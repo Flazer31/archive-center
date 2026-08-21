@@ -206,10 +206,11 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 		SELECT id
 		FROM world_rules
 		WHERE chat_session_id = ? AND scope = ? AND `+"`key`"+` = ? AND scope_name <=> ?
+		  AND value_json <=> ?
 		  AND (? <= 0 OR source_turn = ?)
 		ORDER BY id DESC
 		LIMIT 1
-	`, w.ChatSessionID, scope, w.Key, scopeName, w.SourceTurn, w.SourceTurn).Scan(&w.ID)
+	`, w.ChatSessionID, scope, w.Key, scopeName, nullableString(w.ValueJSON), w.SourceTurn, w.SourceTurn).Scan(&w.ID)
 	if lookupErr == nil {
 		_, err := m.db.ExecContext(ctx, `
 			UPDATE world_rules

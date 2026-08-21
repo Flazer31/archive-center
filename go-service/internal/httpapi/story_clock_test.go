@@ -321,7 +321,7 @@ func TestStoryClockUnknownCorrectionReplayAndOlderTurn(t *testing.T) {
 	}
 }
 
-func TestStoryClockRequiresAcceptedSourceAndDirectEvidence(t *testing.T) {
+func TestStoryClockRequiresAcceptedSourceButNotDirectEvidence(t *testing.T) {
 	excerpt := "The date was 1423-04-12."
 	proposal := storyClockProposal("absolute", "current", "exact", excerpt)
 	proposal["absolute"] = map[string]any{"date": "1423-04-12"}
@@ -350,13 +350,21 @@ func TestStoryClockRequiresAcceptedSourceAndDirectEvidence(t *testing.T) {
 		"story-session",
 		10,
 		map[string]any{"story_clock": proposal},
-		excerpt+" The scene continued.",
+		"The scene continued.",
 		nil,
 		time.Unix(10, 0),
 		&result,
 	)
-	if len(fake.savedStatusCurrent) != 0 || !hasStoryClockSkipReason(result, "direct_evidence_required") {
-		t.Fatalf("clock without direct evidence became canonical: current=%#v skips=%#v", fake.savedStatusCurrent, result.SkipReasons)
+	if len(fake.savedStatusCurrent) != 1 || len(fake.savedStatusEvents) != 1 {
+		t.Fatalf("accepted semantic clock without direct evidence was dropped: current=%#v events=%#v skips=%#v", fake.savedStatusCurrent, fake.savedStatusEvents, result.SkipReasons)
+	}
+	missingEvidencePayload := map[string]any{}
+	if err := json.Unmarshal([]byte(fake.savedStatusEvents[0].EvidenceJSON), &missingEvidencePayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(sliceFromAny(missingEvidencePayload["direct_evidence_ids"])) != 0 ||
+		extractionStringFromAny(missingEvidencePayload["evidence_excerpt"]) != "" {
+		t.Fatalf("missing evidence was invented instead of recorded honestly: %#v", missingEvidencePayload)
 	}
 
 	for _, mutate := range []func(*store.DirectEvidence){
@@ -370,16 +378,26 @@ func TestStoryClockRequiresAcceptedSourceAndDirectEvidence(t *testing.T) {
 		func(item *store.DirectEvidence) { item.CommittedGate = "manual" },
 		func(item *store.DirectEvidence) { item.EvidenceText = "The date was" },
 	} {
+		caseFake := &turnRecordingStore{}
+		caseServer := NewServer(config.Default())
+		caseServer.Store = caseFake
 		rejected := storyClockEvidence(10, 10, excerpt)
 		mutate(&rejected[0])
 		result = artifactSaveResult{}
-		server.saveStoryClockFromExtraction(
+		caseServer.saveStoryClockFromExtraction(
 			acceptedStoryClockContext("revision-rejected-evidence", "logical-rejected-evidence", "generation-rejected-evidence"),
 			"story-session", 10, map[string]any{"story_clock": proposal},
 			excerpt+" The scene continued.", rejected, time.Unix(10, 0), &result,
 		)
-		if len(fake.savedStatusCurrent) != 0 || !hasStoryClockSkipReason(result, "direct_evidence_required") {
-			t.Fatalf("inactive evidence became canonical: current=%#v evidence=%#v skips=%#v", fake.savedStatusCurrent, rejected[0], result.SkipReasons)
+		if len(caseFake.savedStatusCurrent) != 1 || len(caseFake.savedStatusEvents) != 1 {
+			t.Fatalf("semantic clock was dropped because evidence did not match: current=%#v evidence=%#v skips=%#v", caseFake.savedStatusCurrent, rejected[0], result.SkipReasons)
+		}
+		payload := map[string]any{}
+		if err := json.Unmarshal([]byte(caseFake.savedStatusEvents[0].EvidenceJSON), &payload); err != nil {
+			t.Fatal(err)
+		}
+		if len(sliceFromAny(payload["direct_evidence_ids"])) != 0 {
+			t.Fatalf("inactive or mismatched evidence was linked: evidence=%#v payload=%#v", rejected[0], payload)
 		}
 	}
 }

@@ -890,23 +890,17 @@ func TestSeq16P221R1dCanonFirstInjectionContract(t *testing.T) {
 		t.Fatalf("missing documents")
 	}
 	tierIndexes := seq16DocumentTierIndexes(docs)
-	memoryIndex, hasMemory := tierIndexes["memory"]
-	evidenceIndex, hasEvidence := tierIndexes["evidence"]
-	chatLogIndex, hasChatLog := tierIndexes["chat_log"]
+	_, hasMemory := tierIndexes["memory"]
+	_, hasEvidence := tierIndexes["evidence"]
+	_, hasChatLog := tierIndexes["chat_log"]
 	if !hasMemory {
 		t.Fatalf("documents missing memory support tier")
 	}
 	if !hasEvidence {
 		t.Fatalf("documents missing direct evidence tier")
 	}
-	if !hasChatLog {
-		t.Fatalf("documents missing chat_log fallback tier")
-	}
-	if memoryIndex > chatLogIndex {
-		t.Fatalf("memory tier index=%d should precede chat_log fallback index=%d", memoryIndex, chatLogIndex)
-	}
-	if evidenceIndex > chatLogIndex {
-		t.Fatalf("evidence tier index=%d should precede chat_log fallback index=%d", evidenceIndex, chatLogIndex)
+	if hasChatLog {
+		t.Fatalf("raw chat log reentered the public retrieval documents: %#v", docs)
 	}
 
 	if !strings.Contains(canonText, "The world is stable.") {

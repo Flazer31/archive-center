@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -14,7 +15,200 @@ import (
 
 const (
 	prepareTurnProductionProjectionV1 = "prepare_turn.production_compact.v1"
+	prepareTurnHistoryMaxDepth        = 32
 )
+
+type prepareTurnHistorySegment struct {
+	SessionID string
+	FromTurn  int
+	ToTurn    int
+}
+
+type prepareTurnHistoryScope struct {
+	Segments []prepareTurnHistorySegment
+	State    string
+	Reason   string
+}
+
+func resolvePrepareTurnHistoryScope(ctx context.Context, st store.Store, sessionID string, currentTurnFence int) prepareTurnHistoryScope {
+	sid := strings.TrimSpace(sessionID)
+	scope := prepareTurnHistoryScope{State: "current_only", Reason: "no_confirmed_fork_lineage"}
+	if sid == "" {
+		return scope
+	}
+	upperTurn := 0
+	if currentTurnFence > 0 {
+		upperTurn = currentTurnFence - 1
+	}
+	segments := make([]prepareTurnHistorySegment, 0, 4)
+	seen := map[string]bool{}
+	cursor := sid
+	confirmedDepth := 0
+	for depth := 0; cursor != "" && depth < prepareTurnHistoryMaxDepth; depth++ {
+		if seen[cursor] {
+			scope.State = "partial"
+			scope.Reason = "confirmed_worldline_cycle"
+			break
+		}
+		seen[cursor] = true
+		worldline := currentWorldlineViewModel(ctx, st, cursor)
+		if worldline.State != "confirmed" || strings.TrimSpace(worldline.ParentSessionID) == "" || strings.TrimSpace(worldline.ForkSourceRole) == "" {
+			segments = appendPrepareTurnHistorySegment(segments, prepareTurnHistorySegment{
+				SessionID: cursor,
+				FromTurn:  0,
+				ToTurn:    upperTurn,
+			})
+			if worldline.State == "unresolved" || worldline.State == "conflict" || worldline.State == "confirmed" {
+				scope.State = "partial"
+				scope.Reason = worldline.Reason
+			}
+			break
+		}
+		boundary := worldline.InheritedThroughTurn
+		segments = appendPrepareTurnHistorySegment(segments, prepareTurnHistorySegment{
+			SessionID: cursor,
+			FromTurn:  boundary + 1,
+			ToTurn:    upperTurn,
+		})
+		confirmedDepth++
+		cursor = strings.TrimSpace(worldline.ParentSessionID)
+		upperTurn = boundary
+		if upperTurn == 0 {
+			upperTurn = -1
+		}
+	}
+	if cursor != "" && len(seen) >= prepareTurnHistoryMaxDepth {
+		scope.State = "partial"
+		scope.Reason = "confirmed_worldline_depth_limit"
+	}
+	for left, right := 0, len(segments)-1; left < right; left, right = left+1, right-1 {
+		segments[left], segments[right] = segments[right], segments[left]
+	}
+	scope.Segments = segments
+	if confirmedDepth > 0 && scope.State == "current_only" {
+		scope.State = "ready"
+		scope.Reason = "confirmed_worldline_history_composed"
+	}
+	return scope
+}
+
+func appendPrepareTurnHistorySegment(segments []prepareTurnHistorySegment, segment prepareTurnHistorySegment) []prepareTurnHistorySegment {
+	segment.SessionID = strings.TrimSpace(segment.SessionID)
+	if segment.SessionID == "" || segment.ToTurn < 0 || (segment.ToTurn > 0 && segment.FromTurn > segment.ToTurn) {
+		return segments
+	}
+	return append(segments, segment)
+}
+
+func prepareTurnHistorySegmentContains(segment prepareTurnHistorySegment, turn int) bool {
+	if segment.ToTurn < 0 || turn < segment.FromTurn {
+		return false
+	}
+	return segment.ToTurn <= 0 || turn <= segment.ToTurn
+}
+
+func prepareTurnHistoryScopeTrace(scope prepareTurnHistoryScope) map[string]any {
+	segments := make([]map[string]any, 0, len(scope.Segments))
+	for _, segment := range scope.Segments {
+		segments = append(segments, map[string]any{
+			"chat_session_id": segment.SessionID,
+			"from_turn":       segment.FromTurn,
+			"to_turn":         segment.ToTurn,
+		})
+	}
+	return map[string]any{
+		"state":    scope.State,
+		"reason":   scope.Reason,
+		"segments": segments,
+	}
+}
+
+func listPrepareTurnHistoryMemories(ctx context.Context, reader store.PrepareTurnRangeStore, segments []prepareTurnHistorySegment, includeIDs []int64) ([]store.Memory, error) {
+	items := []store.Memory{}
+	var firstErr error
+	for _, segment := range segments {
+		rows, err := reader.ListMemoriesRange(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn, includeIDs)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, row := range rows {
+			if prepareTurnHistorySegmentContains(segment, row.TurnIndex) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, firstErr
+}
+
+func listPrepareTurnHistoryEvidence(ctx context.Context, reader store.PrepareTurnRangeStore, segments []prepareTurnHistorySegment, includeIDs []int64) ([]store.DirectEvidence, error) {
+	items := []store.DirectEvidence{}
+	var firstErr error
+	for _, segment := range segments {
+		rows, err := reader.ListEvidenceRange(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn, includeIDs)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, row := range rows {
+			turn := row.TurnAnchor
+			if turn <= 0 {
+				turn = row.SourceTurnEnd
+			}
+			if turn <= 0 {
+				turn = row.SourceTurnStart
+			}
+			if prepareTurnHistorySegmentContains(segment, turn) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, firstErr
+}
+
+func listPrepareTurnHistoryKGTriples(ctx context.Context, reader store.PrepareTurnRangeStore, segments []prepareTurnHistorySegment) ([]store.KGTriple, error) {
+	items := []store.KGTriple{}
+	var firstErr error
+	for _, segment := range segments {
+		rows, err := reader.ListKGTriplesRange(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, row := range rows {
+			if prepareTurnHistorySegmentContains(segment, row.SourceTurn) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, firstErr
+}
+
+func listPrepareTurnHistoryChatLogs(ctx context.Context, reader store.Store, segments []prepareTurnHistorySegment) ([]store.ChatLog, error) {
+	items := []store.ChatLog{}
+	var firstErr error
+	for _, segment := range segments {
+		rows, err := reader.ListChatLogs(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn)
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		for _, row := range rows {
+			if prepareTurnHistorySegmentContains(segment, row.TurnIndex) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, firstErr
+}
 
 func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing := newBackendTimingTrace("prepare_turn.backend_timing.v1")
@@ -88,6 +282,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	if enforceCurrentInputContract {
 		req.RawUserInput = &currentInputDecision.EffectiveUserInput
+	}
+	currentLogicalTurn, currentLogicalTurnTrace := s.resolvePrepareTurnCurrentLogicalTurn(r.Context(), request, currentInputDecision, sid)
+	currentTurnFence := 0
+	if currentLogicalTurn > 0 {
+		req.TurnIndex = &currentLogicalTurn
+		request.PrepareTurnRequest.TurnIndex = req.TurnIndex
+		turnResolutionStatus := extractionStringFromAny(currentLogicalTurnTrace["status"])
+		if turnResolutionStatus == "resolved" {
+			currentTurnFence = currentLogicalTurn
+		}
 	}
 	if req.Settings.CoreObjectiveMemoryMaxItems != nil && *req.Settings.CoreObjectiveMemoryMaxItems <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid_setting", "core_objective_memory_max_items must be at least 1 when provided")
@@ -166,6 +370,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if narrativeSupportMaxChars < 0 {
 		narrativeSupportMaxChars = 0
 	}
+	publisherGuidanceFormat := normalizePublisherGuidanceFormat(stringPtrValue(request.PublisherGuidanceFormat, "standard"))
 	referenceBudgetBasisChars := maxInjectionChars
 	if req.Settings.ReferenceInjectionBudgetBasisChars != nil {
 		referenceBudgetBasisChars = *req.Settings.ReferenceInjectionBudgetBasisChars
@@ -198,11 +403,21 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	rawUserInput := stringPtrValue(req.RawUserInput, "")
 	turnIndex := intPtrValue(req.TurnIndex, 0)
+	lorebookReferenceStartedAt := time.Now()
+	lorebookReference := s.prepareTurnLorebookReferenceSearch(
+		r.Context(),
+		sid,
+		rawUserInput,
+		stringPtrValue(req.Settings.LorebookReferenceMode, prepareTurnLorebookModeReferenceAssist),
+		request.LorebookReferenceScope,
+	)
+	timing.addElapsed("lorebook_reference", lorebookReferenceStartedAt)
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
 	perspectiveContext = resolvePrepareTurnPerspectiveIdentity(r.Context(), s.Store, sid, perspectiveContext)
+	historyScope := resolvePrepareTurnHistoryScope(r.Context(), s.Store, sid, currentTurnFence)
 	vectorStartedAt := time.Now()
-	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK)
+	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK, historyScope)
 	timing.addElapsed("vector_recall", vectorStartedAt)
 	vectorMemoryIDs, vectorEvidenceIDs := prepareTurnVectorHistoryRowIDs(vectorShadow)
 
@@ -219,9 +434,15 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var pendingThreads []store.PendingThread
 	var activeStates []store.ActiveState
 	var canonicalLayers []store.CanonicalStateLayer
+	var memoryReadErr error
+	var kgReadErr error
+	var characterStateReadErr error
+	var canonicalStateReadErr error
+	var pendingThreadReadErr error
 	var episodeSums []store.EpisodeSummary
 	var personaEntries []store.PersonaMemoryEntry
 	var characterPrivateMemories []store.ProtagonistEntityMemory
+	attachedCharacterPrivateMemoryCount := 0
 	entityOwnerIndexCount := 0
 	entityOwnerScopeMatchCount := 0
 	entityMemoryReadCount := 0
@@ -236,18 +457,24 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	readErrs := []error{}
 	readsOK := 0
 	sessionStateReads := map[string]bool{}
-	const historyFromTurn = 0
-	const historyToTurn = 0
+	historyFromTurn := 0
+	historyToTurn := 0
+	if currentTurnFence > 0 {
+		historyToTurn = currentTurnFence - 1
+	}
 	fullSessionRangeRead := false
 	materializationTrace := map[string]any{
-		"contract_version":              "prepare_turn.materialization_trace.v1",
-		"history_scope":                 "full_session",
-		"history_from_turn":             historyFromTurn,
-		"history_to_turn":               historyToTurn,
-		"range_store_used":              false,
-		"bounded_history_store":         false,
-		"vector_memory_include_count":   len(vectorMemoryIDs),
-		"vector_evidence_include_count": len(vectorEvidenceIDs),
+		"contract_version":                "prepare_turn.materialization_trace.v1",
+		"history_scope":                   map[bool]string{true: "before_current_logical_turn", false: "full_session"}[currentTurnFence > 0],
+		"history_from_turn":               historyFromTurn,
+		"history_to_turn":                 historyToTurn,
+		"current_logical_turn":            turnIndex,
+		"current_logical_turn_resolution": currentLogicalTurnTrace,
+		"range_store_used":                false,
+		"bounded_history_store":           false,
+		"vector_memory_include_count":     len(vectorMemoryIDs),
+		"vector_evidence_include_count":   len(vectorEvidenceIDs),
+		"worldline_history_scope":         prepareTurnHistoryScopeTrace(historyScope),
 	}
 
 	storeReadsStartedAt := time.Now()
@@ -280,9 +507,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			fullSessionRangeRead = true
 			materializationTrace["range_store_used"] = true
 		}
-		var memoryReadErr error
 		if fullSessionRangeRead {
-			memories, memoryReadErr = rangeStore.ListMemoriesRange(ctx, sid, historyFromTurn, historyToTurn, vectorMemoryIDs)
+			memories, memoryReadErr = listPrepareTurnHistoryMemories(ctx, rangeStore, historyScope.Segments, vectorMemoryIDs)
 		} else {
 			memories, memoryReadErr = s.Store.ListMemories(ctx, sid, 0, 0)
 		}
@@ -291,9 +517,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(memoryReadErr, store.ErrNotEnabled) {
 			readErrs = append(readErrs, memoryReadErr)
 		}
-		var kgReadErr error
 		if fullSessionRangeRead {
-			kgTriples, kgReadErr = rangeStore.ListKGTriplesRange(ctx, sid, historyFromTurn, historyToTurn)
+			kgTriples, kgReadErr = listPrepareTurnHistoryKGTriples(ctx, rangeStore, historyScope.Segments)
 		} else {
 			kgTriples, kgReadErr = s.Store.ListKGTriples(ctx, sid)
 		}
@@ -304,7 +529,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		}
 		var evidenceReadErr error
 		if fullSessionRangeRead {
-			evidence, evidenceReadErr = rangeStore.ListEvidenceRange(ctx, sid, historyFromTurn, historyToTurn, vectorEvidenceIDs)
+			evidence, evidenceReadErr = listPrepareTurnHistoryEvidence(ctx, rangeStore, historyScope.Segments, vectorEvidenceIDs)
 		} else {
 			evidence, evidenceReadErr = s.Store.ListEvidence(ctx, sid)
 		}
@@ -313,7 +538,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(evidenceReadErr, store.ErrNotEnabled) {
 			readErrs = append(readErrs, evidenceReadErr)
 		}
-		if c, err := s.Store.ListChatLogs(ctx, sid, historyFromTurn, historyToTurn); err == nil {
+		if c, err := listPrepareTurnHistoryChatLogs(ctx, s.Store, historyScope.Segments); err == nil {
 			chatLogs = c
 			readsOK++
 			sessionStateReads["chat_logs"] = true
@@ -339,9 +564,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(err, store.ErrNotEnabled) {
 			readErrs = append(readErrs, err)
 		}
-		var characterStateReadErr error
 		if fullSessionRangeRead {
-			charStates, characterStateReadErr = rangeStore.ListCharacterStatesCurrent(ctx, sid)
+			charStates, characterStateReadErr = rangeStore.ListCharacterStatesCurrentBefore(ctx, sid, currentTurnFence)
 		} else {
 			charStates, characterStateReadErr = s.Store.ListCharacterStates(ctx, sid)
 		}
@@ -363,8 +587,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			pendingThreads = pt
 			readsOK++
 			sessionStateReads["pending_threads"] = true
-		} else if !errors.Is(err, store.ErrNotEnabled) {
-			readErrs = append(readErrs, err)
+		} else {
+			pendingThreadReadErr = err
+			if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
+			}
 		}
 		var activeStateReadErr error
 		if fullSessionRangeRead {
@@ -378,7 +605,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		} else if !errors.Is(activeStateReadErr, store.ErrNotEnabled) {
 			readErrs = append(readErrs, activeStateReadErr)
 		}
-		var canonicalStateReadErr error
 		if fullSessionRangeRead {
 			canonicalLayers, canonicalStateReadErr = rangeStore.ListCanonicalStateLayersRange(ctx, sid, historyFromTurn, historyToTurn)
 		} else {
@@ -404,6 +630,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					}
 					personaEntries = append(personaEntries, entry)
 				}
+				attachedCharacterPrivateMemoryCount = len(characterPrivateMemories)
 				readsOK++
 			} else if !errors.Is(err, store.ErrNotEnabled) {
 				readErrs = append(readErrs, err)
@@ -415,7 +642,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				OwnerVisibility:     "owner_private",
 				SourceChatSessionID: sid,
 			}
-			readScopedMemories := true
 			if ownerStore, ownerOK := s.Store.(store.ProtagonistEntityMemoryOwnerIndexStore); ownerOK {
 				owners, ownerErr := ownerStore.ListProtagonistEntityMemoryOwners(ctx, store.ProtagonistEntityMemoryFilter{
 					OwnerEntityRole:     "npc",
@@ -437,6 +663,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 						nonEmptyStrings(strings.Split(recollectionContext.currentEntities, "\n")),
 						nonEmptyStrings([]string{
 							recollectionContext.currentAssistantContext,
+							recollectionContext.previousEventSummary,
 							extractionStringFromAny(perspectiveContext["current_pov"]),
 						}),
 					)
@@ -447,11 +674,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 							memoryFilter.OwnerEntityKeys = append(memoryFilter.OwnerEntityKeys, key)
 						}
 					}
-					if len(owners) == 0 {
+					switch {
+					case len(owners) == 0:
 						entityMemoryReadPolicy = "owner_index_empty_all_rows_then_semantic_filter"
-						readScopedMemories = true
-					} else {
-						readScopedMemories = len(memoryFilter.OwnerEntityKeys) > 0
+					case len(memoryFilter.OwnerEntityKeys) == 0:
+						entityMemoryReadPolicy = "owner_index_no_current_owner_match_all_rows_then_semantic_filter"
+					default:
+						entityMemoryReadPolicy = "owner_index_exact_scope"
 					}
 				} else if !errors.Is(ownerErr, store.ErrNotEnabled) {
 					readErrs = append(readErrs, ownerErr)
@@ -462,17 +691,15 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			} else {
 				entityMemoryReadPolicy = "owner_index_unavailable_all_rows_then_semantic_filter"
 			}
-			if readScopedMemories {
-				memories, err := entityStore.ListProtagonistEntityMemories(ctx, memoryFilter)
-				if err == nil {
-					characterPrivateMemories = append(characterPrivateMemories, memories...)
-					entityMemoryReadCount = len(memories)
-					if len(memories) > 0 {
-						readsOK++
-					}
-				} else if !errors.Is(err, store.ErrNotEnabled) {
-					readErrs = append(readErrs, err)
+			memories, err := entityStore.ListProtagonistEntityMemories(ctx, memoryFilter)
+			if err == nil {
+				characterPrivateMemories = append(characterPrivateMemories, memories...)
+				entityMemoryReadCount = len(memories)
+				if len(memories) > 0 {
+					readsOK++
 				}
+			} else if !errors.Is(err, store.ErrNotEnabled) {
+				readErrs = append(readErrs, err)
 			}
 		}
 		if valueStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
@@ -502,6 +729,38 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	materializedBeforeCurrentTurnFence := len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(charEvents) + len(pendingThreads) + len(activeStates) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories) + len(characterPerspectiveUnits) + len(activeInteractionUnits) + len(narrativeCurrentValues) + len(storyClockCurrentValues) + len(reversibleCurrentValues)
+	memories = prepareTurnHistoryBeforeCurrent(memories, currentTurnFence, func(item store.Memory) int { return item.TurnIndex })
+	evidence = prepareTurnHistoryBeforeCurrent(evidence, currentTurnFence, func(item store.DirectEvidence) int {
+		return maxInt(item.SourceTurnStart, maxInt(item.SourceTurnEnd, item.TurnAnchor))
+	})
+	kgTriples = prepareTurnHistoryBeforeCurrent(kgTriples, currentTurnFence, func(item store.KGTriple) int { return item.SourceTurn })
+	chatLogs = prepareTurnHistoryBeforeCurrent(chatLogs, currentTurnFence, func(item store.ChatLog) int { return item.TurnIndex })
+	storylines = prepareTurnHistoryBeforeCurrent(storylines, currentTurnFence, func(item store.Storyline) int {
+		return maxInt(item.FirstTurn, maxInt(item.LastTurn, item.LastEvidenceTurn))
+	})
+	worldRules = prepareTurnHistoryBeforeCurrent(worldRules, currentTurnFence, func(item store.WorldRule) int { return item.SourceTurn })
+	charStates = prepareTurnHistoryBeforeCurrent(charStates, currentTurnFence, func(item store.CharacterState) int { return item.TurnIndex })
+	charEvents = prepareTurnHistoryBeforeCurrent(charEvents, currentTurnFence, func(item store.CharacterEvent) int { return item.TurnIndex })
+	pendingThreads = prepareTurnHistoryBeforeCurrent(pendingThreads, currentTurnFence, func(item store.PendingThread) int {
+		return maxInt(item.SourceTurn, maxInt(item.CreatedTurn, item.ResolvedTurn))
+	})
+	activeStates = prepareTurnHistoryBeforeCurrent(activeStates, currentTurnFence, func(item store.ActiveState) int { return item.TurnIndex })
+	canonicalLayers = prepareTurnHistoryBeforeCurrent(canonicalLayers, currentTurnFence, func(item store.CanonicalStateLayer) int {
+		return maxInt(item.TurnIndex, item.SourceTurn)
+	})
+	episodeSums = prepareTurnHistoryBeforeCurrent(episodeSums, currentTurnFence, func(item store.EpisodeSummary) int { return item.ToTurn })
+	attachedCharacterPrivateMemories := append([]store.ProtagonistEntityMemory(nil), characterPrivateMemories[:attachedCharacterPrivateMemoryCount]...)
+	sessionCharacterPrivateMemories := prepareTurnHistoryBeforeCurrent(characterPrivateMemories[attachedCharacterPrivateMemoryCount:], currentTurnFence, func(item store.ProtagonistEntityMemory) int { return item.SourceTurn })
+	characterPrivateMemories = append(attachedCharacterPrivateMemories, sessionCharacterPrivateMemories...)
+	characterPerspectiveUnits = prepareTurnHistoryBeforeCurrent(characterPerspectiveUnits, currentTurnFence, func(item store.PreciseMemoryUnit) int { return item.SourceTurnEnd })
+	activeInteractionUnits = prepareTurnHistoryBeforeCurrent(activeInteractionUnits, currentTurnFence, func(item store.PreciseMemoryUnit) int { return item.SourceTurnEnd })
+	narrativeCurrentValues = prepareTurnHistoryBeforeCurrent(narrativeCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
+	storyClockCurrentValues = prepareTurnHistoryBeforeCurrent(storyClockCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
+	reversibleCurrentValues = prepareTurnHistoryBeforeCurrent(reversibleCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
+	materializedAfterCurrentTurnFence := len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(charEvents) + len(pendingThreads) + len(activeStates) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories) + len(characterPerspectiveUnits) + len(activeInteractionUnits) + len(narrativeCurrentValues) + len(storyClockCurrentValues) + len(reversibleCurrentValues)
+	materializationTrace["current_turn_fence_applied"] = currentTurnFence > 0
+	materializationTrace["current_turn_fence_dropped_rows"] = materializedBeforeCurrentTurnFence - materializedAfterCurrentTurnFence
 	storylines, pendingThreads, activeStates, canonicalLayers, supersededOpenGoalTrace := filterPrepareTurnSupersededOpenGoals(
 		narrativeCurrentValues,
 		storylines,
@@ -630,12 +889,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	documents := []map[string]any{}
 	injectionStartedAt := time.Now()
 	if !degraded {
-		safeRetrievalMemories, _ := prefilterPrepareTurnHolderScopedPerspectiveMemories(memories)
+		safeRetrievalMemories, _ := projectPrepareTurnGeneralMemories(memories)
 		safeRetrievalEvidence, _ := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
-		if prepareTurnPerspectiveHardFilterActive(perspectiveContext) {
-			safeRetrievalMemories, _ = prefilterPrepareTurnProtectedAggregateMemories(safeRetrievalMemories)
-		}
-		documents = buildUnifiedRetrievalDocuments(sid, safeRetrievalMemories, safeRetrievalEvidence, kgTriples, episodeSums, resumePack, chatLogs)
+		documents = buildUnifiedRetrievalDocuments(sid, safeRetrievalMemories, safeRetrievalEvidence, kgTriples, episodeSums, resumePack, nil)
 		if injectionEnabled && memoryInjectionBudget > 0 {
 			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
 			assemblyPerspectiveContext["_character_perspective_text"] = characterPerspectiveCandidateText
@@ -651,6 +907,103 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, memoryInjectionBudget, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
 		}
+	}
+	methods := mapFromAny(injectionAssembly.Counts["retrieval_methods"])
+	if len(methods) == 0 {
+		inactiveStatus := "skipped"
+		inactiveReason := "assembly_not_run"
+		switch {
+		case degraded:
+			inactiveStatus = "unavailable"
+			inactiveReason = "store_unavailable"
+		case !injectionEnabled:
+			inactiveReason = "injection_disabled"
+		case memoryInjectionBudget <= 0:
+			inactiveReason = "injection_budget_empty"
+		}
+		methods = map[string]any{
+			"exact_phrase": map[string]any{"status": inactiveStatus, "reason_code": inactiveReason, "candidate_count": 0, "selected_count": 0},
+			"lexical":      map[string]any{"status": inactiveStatus, "reason_code": inactiveReason, "candidate_count": 0, "selected_count": 0},
+			"vector":       prepareTurnVectorRetrievalMethodStatus(vectorShadow, 0),
+			"relationship": map[string]any{
+				"status": inactiveStatus, "reason_code": inactiveReason,
+				"source_row_count": len(kgTriples) + len(charStates) + len(canonicalLayers), "selected_count": 0,
+			},
+			"unresolved_thread": map[string]any{
+				"status": inactiveStatus, "reason_code": inactiveReason,
+				"candidate_count": len(pendingThreads), "selected_count": 0,
+			},
+		}
+		if injectionAssembly.Counts == nil {
+			injectionAssembly.Counts = map[string]any{}
+		}
+		injectionAssembly.Counts["retrieval_methods"] = methods
+	}
+	if len(methods) > 0 {
+		for _, methodName := range []string{"exact_phrase", "lexical"} {
+			methodStatus := mapFromAny(methods[methodName])
+			if memoryReadErr != nil {
+				if errors.Is(memoryReadErr, store.ErrNotEnabled) {
+					methodStatus["status"] = "unavailable"
+					methodStatus["reason_code"] = "not_enabled"
+				} else {
+					methodStatus["status"] = "failed"
+					methodStatus["reason_code"] = "source_read_failed"
+				}
+			}
+			methods[methodName] = methodStatus
+		}
+
+		relationshipStatus := mapFromAny(methods["relationship"])
+		failedSources := []string{}
+		unavailableSources := []string{}
+		for _, source := range []struct {
+			name string
+			err  error
+		}{
+			{name: "kg", err: kgReadErr},
+			{name: "character_state", err: characterStateReadErr},
+			{name: "canonical_state", err: canonicalStateReadErr},
+		} {
+			if source.err == nil {
+				continue
+			}
+			if errors.Is(source.err, store.ErrNotEnabled) {
+				unavailableSources = append(unavailableSources, source.name)
+				continue
+			}
+			failedSources = append(failedSources, source.name)
+		}
+		if len(failedSources) > 0 || len(unavailableSources) > 0 {
+			if intFromAny(relationshipStatus["selected_count"], 0) > 0 || intFromAny(relationshipStatus["source_row_count"], 0) > 0 {
+				relationshipStatus["status"] = "partial"
+			} else if len(failedSources) > 0 {
+				relationshipStatus["status"] = "failed"
+			} else {
+				relationshipStatus["status"] = "unavailable"
+			}
+			if len(failedSources) > 0 {
+				relationshipStatus["reason_code"] = "source_read_failed"
+				relationshipStatus["failed_sources"] = failedSources
+			}
+			if len(unavailableSources) > 0 {
+				relationshipStatus["unavailable_sources"] = unavailableSources
+			}
+		}
+		methods["relationship"] = relationshipStatus
+
+		unresolvedThreadStatus := mapFromAny(methods["unresolved_thread"])
+		if pendingThreadReadErr != nil {
+			if errors.Is(pendingThreadReadErr, store.ErrNotEnabled) {
+				unresolvedThreadStatus["status"] = "unavailable"
+				unresolvedThreadStatus["reason_code"] = "not_enabled"
+			} else {
+				unresolvedThreadStatus["status"] = "failed"
+				unresolvedThreadStatus["reason_code"] = "source_read_failed"
+			}
+		}
+		methods["unresolved_thread"] = unresolvedThreadStatus
+		injectionAssembly.Counts["retrieval_methods"] = methods
 	}
 	memoryDeliveryText := extractionStringFromAny(injectionAssembly.MemoryDeliveryPlan["final_text"])
 	activeInteractionPacket, activeInteractionPublicText, activeInteractionGuardedText := finalizePrepareTurnActiveInteractionProjection(
@@ -705,7 +1058,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
 	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
 	memoryAndStateText := strings.Join(nonEmptyStrings([]string{memoryDeliveryText, reversibleStateText}), "\n\n")
-	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndStateText}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -716,6 +1068,24 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		inputContextSource = source
 		inputContextText, inputContextTruncated = buildInputContextText(inputContextLogs, maxInputContextChars)
 	}
+	lorebookReferenceBudget := maxInt(0, referenceBudgetBasisChars-referenceBudgetPolicy.UsedChars)
+	if strings.TrimSpace(referenceText) != "" && lorebookReferenceBudget > 0 {
+		lorebookReferenceBudget = maxInt(0, lorebookReferenceBudget-2)
+	}
+	finalizePrepareTurnLorebookReference(
+		&lorebookReference,
+		rawUserInput,
+		req.Messages,
+		[]string{
+			memoryDeliveryText,
+			reversibleStateText,
+			inputContextText,
+			referenceText,
+		},
+		injectionEnabled,
+		lorebookReferenceBudget,
+	)
+	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndStateText, lorebookReference.deliveryText}), "\n\n")
 	if injectionAssembly.Counts == nil {
 		injectionAssembly.Counts = map[string]any{}
 	}
@@ -752,6 +1122,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	)
 	criticInputPack := buildCriticInputPack(sid, turnIndex, rawUserInput, promptAssembly, evidenceCounts, sectionSummary, degraded)
 	injectionPack := buildInjectionPack(rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, injectionAssembly, temporalSupportPacket)
+	injectionPack["lorebook_reference_recall"] = lorebookReference
 	injectionPack["character_perspective_packet"] = characterPerspectivePacket
 	injectionPack["character_perspective_text"] = nilIfEmpty(characterPerspectiveText)
 	injectionPack["active_interaction_packet"] = activeInteractionPacket
@@ -864,12 +1235,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	inputAnchorGovernor := buildInputAnchorGovernor(rawUserInput, inputContextText, inputContextTruncated, maxInputContextChars, chatLogs, resumePack, activeStates, canonicalLayers, episodeSums, pendingThreads, storylines)
 	boundedMemoryDeliveryLineage := boundedPrepareTurnMemoryDeliveryLineage(sid, injectionAssembly.MemoryDeliveryLineage, chatLogs)
 	responseExecutionContract := buildResponseExecutionContractWithMemoryLineage(sid, inputAnchorGovernor, selectedStorylines, pendingThreads, activeStates, canonicalLayers, worldRules, injectionAssembly, languageContext, currentInputDecision, hostContextReferenceEvidence, inputContextText)
+	supervisorSupportPacket := buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage, inputContextText, injectionAssembly.CharacterMemorySupport, injectionAssembly.MemoryDeliveryPlan)
+	attachPrepareTurnLorebookPublisherSupport(responseExecutionContract, supervisorSupportPacket, &lorebookReference)
 	guideEligibility := buildPrepareTurnGuideEligibility(guideMode, guideStrength, injectionEnabled, narrativeSupportMaxChars, responseExecutionContract)
 	responseExecutionContract["guide_eligibility"] = guideEligibility
 	supervisorInputPack["guide_eligibility"] = guideEligibility
 	guideEligible := extractionStringFromAny(guideEligibility["status"]) == "eligible"
 	supervisorInputPack["response_execution_contract"] = responseExecutionContract
-	supervisorInputPack["support_packet"] = buildSupervisorSupportPacket(sid, rawUserInput, responseExecutionContract, injectionAssembly.MemoryDeliveryLineage, inputContextText, injectionAssembly.CharacterMemorySupport)
+	supervisorInputPack["support_packet"] = supervisorSupportPacket
 	guidanceItems := []prepareTurnGuidanceItem{}
 	supervisorCallStatus := "disabled"
 	supervisorCallReason := ""
@@ -938,35 +1311,41 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
 				proposalStatus := extractionStringFromAny(proposal["status"])
 				switch proposalStatus {
-				case "malformed_failed_open":
-					supervisorCallStatus = "malformed_failed_open"
+				case "publisher_response_container_invalid", "publisher_llm_empty_content", "publisher_json_malformed", "publisher_json_truncated", "publisher_schema_invalid":
+					supervisorCallStatus = proposalStatus
 					supervisorCallReason = extractionFirstNonEmpty(
 						extractionStringFromAny(proposal["reason_code"]),
-						"supervisor_malformed_json",
+						proposalStatus,
 					)
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", supervisorCallReason)
 						s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_MALFORMED_FAILED_OPEN", "turn_hud.warning.publisher_llm_malformed_failed_open", turnWorkflowStagePublisherLLM)
 					}
 				case "valid_empty":
 					supervisorCallStatus = "valid_empty"
-					supervisorCallReason = "supervisor_valid_empty"
+					supervisorCallReason = "publisher_valid_empty"
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "supervisor_valid_empty")
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "publisher_valid_empty")
 					}
-				case "unsupported_rejected":
-					supervisorCallStatus = "unsupported_rejected"
-					supervisorCallReason = "supervisor_unsupported_proposal_rejected"
+				case "publisher_plan_no_valid_items":
+					supervisorCallStatus = "publisher_plan_no_valid_items"
+					supervisorCallReason = "publisher_plan_no_valid_items"
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", "supervisor_unsupported_proposal_rejected")
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "publisher_plan_no_valid_items")
+						s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_PLAN_NO_VALID_ITEMS", "turn_hud.warning.publisher_llm_malformed_failed_open", turnWorkflowStagePublisherLLM)
 					}
-				case "ready":
+				case "ready", "partial":
 					publisherPlan := mapFromAny(proposal["publisher_plan"])
-					if extractionStringFromAny(publisherPlan["contract_version"]) == "publisher_plan.v1" &&
-						extractionStringFromAny(publisherPlan["status"]) == "ready" {
+					planStatus := extractionStringFromAny(publisherPlan["status"])
+					if extractionStringFromAny(publisherPlan["contract_version"]) == "publisher_plan.v2" &&
+						(planStatus == "ready" || planStatus == "partial") {
 						supervisorCallStatus = "applied"
+						if planStatus == "partial" {
+							supervisorCallStatus = "applied_partial"
+							supervisorCallReason = "publisher_plan_partial"
+						}
 						if s.TurnWorkflows != nil && workflowRequestID != "" {
-							s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", "")
+							s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", supervisorCallReason)
 						}
 					} else {
 						supervisorCallStatus = "proposal_0"
@@ -985,23 +1364,23 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
 					}
 				}
-				guidanceItems = append(guidanceItems, supervisorSceneProposalGuidanceItems(result)...)
+				guidanceItems = append(guidanceItems, supervisorSceneProposalGuidanceItems(result, publisherGuidanceFormat)...)
 			}
 		}
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.setFact(workflowRequestID, buildTurnWorkflowHUDNarrativeGuidanceFact(supervisorCallStatus, supervisorCallReason))
 	}
-	if s.TurnWorkflows != nil && workflowRequestID != "" {
-		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePayload)
-	}
 	if supervisorCallStatus == "failed_open" {
 		guidanceItems = append(guidanceItems, prepareTurnGuidanceItem{
-			Key:        "supervisor_scene_proposal",
-			Title:      "Publisher LLM Proposal",
+			Key:        "publisher_plan",
+			Title:      "Publisher Guidance",
 			Status:     "failed",
-			ReasonCode: "supervisor_llm_failed_open",
+			ReasonCode: supervisorCallReason,
 		})
+	}
+	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStagePayload)
 	}
 	effectiveNarrativeSupportMaxChars := 0
 	if guideEligible {
@@ -1020,12 +1399,22 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		guidanceItems,
 		supervisorCallStatus,
 	)
+	if lorebookReference.Mode == prepareTurnLorebookModeReferenceAssist {
+		attachPrepareTurnLorebookReferenceLane(
+			payloadApplicationPlan,
+			lorebookReference.deliveryText,
+			lorebookReference.BudgetChars,
+			injectionEnabled,
+			lorebookReference.deliveredSourceRefs(),
+		)
+	}
 	payloadApplicationPlan["guide_eligibility"] = guideEligibility
 	guidanceApplicationTrace := mapFromAny(payloadApplicationPlan["guidance_application_trace"])
 	guidanceApplicationTrace["eligibility"] = guideEligibility["status"]
 	guidanceApplicationTrace["eligibility_reason"] = guideEligibility["reason_code"]
 	guidanceApplicationTrace["guide_mode"] = guideEligibility["guide_mode"]
 	guidanceApplicationTrace["guide_strength"] = guideEligibility["guide_strength"]
+	guidanceApplicationTrace["publisher_guidance_format"] = publisherGuidanceFormat
 	guidanceApplicationTrace["requested_budget_chars"] = narrativeSupportMaxChars
 	guidanceApplicationTrace["guide_eligibility"] = guideEligibility
 	payloadApplicationPlan["guidance_application_trace"] = guidanceApplicationTrace
@@ -1041,6 +1430,19 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(requestCorrelationID) == "" {
 		requestCorrelationID = extractionStringFromAny(req.ClientMeta["archive_center_request_correlation_id"])
 	}
+	memoryRecallBindings := map[string]any{
+		"chat_session_id": sid,
+	}
+	if req.TurnIndex != nil {
+		memoryRecallBindings["turn_index"] = *req.TurnIndex
+	}
+	if sourceObservationRef := stringPtrValue(currentInputDecision.SelectedObservationRef, ""); strings.TrimSpace(sourceObservationRef) != "" {
+		memoryRecallBindings["source_observation_ref"] = sourceObservationRef
+	}
+	if strings.TrimSpace(requestCorrelationID) != "" {
+		memoryRecallBindings["request_correlation_id"] = requestCorrelationID
+	}
+	memoryRecallPlan := buildPrepareTurnMemoryRecallPlan(sid, memoryRecallBindings, injectionAssembly)
 	sourceToPayloadLineage := attachPrepareTurnOutputFidelityLineage(
 		requestCorrelationID,
 		payloadApplicationPlan,
@@ -1048,11 +1450,13 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		boundedMemoryDeliveryLineage,
 	)
 	injectionPack["payload_application_plan"] = payloadApplicationPlan
+	injectionPack["memory_recall_plan"] = memoryRecallPlan
 	injectionPack["memory_delivery_lineage"] = boundedMemoryDeliveryLineage
 	injectionPack["source_to_payload_lineage"] = sourceToPayloadLineage
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
+	injectionPack["lorebook_reference_recall"] = lorebookReference
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
-	inputContextText = extractionStringFromAny(payloadApplicationPlan["input_context_text"])
+	injectionPack["injection_text"] = nilIfEmpty(injectionText)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		s.TurnWorkflows.setMemorySelection(
 			workflowRequestID,
@@ -1119,6 +1523,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"critic_status":       criticInputPack["status"],
 		"storyline_selection": supervisorInputPack["storyline_selection"],
 		"materialization":     materializationTrace,
+		"lorebook_reference":  lorebookReference,
 	}
 	tracePreview["compact_orchestration"] = buildPrepareTurnCompactOrchestrationProjection(
 		supervisorCallStatus,
@@ -1158,8 +1563,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"legacy_surfaces":  "omitted",
 		}
 		compactInjectionPack := map[string]any{
-			"contract_version":                "prepare_turn.compact_injection_pack.v1",
+			"contract_version": "prepare_turn.compact_injection_pack.v1",
+			"counts": map[string]any{
+				"retrieval_methods": injectionAssembly.Counts["retrieval_methods"],
+			},
 			"payload_application_plan":        payloadApplicationPlan,
+			"memory_recall_plan":              injectionPack["memory_recall_plan"],
 			"memory_delivery_plan":            injectionPack["memory_delivery_plan"],
 			"memory_delivery_lineage":         boundedMemoryDeliveryLineage,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
@@ -1172,6 +1581,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"active_interaction_guarded_text": injectionPack["active_interaction_guarded_text"],
 			"reversible_state_packet":         injectionPack["reversible_state_packet"],
 			"reversible_state_text":           injectionPack["reversible_state_text"],
+			"lorebook_reference_recall":       lorebookReference,
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":                          "ok",
@@ -1206,6 +1616,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				"scene_used_chars": referenceSceneUsedChars,
 				"budget_policy":    referenceBudgetPolicy,
 			},
+			"lorebook_reference": lorebookReference,
 		})
 		return
 	}
@@ -1244,6 +1655,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"recall_result":                   recallResult,
 		"reference_recall":                referenceRecall,
 		"primary_canon_base":              primaryCanonBase,
+		"lorebook_reference":              lorebookReference,
 		"reference_injection": map[string]any{
 			"enabled":          referenceInjectionEnabled,
 			"applied":          referenceText != "",
@@ -1843,119 +2255,117 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"seq215_final_validation":             buildSeq215P447FinalValidation(),
 		"seq215_step_complete":                buildSeq215P448StepComplete(),
 		// SEQ-21.5 WI14 deletion slice evidence (P476 ~ P488)
-		"seq215_authority_restate":                        buildSeq215P476AuthorityRestate(),
-		"seq215_before_count":                             buildSeq215P477BeforeCount(),
-		"seq215_exact_usage_search":                       buildSeq215P478ExactUsageSearch(),
-		"seq215_delete_minimal_continuation_cues":         buildSeq215P479DeleteMinimalContinuationCues(),
-		"seq215_delete_explicit_correction_markers":       buildSeq215P480DeleteExplicitCorrectionMarkers(),
-		"seq215_delete_detect_input_mode":                 buildSeq215P481DeleteDetectInputMode(),
-		"seq215_remove_build_weak_input_steering":         buildSeq215P482RemoveBuildWeakInputSteering(),
-		"seq215_simplify_supervisor_planner":              buildSeq215P483SimplifySupervisorPlanner(),
-		"seq215_keep_auto_advance_explicit":               buildSeq215P484KeepAutoAdvanceExplicit(),
-		"seq215_py_compile_pass":                          buildSeq215P485PyCompilePass(),
-		"seq215_focused_backend_tests":                    buildSeq215P486FocusedBackendTests(),
-		"seq215_js_untouched":                             buildSeq215P487JSUntouched(),
-		"seq215_after_count":                              buildSeq215P488AfterCount(),
-		"seq215_js_authority":                             buildSeq215P556JSAuthority(),
-		"seq215_backend_authority":                        buildSeq215P557BackendAuthority(),
-		"seq215_no_root_standalone_pair":                  buildSeq215P558NoRootStandalonePair(),
-		"seq215_backup_not_authority":                     buildSeq215P559BackupNotAuthority(),
-		"seq215_deploy_not_authority":                     buildSeq215P560DeployNotAuthority(),
-		"seq215_no_broad_split_before_narrow":             buildSeq215P561NoBroadSplitBeforeNarrow(),
-		"seq215_stale_split_rejected_context":             buildSeq215P562StaleSplitRejectedContext(),
-		"seq215_stale_split_rejected_progress":            buildSeq215P563StaleSplitRejectedProgress(),
-		"seq215_beta08_metrics":                           buildSeq215P564Beta08Metrics(),
-		"seq215_restate_guard":                            buildSeq215P565RestateGuard(),
-		"seq215_promote_guard":                            buildSeq215P566PromoteGuard(),
-		"seq215_turn_contracts_created":                   buildSeq215P589TurnContractsCreated(),
-		"seq215_complete_turn_request_moved":              buildSeq215P590CompleteTurnRequestMoved(),
-		"seq215_m4_complete_turn_request_moved":           buildSeq215P591M4CompleteTurnRequestMoved(),
-		"seq215_m4_complete_turn_response_moved":          buildSeq215P592M4CompleteTurnResponseMoved(),
-		"seq215_prepare_turn_settings_moved":              buildSeq215P593PrepareTurnSettingsMoved(),
-		"seq215_prepare_turn_request_moved":               buildSeq215P594PrepareTurnRequestMoved(),
-		"seq215_retrieval_document_q1a_moved":             buildSeq215P595RetrievalDocumentQ1AMoved(),
-		"seq215_generation_packet_moved":                  buildSeq215P596GenerationPacketMoved(),
-		"seq215_prepare_turn_response_moved":              buildSeq215P597PrepareTurnResponseMoved(),
-		"seq215_moved_classes_imported_back":              buildSeq215P598MovedClassesImportedBack(),
-		"seq215_route_decorators_stay":                    buildSeq215P599RouteDecoratorsStay(),
-		"seq215_prepare_turn_stays":                       buildSeq215P600PrepareTurnStays(),
-		"seq215_complete_turn_m4_stays":                   buildSeq215P601CompleteTurnM4Stays(),
-		"seq215_public_route_paths_unchanged":             buildSeq215P602PublicRoutePathsUnchanged(),
-		"seq215_response_fields_unchanged":                buildSeq215P603ResponseFieldsUnchanged(),
-		"seq215_no_broad_tree_created":                    buildSeq215P604NoBroadTreeCreated(),
-		"seq215_py_compile_turn_contracts":                buildSeq215P605PyCompileTurnContracts(),
-		"seq215_focused_import_check":                     buildSeq215P606FocusedImportCheck(),
-		"seq215_validation_record":                        buildSeq215P607ValidationRecord(),
-		"seq215_phase1_validation_passed":                 buildSeq215P663Phase1ValidationPassed(),
-		"seq215_prepare_turn_assembly_created":            buildSeq215P664PrepareTurnAssemblyCreated(),
-		"seq215_format_memory_text_moved":                 buildSeq215P665FormatMemoryTextMoved(),
-		"seq215_format_kg_text_moved":                     buildSeq215P666FormatKGTextMoved(),
-		"seq215_format_episode_text_moved":                buildSeq215P667FormatEpisodeTextMoved(),
-		"seq215_format_chapter_text_moved":                buildSeq215P668FormatChapterTextMoved(),
-		"seq215_format_fallback_text_moved":               buildSeq215P669FormatFallbackTextMoved(),
-		"seq215_clean_short_moved":                        buildSeq215P670CleanShortMoved(),
-		"seq215_json_load_maybe_moved":                    buildSeq215P671JsonLoadMaybeMoved(),
-		"seq215_predicate_matches_moved":                  buildSeq215P672PredicateMatchesMoved(),
-		"seq215_world_rule_note_moved":                    buildSeq215P673WorldRuleNoteMoved(),
-		"seq215_format_entity_digest_text_moved":          buildSeq215P674FormatEntityDigestTextMoved(),
-		"seq215_format_entity_anchor_text_moved":          buildSeq215P675FormatEntityAnchorTextMoved(),
-		"seq215_db_session_helpers_stay":                  buildSeq215P677DBSessionHelpersStay(),
-		"seq215_core_logic_stay":                          buildSeq215P678CoreLogicStay(),
-		"seq215_injection_pack_fields_unchanged":          buildSeq215P679InjectionPackFieldsUnchanged(),
-		"seq215_py_compile_prepare_turn_assembly":         buildSeq215P680PyCompilePrepareTurnAssembly(),
-		"seq215_focused_backend_tests_m3a":                buildSeq215P681FocusedBackendTestsM3a(),
-		"seq215_m3a_validation_record":                    buildSeq215P682M3aValidationRecord(),
-		"seq215_proxy_plugin_main_model_separated":        buildSeq215P730ProxyPluginMainModelSeparated(),
-		"seq215_provider_ownership_split":                 buildSeq215P731ProviderOwnershipSplit(),
-		"seq215_thin_proxy_route":                         buildSeq215P732ThinProxyRoute(),
-		"seq215_config_service_split":                     buildSeq215P733ConfigServiceSplit(),
-		"seq215_thin_config_route":                        buildSeq215P734ThinConfigRoute(),
-		"seq215_routes_explicitly_wired":                  buildSeq215P735RoutesExplicitlyWired(),
-		"seq215_public_paths_preserved":                   buildSeq215P736PublicPathsPreserved(),
-		"seq215_compatibility_wrapper":                    buildSeq215P737CompatibilityWrapper(),
-		"seq215_route_level_tests":                        buildSeq215P738RouteLevelTests(),
-		"seq215_js_route_usage":                           buildSeq215P739JSRouteUsage(),
-		"seq215_monolith_not_applicable":                  buildSeq215P740MonolithNotApplicable(),
-		"seq215_prepare_turn_bundle_normal_use":           buildSeq215P776PrepareTurnBundleNormalUse(),
-		"seq215_js_payload_mutation_owner":                buildSeq215P777JSPayloadMutationOwner(),
-		"seq215_js_injection_budget_owner":                buildSeq215P778JSInjectionBudgetOwner(),
-		"seq215_js_input_context_slotting_owner":          buildSeq215P779JSInputContextSlottingOwner(),
-		"seq215_js_protection_blocks_owner":               buildSeq215P780JSProtectionBlocksOwner(),
-		"seq215_js_hook_ui_integration_owner":             buildSeq215P781JSHookUIIntegrationOwner(),
-		"seq215_js_offline_fail_open_owner":               buildSeq215P782JSOfflineFailOpenOwner(),
-		"seq215_build_input_context_preserved":            buildSeq215P783BuildInputContextPreserved(),
-		"seq215_assemble_injection_with_budget_preserved": buildSeq215P784AssembleInjectionWithBudgetPreserved(),
-		"seq215_apply_context_injection_preserved":        buildSeq215P785ApplyContextInjectionPreserved(),
-		"seq215_try_prepare_turn_takeover_off":            buildSeq215P786TryPrepareTurnTakeoverOff(),
-		"seq215_js_node_check":                            buildSeq215P787JSNodeCheck(),
-		"seq215_js_focused_contract_tests":                buildSeq215P788JSFocusedContractTests(),
-		"seq215_p789_validation_record":                   buildSeq215P789ValidationRecord(),
-		"seq215_runtime_split_status":                     buildSeq215P830RuntimeSplitStatus(),
-		"seq215_backend_bundle_assisted":                  buildSeq215P831BackendBundleAssisted(),
-		"seq215_plugin_only_modules":                      buildSeq215P832PluginOnlyModules(),
-		"seq215_or1e_wording":                             buildSeq215P833OR1eWording(),
-		"seq215_or1e_node_check":                          buildSeq215P834OR1eNodeCheck(),
-		"seq215_validation_record_p835":                   buildSeq215P835ValidationRecord(),
-		"seq215_phase1_complete":                          buildSeq215P869Phase1Complete(),
-		"seq215_phase2_complete":                          buildSeq215P870Phase2Complete(),
-		"seq215_phase3_complete":                          buildSeq215P871Phase3Complete(),
-		"seq215_phase4_complete":                          buildSeq215P872Phase4Complete(),
-		"seq215_context_readback":                         buildSeq215P873ContextReadback(),
-		"seq215_progress_readback":                        buildSeq215P874ProgressReadback(),
-		"seq215_stale_authority_search":                   buildSeq215P875StaleAuthoritySearch(),
-		"seq215_false_backend_tree_search":                buildSeq215P876FalseBackendTreeSearch(),
-		"seq215_no_backup_deploy_edited":                  buildSeq215P877NoBackupDeployEdited(),
-		"seq215_changed_files_list":                       buildSeq215P878ChangedFilesList(),
-		"seq215_validation_commands":                      buildSeq215P879ValidationCommands(),
-		"seq215_additional_owner_split_bounded":           buildSeq215P880AdditionalOwnerSplitBounded(),
-		"seq215_js_backend_offload_plugin_only":           buildSeq215P881JSBackendOffloadPluginOnly(),
-		"seq215_master_checklist_open_zero":               buildSeq215P882MasterChecklistOpenZero(),
-		"seq215_step_complete_p883":                       buildSeq215P883StepComplete(),
-		"writeback_preview":                               writebackPreview,
-		"continuity_pack":                                 continuityPack,
-		"persona_recollection":                            personaRecollection,
-		"character_private_recollection":                  characterPrivateRecollection,
-		"entity_recollection_relevance":                   recollectionRelevance,
+		"seq215_authority_restate":                  buildSeq215P476AuthorityRestate(),
+		"seq215_before_count":                       buildSeq215P477BeforeCount(),
+		"seq215_exact_usage_search":                 buildSeq215P478ExactUsageSearch(),
+		"seq215_delete_minimal_continuation_cues":   buildSeq215P479DeleteMinimalContinuationCues(),
+		"seq215_delete_explicit_correction_markers": buildSeq215P480DeleteExplicitCorrectionMarkers(),
+		"seq215_delete_detect_input_mode":           buildSeq215P481DeleteDetectInputMode(),
+		"seq215_remove_build_weak_input_steering":   buildSeq215P482RemoveBuildWeakInputSteering(),
+		"seq215_simplify_supervisor_planner":        buildSeq215P483SimplifySupervisorPlanner(),
+		"seq215_keep_auto_advance_explicit":         buildSeq215P484KeepAutoAdvanceExplicit(),
+		"seq215_py_compile_pass":                    buildSeq215P485PyCompilePass(),
+		"seq215_focused_backend_tests":              buildSeq215P486FocusedBackendTests(),
+		"seq215_js_untouched":                       buildSeq215P487JSUntouched(),
+		"seq215_after_count":                        buildSeq215P488AfterCount(),
+		"seq215_js_authority":                       buildSeq215P556JSAuthority(),
+		"seq215_backend_authority":                  buildSeq215P557BackendAuthority(),
+		"seq215_no_root_standalone_pair":            buildSeq215P558NoRootStandalonePair(),
+		"seq215_backup_not_authority":               buildSeq215P559BackupNotAuthority(),
+		"seq215_deploy_not_authority":               buildSeq215P560DeployNotAuthority(),
+		"seq215_no_broad_split_before_narrow":       buildSeq215P561NoBroadSplitBeforeNarrow(),
+		"seq215_stale_split_rejected_context":       buildSeq215P562StaleSplitRejectedContext(),
+		"seq215_stale_split_rejected_progress":      buildSeq215P563StaleSplitRejectedProgress(),
+		"seq215_beta08_metrics":                     buildSeq215P564Beta08Metrics(),
+		"seq215_restate_guard":                      buildSeq215P565RestateGuard(),
+		"seq215_promote_guard":                      buildSeq215P566PromoteGuard(),
+		"seq215_turn_contracts_created":             buildSeq215P589TurnContractsCreated(),
+		"seq215_complete_turn_request_moved":        buildSeq215P590CompleteTurnRequestMoved(),
+		"seq215_m4_complete_turn_request_moved":     buildSeq215P591M4CompleteTurnRequestMoved(),
+		"seq215_m4_complete_turn_response_moved":    buildSeq215P592M4CompleteTurnResponseMoved(),
+		"seq215_prepare_turn_settings_moved":        buildSeq215P593PrepareTurnSettingsMoved(),
+		"seq215_prepare_turn_request_moved":         buildSeq215P594PrepareTurnRequestMoved(),
+		"seq215_retrieval_document_q1a_moved":       buildSeq215P595RetrievalDocumentQ1AMoved(),
+		"seq215_generation_packet_moved":            buildSeq215P596GenerationPacketMoved(),
+		"seq215_prepare_turn_response_moved":        buildSeq215P597PrepareTurnResponseMoved(),
+		"seq215_moved_classes_imported_back":        buildSeq215P598MovedClassesImportedBack(),
+		"seq215_route_decorators_stay":              buildSeq215P599RouteDecoratorsStay(),
+		"seq215_prepare_turn_stays":                 buildSeq215P600PrepareTurnStays(),
+		"seq215_complete_turn_m4_stays":             buildSeq215P601CompleteTurnM4Stays(),
+		"seq215_public_route_paths_unchanged":       buildSeq215P602PublicRoutePathsUnchanged(),
+		"seq215_response_fields_unchanged":          buildSeq215P603ResponseFieldsUnchanged(),
+		"seq215_no_broad_tree_created":              buildSeq215P604NoBroadTreeCreated(),
+		"seq215_py_compile_turn_contracts":          buildSeq215P605PyCompileTurnContracts(),
+		"seq215_focused_import_check":               buildSeq215P606FocusedImportCheck(),
+		"seq215_validation_record":                  buildSeq215P607ValidationRecord(),
+		"seq215_phase1_validation_passed":           buildSeq215P663Phase1ValidationPassed(),
+		"seq215_prepare_turn_assembly_created":      buildSeq215P664PrepareTurnAssemblyCreated(),
+		"seq215_format_memory_text_moved":           buildSeq215P665FormatMemoryTextMoved(),
+		"seq215_format_kg_text_moved":               buildSeq215P666FormatKGTextMoved(),
+		"seq215_format_episode_text_moved":          buildSeq215P667FormatEpisodeTextMoved(),
+		"seq215_format_chapter_text_moved":          buildSeq215P668FormatChapterTextMoved(),
+		"seq215_format_fallback_text_moved":         buildSeq215P669FormatFallbackTextMoved(),
+		"seq215_clean_short_moved":                  buildSeq215P670CleanShortMoved(),
+		"seq215_json_load_maybe_moved":              buildSeq215P671JsonLoadMaybeMoved(),
+		"seq215_predicate_matches_moved":            buildSeq215P672PredicateMatchesMoved(),
+		"seq215_world_rule_note_moved":              buildSeq215P673WorldRuleNoteMoved(),
+		"seq215_format_entity_digest_text_moved":    buildSeq215P674FormatEntityDigestTextMoved(),
+		"seq215_format_entity_anchor_text_moved":    buildSeq215P675FormatEntityAnchorTextMoved(),
+		"seq215_db_session_helpers_stay":            buildSeq215P677DBSessionHelpersStay(),
+		"seq215_core_logic_stay":                    buildSeq215P678CoreLogicStay(),
+		"seq215_injection_pack_fields_unchanged":    buildSeq215P679InjectionPackFieldsUnchanged(),
+		"seq215_py_compile_prepare_turn_assembly":   buildSeq215P680PyCompilePrepareTurnAssembly(),
+		"seq215_focused_backend_tests_m3a":          buildSeq215P681FocusedBackendTestsM3a(),
+		"seq215_m3a_validation_record":              buildSeq215P682M3aValidationRecord(),
+		"seq215_proxy_plugin_main_model_separated":  buildSeq215P730ProxyPluginMainModelSeparated(),
+		"seq215_provider_ownership_split":           buildSeq215P731ProviderOwnershipSplit(),
+		"seq215_thin_proxy_route":                   buildSeq215P732ThinProxyRoute(),
+		"seq215_config_service_split":               buildSeq215P733ConfigServiceSplit(),
+		"seq215_thin_config_route":                  buildSeq215P734ThinConfigRoute(),
+		"seq215_routes_explicitly_wired":            buildSeq215P735RoutesExplicitlyWired(),
+		"seq215_public_paths_preserved":             buildSeq215P736PublicPathsPreserved(),
+		"seq215_compatibility_wrapper":              buildSeq215P737CompatibilityWrapper(),
+		"seq215_route_level_tests":                  buildSeq215P738RouteLevelTests(),
+		"seq215_js_route_usage":                     buildSeq215P739JSRouteUsage(),
+		"seq215_monolith_not_applicable":            buildSeq215P740MonolithNotApplicable(),
+		"seq215_prepare_turn_bundle_normal_use":     buildSeq215P776PrepareTurnBundleNormalUse(),
+		"seq215_js_payload_mutation_owner":          buildSeq215P777JSPayloadMutationOwner(),
+		"seq215_js_injection_budget_owner":          buildSeq215P778JSInjectionBudgetOwner(),
+		"seq215_js_input_context_slotting_owner":    buildSeq215P779JSInputContextSlottingOwner(),
+		"seq215_js_protection_blocks_owner":         buildSeq215P780JSProtectionBlocksOwner(),
+		"seq215_js_hook_ui_integration_owner":       buildSeq215P781JSHookUIIntegrationOwner(),
+		"seq215_js_offline_fail_open_owner":         buildSeq215P782JSOfflineFailOpenOwner(),
+		"seq215_apply_context_injection_preserved":  buildSeq215P785ApplyContextInjectionPreserved(),
+		"seq215_try_prepare_turn_takeover_off":      buildSeq215P786TryPrepareTurnTakeoverOff(),
+		"seq215_js_node_check":                      buildSeq215P787JSNodeCheck(),
+		"seq215_js_focused_contract_tests":          buildSeq215P788JSFocusedContractTests(),
+		"seq215_p789_validation_record":             buildSeq215P789ValidationRecord(),
+		"seq215_runtime_split_status":               buildSeq215P830RuntimeSplitStatus(),
+		"seq215_backend_bundle_assisted":            buildSeq215P831BackendBundleAssisted(),
+		"seq215_plugin_only_modules":                buildSeq215P832PluginOnlyModules(),
+		"seq215_or1e_wording":                       buildSeq215P833OR1eWording(),
+		"seq215_or1e_node_check":                    buildSeq215P834OR1eNodeCheck(),
+		"seq215_validation_record_p835":             buildSeq215P835ValidationRecord(),
+		"seq215_phase1_complete":                    buildSeq215P869Phase1Complete(),
+		"seq215_phase2_complete":                    buildSeq215P870Phase2Complete(),
+		"seq215_phase3_complete":                    buildSeq215P871Phase3Complete(),
+		"seq215_phase4_complete":                    buildSeq215P872Phase4Complete(),
+		"seq215_context_readback":                   buildSeq215P873ContextReadback(),
+		"seq215_progress_readback":                  buildSeq215P874ProgressReadback(),
+		"seq215_stale_authority_search":             buildSeq215P875StaleAuthoritySearch(),
+		"seq215_false_backend_tree_search":          buildSeq215P876FalseBackendTreeSearch(),
+		"seq215_no_backup_deploy_edited":            buildSeq215P877NoBackupDeployEdited(),
+		"seq215_changed_files_list":                 buildSeq215P878ChangedFilesList(),
+		"seq215_validation_commands":                buildSeq215P879ValidationCommands(),
+		"seq215_additional_owner_split_bounded":     buildSeq215P880AdditionalOwnerSplitBounded(),
+		"seq215_js_backend_offload_plugin_only":     buildSeq215P881JSBackendOffloadPluginOnly(),
+		"seq215_master_checklist_open_zero":         buildSeq215P882MasterChecklistOpenZero(),
+		"seq215_step_complete_p883":                 buildSeq215P883StepComplete(),
+		"writeback_preview":                         writebackPreview,
+		"continuity_pack":                           continuityPack,
+		"persona_recollection":                      personaRecollection,
+		"character_private_recollection":            characterPrivateRecollection,
+		"entity_recollection_relevance":             recollectionRelevance,
 		"generation_packet": map[string]any{
 			"packet_mode":     packetMode,
 			"degraded":        degraded,
@@ -2022,6 +2432,63 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) resolvePrepareTurnCurrentLogicalTurn(
+	ctx context.Context,
+	request dto.PrepareTurnContractRequest,
+	decision dto.PrepareTurnCurrentInputDecisionV1,
+	sessionID string,
+) (int, map[string]any) {
+	if requested := intPtrValue(request.TurnIndex, 0); requested > 0 {
+		return requested, map[string]any{"status": "provided", "source": "turn_index"}
+	}
+	if decision.Envelope == nil || decision.Envelope.Identity.MessageIndex == nil {
+		return 0, map[string]any{"status": "unobserved", "source": "host_message_position_unavailable"}
+	}
+	messageIndex := *decision.Envelope.Identity.MessageIndex
+	observedPairOrdinal := 0
+	selectedRef := strings.TrimSpace(decision.Envelope.ObservationRef)
+	if request.HostObservations != nil {
+		for _, observation := range request.HostObservations.ActiveChat {
+			if strings.EqualFold(strings.TrimSpace(pointerString(observation.Role)), "user") {
+				observedPairOrdinal++
+			}
+			if selectedRef != "" && strings.TrimSpace(observation.ObservationRef) == selectedRef {
+				break
+			}
+		}
+	}
+	resolution := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+		Mode:                 "pair",
+		RisuUserMessageIndex: &messageIndex,
+		ObservedPairOrdinal:  observedPairOrdinal,
+		Baseline:             s.resolveDurableSessionRoutingBaseline(ctx, sessionID, nil),
+	})
+	if resolution.TurnIndex <= 0 {
+		return 0, map[string]any{"status": "unobserved", "source": resolution.LocalTurnSource}
+	}
+	return resolution.TurnIndex, map[string]any{
+		"status":                "resolved",
+		"source":                resolution.LocalTurnSource,
+		"message_index":         messageIndex,
+		"observed_pair_ordinal": observedPairOrdinal,
+		"baseline_applied":      resolution.BaselineApplied,
+	}
+}
+
+func prepareTurnHistoryBeforeCurrent[T any](items []T, currentTurn int, sourceTurn func(T) int) []T {
+	if currentTurn <= 0 || len(items) == 0 {
+		return items
+	}
+	kept := make([]T, 0, len(items))
+	for _, item := range items {
+		turn := sourceTurn(item)
+		if turn <= 0 || turn < currentTurn {
+			kept = append(kept, item)
+		}
+	}
+	return kept
+}
+
 func countPrepareTurnSupervisorDirectiveItems(items []prepareTurnGuidanceItem) int {
 	count := 0
 	for _, item := range items {
@@ -2037,7 +2504,7 @@ func buildPrepareTurnCompactOrchestrationProjection(supervisorStatus string, gui
 	memoryCount := maxInt(intFromAny(lineage["final_delivered_count"], 0), 0)
 	supervisorCallCount := 0
 	switch strings.TrimSpace(supervisorStatus) {
-	case "applied", "valid_empty", "unsupported_rejected", "malformed_failed_open", "failed_open":
+	case "applied", "applied_partial", "valid_empty", "publisher_plan_no_valid_items", "publisher_response_container_invalid", "publisher_llm_empty_content", "publisher_json_malformed", "publisher_json_truncated", "publisher_schema_invalid", "failed_open":
 		supervisorCallCount = 1
 	}
 	return map[string]any{

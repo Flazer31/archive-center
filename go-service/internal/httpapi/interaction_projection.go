@@ -201,8 +201,8 @@ func buildPrepareTurnActiveInteractionProjection(
 
 func normalizePrepareTurnInteractionCandidate(unit store.PreciseMemoryUnit) (prepareTurnInteractionCandidate, string) {
 	candidate := prepareTurnInteractionCandidate{unit: unit}
-	if unit.LifecycleState != "active" || unit.AdmissionState != "committed" || unit.ReviewState != "source_observed" {
-		return candidate, "inactive_or_uncommitted"
+	if unit.LifecycleState != "active" {
+		return candidate, "inactive"
 	}
 	if strings.TrimSpace(unit.SourceRevision) == "" {
 		return candidate, "source_revision_missing"

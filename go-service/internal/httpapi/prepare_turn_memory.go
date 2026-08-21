@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -11,8 +12,6 @@ import (
 func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
 	lines := []string{}
 	trace := newPrepareTurnMemoryLanguageTrace(languageContext)
-	seenFinalText := map[string]bool{}
-	seenFinalSource := map[string]any{}
 	finalRenderDuplicates := 0
 	lineageItems := []map[string]any{}
 	actualLines := []string{}
@@ -27,16 +26,26 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 		appendedAny := false
 		for laneRank, item := range items {
 			memoryKey := prepareTurnMemoryLaneKey(item)
-			if emittedMemories[memoryKey] {
+			renderMemoryKey := memoryKey
+			if label == "protected" {
+				renderMemoryKey = "protected:" + memoryKey
+			}
+			if emittedMemories[renderMemoryKey] {
+				finalRenderDuplicates++
 				continue
 			}
 			summary := prepareTurnMemorySummary(item)
 			if summary == "" {
 				continue
 			}
-			emittedMemories[memoryKey] = true
+			emittedMemories[renderMemoryKey] = true
 			groups := protectedGroups[memoryKey]
-			if len(groups) == 0 && protectedGroupMembers[memoryKey] {
+			protectedGroupMember := protectedGroupMembers[memoryKey]
+			if label != "protected" && !prepareTurnProtectedMemoryGuard(item).Active {
+				groups = nil
+				protectedGroupMember = false
+			}
+			if len(groups) == 0 && protectedGroupMember {
 				finalRenderDuplicates++
 				continue
 			}
@@ -47,7 +56,7 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 				renderItem := group.Memory
 				lineText, lineTrace := prepareTurnMemoryInjectionLineText(renderItem, summary, languageContext, perspectiveContext)
 				updatePrepareTurnMemoryLanguageTrace(trace, lineTrace)
-				finalKey := collapseTextKey(lineText)
+				finalKey := memoryKey
 				if group.CoverageKey != "" {
 					finalKey = "protected:" + group.CoverageKey
 				}
@@ -59,18 +68,6 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 					lineage["protected_coverage_key"] = group.CoverageKey
 					lineage["merged_source_row_ids"] = group.SourceRowIDs
 					lineage["merged_source_count"] = len(group.SourceRowIDs)
-				}
-				if finalKey != "" && seenFinalText[finalKey] {
-					finalRenderDuplicates++
-					lineage["delivered"] = false
-					lineage["delivery_status"] = "dropped_final_render_duplicate"
-					lineage["duplicate_of_source_row_id"] = seenFinalSource[finalKey]
-					lineageItems = append(lineageItems, lineage)
-					continue
-				}
-				if finalKey != "" {
-					seenFinalText[finalKey] = true
-					seenFinalSource[finalKey] = prepareTurnMemorySourceRowID(item)
 				}
 				meta := prepareTurnMemoryLineMeta(item, label, selection)
 				renderedLine := fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), lineText)
@@ -128,12 +125,14 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 	for _, lane := range lanes {
 		appendLane(lane.label, lane.items)
 	}
+	appendLane("protected", selection.ProtectedSelected)
 	trace["line_count"] = len(lines)
 	trace["direct_entity_render_requested_count"] = len(selection.DirectlyReferenced)
 	trace["direct_entity_render_covered_count"] = len(coveredDirectEntities)
 	trace["direct_entity_render_gap"] = maxInt(len(selection.DirectlyReferenced)-len(coveredDirectEntities), 0)
 	trace["final_render_duplicate_count"] = finalRenderDuplicates
-	trace["final_render_dedup_applied"] = true
+	trace["final_render_dedup_applied"] = finalRenderDuplicates > 0
+	trace["final_render_dedup_scope"] = "same_stored_memory_row_repeated_across_recall_lanes"
 	trace["delivery_lineage_items"] = lineageItems
 	trace["actual_lines"] = actualLines
 	trace["protected_lines"] = protectedLines
@@ -154,42 +153,61 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 	selectedItems := []store.Memory{}
 	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
 		for _, item := range lane {
-			selected[prepareTurnMemoryLaneKey(item)] = true
+			if prepareTurnProtectedMemoryGuard(item).Active {
+				selected[prepareTurnMemoryLaneKey(item)] = true
+			}
 			selectedItems = append(selectedItems, item)
 		}
+	}
+	for _, item := range selection.ProtectedSelected {
+		selected[prepareTurnMemoryLaneKey(item)] = true
+		selectedItems = append(selectedItems, item)
 	}
 	candidates := selection.ProtectedCandidates
 	if len(candidates) == 0 {
 		candidates = selectedItems
 	}
-	aliasCanonical := selection.ProtectedAliasCanonical
-	ambiguousAliases := selection.ProtectedAmbiguousAlias
-	if aliasCanonical == nil || ambiguousAliases == nil {
-		aliasCanonical, ambiguousAliases = prepareTurnProtectedAliasResolution(candidates)
-	}
 	groups := map[string]*prepareTurnProtectedDeliveryGroup{}
 	members := map[string]bool{}
 	order := []string{}
-	add := func(item store.Memory, field string, protectedItem map[string]any) {
-		payload := map[string]any{"turn_summary": prepareTurnMemorySummary(item), field: []any{protectedItem}}
-		encoded, _ := json.Marshal(payload)
-		probe := item
-		probe.SummaryJSON = string(encoded)
-		keys := prepareTurnProtectedMemoryCoverageKeys(probe, aliasCanonical, ambiguousAliases)
-		coverageKey := ""
-		if len(keys) > 0 {
-			coverageKey = keys[0]
+	add := func(item store.Memory, field string, ordinal int, protectedItem map[string]any) {
+		occurrenceKey := prepareTurnMemorySourceOccurrenceKey(item)
+		artifactID := strings.TrimSpace(extractionFirstNonEmpty(
+			extractionStringFromAny(protectedItem["artifact_id"]),
+			extractionStringFromAny(protectedItem["secret_id"]),
+			extractionStringFromAny(protectedItem["identity_id"]),
+			extractionStringFromAny(protectedItem["source_occurrence_id"]),
+		))
+		artifactCoordinate := fmt.Sprintf("ordinal:%d", ordinal)
+		if artifactID != "" {
+			artifactCoordinate = "artifact:" + artifactID
 		}
-		if coverageKey == "" {
-			coverageKey = fmt.Sprintf("%s|source:%v", field, prepareTurnMemorySourceRowID(item))
+		groupKey := ""
+		if occurrenceKey != "" {
+			identity := map[string]any{
+				"knowledge_scope":   protectedItem["knowledge_scope"],
+				"owner_entity_id":   protectedItem["owner_entity_id"],
+				"knower_entity_id":  protectedItem["knower_entity_id"],
+				"visibility":        protectedItem["visibility"],
+				"privacy_guard":     protectedItem["privacy_guard"],
+				"reveal_policy":     protectedItem["reveal_policy"],
+				"disclosure_policy": protectedItem["disclosure_policy"],
+			}
+			material := strings.Join([]string{occurrenceKey, field, artifactCoordinate, mustCompactJSON(identity), mustCompactJSON(protectedItem)}, "\x1f")
+			groupKey = fmt.Sprintf("protected-source-group:%x", sha256.Sum256([]byte(material)))
+		} else {
+			material := strings.Join([]string{prepareTurnMemoryLaneKey(item), field, artifactCoordinate, mustCompactJSON(protectedItem)}, "\x1f")
+			groupKey = fmt.Sprintf("protected-distinct-row:%x", sha256.Sum256([]byte(material)))
 		}
-		group := groups[coverageKey]
+		group := groups[groupKey]
 		if group == nil {
-			group = &prepareTurnProtectedDeliveryGroup{CoverageKey: coverageKey, ProtectionField: field}
-			groups[coverageKey] = group
-			order = append(order, coverageKey)
+			group = &prepareTurnProtectedDeliveryGroup{CoverageKey: groupKey, ProtectionField: field}
+			groups[groupKey] = group
+			order = append(order, groupKey)
 		}
-		group.ProtectedItems = append(group.ProtectedItems, protectedItem)
+		if len(group.ProtectedItems) == 0 {
+			group.ProtectedItems = append(group.ProtectedItems, protectedItem)
+		}
 		group.SourceRowIDs = appendUniquePrepareTurnSourceRowID(group.SourceRowIDs, prepareTurnMemorySourceRowID(item))
 		itemKey := prepareTurnMemoryLaneKey(item)
 		if selected[itemKey] {
@@ -202,16 +220,16 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 	}
 	for _, item := range candidates {
 		parsed := parseJSONMap(item.SummaryJSON)
-		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+		for ordinal, raw := range sliceFromAny(parsed["protected_secrets"]) {
 			secret := mapFromAny(raw)
 			if protectedSecretRequiresGuard(secret, "disclosure_policy") {
-				add(item, "protected_secrets", secret)
+				add(item, "protected_secrets", ordinal, secret)
 			}
 		}
-		for _, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
+		for ordinal, raw := range sliceFromAny(parsed["character_identity_accuracy"]) {
 			identity := mapFromAny(raw)
 			if protectedSecretRequiresGuard(identity, "reveal_policy") {
-				add(item, "character_identity_accuracy", identity)
+				add(item, "character_identity_accuracy", ordinal, identity)
 			}
 		}
 	}
@@ -298,6 +316,7 @@ func prepareTurnMemoryDeliveryLineageItem(item store.Memory, lane string, laneRa
 		"final_text":                   finalText,
 		"final_text_chars":             len([]rune(finalText)),
 		"final_render_key":             finalKey,
+		"source_occurrence_key":        nilIfEmpty(prepareTurnMemorySourceOccurrenceKey(item)),
 	}
 	if guard.Active {
 		itemTrace["core_objective_k_consumption"] = "item_count_exempt_protected_guard"
@@ -804,6 +823,7 @@ func prepareTurnMemoryLaneKey(item store.Memory) string {
 }
 
 type prepareTurnHierarchyEscalation struct {
+	EpisodeText string
 	ChapterText string
 	ArcText     string
 	SagaText    string

@@ -40,21 +40,39 @@ type PrepareTurnCapabilityObservationV1 struct {
 	Capabilities    map[string]string `json:"capabilities,omitempty"`
 }
 
+// PrepareTurnLorebookReferenceScopeV1 contains only the exact Host scope
+// observations needed to select the corresponding read-only MariaDB snapshot.
+// Nil indexes and an unobserved module list remain unavailable facts.
+type PrepareTurnLorebookReferenceScopeV1 struct {
+	ContractVersion        string   `json:"contract_version"`
+	ObservationState       string   `json:"observation_state"`
+	CharacterIndex         *int64   `json:"character_index,omitempty"`
+	ChatIndex              *int64   `json:"chat_index,omitempty"`
+	EnabledModuleIDs       []string `json:"enabled_module_ids"`
+	EnabledModulesObserved bool     `json:"enabled_modules_observed"`
+}
+
 // PrepareTurnContractRequest extends the generated legacy request without
 // editing generated code or changing its defaulting behavior.
 type PrepareTurnContractRequest struct {
 	PrepareTurnRequest
-	SourceDecisionOnly       bool                                `json:"source_decision_only,omitempty"`
-	ResponseProjection       string                              `json:"response_projection,omitempty"`
-	NarrativeSupportMaxChars *int                                `json:"narrative_support_max_chars,omitempty"`
-	SourceObservation        *PrepareTurnSourceObservationV1     `json:"source_observation,omitempty"`
-	CapabilityObservation    *PrepareTurnCapabilityObservationV1 `json:"capability_observation,omitempty"`
-	HostObservations         *PrepareTurnHostObservationsV1      `json:"host_observations,omitempty"`
-	BootstrapObservation     *PrepareTurnBootstrapObservationV1  `json:"bootstrap_observation,omitempty"`
+	SourceDecisionOnly       bool                                 `json:"source_decision_only,omitempty"`
+	ResponseProjection       string                               `json:"response_projection,omitempty"`
+	NarrativeSupportMaxChars *int                                 `json:"narrative_support_max_chars,omitempty"`
+	PublisherGuidanceFormat  *string                              `json:"publisher_guidance_format,omitempty"`
+	SourceObservation        *PrepareTurnSourceObservationV1      `json:"source_observation,omitempty"`
+	CapabilityObservation    *PrepareTurnCapabilityObservationV1  `json:"capability_observation,omitempty"`
+	HostObservations         *PrepareTurnHostObservationsV1       `json:"host_observations,omitempty"`
+	BootstrapObservation     *PrepareTurnBootstrapObservationV1   `json:"bootstrap_observation,omitempty"`
+	LorebookReferenceScope   *PrepareTurnLorebookReferenceScopeV1 `json:"lorebook_reference_scope,omitempty"`
 }
 
 func (request *PrepareTurnContractRequest) ApplyDefaults() {
 	request.PrepareTurnRequest.ApplyDefaults()
+	if request.PublisherGuidanceFormat == nil {
+		value := "standard"
+		request.PublisherGuidanceFormat = &value
+	}
 }
 
 // SupervisorContractRequest extends the generated supervisor request with the

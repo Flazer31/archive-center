@@ -57,14 +57,13 @@ func buildCharacterPerspectivePacket(
 	maxChars int,
 ) (map[string]any, string) {
 	type perspectiveCandidate struct {
-		unit        store.PreciseMemoryUnit
-		payload     map[string]any
-		state       string
-		subject     string
-		slot        string
-		claim       string
-		sourceTurn  int
-		deliverable bool
+		unit       store.PreciseMemoryUnit
+		payload    map[string]any
+		state      string
+		subject    string
+		slot       string
+		claim      string
+		sourceTurn int
 	}
 
 	holderID := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov_entity_id"]))
@@ -146,8 +145,6 @@ func buildCharacterPerspectivePacket(
 			slot:       slot,
 			claim:      claim,
 			sourceTurn: sourceTurn,
-			deliverable: unit.AdmissionState == "committed" &&
-				unit.ReviewState == "source_observed",
 		})
 	}
 
@@ -193,10 +190,6 @@ func buildCharacterPerspectivePacket(
 	candidateStates := packet["candidate_states"].(map[string]any)
 	used := 0
 	for _, candidate := range current {
-		if !candidate.deliverable {
-			drop("latest_epistemic_state_requires_review")
-			continue
-		}
 		if candidate.state == "unknown" || candidate.state == "hidden" {
 			drop("not_known_by_current_holder")
 			continue

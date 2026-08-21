@@ -107,7 +107,7 @@ func (m *mariadbStore) ListCharacterStates(ctx context.Context, chatSessionID st
 	return mariaListCharacterStates(ctx, m.db, chatSessionID)
 }
 
-func (m *mariadbStore) ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
+func (m *mariadbStore) ListCharacterStatesCurrentBefore(ctx context.Context, chatSessionID string, beforeTurn int) ([]CharacterState, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
@@ -117,16 +117,18 @@ func (m *mariadbStore) ListCharacterStatesCurrent(ctx context.Context, chatSessi
 			   state.speech_style_json, state.turn_index, state.created_at, state.updated_at
 		FROM character_states state
 		WHERE state.chat_session_id = ?
+		  AND (? <= 0 OR COALESCE(state.turn_index, 0) < ?)
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM character_states newer
 			WHERE newer.chat_session_id = state.chat_session_id
 			  AND newer.character_name = state.character_name
+			  AND (? <= 0 OR COALESCE(newer.turn_index, 0) < ?)
 			  AND (COALESCE(newer.turn_index, 0) > COALESCE(state.turn_index, 0)
 			       OR (COALESCE(newer.turn_index, 0) = COALESCE(state.turn_index, 0) AND newer.id > state.id))
 		  )
 		ORDER BY state.turn_index DESC, state.id DESC
-	`, chatSessionID)
+	`, chatSessionID, beforeTurn, beforeTurn, beforeTurn, beforeTurn)
 	if err != nil {
 		return nil, err
 	}

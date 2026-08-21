@@ -55,7 +55,6 @@ type completeTurnCriticInputSnapshot struct {
 	ContextMessages    []map[string]any              `json:"context_messages"`
 	ArchiveLedger      map[string]any                `json:"archive_ledger"`
 	ActiveWorldRules   []map[string]any              `json:"active_world_rules"`
-	OutputLanguage     map[string]any                `json:"output_language_override"`
 	LanguageContext    map[string]any                `json:"language_context"`
 	PreviewPass        map[string]any                `json:"preview_pass"`
 	InputPolicy        completeTurnCriticInputPolicy `json:"input_policy"`
@@ -309,6 +308,38 @@ func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid
 	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{})
 }
 
+func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any) map[string]any {
+	languageContext := normalizeCompleteTurnLanguageContext(raw)
+	if languageContext == nil {
+		languageContext = map[string]any{
+			"contract_version":       languageMemoryContractVersion,
+			"search_text_policy":     languageMemorySearchPolicy,
+			"raw_evidence_rewritten": false,
+		}
+	}
+
+	observed := strings.ToLower(strings.TrimSpace(extractionStringFromAny(languageContext["assistant_output_language"])))
+	effective := "auto"
+	source := "assistant_output_unknown"
+	confidence := float64(0)
+	switch observed {
+	case "ko", "en", "ja":
+		effective = observed
+		source = "current_assistant"
+		confidence = 0.95
+	case "":
+		observed = "unknown"
+	}
+
+	languageContext["assistant_output_language"] = observed
+	languageContext["session_output_language"] = effective
+	languageContext["summary_language"] = effective
+	languageContext["output_language_source"] = source
+	languageContext["locked_for_turn"] = true
+	languageContext["confidence"] = confidence
+	return languageContext
+}
+
 func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, inputPolicy completeTurnCriticInputPolicy, replay completeTurnCriticInputReplay, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
 	if !cfg.hasConfig() {
 		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
@@ -375,17 +406,21 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		criticUserInput = snapshot.UserInput
 		criticAssistantContent = snapshot.AssistantContent
 		criticContextMessages = snapshot.ContextMessages
-		criticArchiveLedgerPromptInput = snapshot.ArchiveLedger
 		selectedActiveWorldRules = snapshot.ActiveWorldRules
 		previewPass = snapshot.PreviewPass
-		languageContext = snapshot.LanguageContext
-		inputPolicy = snapshot.InputPolicy
-		if snapshot.OutputLanguage == nil {
-			outputLanguageOverride = nil
-		} else {
-			restoredOutputLanguage := cloneMapAny(snapshot.OutputLanguage)
-			outputLanguageOverride = &restoredOutputLanguage
+		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(snapshot.LanguageContext)
+		criticArchiveLedgerPromptInput = cloneMapAny(snapshot.ArchiveLedger)
+		if criticArchiveLedgerPromptInput != nil {
+			ledgerLanguage := cloneMapAny(mapFromAny(criticArchiveLedgerPromptInput["language"]))
+			if ledgerLanguage == nil {
+				ledgerLanguage = map[string]any{}
+			}
+			ledgerLanguage["assistant_final_language"] = extractionStringFromAny(languageContext["session_output_language"])
+			ledgerLanguage["source"] = "request_assistant_final_language"
+			ledgerLanguage["override_applied"] = false
+			criticArchiveLedgerPromptInput["language"] = ledgerLanguage
 		}
+		inputPolicy = snapshot.InputPolicy
 		contextSelectionTrace = map[string]any{
 			"mode":                  "durable_critic_input_snapshot",
 			"snapshot_contract":     snapshot.ContractVersion,
@@ -407,13 +442,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			"prompt_hash_match": true,
 		}
 	} else {
+		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(languageContext)
 		criticContextMessages = sanitizeContextMessagesForCriticInput(contextMessages)
 		contextSelectionTrace = map[string]any{"mode": "host_context", "host_messages_used": len(criticContextMessages)}
 		relevantMemoryContext := []map[string]any{}
 		if canonicalChatLogs {
 			criticContextMessages, relevantMemoryContext, contextSelectionTrace = s.buildCompleteTurnCriticCanonicalContext(ctx, sid, turnIndex, criticUserInput+"\n"+criticAssistantContent, len(criticContextMessages))
 		}
-		criticArchiveLedgerPromptInput, criticArchiveLedgerTrace = s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, outputLanguageOverride)
+		criticArchiveLedgerPromptInput, criticArchiveLedgerTrace = s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, extractionStringFromAny(languageContext["session_output_language"]))
 		activeWorldRules, activeTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
 		activeWorldRuleTrace = activeTrace
 		selectedActiveWorldRules = activeWorldRules
@@ -462,7 +498,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				ContextMessages:    criticContextMessages,
 				ArchiveLedger:      criticArchiveLedgerPromptInput,
 				ActiveWorldRules:   selectedActiveWorldRules,
-				OutputLanguage:     mapFromOptionalMap(outputLanguageOverride),
 				LanguageContext:    languageContext,
 				PreviewPass:        previewPass,
 				InputPolicy:        inputPolicy,
@@ -501,7 +536,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		"user_prompt_chars":            len([]rune(userPrompt)),
 		"final_prompt_chars":           len([]rune(systemPrompt)) + len([]rune(userPrompt)),
 	}
-	providerRetryTrace := map[string]any{}
+	providerResponse := map[string]any{}
 	attachInputBudgetTrace := func(trace map[string]any) map[string]any {
 		if trace == nil {
 			trace = map[string]any{}
@@ -511,8 +546,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["critic_archive_ledger"] = criticArchiveLedgerTrace
 		trace["active_world_rule_contract"] = activeWorldRuleTrace
 		trace["input_snapshot"] = snapshotTrace
-		if len(providerRetryTrace) > 0 {
-			trace["provider_retry"] = providerRetryTrace
+		if len(providerResponse) > 0 {
+			trace["provider_response"] = providerResponse
 		}
 		return trace
 	}
@@ -552,32 +587,15 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic"}
 
-	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, jsonPolicy)
+	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, jsonPolicy)
+	providerResponse = mapFromAny(upstream[proxyResponseMetadataKey])
 	if err != nil {
 		providerErr := classifyCriticProviderError(err, upstreamStatus)
 		firstFailureTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, providerErr, "")
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			firstFailureTrace["request_overrides"] = requestOverrides
 		}
-		if !cfg.RetryBudget.take() {
-			return nil, attachInputBudgetTrace(firstFailureTrace), providerErr
-		}
-		retryUpstream, retryStatus, retryErr := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, jsonPolicy)
-		providerRetryTrace = map[string]any{
-			"mode":                         "unchanged_input_retry",
-			"current_turn_content_changed": false,
-			"first_failure":                firstFailureTrace,
-		}
-		if retryErr != nil {
-			retryPipelineErr := classifyCriticProviderError(retryErr, retryStatus)
-			retryFailureTrace := criticFailureTrace(promptSource, cfg, retryStatus, retryPipelineErr, "")
-			if requestOverrides := mapFromAny(retryUpstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
-				retryFailureTrace["request_overrides"] = requestOverrides
-			}
-			return nil, attachInputBudgetTrace(retryFailureTrace), retryPipelineErr
-		}
-		upstream = retryUpstream
-		upstreamStatus = retryStatus
+		return nil, attachInputBudgetTrace(firstFailureTrace), providerErr
 	}
 	content := chatCompletionText(upstream)
 	if strings.TrimSpace(content) == "" {
@@ -593,6 +611,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		code := "CRITIC_JSON_PARSE_FAILED"
 		if strings.Contains(err.Error(), "critic_json_missing") {
 			code = "CRITIC_JSON_MISSING"
+		} else if strings.Contains(err.Error(), "critic_json_incomplete") && stringFromMap(providerResponse, "termination_kind") == "length" {
+			code = "CRITIC_JSON_TRUNCATED"
 		}
 		parseErr := newCriticPipelineError(code, "json_parse", true, upstreamStatus, err)
 		parseTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, parseErr, content)
@@ -601,9 +621,13 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		}
 		return nil, attachInputBudgetTrace(parseTrace), parseErr
 	}
-	if err := validateCriticExtractionSchema(parsed); err != nil {
+	parsed, schemaQuarantineTrace, err := validateCriticExtractionSchema(parsed)
+	if err != nil {
 		schemaErr := newCriticPipelineError("CRITIC_SCHEMA_INVALID", "schema_validation", true, upstreamStatus, err)
 		schemaTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, schemaErr, content)
+		if len(schemaQuarantineTrace) > 0 {
+			schemaTrace["schema_quarantine"] = schemaQuarantineTrace
+		}
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			schemaTrace["request_overrides"] = requestOverrides
 		}
@@ -644,6 +668,12 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		},
 		"preview_pass": previewPass,
 	}
+	if len(providerResponse) > 0 {
+		trace["provider_response"] = providerResponse
+	}
+	if len(schemaQuarantineTrace) > 0 {
+		trace["schema_quarantine"] = schemaQuarantineTrace
+	}
 	if len(quarantineTrace) > 0 {
 		trace["protected_candidate_quarantine"] = quarantineTrace
 	}
@@ -657,9 +687,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	trace["context_selection"] = contextSelectionTrace
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
 	trace["input_snapshot"] = snapshotTrace
-	if len(providerRetryTrace) > 0 {
-		trace["provider_retry"] = providerRetryTrace
-	}
 	if len(languageContext) > 0 {
 		trace["language_context"] = languageContext
 		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
@@ -807,7 +834,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	}
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	trace["llm_call_attempt"] = true
-	upstream, _, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, cfg.RetryBudget, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit"})
+	upstream, _, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit"})
 	if err != nil {
 		trace["status"] = "error"
 		trace["error"] = err.Error()
@@ -829,6 +856,9 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	trace["status"] = "ok"
 	trace["model"] = extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model)
 	trace["usage"] = upstream["usage"]
+	if providerResponse := mapFromAny(upstream[proxyResponseMetadataKey]); len(providerResponse) > 0 {
+		trace["provider_response"] = providerResponse
+	}
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
 	}
@@ -922,7 +952,7 @@ func mergeWorldRuleAuditIntoExtraction(base map[string]any, audit map[string]any
 	return out, len(worldRuleItemsForSave(out))
 }
 
-func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, sid string, turnIndex int, assistantContent string, outputLanguageOverride *map[string]any) (map[string]any, map[string]any) {
+func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, sid string, turnIndex int, assistantContent string, assistantFinalLanguage string) (map[string]any, map[string]any) {
 	trace := map[string]any{
 		"enabled":          s != nil && s.Cfg.CriticLedgerEnabled,
 		"included":         false,
@@ -936,7 +966,7 @@ func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, 
 		ChatSessionID:          sid,
 		TurnIndex:              turnIndex,
 		AssistantFinalText:     assistantContent,
-		AssistantFinalLanguage: completeTurnAssistantFinalLanguage(outputLanguageOverride),
+		AssistantFinalLanguage: strings.TrimSpace(assistantFinalLanguage),
 		StreamingMismatch:      "unknown",
 	}
 	resp := s.buildCriticArchiveLedgerPreviewWithContext(ctx, req)
@@ -1014,12 +1044,10 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 				eligible = append(eligible, row)
 			}
 		}
-		eligible, protectedTrace := prefilterPrepareTurnProtectedAggregateMemories(eligible)
-		eligible, holderTrace := prefilterPrepareTurnHolderScopedPerspectiveMemories(eligible)
-		selection := collapsePrepareTurnMemoryLaneSelection(selectPrepareTurnMemoryLanes(eligible, query, len(eligible)))
+		eligible, projectionTrace := projectPrepareTurnGeneralMemories(eligible)
+		selection := selectPrepareTurnMemoryLanes(eligible, query, len(eligible))
 		selectionTrace = selection.Trace
-		selectionTrace["protected_prefilter"] = protectedTrace
-		selectionTrace["holder_prefilter"] = holderTrace
+		selectionTrace["public_projection"] = projectionTrace
 		for _, memory := range selection.Relevant {
 			if !selectedTurns[memory.TurnIndex] {
 				pair, ok := readPair(memory.TurnIndex, "relevant_memory_source_turn")
@@ -1345,20 +1373,6 @@ func (s *Server) buildCompleteTurnActiveWorldRuleInput(ctx context.Context, sid 
 	return out, trace
 }
 
-func completeTurnAssistantFinalLanguage(outputLanguageOverride *map[string]any) string {
-	if outputLanguageOverride == nil || *outputLanguageOverride == nil {
-		return ""
-	}
-	for _, key := range []string{"language", "lang", "target_language", "output_language"} {
-		if value, ok := (*outputLanguageOverride)[key]; ok {
-			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" {
-				return text
-			}
-		}
-	}
-	return ""
-}
-
 func criticArchiveLedgerPromptInput(resp criticArchiveLedgerPreviewResponse) map[string]any {
 	items := make([]map[string]any, 0, len(resp.Items))
 	for _, item := range resp.Items {
@@ -1413,33 +1427,37 @@ func readCriticSystemPrompt(configuredDir string) (string, string) {
 	return "You are Archive Center's critic extractor. Return only valid JSON matching the configured critic schema.", "fallback_builtin"
 }
 
-func readSupervisorSystemPrompt(configuredDir string) (string, string) {
+func readSupervisorSystemPrompt(configuredDir string) (string, string, error) {
 	candidates := []string{}
 	if strings.TrimSpace(configuredDir) != "" {
 		candidates = append(candidates, filepath.Join(configuredDir, "supervisor_system.txt"))
+	} else {
+		candidates = append(candidates,
+			filepath.Join("..", "prompts", "supervisor_system.txt"),
+			filepath.Join("prompts", "supervisor_system.txt"),
+			filepath.Join("..", "..", "prompts", "supervisor_system.txt"),
+			filepath.Join("..", "..", "..", "prompts", "supervisor_system.txt"),
+		)
 	}
-	candidates = append(candidates,
-		filepath.Join("..", "prompts", "supervisor_system.txt"),
-		filepath.Join("prompts", "supervisor_system.txt"),
-		filepath.Join("..", "..", "prompts", "supervisor_system.txt"),
-		filepath.Join("..", "..", "..", "prompts", "supervisor_system.txt"),
-	)
 	for _, path := range candidates {
 		data, err := os.ReadFile(path)
-		if err == nil && strings.TrimSpace(string(data)) != "" {
-			return string(data), path
+		if err != nil {
+			continue
 		}
+		if strings.TrimSpace(string(data)) == "" {
+			return "", path, fmt.Errorf("publisher system prompt is empty: %s", path)
+		}
+		return string(data), path, nil
 	}
-	return "You are Archive Center's source-backed narrative support reviewer. Return only valid JSON matching supervisor_scene_proposal.v3 with fidelity_warnings and typed expression_hints. Fidelity warnings and callbacks require delivered-memory support; portrayal, pacing, scene emphasis, and reversible options require current-input or delivered-memory support. Every item is optional, proposal-only, non-canonical, and cannot decide user actions, new facts or knowledge, relationship changes, event closure, or scene jumps.", "fallback_builtin"
+	return "", "missing", errors.New("publisher system prompt is missing")
 }
 
-func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
-	return buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, previewPass, nil, archiveLedger...)
+func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
+	return buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, userInput, assistantContent, contextMessages, nil, previewPass, nil, archiveLedger...)
 }
 
-func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, previewPass map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
+func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, previewPass map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
 	ctx, _ := json.Marshal(contextMessages)
-	lang, _ := json.Marshal(outputLanguageOverride)
 	langCtx, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
 	preview, _ := json.Marshal(previewPass)
 	var ledgerInput any
@@ -1470,11 +1488,6 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		"<Critic_Archive_Ledger_JSON>",
 		string(ledger),
 		"</Critic_Archive_Ledger_JSON>",
-		"",
-		"<Output_Language_Override_JSON>",
-		string(lang),
-		"</Output_Language_Override_JSON>",
-		"",
 		"<Language_Context_JSON>",
 		string(langCtx),
 		"</Language_Context_JSON>",
@@ -1627,7 +1640,7 @@ func extractJSONCandidateFromLLMContent(content string) (string, error) {
 			stack = stack[:len(stack)-1]
 		}
 	}
-	return closeTruncatedJSONCandidate(cleaned[start:], stack, inString, escaped)
+	return "", errors.New("critic_json_incomplete")
 }
 
 func normalizeLLMJSONText(content string) string {
@@ -1641,7 +1654,6 @@ func normalizeLLMJSONText(content string) string {
 
 func repairJSONCandidate(candidate string) string {
 	repaired := replaceJSONLiteralsOutsideStrings(candidate)
-	repaired = repairMissingJSONValuesOutsideStrings(repaired)
 	repaired = removeJSONTrailingCommasOutsideStrings(repaired)
 	return strings.TrimSpace(repaired)
 }
@@ -1775,31 +1787,6 @@ func removeJSONTrailingCommasOutsideStrings(input string) string {
 	return b.String()
 }
 
-func closeTruncatedJSONCandidate(candidate string, stack []byte, inString bool, escaped bool) (string, error) {
-	if len(stack) == 0 && !inString {
-		return "", errors.New("critic_json_unclosed")
-	}
-	repaired := strings.TrimSpace(candidate)
-	if inString {
-		if escaped {
-			repaired += "\\"
-		}
-		repaired += `"`
-	}
-	repaired = strings.TrimRight(repaired, " \t\r\n,")
-	for i := len(stack) - 1; i >= 0; i-- {
-		switch stack[i] {
-		case '{':
-			repaired += "}"
-		case '[':
-			repaired += "]"
-		default:
-			return "", errors.New("critic_json_unclosed")
-		}
-	}
-	return repaired, nil
-}
-
 func replaceJSONLiteralsOutsideStrings(input string) string {
 	var b strings.Builder
 	inString := false
@@ -1845,52 +1832,6 @@ func replaceJSONLiteralsOutsideStrings(input string) string {
 	return b.String()
 }
 
-func repairMissingJSONValuesOutsideStrings(input string) string {
-	var b strings.Builder
-	inString := false
-	escaped := false
-	expectValue := false
-	for i := 0; i < len(input); i++ {
-		ch := input[i]
-		if inString {
-			b.WriteByte(ch)
-			if escaped {
-				escaped = false
-			} else if ch == '\\' {
-				escaped = true
-			} else if ch == '"' {
-				inString = false
-			}
-			continue
-		}
-		if ch == '"' {
-			inString = true
-			expectValue = false
-			b.WriteByte(ch)
-			continue
-		}
-		if ch == ':' {
-			expectValue = true
-			b.WriteByte(ch)
-			continue
-		}
-		if expectValue {
-			if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
-				b.WriteByte(ch)
-				continue
-			}
-			if ch == '}' || ch == ']' || ch == ',' {
-				b.WriteString("null")
-				expectValue = false
-			} else {
-				expectValue = false
-			}
-		}
-		b.WriteByte(ch)
-	}
-	return b.String()
-}
-
 func hasJSONLiteralAt(input string, pos int, literal string) bool {
 	if pos+len(literal) > len(input) || input[pos:pos+len(literal)] != literal {
 		return false
@@ -1905,9 +1846,24 @@ func isJSONLiteralChar(ch byte) bool {
 	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_'
 }
 
-func validateCriticExtractionSchema(raw map[string]any) error {
+func validateCriticExtractionSchema(raw map[string]any) (map[string]any, map[string]any, error) {
 	if raw == nil || len(raw) == 0 {
-		return errors.New("critic schema requires a non-empty JSON object")
+		return nil, nil, errors.New("critic schema requires a non-empty JSON object")
+	}
+	out := cloneMapAny(raw)
+	trace := map[string]any{
+		"contract_version":    "critic_schema_quarantine.v1",
+		"dropped_field_count": 0,
+		"dropped_item_count":  0,
+		"dropped_fields":      []any{},
+		"dropped_items":       []any{},
+	}
+	dropField := func(field, expected string, value any) {
+		delete(out, field)
+		trace["dropped_field_count"] = intFromAny(trace["dropped_field_count"], 0) + 1
+		trace["dropped_fields"] = append(sliceFromAny(trace["dropped_fields"]), map[string]any{
+			"field": field, "reason": "wrong_type", "expected": expected, "actual": fmt.Sprintf("%T", value),
+		})
 	}
 	recognizedPayload := false
 	stringFields := []string{"turn_summary"}
@@ -1927,60 +1883,75 @@ func validateCriticExtractionSchema(raw map[string]any) error {
 		"world_state", "archive_hint", "story_clock",
 	}
 	for _, field := range stringFields {
-		value, exists := raw[field]
+		value, exists := out[field]
 		if !exists {
 			continue
 		}
-		recognizedPayload = true
 		if _, ok := value.(string); !ok {
-			return fmt.Errorf("critic schema field %s must be a string", field)
+			dropField(field, "string", value)
+			continue
 		}
+		recognizedPayload = true
 	}
 	for _, field := range numberFields {
-		value, exists := raw[field]
+		value, exists := out[field]
 		if !exists {
 			continue
 		}
 		switch value.(type) {
 		case float64, float32, int, int32, int64, json.Number:
+			recognizedPayload = true
 		default:
-			return fmt.Errorf("critic schema field %s must be a number", field)
+			dropField(field, "number", value)
 		}
 	}
 	for _, field := range arrayFields {
-		value, exists := raw[field]
+		value, exists := out[field]
 		if !exists {
 			continue
 		}
-		recognizedPayload = true
 		if _, ok := value.([]any); !ok {
-			return fmt.Errorf("critic schema field %s must be an array", field)
+			dropField(field, "array", value)
+			continue
 		}
+		recognizedPayload = true
 	}
 	for _, field := range objectFields {
-		value, exists := raw[field]
+		value, exists := out[field]
 		if !exists {
 			continue
 		}
-		recognizedPayload = true
 		if value == nil {
+			recognizedPayload = true
 			continue
 		}
 		if _, ok := value.(map[string]any); !ok {
-			return fmt.Errorf("critic schema field %s must be an object", field)
+			dropField(field, "object", value)
+			continue
 		}
+		recognizedPayload = true
 	}
-	if excerpts, ok := raw["evidence_excerpts"].([]any); ok {
+	if excerpts, ok := out["evidence_excerpts"].([]any); ok {
+		kept := make([]any, 0, len(excerpts))
 		for index, excerpt := range excerpts {
-			if _, ok := excerpt.(string); !ok {
-				return fmt.Errorf("critic schema field evidence_excerpts[%d] must be a string", index)
+			if _, ok := excerpt.(string); ok {
+				kept = append(kept, excerpt)
+				continue
 			}
+			trace["dropped_item_count"] = intFromAny(trace["dropped_item_count"], 0) + 1
+			trace["dropped_items"] = append(sliceFromAny(trace["dropped_items"]), map[string]any{
+				"field": "evidence_excerpts", "index": index, "reason": "wrong_type", "expected": "string", "actual": fmt.Sprintf("%T", excerpt),
+			})
 		}
+		out["evidence_excerpts"] = kept
 	}
 	if !recognizedPayload {
-		return errors.New("critic schema has no recognized extraction payload")
+		return nil, trace, errors.New("critic schema has no recognized extraction payload")
 	}
-	return nil
+	if intFromAny(trace["dropped_field_count"], 0) == 0 && intFromAny(trace["dropped_item_count"], 0) == 0 {
+		trace = nil
+	}
+	return out, trace, nil
 }
 
 func quarantineCriticProtectedCandidates(raw map[string]any, userInput, assistantContent string) (map[string]any, map[string]any) {

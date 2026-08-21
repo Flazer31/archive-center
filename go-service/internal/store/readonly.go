@@ -58,12 +58,12 @@ func (r *readOnlyStore) ListKGTriplesRange(ctx context.Context, chatSessionID st
 	return reader.ListKGTriplesRange(ctx, chatSessionID, fromTurn, toTurn)
 }
 
-func (r *readOnlyStore) ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
+func (r *readOnlyStore) ListCharacterStatesCurrentBefore(ctx context.Context, chatSessionID string, beforeTurn int) ([]CharacterState, error) {
 	reader, ok := r.delegate.(PrepareTurnRangeStore)
 	if !ok {
 		return nil, ErrNotEnabled
 	}
-	return reader.ListCharacterStatesCurrent(ctx, chatSessionID)
+	return reader.ListCharacterStatesCurrentBefore(ctx, chatSessionID, beforeTurn)
 }
 
 func (r *readOnlyStore) ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error) {
@@ -405,6 +405,14 @@ func (r *readOnlyStore) ListForkLineageRecords(ctx context.Context, chatSessionI
 	return store.ListForkLineageRecords(ctx, chatSessionID, scopeID, limit)
 }
 
+func (r *readOnlyStore) GetWorldlineTopologySnapshot(ctx context.Context, anchorSessionID string, limit int) (WorldlineTopologySnapshot, error) {
+	reader, ok := r.delegate.(WorldlineTopologySnapshotStore)
+	if !ok {
+		return WorldlineTopologySnapshot{}, ErrNotEnabled
+	}
+	return reader.GetWorldlineTopologySnapshot(ctx, anchorSessionID, limit)
+}
+
 func (r *readOnlyStore) SaveForkLineageRecord(ctx context.Context, record ForkLineageRecord) (ForkLineageRecord, error) {
 	return record, ErrNotEnabled
 }
@@ -606,6 +614,14 @@ func (r *readOnlyStore) ListActiveInteractionMemoryUnits(ctx context.Context, ch
 		return nil, ErrNotEnabled
 	}
 	return reader.ListActiveInteractionMemoryUnits(ctx, chatSessionID)
+}
+
+func (r *readOnlyStore) ListGeneralVectorPreciseMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	reader, ok := r.delegate.(GeneralVectorPreciseMemoryReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListGeneralVectorPreciseMemoryUnits(ctx, chatSessionID)
 }
 
 // Ping delegates to the underlying store if it implements Pinger.

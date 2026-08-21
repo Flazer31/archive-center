@@ -237,6 +237,8 @@ func TestListReferenceEntitiesReturnsReviewAudit(t *testing.T) {
 
 func TestAdminResetIncludesReferenceTablesChildFirst(t *testing.T) {
 	wantOrder := []string{
+		"lorebook_reference_entries", "lorebook_reference_snapshots",
+		"lorebook_reference_scopes", "lorebook_reference_session_locks",
 		"source_discovery_jobs",
 		"session_reference_coverage_fields", "session_reference_coverage_snapshots",
 		"session_reference_runtime", "session_reference_bindings",

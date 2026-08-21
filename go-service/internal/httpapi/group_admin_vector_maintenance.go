@@ -248,6 +248,7 @@ func adminEvidenceVectorEligible(item store.DirectEvidence) bool {
 		!item.Tombstoned &&
 		!item.RepairNeeded &&
 		item.SupersededByID <= 0 &&
+		!strings.EqualFold(strings.TrimSpace(item.EvidenceKind), "perspective_scoped_turn_excerpt") &&
 		strings.TrimSpace(item.EvidenceText) != ""
 }
 
@@ -374,7 +375,7 @@ func (s *Server) adminVectorOrphanAudit(ctx context.Context, sid string, deleteO
 		report["reason"] = "vector_store_does_not_support_document_listing"
 		return report
 	}
-	canonicalIDs, canonicalPairs, canonicalCounts, err := s.adminCanonicalVectorReferences(ctx, sid)
+	canonicalIDs, canonicalCounts, err := s.adminCanonicalVectorReferences(ctx, sid)
 	if err != nil {
 		report["status"] = "error"
 		report["error"] = err.Error()
@@ -397,8 +398,7 @@ func (s *Server) adminVectorOrphanAudit(ctx context.Context, sid string, deleteO
 			continue
 		}
 		managed++
-		sourcePair := strings.TrimSpace(doc.SourceTable) + ":" + strings.TrimSpace(doc.SourceRowID)
-		if canonicalIDs[strings.TrimSpace(doc.ID)] || canonicalPairs[sourcePair] {
+		if canonicalIDs[strings.TrimSpace(doc.ID)] {
 			okDocs = append(okDocs, strings.TrimSpace(doc.ID))
 			continue
 		}
@@ -435,29 +435,23 @@ func (s *Server) adminVectorOrphanAudit(ctx context.Context, sid string, deleteO
 	report["ignored_unmanaged_ids"] = ignored
 	report["deleted_orphan_count"] = deleted
 	report["delete_status"] = deleteStatus
-	report["policy"] = "full ChromaDB session document list is compared with MariaDB canonical row references"
+	report["policy"] = "force-reindex-owned ChromaDB documents are compared with the exact MariaDB canonical document ID allowlist"
 	return report
 }
 
-func (s *Server) adminCanonicalVectorReferences(ctx context.Context, sid string) (map[string]bool, map[string]bool, map[string]int, error) {
+func (s *Server) adminCanonicalVectorReferences(ctx context.Context, sid string) (map[string]bool, map[string]int, error) {
 	ids := map[string]bool{}
-	pairs := map[string]bool{}
 	counts := map[string]int{
 		"memories":                0,
 		"direct_evidence_records": 0,
+		"precise_memory_units":    0,
 		"world_rules":             0,
-		"kg_triples":              0,
-		"episode_summaries":       0,
-		"chapter_summaries":       0,
-		"arc_summaries":           0,
-		"saga_digests":            0,
 	}
 	add := func(table, tier string, rowID int64, docIDs ...string) {
 		if rowID <= 0 {
 			return
 		}
 		counts[table]++
-		pairs[table+":"+strconv.FormatInt(rowID, 10)] = true
 		for _, id := range docIDs {
 			if id = strings.TrimSpace(id); id != "" {
 				ids[id] = true
@@ -468,71 +462,46 @@ func (s *Server) adminCanonicalVectorReferences(ctx context.Context, sid string)
 	}
 	memories, err := s.Store.ListMemories(ctx, sid, 0, 0)
 	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for _, item := range memories {
-		add("memories", "memory", item.ID, memoryVectorDocumentID(sid, item))
+		if strings.TrimSpace(reindexMemoryDocumentText(item)) != "" {
+			add("memories", "memory", item.ID, memoryVectorDocumentID(sid, item))
+		}
 	}
 	evidence, err := s.Store.ListEvidence(ctx, sid)
 	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for _, item := range evidence {
 		if adminEvidenceVectorEligible(item) {
 			add("direct_evidence_records", "evidence", item.ID, derivedArtifactVectorDocumentID("evidence", sid, item.ID))
 		}
 	}
+	if reader, ok := s.Store.(store.GeneralVectorPreciseMemoryReader); ok {
+		units, err := reader.ListGeneralVectorPreciseMemoryUnits(ctx, sid)
+		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+			return nil, nil, err
+		}
+		for _, item := range units {
+			unitID := strings.TrimSpace(item.UnitID)
+			if unitID == "" || !store.PreciseMemoryGeneralVectorEligible(&item) {
+				continue
+			}
+			counts["precise_memory_units"]++
+			ids["precise_memory:"+sid+":"+unitID] = true
+		}
+	}
 	worldRules, err := s.Store.ListWorldRules(ctx, sid)
 	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		return nil, nil, nil, err
+		return nil, nil, err
 	}
 	for _, item := range worldRules {
 		if adminWorldRuleVectorEligible(item) {
 			add("world_rules", "world_rule", item.ID, derivedArtifactVectorDocumentID("world_rule", sid, item.ID))
 		}
 	}
-	kg, err := s.Store.ListKGTriples(ctx, sid)
-	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		return nil, nil, nil, err
-	}
-	for _, item := range kg {
-		add("kg_triples", "kg_triple", item.ID)
-	}
-	episodes, err := s.Store.ListEpisodeSummaries(ctx, sid, 0, 0, 0)
-	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-		return nil, nil, nil, err
-	}
-	for _, item := range episodes {
-		add("episode_summaries", "episode", item.ID)
-	}
-	if chapterStore, ok := s.Store.(store.ChapterSummaryStore); ok {
-		chapters, err := chapterStore.SearchChapterSummaries(ctx, sid, "", 0, 0, 0)
-		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-			return nil, nil, nil, err
-		}
-		for _, item := range chapters {
-			add("chapter_summaries", "chapter", item.ID)
-		}
-	}
-	if arcStore, ok := s.Store.(store.ArcSummaryStore); ok {
-		arcs, err := arcStore.ListArcSummaries(ctx, sid, "", 0)
-		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-			return nil, nil, nil, err
-		}
-		for _, item := range arcs {
-			add("arc_summaries", "arc", item.ID)
-		}
-	}
-	if sagaStore, ok := s.Store.(store.SagaDigestStore); ok {
-		sagas, err := sagaStore.ListSagaDigests(ctx, sid, 0)
-		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-			return nil, nil, nil, err
-		}
-		for _, item := range sagas {
-			add("saga_digests", "saga", item.ID)
-		}
-	}
-	return ids, pairs, counts, nil
+	return ids, counts, nil
 }
 
 func adminManagedVectorTier(doc vector.VectorDocument) string {
@@ -540,22 +509,14 @@ func adminManagedVectorTier(doc vector.VectorDocument) string {
 	table := strings.ToLower(strings.TrimSpace(doc.SourceTable))
 	id := strings.ToLower(strings.TrimSpace(doc.ID))
 	switch {
+	case tier == "precise_memory" || table == "precise_memory_units" || strings.HasPrefix(id, "precise_memory:"):
+		return "precise_memory"
 	case tier == "memory" || table == "memories" || strings.HasPrefix(id, "memory:"):
 		return "memory"
 	case tier == "evidence" || table == "direct_evidence_records" || strings.HasPrefix(id, "evidence:"):
 		return "evidence"
 	case tier == "world_rule" || table == "world_rules" || strings.HasPrefix(id, "world_rule:"):
 		return "world_rule"
-	case tier == "kg_triple" || table == "kg_triples" || strings.HasPrefix(id, "kg_triple:"):
-		return "kg_triple"
-	case tier == "episode" || table == "episode_summaries" || strings.HasPrefix(id, "episode:"):
-		return "episode"
-	case tier == "chapter" || table == "chapter_summaries" || strings.HasPrefix(id, "chapter:"):
-		return "chapter"
-	case tier == "arc" || table == "arc_summaries" || strings.HasPrefix(id, "arc:"):
-		return "arc"
-	case tier == "saga" || table == "saga_digests" || strings.HasPrefix(id, "saga:"):
-		return "saga"
 	default:
 		return ""
 	}

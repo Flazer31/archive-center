@@ -637,7 +637,7 @@ func TestSaveCriticExtractionArtifactsAcceptsTupleKGAndScalarEntities(t *testing
 	}
 }
 
-func TestSaveCriticExtractionArtifactsKeepsDistinctEvidenceAndSkipsExactActiveKGDuplicate(t *testing.T) {
+func TestSaveCriticExtractionArtifactsKeepsDistinctEvidenceAndRepeatedEventOnNewTurn(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnEvidence: []store.DirectEvidence{{
 			ChatSessionID:   "sess-dupe-artifacts-fuzzy",
@@ -665,11 +665,11 @@ func TestSaveCriticExtractionArtifactsKeepsDistinctEvidenceAndSkipsExactActiveKG
 		"kg_triples":        []any{map[string]any{"semantic_class": "event_fact", "subject": "Mina", "predicate": "protects", "object": "Rowan", "valid_from": 7}},
 	})
 	result := srv.saveCriticExtractionArtifacts(context.Background(), "sess-dupe-artifacts-fuzzy", 7, extraction, "Mina promises Rowan she will return. Mina protects Rowan.", completeTurnEmbeddingConfig{}, time.Unix(701, 0))
-	if result.Evidence != 1 || result.KGTriples != 0 {
-		t.Fatalf("distinct evidence or exact KG duplicate was handled incorrectly, evidence=%d kg=%d skip=%#v", result.Evidence, result.KGTriples, result.SkipReasons)
+	if result.Evidence != 1 || result.KGTriples != 1 {
+		t.Fatalf("distinct evidence or repeated event was discarded, evidence=%d kg=%d skip=%#v", result.Evidence, result.KGTriples, result.SkipReasons)
 	}
-	if len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 0 {
-		t.Fatalf("distinct evidence or exact KG duplicate write count is wrong, evidence=%d kg=%d", len(fake.savedEvidence), len(fake.savedKGTriples))
+	if len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 1 {
+		t.Fatalf("distinct evidence or repeated event write count is wrong, evidence=%d kg=%d", len(fake.savedEvidence), len(fake.savedKGTriples))
 	}
 }
 
@@ -849,7 +849,7 @@ func TestCompleteTurnCriticLedgerWiringBehindFeatureFlag(t *testing.T) {
 		t.Fatalf("enabled ledger trace mismatch: %+v", enabledLedgerTrace)
 	}
 	language, _ := enabledLedgerTrace["language"].(map[string]any)
-	if language["assistant_final_language"] != "ko" {
+	if language["assistant_final_language"] != "auto" {
 		t.Fatalf("enabled ledger language mismatch: %+v", language)
 	}
 }
@@ -886,8 +886,16 @@ func TestImportHypamemoryRequiresCriticConfig(t *testing.T) {
 	}
 }
 
+type hypaLifecycleTurnRecordingStore struct {
+	*turnRecordingStore
+}
+
+func (*hypaLifecycleTurnRecordingStore) MemoryDerivationLifecycleEnabled() bool {
+	return true
+}
+
 func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
-	fake := &turnRecordingStore{}
+	fake := &hypaLifecycleTurnRecordingStore{turnRecordingStore: &turnRecordingStore{}}
 	vec := &turnRecordingVectorStore{}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -961,11 +969,25 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	if fake.savedMemories[0].TurnIndex != -42 || fake.savedEvidence[0].SourceTurnStart != -42 {
 		t.Fatalf("expected HypaMemory import artifacts to use negative import turn index, memory=%d evidence=%d", fake.savedMemories[0].TurnIndex, fake.savedEvidence[0].SourceTurnStart)
 	}
-	if len(vec.docs) != 1 {
-		t.Fatalf("relationship-scoped imported memory must stay out of generic vector; expected evidence only, got %d", len(vec.docs))
+	if len(vec.docs) != 2 {
+		t.Fatalf("public imported memory and evidence were not retained for general recall, got %d", len(vec.docs))
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "hypamemory_import") {
 		t.Fatalf("expected hypamemory_import audit log, got %#v", fake.savedAuditLogs)
+	}
+}
+
+func TestMemoryForTurnAlreadyExistsFindsNegativeHypaImportTurn(t *testing.T) {
+	const sid = "sess-hypa-idempotency"
+	fake := &turnRecordingStore{returnMemories: []store.Memory{
+		{ID: 81, ChatSessionID: sid, TurnIndex: -42, SummaryJSON: `{"turn_summary":"Existing HypaMemory import."}`},
+		{ID: 82, ChatSessionID: sid, TurnIndex: -41, SummaryJSON: `{"turn_summary":"Different import."}`},
+	}}
+	srv := &Server{Store: fake}
+
+	id, summary := srv.memoryForTurnAlreadyExists(context.Background(), sid, -42, &artifactSaveResult{})
+	if id != 81 || summary != "Existing HypaMemory import." {
+		t.Fatalf("negative import duplicate lookup = (%d, %q), want (81, Existing HypaMemory import.)", id, summary)
 	}
 }
 

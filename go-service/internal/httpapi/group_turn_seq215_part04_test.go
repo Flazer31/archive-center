@@ -68,17 +68,19 @@ func TestSeq215P779JSInputContextSlottingOwner(t *testing.T) {
 	if s["owner"] != "go_backend" {
 		t.Fatalf("owner=%v, want go_backend", s["owner"])
 	}
-	if s["responsibility"] != "input_context_text_decision" {
-		t.Fatalf("responsibility=%v, want input_context_text_decision", s["responsibility"])
+	if s["responsibility"] != "input_context_internal_only" {
+		t.Fatalf("responsibility=%v, want input_context_internal_only", s["responsibility"])
 	}
 	source := seq215ArchiveCenterJSSource(t)
 	seq215RequireJSSourceContains(t, source,
-		"const inputContextText = String(plan.input_context_text || \"\")",
-		"injectInputContextBeforeUser(finalPayload, inputContextText)",
-		"source: \"go_payload_application_plan.v1\"",
+		"const auxiliaryText = String(plan.auxiliary_text || \"\")",
+		"source: \"risu_host_recent_chat\"",
 	)
-	if s["mode"] != "go_input_context_owner" {
-		t.Fatalf("mode=%v, want go_input_context_owner", s["mode"])
+	if strings.Contains(source, "injectInputContextBeforeUser") || strings.Contains(source, "[Archive Center — Input Context]") {
+		t.Fatal("JavaScript still contains the removed recent-chat reinjection path")
+	}
+	if s["mode"] != "host_recent_chat_not_reinjected" {
+		t.Fatalf("mode=%v, want host_recent_chat_not_reinjected", s["mode"])
 	}
 }
 
@@ -194,72 +196,6 @@ func TestSeq215P782JSOfflineFailOpenOwner(t *testing.T) {
 	}
 	if s["mode"] != "seq215_js_offline_fail_open_owner_definition" {
 		t.Fatalf("mode=%v, want seq215_js_offline_fail_open_owner_definition", s["mode"])
-	}
-}
-
-func TestSeq215P783BuildInputContextPreserved(t *testing.T) {
-	mux := http.NewServeMux()
-	srv := setupTestServer()
-	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"seq215-p783","turn_index":1,"raw_user_input":"hello","settings":{"injection_enabled":true,"input_context_enabled":true}}`
-	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	s := seq165Map(t, resp, "seq215_build_input_context_preserved")
-	if s["version"] != "s215-p783.v1" {
-		t.Fatalf("version=%v, want s215-p783.v1", s["version"])
-	}
-	if s["function_name"] != "buildInputContext" {
-		t.Fatalf("function_name=%v, want buildInputContext", s["function_name"])
-	}
-	if s["preserved"] != true {
-		t.Fatalf("preserved=%v, want true", s["preserved"])
-	}
-	source := seq215ArchiveCenterJSSource(t)
-	seq215RequireJSSourceContains(t, source, "function buildInputContext(")
-	if s["mode"] != "seq215_build_input_context_preserved_definition" {
-		t.Fatalf("mode=%v, want seq215_build_input_context_preserved_definition", s["mode"])
-	}
-}
-
-func TestSeq215P784AssembleInjectionWithBudgetPreserved(t *testing.T) {
-	mux := http.NewServeMux()
-	srv := setupTestServer()
-	srv.RegisterRoutes(mux)
-	body := `{"chat_session_id":"seq215-p784","turn_index":1,"raw_user_input":"hello","settings":{"injection_enabled":true,"input_context_enabled":true}}`
-	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	rec := httptest.NewRecorder()
-	mux.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
-	}
-	var resp map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	s := seq165Map(t, resp, "seq215_assemble_injection_with_budget_preserved")
-	if s["version"] != "s215-p784.v1" {
-		t.Fatalf("version=%v, want s215-p784.v1", s["version"])
-	}
-	if s["function_name"] != "assembleInjectionWithBudget" {
-		t.Fatalf("function_name=%v, want assembleInjectionWithBudget", s["function_name"])
-	}
-	if s["preserved"] != true {
-		t.Fatalf("preserved=%v, want true", s["preserved"])
-	}
-	source := seq215ArchiveCenterJSSource(t)
-	seq215RequireJSSourceContains(t, source, "function assembleInjectionWithBudget(")
-	if s["mode"] != "seq215_assemble_injection_with_budget_preserved_definition" {
-		t.Fatalf("mode=%v, want seq215_assemble_injection_with_budget_preserved_definition", s["mode"])
 	}
 }
 

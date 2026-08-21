@@ -921,7 +921,7 @@ func TestMariaDBSaveWorldRuleCreatesNewTurnVersion(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
-		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.SourceTurn, rule.SourceTurn).
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.ValueJSON, rule.SourceTurn, rule.SourceTurn).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT INTO world_rules").
 		WithArgs(rule.ChatSessionID, rule.Scope, nil, rule.Category, rule.Key, rule.ValueJSON,
@@ -960,7 +960,7 @@ func TestMariaDBSaveWorldRuleUpdatesSameTurnWithoutDuplicate(t *testing.T) {
 	}
 
 	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
-		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.SourceTurn, rule.SourceTurn).
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.ValueJSON, rule.SourceTurn, rule.SourceTurn).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(33))
 	mock.ExpectExec("UPDATE world_rules .*WHERE id = \\?").
 		WithArgs(nil, rule.Category, rule.ValueJSON, nil, rule.SourceTurn, rule.SourceTurn,

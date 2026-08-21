@@ -40,17 +40,9 @@ func TestSupervisorStorylineFeedbackReplayAssumedRuntimeGate(t *testing.T) {
 		callCount++
 
 		response := map[string]any{
-			"choices": []any{map[string]any{"message": map[string]any{"content": `{
-				"supervisor_scene_proposal": {
-					"fidelity_warnings": [],
-					"expression_hints": [
-						{"kind":"portrayal","text":"baseline_continue","source_refs":["input:test"]},
-						{"kind":"pacing","text":"Continue from recent chat without storyline feedback.","source_refs":["input:test"]}
-					]
-				}
-			}`}}},
-			"model": "supervisor-replay",
-			"usage": map[string]any{"total_tokens": 42},
+			"choices": []any{map[string]any{"message": map[string]any{"content": publisherV2TestContent("input:test", "baseline_continue", "Continue from recent chat without storyline feedback.")}}},
+			"model":   "supervisor-replay",
+			"usage":   map[string]any{"total_tokens": 42},
 		}
 		data, _ := json.Marshal(response)
 		return &http.Response{
@@ -196,7 +188,7 @@ func TestNarrativeGuideModesControlledReplayDiverges(t *testing.T) {
 			"action":      "action forward motion",
 			"mature_soft": "sensual consent-aware beat",
 		}[mode]
-		content := `{"supervisor_scene_proposal":{"fidelity_warnings":[],"expression_hints":[{"kind":"portrayal","text":"` + responseText + `","source_refs":["input:test"]}]}}`
+		content := publisherV2TestContent("input:test", responseText)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -310,7 +302,7 @@ func TestNarrativeStanceDoesNotControlMemoryFidelityReviewer(t *testing.T) {
 		body := extractionStringFromAny(userMessage["content"])
 		callCount++
 		capturedPrompts = append(capturedPrompts, body)
-		content := `{"supervisor_scene_proposal":{"fidelity_warnings":[],"expression_hints":[{"kind":"portrayal","text":"keep the current request perceptible","source_refs":["input:test"]}]}}`
+		content := publisherV2TestContent("input:test", "keep the current request perceptible")
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -382,27 +374,70 @@ func TestNarrativeStanceDoesNotControlMemoryFidelityReviewer(t *testing.T) {
 }
 
 func supervisorProposalText(resp map[string]any, field string) string {
-	result, _ := resp["supervisor_result"].(map[string]any)
-	directive, _ := result["directive"].(map[string]any)
-	proposal, _ := directive["supervisor_scene_proposal"].(map[string]any)
-	items, _ := proposal[field].([]any)
-	if len(items) == 0 {
-		return ""
-	}
-	item, _ := items[0].(map[string]any)
-	return extractionStringFromAny(item["text"])
+	return publisherAcceptedFieldText(resp, field)
 }
 
 func supervisorExpressionText(resp map[string]any, kind string) string {
+	field := kind
+	switch kind {
+	case "portrayal", "response_focus":
+		field = "current_arc"
+	case "pacing":
+		field = "next_beats"
+	}
+	return publisherAcceptedFieldText(resp, field)
+}
+
+func publisherAcceptedFieldText(resp map[string]any, field string) string {
 	result := mapFromAny(resp["supervisor_result"])
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
-	for _, raw := range anySliceFromAny(proposal["expression_hints"]) {
+	plan := mapFromAny(proposal["publisher_plan"])
+	for _, raw := range anySliceFromAny(plan["accepted_items"]) {
 		item := mapFromAny(raw)
-		if extractionStringFromAny(item["kind"]) == kind {
+		if extractionStringFromAny(item["field"]) == field {
 			return extractionStringFromAny(item["text"])
 		}
 	}
 	return ""
+}
+
+func publisherV2TestContent(ref, currentArc string, nextBeats ...string) string {
+	beats := []any{}
+	for _, text := range nextBeats {
+		beats = append(beats, map[string]any{"text": text, "source_refs": []any{ref}})
+	}
+	content := map[string]any{
+		"supervisor_scene_proposal": map[string]any{
+			"publisher_plan": map[string]any{
+				"contract_version": "publisher_plan.v2",
+				"book_author": map[string]any{
+					"current_arc":    map[string]any{"text": currentArc, "source_refs": []any{ref}},
+					"narrative_goal": nil,
+					"next_beats":     beats,
+					"guardrails":     []any{},
+				},
+				"director": map[string]any{
+					"scene_mandate":     nil,
+					"required_outcomes": []any{},
+					"forbidden_moves":   []any{},
+					"pressure_level":    nil,
+				},
+			},
+		},
+	}
+	data, _ := json.Marshal(content)
+	return string(data)
+}
+
+func publisherV2OpenAIResponse(ref, currentArc string, nextBeats ...string) string {
+	response := map[string]any{
+		"model": "test-supervisor",
+		"choices": []any{map[string]any{
+			"message": map[string]any{"content": publisherV2TestContent(ref, currentArc, nextBeats...)},
+		}},
+	}
+	data, _ := json.Marshal(response)
+	return string(data)
 }
 
 func anySliceContains(values []any, needle string) bool {
@@ -818,6 +853,73 @@ func TestHandleSupervisorFailOpenOnRuntimeLLMError(t *testing.T) {
 	}
 }
 
+func TestHandleSupervisorMissingOrEmptyPromptFailsOpenWithoutProviderCall(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		writeFile bool
+	}{
+		{name: "missing"},
+		{name: "empty", writeFile: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			promptDir := t.TempDir()
+			if tc.writeFile {
+				if err := os.WriteFile(filepath.Join(promptDir, "supervisor_system.txt"), []byte(" \n\t"), 0644); err != nil {
+					t.Fatalf("write empty Publisher prompt: %v", err)
+				}
+			}
+
+			providerCalls := 0
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				providerCalls++
+				t.Fatal("Publisher provider must not be called without its system prompt")
+				return nil, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			mux := http.NewServeMux()
+			srv := setupTestServer()
+			srv.Cfg.PromptDir = promptDir
+			srv.RuntimeConfig = RuntimeConfig{
+				SupervisorProvider:   "openai",
+				SupervisorAPIKey:     "test-publisher-key",
+				SupervisorEndpoint:   "https://api.example.com/v1",
+				SupervisorModel:      "test-publisher",
+				SupervisorTimeoutSec: 10,
+			}
+			srv.RegisterRoutes(mux)
+
+			body := `{"chat_session_id":"publisher-prompt-unavailable","guide_mode":"standard","guide_strength":"strong","response_execution_contract":{"contract_version":"response_execution_contract.v1","status":"ready","active":true,"source_refs":{"all":["input:test"],"current_input":["input:test"],"native_system":[],"memory":[]}},"context_messages":[{"role":"user","content":"Continue the current scene."}]}`
+			req := httptest.NewRequest(http.MethodPost, "/supervisor", bytes.NewReader([]byte(body)))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			mux.ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("fail-open status = %d, want 200: %s", rec.Code, rec.Body.String())
+			}
+			if providerCalls != 0 {
+				t.Fatalf("Publisher provider calls = %d, want zero", providerCalls)
+			}
+
+			var resp map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+				t.Fatalf("decode fail-open response: %v", err)
+			}
+			if resp["status"] != "partial" || resp["source"] != "runtime_llm_error" ||
+				resp["fail_open"] != true || resp["would_call_llm"] != false ||
+				resp["reason_code"] != "publisher_system_prompt_unavailable" {
+				t.Fatalf("unexpected prompt-authority fail-open response: %#v", resp)
+			}
+			trace := mapFromAny(resp["trace_summary"])
+			llmTrace := mapFromAny(trace["llm_trace"])
+			if trace["llm_call"] != "skipped" || llmTrace["failure_code"] != "publisher_system_prompt_unavailable" {
+				t.Fatalf("prompt-authority failure was not explicit: trace=%#v llm_trace=%#v", trace, llmTrace)
+			}
+		})
+	}
+}
+
 func TestHandleSupervisorSkipsRuntimeLLMWithoutExecutionContract(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()
@@ -871,9 +973,8 @@ func TestHandleSupervisorSkipsRuntimeLLMWithoutExecutionContract(t *testing.T) {
 		proposal["reason_code"] != "supervisor_execution_contract_missing" {
 		t.Fatalf("missing execution contract did not produce bounded degraded result: %+v", proposal)
 	}
-	if len(anySliceFromAny(proposal["fidelity_warnings"])) != 0 ||
-		len(anySliceFromAny(proposal["expression_hints"])) != 0 {
-		t.Fatalf("gated proposal delivered unsupported items: %+v", proposal)
+	if _, exists := proposal["publisher_plan"]; exists {
+		t.Fatalf("gated proposal fabricated a publisher plan: %+v", proposal)
 	}
 
 	nativeOnlyBody := `{

@@ -1080,8 +1080,15 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 	if len(fake.savedStorylines) != 1 {
 		t.Fatalf("expected one storyline, got %d", len(fake.savedStorylines))
 	}
-	if len(vec.docs) != 2 {
-		t.Fatalf("relationship-scoped memory must stay out of generic vector; expected evidence/world-rule, got %d", len(vec.docs))
+	if len(vec.docs) != 3 {
+		t.Fatalf("public relationship evidence was not retained for general recall; got %#v", vec.docs)
+	}
+	tiers := map[string]bool{}
+	for _, doc := range vec.docs {
+		tiers[doc.Tier] = true
+	}
+	if !tiers["memory"] || !tiers["evidence"] || !tiers["world_rule"] {
+		t.Fatalf("expected public memory, evidence, and world-rule vectors, got %#v", vec.docs)
 	}
 }
 

@@ -19,19 +19,30 @@ import (
 )
 
 func TestAdminReindexBlocksChromaDimensionMismatchAtFirstVectorError(t *testing.T) {
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","data":[{"embedding":[0.1,0.2]}]}`)
+	}))
+	defer embeddingServer.Close()
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBShadow
 	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
 	srv := NewServer(cfg)
 	srv.Store = &turnRecordingStore{
-		returnMemories: []store.Memory{
-			{ID: 1, ChatSessionID: "sess-dim-mismatch", TurnIndex: 1, SummaryJSON: `{"summary":"Already embedded memory."}`, Embedding: `[0.1,0.2]`, EmbeddingModel: "old-model"},
+		returnWorldRules: []store.WorldRule{
+			{ID: 1, ChatSessionID: "sess-dim-mismatch", Scope: "world", Category: "rule", Key: "gate", ValueJSON: `{"value":"The gate remains sealed."}`, SourceTurn: 1},
 		},
 	}
 	srv.StoreOpenError = nil
 	srv.Vector = &turnRecordingVectorStore{upsertErr: fmt.Errorf("chroma collection dimension mismatch: current embedding dimension=1024; existing collection was created with a different embedding dimension")}
 
-	resp, err := srv.runAdminReindexJob(context.Background(), "sess-dim-mismatch", map[string]any{}, nil)
+	resp, err := srv.runAdminReindexJob(context.Background(), "sess-dim-mismatch", map[string]any{
+		"force": true,
+		"client_meta": map[string]any{"embedding": map[string]any{
+			"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL,
+			"model": "test-model", "timeout_ms": 5000,
+		}},
+	}, nil)
 	if err != nil {
 		t.Fatalf("runAdminReindexJob: %v", err)
 	}
@@ -41,7 +52,7 @@ func TestAdminReindexBlocksChromaDimensionMismatchAtFirstVectorError(t *testing.
 	if resp["stage"] != "collection_recreate_required" || resp["ui_action"] != "recreate_chromadb_collection_then_reindex" {
 		t.Fatalf("dimension mismatch guidance missing: %#v", resp)
 	}
-	if resp["blocked_tier"] != "memory" || resp["blocked_row_id"] != int64(1) {
+	if resp["blocked_tier"] != "world_rule" || resp["blocked_row_id"] != int64(1) {
 		t.Fatalf("blocked target mismatch: %#v", resp)
 	}
 }
@@ -91,7 +102,438 @@ func TestAdminReindexDerivedArtifactsEmitsTierProgress(t *testing.T) {
 	}
 }
 
-func TestAdminReindexVoyageContextKeepsLogicalTurnsInSeparateDocuments(t *testing.T) {
+func TestAdminReindexForceDoesNotIncludePerspectiveScopedEvidence(t *testing.T) {
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{returnEvidence: []store.DirectEvidence{{
+		ID:            10,
+		ChatSessionID: "sess-perspective-evidence",
+		EvidenceKind:  "perspective_scoped_turn_excerpt",
+		EvidenceText:  "A private perspective excerpt must not enter general vectors.",
+		SourceTurnEnd: 1,
+	}}}
+	srv.StoreOpenError = nil
+	vec := &turnRecordingVectorStore{}
+	srv.Vector = vec
+
+	result, err := srv.runAdminReindexJob(
+		context.Background(),
+		"sess-perspective-evidence",
+		map[string]any{"force": true},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if result["status"] != "ok" || result["force"] != true {
+		t.Fatalf("result = %#v, want successful forced reindex", result)
+	}
+	derived, ok := result["derived_artifact_reindex"].(map[string]any)
+	if !ok {
+		t.Fatalf("derived_artifact_reindex = %T, want object", result["derived_artifact_reindex"])
+	}
+	candidates, ok := derived["candidates_by_tier"].(map[string]int)
+	if !ok || candidates["evidence"] != 0 {
+		t.Fatalf("perspective evidence candidates = %#v, want zero", derived["candidates_by_tier"])
+	}
+	integrity, ok := result["integrity_report"].(map[string]any)
+	if !ok || integrity["canonical_evidence_vector_count"] != 0 {
+		t.Fatalf("integrity report counted perspective evidence: %#v", result["integrity_report"])
+	}
+	if vec.upsertCalls != 0 {
+		t.Fatalf("forced reindex upsert calls = %d, want zero", vec.upsertCalls)
+	}
+}
+
+func TestAdminIntegrityDoesNotRequirePrivateOnlyMemoryProjection(t *testing.T) {
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Vector = &turnRecordingVectorStore{}
+	privateOnly := store.Memory{
+		ID:             9,
+		ChatSessionID:  "sess-private-integrity",
+		TurnIndex:      2,
+		SummaryJSON:    `{"turn_summary":"Mira privately suspects the gate code.","belief_updates":[{"knowledge_holder":"Mira","belief":"the code is 17"}]}`,
+		Embedding:      "[]",
+		EmbeddingModel: "perspective_scoped_typed_delivery",
+	}
+	report := srv.adminReindexIntegrityReport(
+		context.Background(), privateOnly.ChatSessionID,
+		[]store.Memory{privateOnly}, nil, nil, "test-model",
+	)
+	if report["canonical_memory_count"] != 0 ||
+		report["canonical_vector_candidate_count"] != 0 ||
+		report["missing_embedding_count"] != 0 {
+		t.Fatalf("private-only projection was counted as required: %#v", report)
+	}
+}
+
+type adminPreciseInventoryStore struct {
+	*turnRecordingStore
+	units []store.PreciseMemoryUnit
+	err   error
+}
+
+func (s *adminPreciseInventoryStore) ListGeneralVectorPreciseMemoryUnits(context.Context, string) ([]store.PreciseMemoryUnit, error) {
+	return append([]store.PreciseMemoryUnit(nil), s.units...), s.err
+}
+
+func TestAdminIntegrityCountsEligiblePreciseMemoryWithoutReportingExtraVector(t *testing.T) {
+	const sid = "sess-precise-integrity"
+	publicUnit := store.PreciseMemoryUnit{
+		ID: 41, UnitID: "public-unit", ChatSessionID: sid,
+		AdmissionState: "committed", ReviewState: "source_observed",
+		Visibility: "public", EpistemicMode: "direct", LifecycleState: "active",
+	}
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &adminPreciseInventoryStore{
+		turnRecordingStore: &turnRecordingStore{
+			returnKGTriples:   []store.KGTriple{{ID: 61, ChatSessionID: sid}},
+			returnEpisodeSums: []store.EpisodeSummary{{ID: 71, ChatSessionID: sid}},
+		},
+		units: []store.PreciseMemoryUnit{publicUnit},
+	}
+	srv.Vector = &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "precise_memory:" + sid + ":public-unit", Tier: "precise_memory", ChatSessionID: sid, SourceTable: "precise_memory_units", SourceRowID: "public-unit"},
+		{ID: "kg_triple:" + sid + ":61", Tier: "kg_triple", ChatSessionID: sid, SourceTable: "kg_triples", SourceRowID: "61"},
+		{ID: "episode:" + sid + ":71", Tier: "episode", ChatSessionID: sid, SourceTable: "episode_summaries", SourceRowID: "71"},
+	}}
+
+	report := srv.adminReindexIntegrityReport(context.Background(), sid, nil, nil, nil, "")
+	if report["canonical_precise_memory_vector_count"] != 1 ||
+		report["canonical_vector_candidate_count"] != 1 ||
+		report["extra_vector_count_estimate"] != 0 ||
+		report["vector_count_matches_canonical"] != true {
+		t.Fatalf("eligible precise integrity report=%#v", report)
+	}
+}
+
+func TestAdminOrphanAuditKeepsEligiblePreciseAndDeletesIneligiblePrecise(t *testing.T) {
+	const sid = "sess-precise-orphan"
+	eligible := store.PreciseMemoryUnit{
+		ID: 51, UnitID: "eligible-unit", ChatSessionID: sid,
+		AdmissionState: "committed", ReviewState: "source_observed",
+		Visibility: "public", EpistemicMode: "direct", LifecycleState: "active",
+	}
+	ineligible := store.PreciseMemoryUnit{
+		ID: 52, UnitID: "private-unit", ChatSessionID: sid,
+		AdmissionState: "committed", ReviewState: "source_observed",
+		Visibility: "owner_private", KnowledgeHolderEntityID: "holder",
+		EpistemicMode: "known", LifecycleState: "active",
+	}
+	srv := NewServer(config.Default())
+	srv.Store = &adminPreciseInventoryStore{
+		turnRecordingStore: &turnRecordingStore{},
+		units:              []store.PreciseMemoryUnit{eligible, ineligible},
+	}
+	vec := &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "precise_memory:" + sid + ":eligible-unit", Tier: "precise_memory", ChatSessionID: sid, SourceTable: "precise_memory_units", SourceRowID: "eligible-unit"},
+		{ID: "precise_memory:" + sid + ":private-unit", Tier: "precise_memory", ChatSessionID: sid, SourceTable: "precise_memory_units", SourceRowID: "private-unit"},
+	}}
+	srv.Vector = vec
+
+	report := srv.adminVectorOrphanAudit(context.Background(), sid, true)
+	counts, ok := report["canonical_counts"].(map[string]int)
+	if !ok || counts["precise_memory_units"] != 1 {
+		t.Fatalf("canonical precise counts=%#v", report["canonical_counts"])
+	}
+	if report["orphan_count"] != 1 || report["deleted_orphan_count"] != 1 ||
+		len(vec.docs) != 1 || vec.docs[0].ID != "precise_memory:"+sid+":eligible-unit" {
+		t.Fatalf("precise orphan audit=%#v remaining=%#v", report, vec.docs)
+	}
+	if got := adminManagedVectorTier(vector.VectorDocument{ID: "precise_memory:" + sid + ":private-unit"}); got != "precise_memory" {
+		t.Fatalf("managed precise tier=%q", got)
+	}
+}
+
+func TestAdminForceReplaysCanonicalPublicProjectionWithoutDirectChromaMutation(t *testing.T) {
+	const sid = "sess-canonical-force"
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","data":[{"embedding":[0.1,0.2]}]}`)
+	}))
+	defer embeddingServer.Close()
+	st := newAdminCanonicalReplayTestStore(sid, 3, map[string]any{
+		"turn_summary":      "The brass key remains on the public table.",
+		"importance_score":  6,
+		"evidence_excerpts": []any{"The brass key remains on the public table."},
+	})
+	st.memories = []store.Memory{{
+		ID: 7, ChatSessionID: sid, TurnIndex: 3,
+		SummaryJSON: `{"turn_summary":"The brass key remains on the public table."}`,
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	vec := &turnRecordingVectorStore{}
+	srv.Vector = vec
+
+	result, err := srv.runAdminReindexJob(
+		context.Background(), sid, map[string]any{"force": true, "client_meta": map[string]any{
+			"embedding": map[string]any{"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL, "model": "test-model", "timeout_ms": 5000},
+		}}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["canonical_replays_completed"] != 1 || result["vector_replays_queued"] != 1 ||
+		result["upserted"] != 0 || vec.upsertCalls != 0 {
+		t.Fatalf("canonical force crossed direct Chroma boundary: result=%#v upserts=%d", result, vec.upsertCalls)
+	}
+	if len(st.admissions) != 1 || st.admissions[0].IndexVersion != memoryAdmissionIndexVersion {
+		t.Fatalf("admissions=%+v", st.admissions)
+	}
+	firstCount := len(st.admissions)
+	if _, err := srv.runAdminReindexJob(
+		context.Background(), sid, map[string]any{"force": true, "client_meta": map[string]any{
+			"embedding": map[string]any{"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL, "model": "test-model", "timeout_ms": 5000},
+		}}, nil,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if len(st.admissions) != firstCount+1 || vec.upsertCalls != 0 {
+		t.Fatalf("repeated force was not an idempotent canonical replay: admissions=%d upserts=%d", len(st.admissions), vec.upsertCalls)
+	}
+}
+
+func TestAdminVoyageCanonicalReplayDoesNotResendRawChat(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+	requests := [][]string{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		groups := sliceFromAny(request["inputs"])
+		for _, group := range groups {
+			chunks := []string{}
+			for _, chunk := range sliceFromAny(group) {
+				chunks = append(chunks, fmt.Sprint(chunk))
+			}
+			requests = append(requests, chunks)
+		}
+		rows := []map[string]any{{"index": 0, "data": []any{map[string]any{"index": 0, "embedding": []float64{0.1, 0.2}}}}}
+		body, _ := json.Marshal(map[string]any{"data": rows, "model": "voyage-context-4"})
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	const sid = "sess-admin-no-raw-chat"
+	st := newAdminCanonicalReplayTestStore(sid, 1, map[string]any{
+		"turn_summary":      "The public bell rang.",
+		"importance_score":  5,
+		"evidence_excerpts": []any{"The public bell rang."},
+	})
+	st.source.UserContent = "RAW USER SECRET MUST NOT BE SENT"
+	st.source.AssistantContent = "RAW ASSISTANT SECRET MUST NOT BE SENT"
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	srv.Vector = &turnRecordingVectorStore{}
+	_, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{
+		"force": true,
+		"client_meta": map[string]any{"embedding": map[string]any{
+			"provider": "voyageai", "api_key": "key", "endpoint": "https://api.voyageai.com/v1/embeddings",
+			"model": "voyage-context-4", "timeout_ms": 5000,
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(requests) == 0 {
+		t.Fatal("canonical replay did not issue a public projection embedding request")
+	}
+	publicProjectionObserved := false
+	for _, chunks := range requests {
+		joined := strings.Join(chunks, "\n")
+		if strings.Contains(joined, "RAW USER SECRET") || strings.Contains(joined, "RAW ASSISTANT SECRET") {
+			t.Fatalf("admin Voyage received raw chat: %#v", requests)
+		}
+		if strings.Contains(joined, "The public bell rang.") {
+			publicProjectionObserved = true
+		}
+	}
+	if !publicProjectionObserved {
+		t.Fatalf("canonical replay did not embed its public projection: %#v", requests)
+	}
+}
+
+func TestAdminReindexReportsUnmatchedLegacyArtifactsInMixedCanonicalSession(t *testing.T) {
+	const sid = "sess-mixed-canonical-legacy"
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","data":[{"embedding":[0.1,0.2]}]}`)
+	}))
+	defer embeddingServer.Close()
+	st := newAdminCanonicalReplayTestStore(sid, 1, map[string]any{
+		"turn_summary":      "The public bell rang.",
+		"importance_score":  5,
+		"evidence_excerpts": []any{"The public bell rang."},
+	})
+	st.memories = []store.Memory{
+		{ID: 11, ChatSessionID: sid, TurnIndex: 1, SummaryJSON: `{"turn_summary":"The public bell rang."}`, Embedding: `[0.1]`, EmbeddingModel: "old-model"},
+		{ID: 12, ChatSessionID: sid, TurnIndex: 2, SummaryJSON: `{"turn_summary":"Legacy row without a source owner."}`, Embedding: `[0.2]`, EmbeddingModel: "old-model"},
+	}
+	st.evidence = []store.DirectEvidence{{
+		ID: 21, ChatSessionID: sid, EvidenceText: "Imported evidence on a covered turn.",
+		TurnAnchor: 1, CaptureStage: "hypamemory_import",
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	vec := &turnRecordingVectorStore{}
+	srv.Vector = vec
+	result, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{
+		"client_meta": map[string]any{"embedding": map[string]any{
+			"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL,
+			"model": "test-model", "timeout_ms": 5000,
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["canonical_replays_completed"] != 1 || vec.upsertCalls != 0 {
+		t.Fatalf("result=%#v direct_upserts=%d", result, vec.upsertCalls)
+	}
+	failedTurns, ok := result["failed_turns"].([]int64)
+	if !ok || len(failedTurns) != 2 ||
+		!int64SliceContains(failedTurns, 1) || !int64SliceContains(failedTurns, 2) {
+		t.Fatalf("failed_turns=%#v, want unmatched turn 2 and unsupported evidence turn 1", result["failed_turns"])
+	}
+	errorsOut, ok := result["errors"].([]string)
+	joinedErrors := strings.Join(errorsOut, "\n")
+	if !ok || !strings.Contains(joinedErrors, "memory:12 has no active committed source revision") ||
+		!strings.Contains(joinedErrors, "evidence:21 has unsupported capture_stage") {
+		t.Fatalf("errors=%#v, want explicit unmatched memory and unsupported evidence", result["errors"])
+	}
+}
+
+func int64SliceContains(values []int64, target int64) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAdminCanonicalReplayBlocksBeforeMutationWithoutEmbeddingConfig(t *testing.T) {
+	const sid = "sess-canonical-config-preflight"
+	st := newAdminCanonicalReplayTestStore(sid, 1, map[string]any{
+		"turn_summary":      "The public bell rang.",
+		"importance_score":  5,
+		"evidence_excerpts": []any{"The public bell rang."},
+	})
+	st.memories = []store.Memory{{
+		ID: 11, ChatSessionID: sid, TurnIndex: 1,
+		SummaryJSON: `{"turn_summary":"The public bell rang."}`,
+		Embedding:   `[0.1]`, EmbeddingModel: "legacy-model",
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	srv.Vector = &turnRecordingVectorStore{}
+	result, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "blocked" || result["reason"] != "missing_embedding_config" ||
+		result["stage"] != "embedding_config_preflight" || len(st.admissions) != 0 {
+		t.Fatalf("result=%#v admissions=%d, want pre-mutation block", result, len(st.admissions))
+	}
+}
+
+func TestAdminForcePrivateSentinelReconcilesDeleteWithoutEmbeddingConfig(t *testing.T) {
+	const sid = "sess-private-sentinel-delete"
+	st := newAdminCanonicalReplayTestStore(sid, 1, map[string]any{
+		"turn_summary":     "Mira privately believes the gate code is seventeen.",
+		"importance_score": 5,
+		"belief_updates": []any{map[string]any{
+			"knowledge_holder": "Mira",
+			"belief":           "The gate code is seventeen.",
+		}},
+	})
+	st.memories = []store.Memory{{
+		ID: 11, ChatSessionID: sid, TurnIndex: 1,
+		SummaryJSON:    `{"summary":"legacy perspective sentinel row"}`,
+		Embedding:      `[]`,
+		EmbeddingModel: "perspective_scoped_typed_delivery",
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	vec := &turnRecordingVectorStore{}
+	srv.Vector = vec
+	result, err := srv.runAdminReindexJob(
+		context.Background(), sid, map[string]any{"force": true}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["status"] != "ok" || result["canonical_replays_completed"] != 1 ||
+		result["vector_replays_queued"] != 1 || vec.upsertCalls != 0 || len(st.admissions) != 1 {
+		t.Fatalf("result=%#v upserts=%d admissions=%d", result, vec.upsertCalls, len(st.admissions))
+	}
+	admission := st.admissions[0]
+	if len(admission.Vectors) != 0 || admission.Memory == nil ||
+		admission.Memory.EmbeddingModel != "" || admission.Memory.Embedding != "[]" {
+		t.Fatalf("private replay created a general vector or fake model: %+v", admission)
+	}
+}
+
+func TestAdminBoundedReindexReportsUnsupportedEvidenceOnCoveredSource(t *testing.T) {
+	const sid = "sess-bounded-unsupported-evidence"
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","data":[{"embedding":[0.1,0.2]}]}`)
+	}))
+	defer embeddingServer.Close()
+	st := newAdminCanonicalReplayTestStore(sid, 7, map[string]any{
+		"turn_summary":      "The public bell rang.",
+		"importance_score":  5,
+		"evidence_excerpts": []any{"The public bell rang."},
+	})
+	st.evidence = []store.DirectEvidence{{
+		ID: 21, ChatSessionID: sid, EvidenceText: "Imported evidence on the covered turn.",
+		TurnAnchor: 7, CaptureStage: "hypamemory_import",
+	}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = st
+	srv.Vector = &turnRecordingVectorStore{}
+	result, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{
+		"max_items": 1,
+		"client_meta": map[string]any{"embedding": map[string]any{
+			"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL,
+			"model": "test-model", "timeout_ms": 5000,
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedTurns, ok := result["failed_turns"].([]int64)
+	if !ok || !int64SliceContains(failedTurns, 7) ||
+		!strings.Contains(strings.Join(result["errors"].([]string), "\n"), "unsupported capture_stage") {
+		t.Fatalf("bounded unsupported evidence was silently omitted: %#v", result)
+	}
+}
+
+func TestAdminReindexVoyageSendsOnlyWorldRulesOutsideCanonicalAdmission(t *testing.T) {
 	oldClient := proxyHTTPClient
 	documents := [][]string{}
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -177,29 +619,22 @@ func TestAdminReindexVoyageContextKeepsLogicalTurnsInSeparateDocuments(t *testin
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	if len(documents) != 2 {
-		t.Fatalf("Voyage calls = %d, want one call for each of two logical turns: %#v response=%s", len(documents), documents, rec.Body.String())
+		t.Fatalf("Voyage calls = %d, want one independent call per world rule: %#v response=%s", len(documents), documents, rec.Body.String())
 	}
 	for turnIndex, chunks := range documents {
 		turn := turnIndex + 1
 		joined := strings.Join(chunks, "\n")
-		for _, want := range []string{
-			fmt.Sprintf("turn %s user input", []string{"one", "two"}[turnIndex]),
-			fmt.Sprintf("turn %s assistant output", []string{"one", "two"}[turnIndex]),
-			fmt.Sprintf("turn %s memory", []string{"one", "two"}[turnIndex]),
-			fmt.Sprintf("turn %s evidence", []string{"one", "two"}[turnIndex]),
-			fmt.Sprintf("turn %s world rule", []string{"one", "two"}[turnIndex]),
-		} {
-			if !strings.Contains(joined, want) {
-				t.Fatalf("turn %d document missing %q: %#v", turn, want, chunks)
-			}
+		want := fmt.Sprintf("turn %s world rule", []string{"one", "two"}[turnIndex])
+		if !strings.Contains(joined, want) {
+			t.Fatalf("turn %d document missing %q: %#v", turn, want, chunks)
 		}
-		other := []string{"two", "one"}[turnIndex]
-		if strings.Contains(joined, "turn "+other+" user input") ||
-			strings.Contains(joined, "turn "+other+" assistant output") ||
-			strings.Contains(joined, "turn "+other+" memory") ||
-			strings.Contains(joined, "turn "+other+" evidence") ||
-			strings.Contains(joined, "turn "+other+" world rule") {
-			t.Fatalf("turn %d document combined a different logical turn: %#v", turn, chunks)
+		for _, forbidden := range []string{
+			"user input", "assistant output", "memory", "evidence",
+			"turn " + []string{"two", "one"}[turnIndex] + " world rule",
+		} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("world-rule document leaked %q: %#v", forbidden, chunks)
+			}
 		}
 	}
 }
@@ -291,6 +726,120 @@ func TestAdminReindexSkipsAlreadyCurrentIndexWithoutForce(t *testing.T) {
 	}
 	if len(vec.docs) != 1 {
 		t.Fatalf("already-current reindex must not upsert duplicates: %#v", vec.docs)
+	}
+}
+
+func TestAdminReindexSkipsCurrentEmptyPublicIndexForPrivateOnlySession(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{returnMemories: []store.Memory{{
+		ID:             9,
+		ChatSessionID:  "sess-reindex-private-current",
+		TurnIndex:      4,
+		SummaryJSON:    `{"turn_summary":"Mira privately suspects the gate code.","belief_updates":[{"knowledge_holder":"Mira","belief":"the code is 17"}]}`,
+		Embedding:      "[]",
+		EmbeddingModel: "perspective_scoped_typed_delivery",
+	}}}
+	srv.StoreOpenError = nil
+	srv.Vector = &turnRecordingVectorStore{}
+
+	result, err := srv.runAdminReindexJob(context.Background(), "sess-reindex-private-current", map[string]any{"force": false}, nil)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if result["reason"] != "vector_index_already_current" || result["reindex_executed"] != false {
+		t.Fatalf("private-only current result mismatch: %#v", result)
+	}
+	integrity, _ := result["integrity_report"].(map[string]any)
+	if integrity["vector_index_current"] != true || integrity["index_usable_for_vector_first_read"] != false {
+		t.Fatalf("private-only empty integrity mismatch: %#v", integrity)
+	}
+}
+
+func TestAdminIntegrityCountsDuplicateManagedAliasesAsExtra(t *testing.T) {
+	const sid = "sess-reindex-duplicate-alias"
+	memory := store.Memory{
+		ID: 7, ChatSessionID: sid, TurnIndex: 3,
+		SummaryJSON: `{"summary":"The gate is indexed."}`,
+		Embedding:   `[0.1,0.2,0.3]`, EmbeddingModel: "test-embedding",
+	}
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{returnMemories: []store.Memory{memory}}
+	srv.Vector = &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "memory:" + sid + ":7", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "7"},
+		{ID: "memory:7", Tier: "memory", ChatSessionID: sid, SourceTable: "memories", SourceRowID: "7"},
+	}}
+
+	report := srv.adminReindexIntegrityReport(context.Background(), sid, []store.Memory{memory}, nil, nil, "test-embedding")
+	if report["vector_index_current"] != false || report["extra_vector_count_estimate"] != 1 {
+		t.Fatalf("duplicate managed alias integrity mismatch: %#v", report)
+	}
+}
+
+func TestAdminIntegrityWrongIDWithCanonicalSourcePairIsOrphanAndMissing(t *testing.T) {
+	const sid = "sess-reindex-wrong-id"
+	memory := store.Memory{
+		ID: 7, ChatSessionID: sid, TurnIndex: 3,
+		SummaryJSON: `{"summary":"The gate is indexed."}`,
+		Embedding:   `[0.1,0.2,0.3]`, EmbeddingModel: "test-embedding",
+	}
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{returnMemories: []store.Memory{memory}}
+	srv.Vector = &turnRecordingVectorStore{docs: []vector.VectorDocument{{
+		ID: "memory:" + sid + ":wrong", Tier: "memory", ChatSessionID: sid,
+		SourceTable: "memories", SourceRowID: "7",
+	}}}
+
+	report := srv.adminReindexIntegrityReport(context.Background(), sid, []store.Memory{memory}, nil, nil, "test-embedding")
+	if report["vector_index_current"] != false ||
+		report["matched_canonical_vector_count"] != 0 ||
+		report["managed_orphan_count"] != 1 ||
+		report["missing_vector_count_estimate"] != 1 ||
+		report["extra_vector_count_estimate"] != 1 {
+		t.Fatalf("wrong-ID same-pair integrity mismatch: %#v", report)
+	}
+}
+
+func TestAdminReindexIgnoresKGAndHierarchyOutsideForceOwnership(t *testing.T) {
+	const sid = "sess-reindex-unowned-tiers"
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = &turnRecordingStore{
+		returnKGTriples:   []store.KGTriple{{ID: 61, ChatSessionID: sid}},
+		returnEpisodeSums: []store.EpisodeSummary{{ID: 71, ChatSessionID: sid}},
+	}
+	vec := &turnRecordingVectorStore{docs: []vector.VectorDocument{
+		{ID: "kg_triple:" + sid + ":61", Tier: "kg_triple", ChatSessionID: sid, SourceTable: "kg_triples", SourceRowID: "61"},
+		{ID: "episode:" + sid + ":71", Tier: "episode", ChatSessionID: sid, SourceTable: "episode_summaries", SourceRowID: "71"},
+	}}
+	srv.Vector = vec
+
+	result, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{"force": false}, nil)
+	if err != nil {
+		t.Fatalf("runAdminReindexJob: %v", err)
+	}
+	if result["reason"] != "vector_index_already_current" || result["reindex_executed"] != false {
+		t.Fatalf("unowned tiers caused a reindex loop: %#v", result)
+	}
+	integrity, _ := result["integrity_report"].(map[string]any)
+	if integrity["canonical_vector_candidate_count"] != 0 ||
+		integrity["managed_vector_count"] != 0 ||
+		integrity["vector_index_current"] != true {
+		t.Fatalf("unowned tiers entered force inventory: %#v", integrity)
+	}
+
+	audit := srv.adminVectorOrphanAudit(context.Background(), sid, true)
+	if audit["orphan_count"] != 0 || audit["deleted_orphan_count"] != 0 ||
+		audit["ignored_unmanaged_count"] != 2 || len(vec.docs) != 2 {
+		t.Fatalf("unowned tier documents were not preserved: report=%#v docs=%#v", audit, vec.docs)
 	}
 }
 
@@ -438,22 +987,25 @@ func TestAdminDedupeCleanupDryRunAndApply(t *testing.T) {
 }
 
 func TestAdminReindexBackgroundJobReportsProgress(t *testing.T) {
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-embedding","data":[{"embedding":[0.1,0.2,0.3]}]}`)
+	}))
+	defer embeddingServer.Close()
 	cfg := config.Default()
-	cfg.StoreMode = config.StoreModeMariaDBShadow
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
 	srv := NewServer(cfg)
-	fake := &memoryFakeStore{
-		memories: []store.Memory{
-			{
-				ID:             42,
-				ChatSessionID:  "sess-reindex-bg",
-				TurnIndex:      7,
-				SummaryJSON:    `{"summary":"Blue lantern oath persists."}`,
-				Embedding:      `[0.1,0.2,0.3]`,
-				EmbeddingModel: "test-embedding",
-			},
-		},
-	}
+	fake := newAdminCanonicalReplayTestStore("sess-reindex-bg", 7, map[string]any{
+		"turn_summary":      "Blue lantern oath persists.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Blue lantern oath persists."},
+	})
+	fake.memories = []store.Memory{{
+		ID: 42, ChatSessionID: "sess-reindex-bg", TurnIndex: 7,
+		SummaryJSON: `{"turn_summary":"Blue lantern oath persists."}`,
+		Embedding:   `[0.1,0.2,0.3]`, EmbeddingModel: "old-model",
+	}}
 	vec := &turnRecordingVectorStore{}
 	srv.Store = fake
 	srv.StoreOpenError = nil
@@ -462,7 +1014,11 @@ func TestAdminReindexBackgroundJobReportsProgress(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(`{"chat_session_id":"sess-reindex-bg","dry_run":false,"background":true}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(fmt.Sprintf(`{
+		"chat_session_id":"sess-reindex-bg","force":true,"background":true,
+		"client_meta":{"embedding":{"provider":"openai","api_key":"key",
+		"endpoint":%q,"model":"test-embedding","timeout_ms":5000}}
+	}`, embeddingServer.URL)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -502,14 +1058,17 @@ func TestAdminReindexBackgroundJobReportsProgress(t *testing.T) {
 	if !ok {
 		t.Fatalf("progress missing: %#v", job)
 	}
-	if progress["processed"] != float64(1) || progress["upserted"] != float64(1) {
+	if progress["processed"] != float64(1) || progress["upserted"] != float64(0) {
 		t.Fatalf("progress mismatch: %#v", progress)
 	}
 	if progress["progress_percent"] != float64(100) {
 		t.Fatalf("progress_percent = %v, want 100", progress["progress_percent"])
 	}
 	result, ok := job["result"].(map[string]any)
-	if !ok || result["reindex_executed"] != true {
+	if !ok || result["reindex_executed"] != true ||
+		result["canonical_replays_completed"] != float64(1) ||
+		result["vector_replays_queued"] != float64(1) ||
+		result["vector_delivery_pending"] != true || vec.upsertCalls != 0 {
 		t.Fatalf("result mismatch: %#v", job["result"])
 	}
 }

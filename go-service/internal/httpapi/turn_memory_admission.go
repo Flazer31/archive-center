@@ -11,7 +11,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-const memoryAdmissionIndexVersion = store.MemoryVectorOutboxContract
+const memoryAdmissionIndexVersion = store.MemoryPublicProjectionIndex
 
 // resolveCommittedMemoryAdmissionExtraction makes crash recovery deterministic.
 // Once the common writer has admitted one extraction for this source/version,
@@ -104,6 +104,13 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	if s == nil || s.Store == nil || result == nil {
 		return false, existingEvidence, nil
 	}
+	// Negative turns are reserved for external auxiliary imports such as
+	// HypaMemory. They are not observed RisuAI turn pairs and therefore cannot
+	// honestly acquire an accepted source revision. Keep them on the existing
+	// external-import writer while positive dialogue turns remain source-fenced.
+	if turnIndex < 0 {
+		return false, existingEvidence, nil
+	}
 	lifecycle, lifecycleOK := s.Store.(store.MemoryDerivationLifecycleAvailability)
 	if !lifecycleOK || !lifecycle.MemoryDerivationLifecycleEnabled() {
 		return false, existingEvidence, nil
@@ -130,6 +137,18 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	}
 
 	var memory *store.Memory
+	publicProjection := buildPublicMemoryProjection(extraction, "")
+	searchText = strings.TrimSpace(publicProjection.SearchText.Text)
+	memorySearchText = publicProjection.SearchText
+	if !publicProjection.Eligible {
+		embedding = "[]"
+		embeddingModel = ""
+		embeddingVector = nil
+		result.EmbeddingStatus = "skipped_no_public_projection"
+		result.addSkipReason("memory_vector", "no_public_general_projection", map[string]any{
+			"turn_index": turnIndex,
+		})
+	}
 	if summary != "" {
 		archiveHint := mapFromAny(extraction["archive_hint"])
 		emotionalIntensity := clampFloat(extractionFloatFromAny(extraction["emotional_intensity"], 0), 0, 1)
@@ -173,15 +192,9 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		unit.IndexVersion = memoryAdmissionIndexVersion
 	}
 
-	perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
 	vectors := []store.MemoryAdmissionVector{}
 	if strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" {
-		if perspectiveScoped {
-			result.addSkipReason("memory_vector", "perspective_scoped_content_requires_typed_delivery", map[string]any{
-				"turn_index": turnIndex,
-			})
-		}
-		if !perspectiveScoped && memory != nil && strings.TrimSpace(searchText) != "" {
+		if publicProjection.Eligible && memory != nil && strings.TrimSpace(searchText) != "" {
 			languageMeta := memoryVectorLanguageMetadata(*memory)
 			vectors = append(vectors, store.MemoryAdmissionVector{
 				ArtifactType:          "memory",
@@ -219,27 +232,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		}
 	}
 	if usesVoyageContextualizedEmbedding(embCfg) {
-		sourceStore, ok := s.Store.(store.SourceRevisionStore)
-		if !ok {
-			result.Errors++
-			result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: source revision store is unavailable for contextualized embedding")
-			return true, existingEvidence, preciseUnits
-		}
-		canonicalSource, err := sourceStore.GetSourceRevision(ctx, sid, source.Revision)
-		if err != nil || canonicalSource == nil {
-			result.Errors++
-			if err == nil {
-				err = store.ErrNotFound
-			}
-			result.ErrorDetails = append(result.ErrorDetails, "CommitMemoryAdmission: canonical source revision is unavailable for contextualized embedding: "+err.Error())
-			return true, existingEvidence, preciseUnits
-		}
-		contextChunks := make([]string, 0, len(vectors)+len(preciseUnits)+2)
-		for _, rawTurnPart := range []string{canonicalSource.UserContent, canonicalSource.AssistantContent} {
-			if rawTurnPart = strings.TrimSpace(rawTurnPart); rawTurnPart != "" {
-				contextChunks = append(contextChunks, rawTurnPart)
-			}
-		}
+		contextChunks := make([]string, 0, len(vectors)+len(preciseUnits)+1)
 		vectorContextPositions := make([]int, len(vectors))
 		for i := range vectorContextPositions {
 			vectorContextPositions[i] = -1
@@ -260,7 +253,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 			}
 			contextChunks = append(contextChunks, text)
 		}
-		if memoryContextPosition < 0 && !perspectiveScoped && memory != nil {
+		if memoryContextPosition < 0 && publicProjection.Eligible && memory != nil {
 			if text := strings.TrimSpace(searchText); text != "" {
 				memoryContextPosition = len(contextChunks)
 				contextChunks = append(contextChunks, text)
@@ -280,7 +273,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 			if !store.PreciseMemoryGeneralVectorEligible(unit) {
 				continue
 			}
-			text := strings.TrimSpace(unit.EvidenceExcerpt)
+			text := store.PreciseMemorySemanticText(unit)
 			if text == "" {
 				continue
 			}
@@ -390,30 +383,6 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	return true, evidenceSnapshot, preciseUnits
 }
 
-func memoryAdmissionHasPerspectiveScopedContent(extraction map[string]any) bool {
-	if len(extraction) == 0 {
-		return false
-	}
-	for _, key := range []string{
-		"belief_updates",
-		"protected_secrets",
-		"character_identity_accuracy",
-		"subjective_entity_memories",
-		"relationship_observations",
-		"interaction_boundaries",
-		"habit_observations",
-		"character_profile_observations",
-		"voice_observations",
-		"user_interaction_profile",
-		"rp_character_profile",
-	} {
-		if len(sliceFromAny(extraction[key])) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
 func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any) bool {
 	if len(extraction) == 0 {
 		return false
@@ -448,37 +417,55 @@ func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any)
 
 func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[string]bool, bool) {
 	protected := map[string]bool{}
-	incomplete := false
 	for _, key := range []string{
 		"belief_updates",
 		"protected_secrets",
 		"character_identity_accuracy",
 		"subjective_entity_memories",
+		"user_interaction_profile",
+	} {
+		for _, raw := range sliceFromAny(extraction[key]) {
+			memoryAdmissionAddPerspectiveEvidenceScope(protected, mapFromAny(raw))
+		}
+	}
+	for _, key := range []string{
+		"interaction_events",
 		"relationship_observations",
 		"interaction_boundaries",
 		"habit_observations",
 		"character_profile_observations",
 		"voice_observations",
-		"user_interaction_profile",
 		"rp_character_profile",
 	} {
 		for _, raw := range sliceFromAny(extraction[key]) {
 			item := mapFromAny(raw)
-			excerpt := strings.TrimSpace(extractionFirstNonEmpty(
-				stringFromMap(item, "evidence_excerpt"),
-				stringFromMap(item, "evidence"),
-				stringFromMap(item, "source_excerpt"),
-			))
-			if excerpt == "" {
-				incomplete = true
+			if !memoryAdmissionExplicitPrivateItem(item) {
 				continue
 			}
-			if normalized := normalizeArtifactDedupeText(excerpt); normalized != "" {
-				protected[normalized] = true
-			}
+			memoryAdmissionAddPerspectiveEvidenceScope(protected, item)
 		}
 	}
-	return protected, incomplete
+	return protected, false
+}
+
+func memoryAdmissionExplicitPrivateItem(item map[string]any) bool {
+	visibility := strings.ToLower(strings.TrimSpace(stringFromMap(item, "visibility")))
+	return visibility == "owner_private" || visibility == "restricted" || visibility == "user_private" ||
+		boolFromAny(item["secret_guard"]) || boolFromAny(item["privacy_guard"])
+}
+
+func memoryAdmissionAddPerspectiveEvidenceScope(protected map[string]bool, item map[string]any) {
+	excerpt := strings.TrimSpace(extractionFirstNonEmpty(
+		stringFromMap(item, "evidence_excerpt"),
+		stringFromMap(item, "evidence"),
+		stringFromMap(item, "source_excerpt"),
+	))
+	if excerpt == "" {
+		return
+	}
+	if normalized := normalizeArtifactDedupeText(excerpt); normalized != "" {
+		protected[normalized] = true
+	}
 }
 
 func buildMemoryAdmissionEvidence(
@@ -493,8 +480,7 @@ func buildMemoryAdmissionEvidence(
 ) []*store.DirectEvidence {
 	out := []*store.DirectEvidence{}
 	seen := map[string]bool{}
-	perspectiveScoped := memoryAdmissionHasPerspectiveScopedContent(extraction)
-	perspectiveEvidenceKeys, perspectiveEvidenceIncomplete := memoryAdmissionPerspectiveEvidenceScope(extraction)
+	perspectiveEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
 	maxID := int64(0)
 	for _, item := range existing {
 		if item.ID > maxID {
@@ -515,9 +501,9 @@ func buildMemoryAdmissionEvidence(
 			continue
 		}
 		seen[key] = true
+		normalizedEvidence := normalizeArtifactDedupeText(text)
 		evidenceKind := "turn_excerpt"
-		if perspectiveScoped &&
-			(perspectiveEvidenceIncomplete || perspectiveEvidenceKeys[normalizeArtifactDedupeText(text)]) {
+		if perspectiveEvidenceKeys[normalizedEvidence] {
 			evidenceKind = "perspective_scoped_turn_excerpt"
 		}
 		evidence := &store.DirectEvidence{

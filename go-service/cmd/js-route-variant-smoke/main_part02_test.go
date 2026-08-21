@@ -273,18 +273,20 @@ func TestArchiveCenterJSFinalPayloadParityMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSBackendOwnsInputContextAndVerifiedPreview(t *testing.T) {
+func TestArchiveCenterJSBackendOwnsPayloadPlanAndDoesNotReinjectHostRecentChat(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, needle := range []string{
 		"return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);",
 		`plan.owner === "go"`,
 		`plan.apply_rule === "apply_exact_text_without_reassembly"`,
-		`injectInputContextBeforeUser(finalPayload, inputContextText)`,
 		"pre_request_payload_verification_missing_or_mismatch",
 	} {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing backend-owned input/parity marker %q", needle)
 		}
+	}
+	if strings.Contains(src, "injectInputContextBeforeUser") || strings.Contains(src, "[Archive Center — Input Context]") {
+		t.Fatal("Archive Center.js still reinjects host recent chat")
 	}
 }
 
@@ -450,83 +452,6 @@ func TestArchiveCenterJSPrepareTurnInjectionPackMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSStep11HybridMemoryPolicyMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const precedencePolicyVersion = "ea1a.v1";`,
-		`"verified_direct_evidence",`,
-		`"canonical_state",`,
-		`"dense_summary",`,
-		`"retrieval_supporting_inference",`,
-		`role: "detail_recall_audit_only",`,
-		"supporting_guidance_guard: {",
-		"narrative_quality_layer: {",
-		`status: "quality_hint_only",`,
-		`"truth_arbitration"`,
-		`"canonical_overwrite"`,
-		`const hybridPolicyVersion = "ea1f.v1";`,
-		`const recentPriorityPolicyVersion = "ea1g.v1";`,
-		"hybridPolicyVersion: hybridPolicyVersion,",
-		"recentPriorityPolicyVersion: recentPriorityPolicyVersion,",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing Step 11 hybrid memory marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSHypaMemoryImportOnlyMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"async function importHypaMemory(sessionId)",
-		"function normalizeHypaImportSourceTurnIndex",
-		`"/import/hypamemory"`,
-		"hypaV3Data",
-		"source_turn_index: normalizeHypaImportSourceTurnIndex(s, idx)",
-		"Please disable RisuAI's HypaMemory after import.",
-		`const hypaLoreIngestPolicyVersion = "rg1d.v1";`,
-		`const hypaLorePolicyTag = "rg1d_ingest_only";`,
-		`const legacyAlwaysOnSourceLabels = ["wake_up", "lorebook", "hypamemory"];`,
-		"hypaLoreIngestOnlyEnabled: true,",
-		`hypaLoreAlwaysOnMode: "discouraged",`,
-		"hypaLoreAlwaysOnSourceLabels: legacyAlwaysOnSourceLabels.slice(),",
-		`"ingest_only_not_injected"`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing HypaMemory ingest-only marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSEA1PrecedenceAndHybridBudgetMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const precedencePolicyVersion = "ea1a.v1";`,
-		`"current_user_input",`,
-		`"explicit_correction",`,
-		`"hard_rule",`,
-		`"verified_direct_evidence",`,
-		`"canonical_state",`,
-		`"dense_summary",`,
-		`"retrieval_supporting_inference",`,
-		`const hybridPolicyVersion = "ea1f.v1";`,
-		`const allocationStrategy = "priority_then_residual_ratio";`,
-		"const hardFloorShareCap = 0.55;",
-		"latestDirectEvidencePriorityEnabled: hasLatestDirectEvidence,",
-		"recentRawTurnPriorityEnabled: hasRecentRawTurn,",
-		"hardFloorShareCap: hardFloorShareCap,",
-		"hardFloorReserveTotalChars: hardFloorReserveTotalChars,",
-		"residualSupportBudgetChars: Math.max(0, budgetLimit - hardFloorReserveTotalChars),",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing EA-1 precedence/hybrid budget marker %q", needle)
-		}
-	}
-}
-
 func TestArchiveCenterJSStructuredOutputSanitizeRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -562,90 +487,6 @@ assertEqual(sanitizeForCritic("<reasoning>private</reasoning>Final text"), "Fina
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("structured output sanitizer runtime fixture failed: %v\n%s", err, output)
-	}
-}
-
-func TestArchiveCenterJSDenseSummaryProfileBudgetMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const denseSummarySlotPolicyVersion = "ds1e.v1";`,
-		"const denseSummarySlotProfile = (function resolveDenseSummarySlotProfile()",
-		"const denseSummarySlotRatios = (function resolveDenseSummarySlotRatios()",
-		`return { episode: 0.045, chapter: 0.04, arc: 0.035, saga: 0.03 };`,
-		"denseSummarySlotPolicyVersion: denseSummarySlotPolicyVersion,",
-		"denseSummarySlotProfile: denseSummarySlotProfile,",
-		"denseSummarySlotRatios: {",
-		"denseSummaryHardFloorChars: {",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing dense-summary profile budget marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSRG1aRetrievalRoleAuditMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const retrievalRolePolicyVersion = "rg1a.v1";`,
-		`const retrievalRolePolicyTag = "rg1a_retrieval_audit_only";`,
-		`const retrievalAllowedUsage = ["detail_recall", "audit_reference"];`,
-		`const retrievalDisallowedUsage = ["truth_overwrite", "canonical_override"];`,
-		`role: "detail_recall_audit_only",`,
-		`retrievalRoleMode: "detail_recall_audit_only",`,
-		"retrievalAuditOnlyEnabled: true,",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing RG-1a retrieval role audit marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSRG1bToRG1dPromotionTraceAndIngestMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const retrievalPromotionPolicyVersion = "rg1b.v1";`,
-		`const retrievalPromotionTargets = ["canonical_state", "dense_summary"];`,
-		"retrievalPromotionCandidatesRaw",
-		"retrievalPromotionCandidateCount",
-		"retrievalPromotionCanonicalCount",
-		"retrievalPromotionDenseSummaryCount",
-		`const retrievalConflictPolicyVersion = "rg1c.v1";`,
-		"retrievalKeepDropTraceEnabled: true,",
-		"retrievalKeepDropTrace: retrievalKeepDropTrace.slice(0, 20),",
-		`const hypaLoreIngestPolicyVersion = "rg1d.v1";`,
-		`const hypaLorePolicyTag = "rg1d_ingest_only";`,
-		`"ingest_only_not_injected"`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing RG-1b/RG-1c/RG-1d marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSRG1fToRG1iAuthorityGuardMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const verifiedCurrentStatePolicyVersion = verifiedCurrentStatePrecedenceEnabled ? "rg1f.v1" : "";`,
-		`const verifiedCurrentStatePolicyTag = verifiedCurrentStatePrecedenceEnabled ? "rg1f_verified_current_state" : "";`,
-		"verifiedCurrentStatePrecedenceEnabled: verifiedCurrentStatePrecedenceEnabled,",
-		`const reliabilityGuardPolicyVersion = "rg1g.v1";`,
-		`const reliabilityGuardPolicyTag = "rg1g_conservative_hold";`,
-		`reliabilityGuardMode: reliabilityGuardTriggered ? "conservative_hold" : "normal",`,
-		`const supportingGuidanceGuardPolicyVersion = "rg1h.v1";`,
-		`const supportingGuidanceGuardPolicyTag = "rg1h_supporting_guidance_guard";`,
-		"supportingGuidanceEvidenceCeilingEnabled: supportingGuidanceEvidenceCeilingEnabled,",
-		`const narrativeQualityLayerPolicyVersion = "rg1i.v1";`,
-		`const narrativeQualityLayerMode = "quality_hint_only";`,
-		"narrativeQualityLayerTruthArbitrationAllowed: false,",
-		"narrativeQualityLayerCanonicalOverwriteAllowed: false,",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing RG-1f/RG-1g/RG-1h/RG-1i marker %q", needle)
-		}
 	}
 }
 
@@ -685,11 +526,11 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 3.9.11",
-		`const VERSION = "3.9.11";`,
-		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 설정`",
-		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} Settings`",
-		`"settings.title": ` + "`🗂️ Archive Center ${VERSION} 設定`",
+		"//@version 4.0.0",
+		`const VERSION = "4.0.0";`,
+		`"settings.title": ` + "`Archive Center ${VERSION}`",
+		`<h2>Archive Center</h2>`,
+		`<span class="mo-hdr-ver">${VERSION}</span>`,
 		`const VERSION_STR = typeof VERSION !== "undefined" ? String(VERSION) : "unknown";`,
 		"source_version:    VERSION_STR",
 		`bridgeFetch("/update/check", {`,
@@ -720,7 +561,7 @@ func TestArchiveCenterJSRenderRegression47Markers(t *testing.T) {
 		"function renderExplorerWorldGraph()",
 		"function renderTimelinePanel()",
 		"function renderPromptEditorSection()",
-		"async function renderSettingsPanel()",
+		"async function renderSettingsPanel(options)",
 		`renderItBlockRaw("3.5. Hybrid Retrieval Inspection"`,
 		`renderItBlockRaw("7.5. Protection Patterns"`,
 		`renderItBlockRaw("8. Context Injection (`,
@@ -1168,11 +1009,7 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 		"acceptRisuAfterRequestFinality",
 		"persistAcceptedAfterRequestWithoutBlockingDisplay",
 		"acceptRisuOutputFinal",
-		"onRisuOutput",
 		"persistOfficialRisuOutputWithoutBlockingHost",
-		`recordRisuHookLifecycle("output", "callback_observed");`,
-		`addRisuChatListener("output"`,
-		`removeRisuChatListener("output"`,
 	} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("Archive Center.js retains forbidden timer/synthetic finality marker %q", forbidden)
@@ -1218,10 +1055,126 @@ func TestArchiveCenterJSAfterRequestStartsPersistenceWithoutBlockingVisibleOutpu
 	if strings.Count(afterRequest, "function persistAfterRequestContent()") != 1 {
 		t.Fatal("afterRequest persistence schedule must have exactly one entry point")
 	}
-	for _, forbidden := range []string{"acceptRisuOutputFinal(", "onRisuOutput", `addRisuChatListener("output"`} {
+	for _, forbidden := range []string{"acceptRisuOutputFinal(", "persistOfficialRisuOutputWithoutBlockingHost"} {
 		if strings.Contains(src, forbidden) {
-			t.Fatalf("removed output-listener finality path returned: %q", forbidden)
+			t.Fatalf("output listener must not own complete-turn finality: %q", forbidden)
 		}
+	}
+}
+
+func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for output-listener worldline smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, required := range []string{
+		`addRisuChatListener("output", onRisuOutput)`,
+		`removeRisuChatListener("output", onRisuOutput)`,
+		`_risuHookLifecycle.output = "callback_observed"`,
+	} {
+		if !strings.Contains(src, required) {
+			t.Fatalf("Archive Center.js missing output worldline owner %q", required)
+		}
+	}
+	callback := extractJSFunctionBlockForTest(t, src, "function onRisuOutput(snapshot)")
+	for _, forbidden := range []string{
+		"runCompleteTurn(",
+		`bridgeFetch("/complete-turn"`,
+		"sourceAcceptanceFinality",
+		"_committedOutputPersistenceBySession",
+		"continueAcceptedFinalPersistence(",
+		"ensureActiveChatCompletedTurnsBackfilled(",
+		"recordRisuHookLifecycle(",
+		"updateRuntimeState(",
+	} {
+		if strings.Contains(callback, forbidden) {
+			t.Fatalf("output worldline callback invokes finality/persistence symbol %q", forbidden)
+		}
+	}
+	script := strings.Join([]string{
+		extractJSFunctionBlockForTest(t, src, "function buildRisuWorldlineObservationFromMessages(messages, observedAtMs, hostSignalSource)"),
+		callback,
+	}, "\n") + `
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+let routed = [];
+let sharedFinalityStatus = "preserved";
+let rejectRouting = false;
+const _risuHookLifecycle = {output: "registration_requested_unconfirmed"};
+function debugLog() {}
+function warnLog() {}
+function requestBackendSessionRoutingTurnResolution(sessionId, mode, facts) {
+  routed.push({sessionId, mode, facts});
+  if (rejectRouting) return Promise.reject(new Error("route failed"));
+  return Promise.resolve({canonicalSessionId: sessionId, worldline: {state: "confirmed"}});
+}
+const malformedOrdinary = onRisuOutput({});
+assert(malformedOrdinary === undefined, "ordinary malformed callback must return silently");
+const ordinary = onRisuOutput({
+  char: {chaId: "stable"}, characterIndex: 3, chatIndex: 4, messageIndex: 0,
+  chat: {id: "child", message: [{role: "char", chatId: "ordinary", data: "hello"}]}
+});
+assert(ordinary === undefined, "output callback must return immediately, not a Promise");
+assert(sharedFinalityStatus === "preserved", "ordinary output changed shared finality status");
+assert(_risuHookLifecycle.output === "registration_requested_unconfirmed", "ordinary output claimed branch callback evidence");
+const incompleteBranch = onRisuOutput({
+  characterIndex: -1, chatIndex: -1, messageIndex: -1,
+  chat: {id: "", message: [
+    {role: "user", chatId: "incomplete-source", data: "source"},
+    {role: "comment", disabled: true, data: "{{specialcomment::branchedfrom::parent::Parent::incomplete-source::}}"}
+  ]}
+});
+assert(incompleteBranch === undefined && routed.length === 0, "incomplete branch coordinates must not route");
+assert(sharedFinalityStatus === "preserved", "incomplete branch changed shared finality status");
+assert(_risuHookLifecycle.output === "callback_observed", "marker-bearing callback evidence was not recorded locally");
+const observed = onRisuOutput({
+  char: {chaId: "stable"}, characterIndex: 3, chatIndex: 4, messageIndex: 5,
+  chat: {id: "child", message: [
+    {role: "char", chatId: "ancestor-source", data: "ancestor"},
+    {role: "comment", disabled: true, data: "{{specialcomment::branchedfrom::ancestor::Ancestor::ancestor-source::}}"},
+    {role: "user", chatId: "middle", data: "middle"},
+    {role: "char", chatId: "direct-source", data: "direct"},
+    {role: "comment", disabled: true, data: "{{specialcomment::branchedfrom::direct-parent::Name::With::Separators::direct-source::}}"},
+    {role: "char", chatId: "tail", data: "tail"}
+  ]}
+});
+assert(observed === undefined, "branch output callback must be non-blocking");
+Promise.resolve().then(() => Promise.resolve()).then(() => {
+  assert(routed.length === 1, "ordinary output should not route; branch output should route exactly once");
+  const route = routed[0];
+  assert(route.sessionId === "char_3_cid_child", "child route must use callback coordinates");
+  assert(route.mode === "identity", "worldline observation must not calculate a logical pair turn");
+  const worldline = route.facts.worldlineObservation;
+  assert(worldline.contract_version === "risu_worldline_observation.v2" && worldline.host_signal_source === "output", "output observation contract mismatch");
+  assert(worldline.branch_shape_contract === "risu_branchedfrom.v1", "parser contract missing");
+  assert(worldline.marker_index === 4 && worldline.branch_marker.includes("direct-parent"), "last inherited marker was not selected as direct parent");
+  assert(worldline.messages.length === 3, "char branch observation must stay bounded to anchor, source, and marker");
+  assert(worldline.messages[0].role === "user" && worldline.messages[0].message_chat_id === "middle", "nearest exact user anchor was not frozen");
+  assert(worldline.messages[1].message_chat_id === "direct-source", "immediate branch source was not frozen");
+  assert(sharedFinalityStatus === "preserved", "successful branch observation changed shared finality status");
+  rejectRouting = true;
+  const failed = onRisuOutput({
+    char: {chaId: "stable"}, characterIndex: 3, chatIndex: 4, messageIndex: 2,
+    chat: {id: "failed-child", message: [
+      {role: "user", chatId: "failed-user", data: "user"},
+      {role: "char", chatId: "failed-source", data: "source"},
+      {role: "comment", disabled: true, data: "{{specialcomment::branchedfrom::failed-parent::Parent::failed-source::}}"}
+    ]}
+  });
+  assert(failed === undefined, "failed branch callback must still return immediately");
+  return Promise.resolve().then(() => Promise.resolve());
+}).then(() => {
+  assert(routed.length === 2, "failed branch should attempt routing exactly once");
+  assert(sharedFinalityStatus === "preserved", "failed branch observation changed shared finality status");
+}).catch(err => { console.error(err); process.exitCode = 1; });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("output-listener worldline fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -1465,122 +1418,6 @@ func TestArchiveCenterJSTrustControlExplorerMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing Trust Control Explorer marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSSeq12P32PermissionSplitMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const coprocessorAuthorityModes = ["truth_writer", "proposal_only", "guidance_only", "diagnostic_only"]`,
-		`const coprocessorTruthWriteTargets = ["current_fact", "canonical_state", "canonical_state_layer", "dense_summary"]`,
-		`module: "step11_truth_core"`,
-		`authority_mode: "truth_writer"`,
-		`current_fact_write: true`,
-		`canonical_write: true`,
-		`module: "truth_maintenance"`,
-		`authority_mode: "diagnostic_only"`,
-		`module: "entity_coprocessor"`,
-		`authority_mode: "proposal_only"`,
-		`module: "world_coprocessor"`,
-		`module: "narrative_quality_coprocessor"`,
-		`authority_mode: "guidance_only"`,
-		`denied_write_targets: coprocessorTruthWriteTargets.slice()`,
-		`canonical_write_authority_after_reentry: "step11_truth_core_only"`,
-		`analysis_provider_autonomous_truth_write: false`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-12-P32 permission split marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSSeq12P34TraceSeparationMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const coprocessorSidecarWritableTargets = ["proposal_trace", "guidance_trace", "audit_trace", "maintenance_metadata"]`,
-		`const entityCoprocessorTraceDisplayMode = "hint_vs_current_fact_split"`,
-		`const worldCoprocessorTraceDisplayMode = "hint_vs_current_world_state_split"`,
-		`const narrativeQualityCoprocessorTraceDisplayMode = "quality_hint_vs_factual_state_split"`,
-		`trace_display_mode: entityCoprocessorTraceDisplayMode`,
-		`trace_display_hint_lane: entityCoprocessorTraceDisplayHintLane`,
-		`trace_display_truth_lane: entityCoprocessorTraceDisplayTruthLane`,
-		`trace_display_mode: worldCoprocessorTraceDisplayMode`,
-		`trace_display_hint_lane: worldCoprocessorTraceDisplayHintLane`,
-		`trace_display_truth_lane: worldCoprocessorTraceDisplayTruthLane`,
-		`trace_display_mode: narrativeQualityCoprocessorTraceDisplayMode`,
-		`trace_display_hint_lane: narrativeQualityCoprocessorTraceDisplayHintLane`,
-		`trace_display_truth_lane: narrativeQualityCoprocessorTraceDisplayTruthLane`,
-		`analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.entity_coprocessor`,
-		`analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.world_coprocessor`,
-		`analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.narrative_quality_coprocessor`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-12-P34 trace separation marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSSeq12P35FeatureControlAblationMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const coprocessorFeatureControlPolicyVersion = "mg1c.v1"`,
-		`const coprocessorFeatureFlagModes = ["always_on", "conservative", "experimental", "off"]`,
-		`const coprocessorRolloutStages = ["truth_floor_locked", "diagnostic_default_on", "experimental_shadow", "manual_enable_required"]`,
-		`const coprocessorKillSwitchStates = ["not_applicable", "armed_standby", "engaged"]`,
-		`const coprocessorFeatureControlMatrix = [`,
-		`module: "step11_truth_core"`,
-		`default_mode: "always_on"`,
-		`ablation_supported: false`,
-		`wiring_status: "hard_enabled_runtime"`,
-		`module: "truth_maintenance"`,
-		`default_mode: "conservative"`,
-		`kill_switch_action: "fail_open_skip"`,
-		`module: "entity_coprocessor"`,
-		`default_mode: "off"`,
-		`wiring_status: "trace_contract_only"`,
-		`module: "narrative_quality_coprocessor"`,
-		`default_mode: "experimental"`,
-		`ablation_supported: true`,
-		`coprocessorFeatureControlByMode[featureMode].push(entry.module)`,
-		`const coprocessorRuntimeActiveModules = coprocessorFeatureControlMatrix.filter`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-12-P35 feature control marker %q", needle)
-		}
-	}
-}
-
-func TestArchiveCenterJSSeq12P120AuthorityMatrixMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		`const coprocessorAuthorityModes = ["truth_writer", "proposal_only", "guidance_only", "diagnostic_only"]`,
-		`const coprocessorAuthorityMatrix = [`,
-		`module: "step11_truth_core"`,
-		`authority_mode: "truth_writer"`,
-		`module: "truth_maintenance"`,
-		`authority_mode: "diagnostic_only"`,
-		`module: "retrieval_supporting_inference"`,
-		`authority_mode: "diagnostic_only"`,
-		`module: "entity_coprocessor"`,
-		`authority_mode: "proposal_only"`,
-		`module: "world_coprocessor"`,
-		`authority_mode: "proposal_only"`,
-		`module: "narrative_quality_coprocessor"`,
-		`authority_mode: "guidance_only"`,
-		`coprocessor_authority_matrix: {`,
-		`status: "authority_matrix_fixed"`,
-		`const coprocessorAuthorityMatrixByMode = {}`,
-		`coprocessorAuthorityMatrixByMode[authorityMode].push(entry.module)`,
-		`const coprocessorAuthorityTruthWriterModules = (coprocessorAuthorityMatrixByMode.truth_writer || []).slice()`,
-		`const coprocessorAuthoritySidecarModules = coprocessorAuthorityMatrix`,
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-12-P120 authority matrix marker %q", needle)
 		}
 	}
 }

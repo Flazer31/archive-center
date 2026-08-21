@@ -71,8 +71,8 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	}
 	hydrationMissMetric := 0
 	topK := searchTopK(req.TopK)
-	chatLogFallbackEnabled := true
-	chatLogFallbackBlockedReason := ""
+	chatLogFallbackEnabled := false
+	chatLogFallbackBlockedReason := "chat_logs_have_no_public_memory_projection"
 
 	if chatSessionID != "" && s.Store != nil {
 		memories, err := s.Store.ListMemories(r.Context(), chatSessionID, 0, 0)
@@ -85,25 +85,10 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if s.Vector != nil {
 				items, vectorSearchTrace, retrievalMode, retrievalFallbackReason = s.vectorFirstSearchMemoryItems(r.Context(), req, chatSessionID, memories, topK)
 				hydrationMissMetric = intFromAny(vectorSearchTrace["hydration_miss_count"], 0)
-				if searchVectorFirstBlocksChatLogFallback(vectorSearchTrace) {
-					chatLogFallbackEnabled = false
-					chatLogFallbackBlockedReason = "vector_first_no_chat_log_top_k_fill"
-				}
 			} else {
 				items = scoredSearchMemoryItems(memories, req.UserInput, topK, s.currentEmbeddingModelIdentity())
 			}
 			memoryCount = countSearchItemsBySource(items, "memory")
-		}
-		if len(items) < topK && chatLogFallbackEnabled {
-			logs, err := s.Store.ListChatLogs(r.Context(), chatSessionID, 0, 0)
-			if err != nil && !errors.Is(err, store.ErrNotEnabled) {
-				writeInternalError(w, err.Error())
-				return
-			}
-			if err == nil {
-				fallbackItems := scoredFallbackChatLogItems(logs, req.UserInput, topK-len(items))
-				items = append(items, fallbackItems...)
-			}
 		}
 	}
 	vectorSearchTrace["chat_log_fallback_enabled"] = chatLogFallbackEnabled
@@ -181,17 +166,6 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		"chat_log_fallback_blocked_reason": nilIfEmpty(chatLogFallbackBlockedReason),
 		"signal_mix_summary":               signalMixSummary,
 	})
-}
-
-func searchVectorFirstBlocksChatLogFallback(trace map[string]any) bool {
-	if trace == nil {
-		return false
-	}
-	if boolFromAny(trace["search_attempted"]) {
-		return true
-	}
-	result := strings.TrimSpace(stringFromMap(trace, "search_result"))
-	return result == "ok" || result == "not_found" || result == "error" || result == "err_not_enabled"
 }
 
 func searchStoryCards(items []any) []any {
@@ -472,14 +446,20 @@ func scoredSearchMemoryItems(memories []store.Memory, query string, topK int, em
 	terms := searchTerms(query)
 	hyTerms := hybridSignalTerms(terms)
 	currentModel := embeddingIdentity.Model
+	publicMemories := make([]store.Memory, 0, len(memories))
+	for _, item := range memories {
+		if projected, ok := publicMemoryFromCanonical(item); ok {
+			publicMemories = append(publicMemories, projected)
+		}
+	}
 	latestTurn := 0
-	for _, m := range memories {
+	for _, m := range publicMemories {
 		if m.TurnIndex > latestTurn {
 			latestTurn = m.TurnIndex
 		}
 	}
-	scored := make([]scoredSearchItem, 0, len(memories))
-	for _, m := range memories {
+	scored := make([]scoredSearchItem, 0, len(publicMemories))
+	for _, m := range publicMemories {
 		embeddingStatus := classifyMemoryEmbeddingStatus(m, currentModel)
 		text := memorySearchText(m)
 		parsed := parseJSONMap(m.SummaryJSON)
@@ -587,78 +567,8 @@ func scoredSearchMemoryItems(memories []store.Memory, query string, topK int, em
 	return items
 }
 
-func scoredFallbackChatLogItems(logs []store.ChatLog, query string, limit int) []any {
-	if limit <= 0 {
-		return []any{}
-	}
-	terms := searchTerms(query)
-	if len(terms) == 0 {
-		return []any{}
-	}
-	latestTurn := 0
-	for _, log := range logs {
-		if log.TurnIndex > latestTurn {
-			latestTurn = log.TurnIndex
-		}
-	}
-	scored := make([]scoredSearchItem, 0, len(logs))
-	for _, log := range logs {
-		similarity := lexicalSimilarityScore(terms, log.Content)
-		if similarity < 0.65 {
-			continue
-		}
-		recency := searchRecencyScore(log.TurnIndex, latestTurn)
-		finalScore := roundSearchScore(similarity*0.65 + recency*0.35)
-		item := map[string]any{
-			"id":               log.ID,
-			"chat_session_id":  log.ChatSessionID,
-			"turn_index":       log.TurnIndex,
-			"role":             log.Role,
-			"content":          log.Content,
-			"content_preview":  truncatePlainForPreview(log.Content, 180),
-			"source":           "chat_log",
-			"similarity_score": roundSearchScore(similarity),
-			"importance_score": 0.0,
-			"recency_score":    roundSearchScore(recency),
-			"final_score":      finalScore,
-			"score_breakdown": map[string]any{
-				"similarity": roundSearchScore(similarity),
-				"importance": 0.0,
-				"recency":    roundSearchScore(recency),
-				"threshold":  0.65,
-				"weights":    map[string]float64{"similarity": 0.65, "recency": 0.35},
-			},
-		}
-		if !log.CreatedAt.IsZero() {
-			item["created_at"] = log.CreatedAt.Format(time.RFC3339Nano)
-		}
-		scored = append(scored, scoredSearchItem{item: item, finalScore: finalScore})
-	}
-	sort.SliceStable(scored, func(i, j int) bool {
-		if scored[i].finalScore == scored[j].finalScore {
-			return intFromSearchItem(scored[i].item["turn_index"]) > intFromSearchItem(scored[j].item["turn_index"])
-		}
-		return scored[i].finalScore > scored[j].finalScore
-	})
-	if limit > len(scored) {
-		limit = len(scored)
-	}
-	items := make([]any, 0, limit)
-	for _, item := range scored[:limit] {
-		items = append(items, item.item)
-	}
-	return items
-}
-
 func memorySearchText(m store.Memory) string {
-	parts := []string{m.SummaryJSON, m.Evidence, m.PlaceWing, m.PlaceRoom}
-	parsed := parseJSONMap(m.SummaryJSON)
-	for _, key := range []string{"summary", "turn_summary", "text", "content"} {
-		if value := strings.TrimSpace(stringFromAny(parsed[key])); value != "" {
-			parts = append(parts, value)
-		}
-	}
-	return strings.Join(parts, " ")
+	return strings.TrimSpace(memorySearchTextFromMemory(m).Text)
 }
 
 func searchTerms(query string) []string {

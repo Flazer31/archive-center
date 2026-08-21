@@ -238,6 +238,41 @@ func TestCriticProviderPromptKeepsCurrentAndPreviousTurnsWholeAndExcludesHostHis
 	}
 }
 
+func TestCompleteTurnCriticLanguageUsesOnlyAssistantOutputObservation(t *testing.T) {
+	tests := []struct {
+		name       string
+		observed   string
+		want       string
+		wantSource string
+	}{
+		{name: "korean output overrides japanese request", observed: "ko", want: "ko", wantSource: "current_assistant"},
+		{name: "mixed output does not fall back", observed: "mixed", want: "auto", wantSource: "assistant_output_unknown"},
+		{name: "unknown output does not fall back", observed: "unknown", want: "auto", wantSource: "assistant_output_unknown"},
+		{name: "missing output does not fall back", observed: "", want: "auto", wantSource: "assistant_output_unknown"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			languageContext := completeTurnCriticLanguageContextFromAssistantOutput(map[string]any{
+				"session_output_language":   "ja",
+				"summary_language":          "ja",
+				"output_language_source":    "explicit_override",
+				"assistant_output_language": tc.observed,
+				"raw_user_language":         "ja",
+				"ui_language":               "ja",
+			})
+			if got := extractionStringFromAny(languageContext["session_output_language"]); got != tc.want {
+				t.Fatalf("session output language=%q, want %q: %#v", got, tc.want, languageContext)
+			}
+			if got := extractionStringFromAny(languageContext["summary_language"]); got != tc.want {
+				t.Fatalf("summary language=%q, want %q: %#v", got, tc.want, languageContext)
+			}
+			if got := extractionStringFromAny(languageContext["output_language_source"]); got != tc.wantSource {
+				t.Fatalf("output language source=%q, want %q: %#v", got, tc.wantSource, languageContext)
+			}
+		})
+	}
+}
+
 func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 	fake := &turnRecordingStore{returnChatLogs: []store.ChatLog{
 		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "user", Content: "original previous user"},
@@ -258,7 +293,7 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"Mina opened the vault.\",\"importance_score\":7,\"evidence_excerpts\":[]}"}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"미나는 금고를 열었다.\",\"importance_score\":7,\"evidence_excerpts\":[]}"}}]}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -267,16 +302,18 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 		Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
 		Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(0),
 	}
-	outputLanguage := map[string]any{"language": "ko", "source": "session"}
+	outputLanguage := map[string]any{"language": "ja", "source": "session"}
 	languageContext := map[string]any{
-		"session_output_language": "ko",
-		"summary_language":        "ko",
-		"locked_for_turn":         true,
+		"session_output_language":   "ja",
+		"summary_language":          "ja",
+		"output_language_source":    "explicit_override",
+		"assistant_output_language": "ko",
+		"locked_for_turn":           true,
 	}
 	policy := completeTurnCriticInputPolicy{AuxiliaryMaxChars: 4_000, ConfiguredChars: 4_000, Source: "test"}
-	_, firstTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
+	firstResult, firstTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
 		context.Background(), "critic-replay", 12,
-		"current user full text", "current assistant full text",
+		"현재 사용자 전체 문장", "현재 어시스턴트 전체 문장",
 		[]map[string]any{{"role": "user", "content": "HOST_HISTORY_IGNORED"}},
 		&outputLanguage, cfg, true, policy,
 		completeTurnCriticInputReplay{SourceRevision: "source-replay"},
@@ -284,6 +321,13 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 	)
 	if err != nil {
 		t.Fatal(err)
+	}
+	resultLanguageContext := mapFromAny(firstResult["language_context"])
+	resultWriteContract := mapFromAny(firstResult["memory_write_contract"])
+	if stringFromMap(resultLanguageContext, "session_output_language") != "ko" ||
+		stringFromMap(resultLanguageContext, "summary_language") != "ko" ||
+		stringFromMap(resultWriteContract, "summary_language") != "ko" {
+		t.Fatalf("critic result did not retain assistant-output-only memory language: result=%#v", firstResult)
 	}
 	saved, ok := fake.savedCriticInputSnapshots["source-replay"]
 	if !ok || saved.JSON == "" || saved.Hash == "" {
@@ -293,30 +337,49 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 	if err := json.Unmarshal([]byte(saved.JSON), &snapshot); err != nil {
 		t.Fatal(err)
 	}
-	if snapshot.UserInput != "current user full text" ||
-		snapshot.AssistantContent != "current assistant full text" ||
-		stringFromMap(snapshot.OutputLanguage, "language") != "ko" ||
-		stringFromMap(snapshot.LanguageContext, "summary_language") != "ko" {
+	if snapshot.UserInput != "현재 사용자 전체 문장" ||
+		snapshot.AssistantContent != "현재 어시스턴트 전체 문장" ||
+		stringFromMap(snapshot.LanguageContext, "session_output_language") != "ko" ||
+		stringFromMap(snapshot.LanguageContext, "summary_language") != "ko" ||
+		stringFromMap(snapshot.LanguageContext, "output_language_source") != "current_assistant" {
 		t.Fatalf("snapshot lost current turn or language input: %#v", snapshot)
+	}
+	if strings.Contains(saved.JSON, "output_language_override") {
+		t.Fatalf("critic snapshot retained an output-language override: %s", saved.JSON)
 	}
 	firstSnapshotTrace := mapFromAny(firstTrace["input_snapshot"])
 	if stringFromMap(firstSnapshotTrace, "status") != "persisted" {
 		t.Fatalf("first snapshot trace=%#v", firstSnapshotTrace)
 	}
+	legacySnapshot := map[string]any{}
+	if err := json.Unmarshal([]byte(saved.JSON), &legacySnapshot); err != nil {
+		t.Fatal(err)
+	}
+	legacySnapshot["output_language_override"] = map[string]any{"language": "ja", "source": "session"}
+	legacyLanguageContext := mapFromAny(legacySnapshot["language_context"])
+	legacyLanguageContext["session_output_language"] = "ja"
+	legacyLanguageContext["summary_language"] = "ja"
+	legacyLanguageContext["output_language_source"] = "explicit_override"
+	legacySnapshot["language_context"] = legacyLanguageContext
+	legacySnapshotJSON, err := json.Marshal(legacySnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacySnapshotHash := criticSystemPromptHash(string(legacySnapshotJSON))
 
 	fake.returnChatLogs = []store.ChatLog{
 		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "user", Content: "mutated previous user"},
 		{ChatSessionID: "critic-replay", TurnIndex: 11, Role: "assistant", Content: "mutated previous assistant"},
 	}
-	mutatedLanguage := map[string]any{"session_output_language": "en", "summary_language": "en"}
+	mutatedLanguage := map[string]any{"session_output_language": "en", "summary_language": "en", "assistant_output_language": "en"}
 	_, replayTrace, err := srv.runCompleteTurnCriticWithInputPolicy(
 		context.Background(), "critic-replay", 12,
-		"current user full text", "current assistant full text",
+		"현재 사용자 전체 문장", "현재 어시스턴트 전체 문장",
 		[]map[string]any{{"role": "user", "content": "MUTATED_HOST_HISTORY"}},
 		nil, cfg, true,
 		completeTurnCriticInputPolicy{AuxiliaryMaxChars: 1, ConfiguredChars: 1, Source: "mutated"},
 		completeTurnCriticInputReplay{
-			SourceRevision: "source-replay", SnapshotJSON: saved.JSON, SnapshotHash: saved.Hash, Required: true,
+			SourceRevision: "source-replay", SnapshotJSON: string(legacySnapshotJSON), SnapshotHash: legacySnapshotHash, Required: true,
 		},
 		mutatedLanguage,
 	)
@@ -328,13 +391,45 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 	}
 	if strings.Contains(providerPrompts[1], "mutated previous") ||
 		strings.Contains(providerPrompts[1], "MUTATED_HOST_HISTORY") ||
-		strings.Contains(providerPrompts[1], `"summary_language":"en"`) {
+		strings.Contains(providerPrompts[1], `"summary_language":"en"`) ||
+		strings.Contains(providerPrompts[1], "Output_Language_Override_JSON") ||
+		!strings.Contains(providerPrompts[1], `"summary_language":"ko"`) {
 		t.Fatalf("mutable session state leaked into replay prompt: %q", providerPrompts[1])
 	}
 	replayedSnapshotTrace := mapFromAny(replayTrace["input_snapshot"])
 	if stringFromMap(replayedSnapshotTrace, "status") != "replayed" ||
-		stringFromMap(replayedSnapshotTrace, "snapshot_hash") != saved.Hash {
+		stringFromMap(replayedSnapshotTrace, "snapshot_hash") != legacySnapshotHash {
 		t.Fatalf("replay snapshot trace=%#v", replayedSnapshotTrace)
+	}
+
+	legacySnapshot["archive_ledger"] = map[string]any{
+		"language": map[string]any{
+			"assistant_final_language": "ja",
+			"source":                   "legacy_override",
+			"override_applied":         true,
+		},
+	}
+	staleLedgerSnapshotJSON, err := json.Marshal(legacySnapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleLedgerSnapshotHash := criticSystemPromptHash(string(staleLedgerSnapshotJSON))
+	_, _, err = srv.runCompleteTurnCriticWithInputPolicy(
+		context.Background(), "critic-replay", 12,
+		"현재 사용자 전체 문장", "현재 어시스턴트 전체 문장",
+		nil, nil, cfg, true, policy,
+		completeTurnCriticInputReplay{
+			SourceRevision: "source-replay", SnapshotJSON: string(staleLedgerSnapshotJSON), SnapshotHash: staleLedgerSnapshotHash, Required: true,
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(providerPrompts) != 3 ||
+		strings.Contains(providerPrompts[2], `"assistant_final_language":"ja"`) ||
+		!strings.Contains(providerPrompts[2], `"assistant_final_language":"ko"`) ||
+		!strings.Contains(providerPrompts[2], `"source":"request_assistant_final_language"`) {
+		t.Fatalf("legacy archive-ledger language was not canonicalized from assistant output: %q", providerPrompts)
 	}
 
 	snapshot.SystemPromptSHA256 = strings.Repeat("0", 64)
@@ -354,7 +449,7 @@ func TestCriticReprocessingReplaysExactPersistedDynamicInput(t *testing.T) {
 		},
 	)
 	if err == nil || stringFromMap(criticPipelineErrorDetails(err), "code") != "CRITIC_INPUT_SNAPSHOT_INVALID" ||
-		len(providerPrompts) != 2 || stringFromMap(mapFromAny(changedPromptTrace["input_snapshot"]), "status") != "invalid" {
+		len(providerPrompts) != 3 || stringFromMap(mapFromAny(changedPromptTrace["input_snapshot"]), "status") != "invalid" {
 		t.Fatalf("changed prompt contract was not rejected before provider call: err=%v trace=%#v calls=%d", err, changedPromptTrace, len(providerPrompts))
 	}
 }
@@ -541,7 +636,7 @@ func TestCriticFailureTraceRedactsCredentialValuesNotEqualToConfiguredKey(t *tes
 	}
 }
 
-func TestCriticProviderRetryKeepsCurrentTurnUnchangedAndTraceSerializable(t *testing.T) {
+func TestCriticProviderFailureDoesNotHideASecondProviderCall(t *testing.T) {
 	oldClient := proxyHTTPClient
 	callCount := 0
 	prompts := []string{}
@@ -555,15 +650,11 @@ func TestCriticProviderRetryKeepsCurrentTurnUnchangedAndTraceSerializable(t *tes
 		if len(messages) >= 2 {
 			prompts = append(prompts, stringFromMap(mapFromAny(messages[1]), "content"))
 		}
-		marker := "first failure marker"
-		if callCount == 2 {
-			marker = "second failure marker"
-		}
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"error":{"message":"` + marker + `"}}`,
+				`{"error":{"message":"provider failure marker"}}`,
 			)),
 		}, nil
 	})}
@@ -587,14 +678,17 @@ func TestCriticProviderRetryKeepsCurrentTurnUnchangedAndTraceSerializable(t *tes
 			RetryBudget: newLLMRetryBudget(1),
 		},
 	)
-	if err == nil || callCount != 2 {
+	if err == nil || callCount != 1 {
 		t.Fatalf("error=%v calls=%d trace=%+v", err, callCount, trace)
 	}
-	if len(prompts) != 2 || prompts[0] != prompts[1] || !strings.Contains(prompts[1], "penetration") || strings.Contains(prompts[1], "redacted for critic retry") {
-		t.Fatalf("provider retry changed the current turn: prompt_count=%d", len(prompts))
+	if len(prompts) != 1 || !strings.Contains(prompts[0], "penetration") {
+		t.Fatalf("critic request prompt_count=%d prompts=%#v", len(prompts), prompts)
 	}
-	if !strings.Contains(stringFromMap(trace, "raw_preview"), "second failure marker") {
-		t.Fatalf("final retry preview was lost: %+v", trace)
+	if !strings.Contains(stringFromMap(trace, "raw_preview"), "provider failure marker") {
+		t.Fatalf("provider failure preview was lost: %+v", trace)
+	}
+	if _, exists := trace["provider_retry"]; exists {
+		t.Fatalf("hidden retry trace should not exist: %+v", trace)
 	}
 	if _, err := json.Marshal(trace); err != nil {
 		t.Fatalf("retry failure trace is cyclic or unserializable: %v; trace=%+v", err, trace)
@@ -630,25 +724,113 @@ func TestCriticProviderFailureRespectsZeroRetryBudget(t *testing.T) {
 	}
 }
 
+func TestCriticCompleteJSONIsKeptEvenWhenProviderReportsTokenLimit(t *testing.T) {
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"critic-test","choices":[{"finish_reason":"length","message":{"content":"{\"turn_summary\":\"Mina kept the key.\",\"importance_score\":6}"}}],"usage":{"prompt_tokens":50,"completion_tokens":20,"total_tokens":70}}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{Cfg: config.Default(), Store: store.NewNoopStore()}
+	result, trace, err := srv.runCompleteTurnCritic(
+		context.Background(), "session", 1,
+		"Mina found the key.", "Mina kept the key safe.", nil, nil,
+		completeTurnLLMConfig{
+			Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+			Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(2),
+		},
+	)
+	if err != nil || callCount != 1 || stringFromMap(result, "turn_summary") != "Mina kept the key." {
+		t.Fatalf("complete JSON was discarded: err=%v calls=%d result=%#v trace=%#v", err, callCount, result, trace)
+	}
+	metadata := mapFromAny(trace["provider_response"])
+	if metadata["termination_kind"] != "length" || intFromAny(metadata["output_tokens"], 0) != 20 {
+		t.Fatalf("provider response metadata=%#v", metadata)
+	}
+}
+
+func TestCriticEmptySafetyResponsePreservesProviderTerminationMetadata(t *testing.T) {
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(
+				`{"model":"critic-test","choices":[{"finish_reason":"content_filter","message":{"content":""}}],"usage":{"prompt_tokens":50,"completion_tokens":0,"total_tokens":50}}`,
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	srv := &Server{Cfg: config.Default(), Store: store.NewNoopStore()}
+	_, trace, err := srv.runCompleteTurnCritic(
+		context.Background(), "session", 1, "Mina found the key.", "Mina kept the key safe.", nil, nil,
+		completeTurnLLMConfig{
+			Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+			Model: "critic-test", TimeoutMs: 30_000, RetryBudget: newLLMRetryBudget(2),
+		},
+	)
+	if err == nil || callCount != 1 || stringFromMap(criticPipelineErrorDetails(err), "code") != "CRITIC_EMPTY_RESPONSE" {
+		t.Fatalf("error=%v calls=%d trace=%#v", err, callCount, trace)
+	}
+	metadata := mapFromAny(trace["provider_response"])
+	if metadata["termination_kind"] != "safety" || metadata["native_finish_reason"] != "content_filter" {
+		t.Fatalf("provider safety metadata=%#v", metadata)
+	}
+}
+
 func TestCriticExtractionSchemaRejectsParsedButInvalidPayload(t *testing.T) {
 	for name, payload := range map[string]map[string]any{
-		"empty":              {},
-		"wrong_summary_type": {"turn_summary": []any{"not", "text"}},
-		"wrong_array_type":   {"turn_summary": "ok", "evidence_excerpts": "not-array"},
-		"unknown_only":       {"unrecognized": "value"},
+		"empty":        {},
+		"invalid_only": {"turn_summary": []any{"not", "text"}},
+		"unknown_only": {"unrecognized": "value"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if err := validateCriticExtractionSchema(payload); err == nil {
+			if _, _, err := validateCriticExtractionSchema(payload); err == nil {
 				t.Fatalf("payload should be rejected: %#v", payload)
 			}
 		})
 	}
-	if err := validateCriticExtractionSchema(map[string]any{
+	if _, _, err := validateCriticExtractionSchema(map[string]any{
 		"turn_summary":      "Mina found the key.",
 		"importance_score":  float64(7),
 		"evidence_excerpts": []any{"Mina found the key."},
 	}); err != nil {
 		t.Fatalf("valid payload rejected: %v", err)
+	}
+}
+
+func TestCriticExtractionSchemaQuarantinesOnlyInvalidFieldsAndItems(t *testing.T) {
+	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{
+		"turn_summary":      "Mina found the key.",
+		"importance_score":  "not-a-number",
+		"evidence_excerpts": []any{"Mina found the key.", map[string]any{"quote": "invalid"}},
+		"kg_triples":        []any{map[string]any{"subject": "Mina", "predicate": "found", "object": "key"}},
+	})
+	if err != nil {
+		t.Fatalf("one malformed field or item discarded the valid extraction: %v", err)
+	}
+	if sanitized["turn_summary"] != "Mina found the key." || len(sliceFromAny(sanitized["kg_triples"])) != 1 {
+		t.Fatalf("valid fields were lost: %#v", sanitized)
+	}
+	if _, exists := sanitized["importance_score"]; exists {
+		t.Fatalf("invalid scalar field was retained: %#v", sanitized)
+	}
+	if excerpts := sliceFromAny(sanitized["evidence_excerpts"]); len(excerpts) != 1 || excerpts[0] != "Mina found the key." {
+		t.Fatalf("invalid evidence item was not isolated: %#v", excerpts)
+	}
+	if intFromAny(trace["dropped_field_count"], 0) != 1 || intFromAny(trace["dropped_item_count"], 0) != 1 {
+		t.Fatalf("quarantine trace=%#v", trace)
 	}
 }
 
@@ -679,7 +861,7 @@ func TestCriticOptionalStateErrorsDoNotDiscardIndependentKG(t *testing.T) {
 			"visibility": "public", "sensitivity": "ordinary",
 		}},
 	}
-	if err := validateCriticExtractionSchema(payload); err != nil {
+	if _, _, err := validateCriticExtractionSchema(payload); err != nil {
 		t.Fatalf("optional state error rejected the full extraction: %v", err)
 	}
 	extraction := normalizeCriticExtraction(payload)
@@ -880,7 +1062,7 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 	if err != nil {
 		t.Fatalf("system critic prompt JSON example is not parseable: %v", err)
 	}
-	if err := validateCriticExtractionSchema(example); err != nil {
+	if _, _, err := validateCriticExtractionSchema(example); err != nil {
 		t.Fatalf("system critic prompt JSON example violates the critic schema: %v", err)
 	}
 	evidenceExcerpts := sliceFromAny(example["evidence_excerpts"])
@@ -905,10 +1087,13 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 			t.Fatalf("dynamic critic user prompt still duplicates static contract %q", duplicate)
 		}
 	}
-	for _, dynamic := range []string{"<Latest_Turn>", "Mina found the brass key.", "<Recent_Context_JSON>", "<Critic_Archive_Ledger_JSON>", "<Output_Language_Override_JSON>", "<Language_Context_JSON>"} {
+	for _, dynamic := range []string{"<Latest_Turn>", "Mina found the brass key.", "<Recent_Context_JSON>", "<Critic_Archive_Ledger_JSON>", "<Language_Context_JSON>"} {
 		if !strings.Contains(userPrompt, dynamic) {
 			t.Fatalf("dynamic critic user prompt lost %q", dynamic)
 		}
+	}
+	if strings.Contains(userPrompt, "Output_Language_Override_JSON") {
+		t.Fatal("dynamic critic user prompt retained output-language override input")
 	}
 	if chars := len([]rune(userPrompt)); chars >= 2000 {
 		t.Fatalf("dynamic critic user prompt regained a static contract: chars=%d", chars)

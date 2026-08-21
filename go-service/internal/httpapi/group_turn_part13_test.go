@@ -425,7 +425,8 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			{ID: 202, ChatSessionID: "sess-artifact-vector", Scope: "session", Category: "identity", Key: "suppressed_rule", ValueJSON: `"hidden"`, SourceTurn: 7, Suppressed: true},
 		}
 		vectorShadow := map[string]any{
-			"search_result": "ok",
+			"memory_search_result": "ok",
+			"search_result":        "ok",
 			"search_results": []map[string]any{
 				{"id": "evidence:sess-artifact-vector:101", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "101", "similarity": 0.87, "similarity_source": "cosine_from_query_and_stored_embedding"},
 				{"id": "world_rule:sess-artifact-vector:201", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "201", "similarity": 0.82, "similarity_source": "cosine_from_query_and_stored_embedding"},
@@ -485,7 +486,13 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			{ID: 3, TurnIndex: 30, SummaryJSON: `{"turn_summary":"Recent unrelated dinner detail."}`, Importance: 1},
 		}
 		vectorShadow := map[string]any{
-			"search_result": "ok",
+			"memory_search_result": "ok",
+			"search_result":        "ok",
+			"memory_search_results": []map[string]any{
+				{"id": "memory:sess-24:2", "source_table": "memories", "source_row_id": "2", "raw_language": "ja", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.86, "similarity_source": "cosine_from_query_and_stored_embedding"},
+				{"id": "memory:sess-24:99", "source_table": "memories", "source_row_id": "99"},
+				{"id": "memory:sess-24:1", "source_table": "memories", "source_row_id": "1", "raw_language": "ko", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.81, "similarity_source": "cosine_from_query_and_stored_embedding"},
+			},
 			"search_results": []map[string]any{
 				{"id": "episode:sess-24:77", "source_table": "episode_summaries", "source_row_id": "77"},
 				{"id": "memory:sess-24:2", "source_table": "memories", "source_row_id": "2", "raw_language": "ja", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.86, "similarity_source": "cosine_from_query_and_stored_embedding"},
@@ -507,7 +514,7 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			"vector_memory_hydrated_count":                  2,
 			"vector_memory_selected_count":                  2,
 			"vector_memory_injected_count":                  2,
-			"vector_non_memory_hit_count":                   1,
+			"vector_non_memory_hit_count":                   0,
 			"vector_memory_missing_count":                   1,
 			"vector_memory_hit_language_context_count":      2,
 			"vector_memory_hydrated_language_context_count": 2,

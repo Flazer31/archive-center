@@ -225,8 +225,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		extractionStringFromAny(effectiveInputObservation["capture_stage"]) == "before_request_return" &&
 		extractionStringFromAny(effectiveInputObservation["hash_algorithm"]) == "or1c_utf16_djb2.v1" &&
 		completeTurnBoolFromAny(effectiveInputObservation["payload_content_match"]) {
-		candidate := strings.TrimSpace(extractionStringFromAny(effectiveInputObservation["effective_input"]))
-		if candidate != "" && prepareOR1CHash(candidate) == extractionStringFromAny(effectiveInputObservation["effective_input_hash"]) {
+		candidate := extractionStringFromAny(effectiveInputObservation["effective_input"])
+		if strings.TrimSpace(candidate) != "" && prepareOR1CHash(candidate) == extractionStringFromAny(effectiveInputObservation["effective_input_hash"]) {
 			verifiedEffectiveInput = candidate
 		}
 	}
@@ -1018,6 +1018,14 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 					reprocessingDurable = true
 				}
 			}
+		}
+		if reprocessingDurable && s.TurnWorkflows != nil && workflowRequestID != "" {
+			s.TurnWorkflows.bindRecoveryTarget(
+				workflowRequestID,
+				sid,
+				turnIndex,
+				sourceAcceptance.Revision,
+			)
 		}
 		if s.TurnWorkflows != nil && workflowRequestID != "" {
 			switch {

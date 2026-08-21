@@ -53,45 +53,52 @@ func TestCompactPrepareTurnLineHonorsRuneLimitAndWordBoundary(t *testing.T) {
 	}
 }
 
-func TestSupervisorProposalCoverageKeepsStrengthProposalOnly(t *testing.T) {
+func TestPublisherStrengthProfileKeepsSixLevelsProposalOnly(t *testing.T) {
 	tests := []struct {
-		strength string
-		scope    string
-		call     string
+		strength     string
+		explicitness string
+		call         string
 	}{
-		{strength: "none", scope: "none", call: "none"},
-		{strength: "weak", scope: "response_focus_and_must_account", call: "source_backed_optional"},
-		{strength: "medium", scope: "may_advance_or_hold_allowed", call: "source_backed_optional"},
-		{strength: "strong", scope: "arc_anchor_and_preferred_frontier", call: "source_backed_optional"},
+		{strength: "none", explicitness: "disabled", call: "none"},
+		{strength: "weak", explicitness: "gentle", call: "single_source_backed"},
+		{strength: "medium", explicitness: "balanced", call: "single_source_backed"},
+		{strength: "strong", explicitness: "direct", call: "single_source_backed"},
+		{strength: "extreme", explicitness: "ordered", call: "single_source_backed"},
+		{strength: "maximum", explicitness: "execution_brief", call: "single_source_backed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.strength, func(t *testing.T) {
-			coverage := supervisorProposalCoverage(tc.strength)
-			if coverage["guidance_scope"] != tc.scope || coverage["supervisor_call"] != tc.call {
-				t.Fatalf("%s coverage semantics = %#v", tc.strength, coverage)
+			if got := normalizeNarrativeGuideStrength(tc.strength); got != tc.strength {
+				t.Fatalf("normalizeNarrativeGuideStrength(%q) = %q", tc.strength, got)
+			}
+			profile := publisherStrengthProfile(tc.strength)
+			if profile["contract_version"] != "publisher_strength_profile.v1" ||
+				profile["guidance_explicitness"] != tc.explicitness || profile["publisher_call"] != tc.call {
+				t.Fatalf("%s strength semantics = %#v", tc.strength, profile)
 			}
 			for _, key := range []string{
 				"truth_authority",
 				"canonical_write",
 				"force_progress",
-				"proactive_complication_opt_in",
-				"strong_implies_proactive",
-				"strong_implies_forced_progress",
+				"force_user_action",
+				"invent_new_facts",
+				"confirm_relationship_change",
+				"close_unresolved_event",
+				"persistent_carry",
 			} {
-				if coverage[key] != false {
-					t.Fatalf("%s coverage %s = %#v, want false", tc.strength, key, coverage[key])
+				if profile[key] != false {
+					t.Fatalf("%s profile %s = %#v, want false", tc.strength, key, profile[key])
 				}
 			}
-			for _, key := range []string{
-				"blocked_user_action",
-				"blocked_new_truth",
-				"blocked_relationship_change",
-				"blocked_unresolved_event_closure",
-				"proactive_complication_requires_opt_in",
-			} {
-				if coverage[key] != true {
-					t.Fatalf("%s coverage %s = %#v, want true", tc.strength, key, coverage[key])
-				}
+			if profile["pressure_independent"] != true || profile["item_policy"] != "supported_items_only_no_filler" {
+				t.Fatalf("%s profile introduced pressure coupling or filler: %#v", tc.strength, profile)
+			}
+			roles := stringSliceFromAny(profile["roles"])
+			if tc.strength == "none" && len(roles) != 0 {
+				t.Fatalf("none strength has Publisher roles: %#v", profile)
+			}
+			if tc.strength != "none" && len(roles) != 2 {
+				t.Fatalf("%s strength roles = %#v", tc.strength, roles)
 			}
 		})
 	}
@@ -104,9 +111,12 @@ func TestTurnWorkflowHUDNarrativeGuidanceFactDoesNotClaimEmptyDelivery(t *testin
 		severity    string
 	}{
 		{status: "applied", disposition: "delivered", severity: turnWorkflowHUDSeverityNormal},
+		{status: "applied_partial", disposition: "delivered", severity: turnWorkflowHUDSeverityNotice},
 		{status: "valid_empty", disposition: "selected", severity: turnWorkflowHUDSeverityNormal},
-		{status: "unsupported_rejected", disposition: "dropped", severity: turnWorkflowHUDSeverityNotice},
-		{status: "malformed_failed_open", disposition: "dropped", severity: turnWorkflowHUDSeverityWarning},
+		{status: "publisher_plan_no_valid_items", disposition: "dropped", severity: turnWorkflowHUDSeverityWarning},
+		{status: "publisher_json_malformed", disposition: "dropped", severity: turnWorkflowHUDSeverityWarning},
+		{status: "publisher_json_truncated", disposition: "dropped", severity: turnWorkflowHUDSeverityWarning},
+		{status: "publisher_schema_invalid", disposition: "dropped", severity: turnWorkflowHUDSeverityWarning},
 		{status: "disabled", disposition: "dropped", severity: turnWorkflowHUDSeverityNormal},
 		{status: "deferred_no_guide_support", disposition: "deferred", severity: turnWorkflowHUDSeverityNotice},
 	}
@@ -118,8 +128,8 @@ func TestTurnWorkflowHUDNarrativeGuidanceFactDoesNotClaimEmptyDelivery(t *testin
 			}
 		})
 	}
-	schemaInvalid := buildTurnWorkflowHUDNarrativeGuidanceFact("malformed_failed_open", "supervisor_schema_invalid")
-	if schemaInvalid.ReasonCode != "supervisor_schema_invalid" {
+	schemaInvalid := buildTurnWorkflowHUDNarrativeGuidanceFact("publisher_schema_invalid", "publisher_schema_invalid")
+	if schemaInvalid.ReasonCode != "publisher_schema_invalid" {
 		t.Fatalf("schema-invalid reason was hidden: %#v", schemaInvalid)
 	}
 }

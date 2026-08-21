@@ -99,6 +99,24 @@ func (f *completeTurnReprocessingStore) FailMemoryReprocessingJob(context.Contex
 	return store.ErrNotEnabled
 }
 
+type completeTurnAdmissionStore struct {
+	*completeTurnReprocessingStore
+}
+
+func (f *completeTurnAdmissionStore) MemoryAdmissionWritesEnabled() bool {
+	return true
+}
+
+func (f *completeTurnAdmissionStore) CommitMemoryAdmission(_ context.Context, admission *store.MemoryAdmission) (store.MemoryAdmissionResult, error) {
+	return store.MemoryAdmissionResult{
+		MemoryInserted:      admission.Memory != nil,
+		EvidenceInserted:    len(admission.Evidence),
+		PreciseInserted:     len(admission.PreciseUnits),
+		VectorOperations:    len(admission.Vectors),
+		CommittedResultHash: admission.ResultHash,
+	}, nil
+}
+
 func TestCompleteTurnMemorySourceRevisionUsesOnlyHostObservation(t *testing.T) {
 	now := time.Date(2026, 7, 28, 6, 0, 0, 0, time.UTC)
 	decision := completeTurnSourceAcceptanceDecision{
@@ -106,6 +124,7 @@ func TestCompleteTurnMemorySourceRevisionUsesOnlyHostObservation(t *testing.T) {
 		LogicalTurnID: "lt_observed",
 		Observation: completeTurnSourceObservation{
 			ObservedAtMS: 1234, HostChatID: "chat", MessageIndex: 7,
+			MessageChatID: "assistant-message", MessageChatIDState: "observed",
 			GenerationID: "generation", UserObservedContentHash: "user_hash",
 			ObservedContentHash: "assistant_hash", HashAlgorithm: "djb2.v1",
 		},
@@ -117,11 +136,27 @@ func TestCompleteTurnMemorySourceRevisionUsesOnlyHostObservation(t *testing.T) {
 	if source.BranchID != "" || source.BranchState != "not_exposed" {
 		t.Fatalf("branch id/state = %q/%q", source.BranchID, source.BranchState)
 	}
-	if source.SourceMessageID != "chat:index:7" ||
+	if source.SourceMessageID != "assistant-message" ||
 		source.SourceGenerationID != "generation" ||
 		source.UserContent != "raw user" ||
 		source.AssistantContent != "raw assistant" {
 		t.Fatalf("source=%+v", source)
+	}
+}
+
+func TestCompleteTurnMemorySourceRevisionRetainsSyntheticFallbackWhenAssistantIDUnobserved(t *testing.T) {
+	decision := completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "sar_fallback", LogicalTurnID: "lt_fallback",
+		Observation: completeTurnSourceObservation{
+			HostChatID: "chat", MessageIndex: 7, MessageChatIDState: "unobserved",
+		},
+	}
+	source, err := completeTurnMemorySourceRevision(decision, "session", 4, "raw user", "raw assistant", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourceMessageID != "chat:index:7" {
+		t.Fatalf("fallback source_message_id=%q", source.SourceMessageID)
 	}
 }
 
@@ -138,7 +173,7 @@ func TestCompleteTurnMemorySourceRevisionRejectsUnexposedLogicalTurn(t *testing.
 	}
 }
 
-func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
+func TestCompleteTurnTruncatedCriticWritesNoDerivedArtifactsAndEnqueuesOneRevisionJob(t *testing.T) {
 	base := &turnRecordingStore{}
 	recording := &completeTurnReprocessingStore{turnRecordingStore: base}
 	cfg := config.Default()
@@ -148,11 +183,13 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	srv.StoreOpenError = nil
 
 	oldClient := proxyHTTPClient
+	providerCalls := 0
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		providerCalls++
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"turn_summary\":\"broken\",]"}}],"model":"critic"}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"choices":[{"finish_reason":"length","message":{"content":"{\"turn_summary\":\"broken\",\"evidence_excerpts\":[\"cut"}}],"model":"critic","usage":{"prompt_tokens":10,"completion_tokens":20,"total_tokens":30}}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -177,16 +214,25 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if len(recording.sources) != 1 || len(recording.jobs) != 1 {
-		t.Fatalf("sources=%d jobs=%d, want one durable source and one retry job", len(recording.sources), len(recording.jobs))
+	if providerCalls != 1 || len(recording.sources) != 1 || len(recording.jobs) != 1 {
+		t.Fatalf("provider_calls=%d sources=%d jobs=%d, want one call, one durable source, and one reprocessing job", providerCalls, len(recording.sources), len(recording.jobs))
+	}
+	recoveryTarget, recoveryTargetOK := srv.TurnWorkflows.recoveryTarget("critic-hud-recovery")
+	recoverySource := recording.sources[recoveryTarget.SourceRevision]
+	if !recoveryTargetOK || recoveryTarget.ChatSessionID != "session-reprocess" ||
+		recoveryTarget.LogicalTurn != 1 || recoverySource == nil || recoverySource.SourceRevision != recoveryTarget.SourceRevision {
+		t.Fatalf("critic recovery target=%+v found=%t", recoveryTarget, recoveryTargetOK)
 	}
 	var response map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode complete-turn response: %v", err)
 	}
 	criticFailure := mapFromAny(response["critic_failure"])
-	if stringFromMap(criticFailure, "code") != "CRITIC_JSON_PARSE_FAILED" {
+	if stringFromMap(criticFailure, "code") != "CRITIC_JSON_TRUNCATED" {
 		t.Fatalf("critic failure=%#v", criticFailure)
+	}
+	if intFromAny(response["derived_write_committed"], -1) != 0 || intFromAny(response["derived_artifacts_saved"], -1) != 0 {
+		t.Fatalf("truncated critic response produced derived writes: %#v", response)
 	}
 	hud := mapFromAny(response["turn_workflow_hud"])
 	hudError := mapFromAny(hud["error"])
@@ -203,12 +249,12 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 		detailValues["provider"] != "openai" ||
 		detailValues["model"] != "critic" ||
 		detailValues["reprocessing"] != "queued" ||
-		!strings.Contains(detailValues["cause"], "critic_json_mismatched_brackets") ||
+		!strings.Contains(detailValues["cause"], "critic_json_incomplete") ||
 		detailValues["raw_preview"] == "" {
 		t.Fatalf("critic failure details=%#v", detailValues)
 	}
 	for _, job := range recording.jobs {
-		if job.SourceRevision == "" || !strings.Contains(job.LastError, "CRITIC_JSON_PARSE_FAILED") ||
+		if job.SourceRevision == "" || !strings.Contains(job.LastError, "CRITIC_JSON_TRUNCATED") ||
 			job.SourceContract != completeTurnSourceAcceptanceContract ||
 			job.Status != "pending" {
 			t.Fatalf("job=%+v", job)
@@ -232,12 +278,12 @@ func TestCompleteTurnCriticFailureEnqueuesDurableRevisionJob(t *testing.T) {
 	}
 }
 
-func TestCompleteTurnSchemaInvalidJobWaitsForManualRecovery(t *testing.T) {
+func TestCompleteTurnInvalidNestedCriticItemKeepsValidDerivedMemory(t *testing.T) {
 	recording := &completeTurnReprocessingStore{turnRecordingStore: &turnRecordingStore{}}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	srv := NewServer(cfg)
-	srv.Store = recording
+	srv.Store = &completeTurnAdmissionStore{completeTurnReprocessingStore: recording}
 	srv.StoreOpenError = nil
 
 	oldClient := proxyHTTPClient
@@ -272,20 +318,22 @@ func TestCompleteTurnSchemaInvalidJobWaitsForManualRecovery(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
-	if providerCalls != 1 || len(recording.jobs) != 1 {
+	if providerCalls != 1 || len(recording.jobs) != 0 {
 		t.Fatalf("provider calls=%d jobs=%d", providerCalls, len(recording.jobs))
 	}
 	var response map[string]any
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if stringFromMap(mapFromAny(response["critic_failure"]), "code") != "CRITIC_SCHEMA_INVALID" {
-		t.Fatalf("critic failure=%#v", response["critic_failure"])
+	if len(mapFromAny(response["critic_failure"])) != 0 || response["critic_triggered"] != true {
+		t.Fatalf("one invalid nested item discarded the full critic result: failure=%#v response=%#v", response["critic_failure"], response)
 	}
-	for _, job := range recording.jobs {
-		if job.Status != "permanent" || !strings.Contains(job.LastError, "CRITIC_SCHEMA_INVALID") {
-			t.Fatalf("schema-invalid job must remain durable without automatic retry: %+v", job)
-		}
+	if intFromAny(response["derived_write_committed"], 0) == 0 || stringFromMap(mapFromAny(response["critic_result"]), "turn_summary") != "broken schema" {
+		t.Fatalf("valid critic memory was not persisted: %#v", response)
+	}
+	quarantine := mapFromAny(mapFromAny(response["trace_handoff"])["critic_trace"])
+	if intFromAny(mapFromAny(quarantine["schema_quarantine"])["dropped_item_count"], 0) != 1 {
+		t.Fatalf("invalid nested item was not traced: %#v", quarantine)
 	}
 }
 

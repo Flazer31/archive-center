@@ -39,6 +39,10 @@ func timelineMatchesSession(itemSessionID, requestedSessionID string) bool {
 func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("sessionId")
 	beforeTurn, _ := strconv.Atoi(r.URL.Query().Get("beforeTurn"))
+	exactTurn, _ := strconv.Atoi(r.URL.Query().Get("turn"))
+	if exactTurn < 0 {
+		exactTurn = 0
+	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	if limit <= 0 {
 		limit = 50
@@ -198,6 +202,9 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	// Apply beforeTurn filter (exclusive)
 	filtered := []timelineItem{}
 	for _, it := range items {
+		if exactTurn > 0 && it.TurnIndex != exactTurn {
+			continue
+		}
 		if beforeTurn > 0 && it.TurnIndex >= beforeTurn {
 			continue
 		}
@@ -224,11 +231,13 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 			"session_id":       sid,
 			"limit":            limit,
 			"before_turn":      beforeTurn,
+			"turn":             exactTurn,
 			"next_before_turn": nextBeforeTurn,
 			"source_counts":    sourceCounts,
 			"generated_at":     time.Now().UTC().Format(time.RFC3339Nano),
 			"read_only":        true,
 			"total_unpaged":    len(items),
+			"worldline":        currentWorldlineViewModel(r.Context(), s.Store, sid),
 		},
 	})
 }

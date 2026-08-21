@@ -1,11 +1,161 @@
 package httpapi
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func prepareTurnTestDeliveryClassText(plan map[string]any, classKey string) string {
+	for _, rawClass := range prepareTurnMemoryLineageSlice(plan["classes"]) {
+		class := mapFromAny(rawClass)
+		if extractionStringFromAny(class["key"]) == classKey {
+			return extractionStringFromAny(class["text"])
+		}
+	}
+	return ""
+}
+
+func TestMemoryRecallPlanConsolidatesExistingRecallWithoutChangingDelivery(t *testing.T) {
+	const sessionID = "recall-plan-production"
+	memories := []store.Memory{
+		{ID: 1, ChatSessionID: sessionID, TurnIndex: 4, SummaryJSON: `{"turn_summary":"Mina hid the brass key under the old shrine."}`, Importance: 8},
+		{ID: 2, ChatSessionID: sessionID, TurnIndex: 5, SummaryJSON: `{"turn_summary":"Mina promised Lia that the brass key would be returned after the gate opened."}`, Importance: 7},
+		{ID: 3, ChatSessionID: sessionID, TurnIndex: 6, SummaryJSON: `{"turn_summary":"A distant market discussed the summer weather."}`, Importance: 9},
+	}
+	assembly := buildPrepareTurnInjectionAssembly(
+		memories,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		[]store.CharacterState{{ChatSessionID: sessionID, TurnIndex: 6, CharacterName: "Rowan", StatusJSON: `{"location":"gate"}`}},
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		3,
+		80,
+		"Mina asks Rowan where the brass key was hidden.",
+		"default",
+		nil,
+		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		nil,
+	)
+
+	finalTextBefore := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	finalHashBefore := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text_sha256"])
+	orderBefore := append([]string(nil), stringsFromAny(assembly.MemoryDeliveryPlan["order"])...)
+	plan := buildPrepareTurnMemoryRecallPlan(sessionID, map[string]any{
+		"chat_session_id":        sessionID,
+		"turn_index":             7,
+		"source_observation_ref": "source:7",
+		"unapproved_binding":     "must-not-escape",
+	}, assembly)
+
+	if plan["contract_version"] != "memory_recall_plan.v1" || plan["owner"] != "go" || !boolFromAny(plan["read_only"]) {
+		t.Fatalf("invalid recall plan contract: %#v", plan)
+	}
+	if _, exists := plan["plan_id"]; exists {
+		t.Fatalf("diagnostic recall plan must not create an acceptance identity: %#v", plan)
+	}
+	bindings := mapFromAny(plan["request_bindings"])
+	if bindings["chat_session_id"] != sessionID || intFromAny(bindings["turn_index"], 0) != 7 || bindings["source_observation_ref"] != "source:7" {
+		t.Fatalf("observed request bindings missing: %#v", bindings)
+	}
+	if _, exists := bindings["unapproved_binding"]; exists {
+		t.Fatalf("unapproved binding escaped allowlist: %#v", bindings)
+	}
+	if !reflect.DeepEqual(plan["retrieval_methods"], assembly.Counts["retrieval_methods"]) {
+		t.Fatalf("recall plan reinterpreted retrieval methods: plan=%#v assembly=%#v", plan["retrieval_methods"], assembly.Counts["retrieval_methods"])
+	}
+	rejections := mapFromAny(plan["lane_rejection_observations"])
+	if !boolFromAny(rejections["not_distinct_global_exclusions"]) {
+		t.Fatalf("lane rejection counters were presented as global exclusions: %#v", rejections)
+	}
+	if _, exists := plan["excluded_count"]; exists {
+		t.Fatalf("recall plan invented a distinct global exclusion count: %#v", plan)
+	}
+
+	selection := mapFromAny(plan["selection"])
+	lineageItems := prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryLineage["items"])
+	delivered := 0
+	deferred := 0
+	for _, rawItem := range lineageItems {
+		if boolFromAny(mapFromAny(rawItem)["delivered"]) {
+			delivered++
+		} else {
+			deferred++
+		}
+	}
+	if intFromAny(selection["selected_memory_row_count"], -1) != intFromAny(assembly.Counts["selected_memory_total_count"], -2) ||
+		intFromAny(selection["lineage_item_count"], -1) != len(lineageItems) ||
+		intFromAny(selection["delivered_lineage_item_count"], -1) != delivered ||
+		intFromAny(selection["deferred_lineage_item_count"], -1) != deferred {
+		t.Fatalf("recall plan invented selection counts: selection=%#v lineage=%#v", selection, assembly.MemoryDeliveryLineage)
+	}
+	if deferred == 0 || delivered >= len(lineageItems) {
+		t.Fatalf("tiny delivery budget fixture did not preserve selected versus delivered: selection=%#v", selection)
+	}
+	for _, rawItem := range prepareTurnMemoryLineageSlice(selection["selected_lineage_items"]) {
+		item := mapFromAny(rawItem)
+		for _, forbidden := range []string{"final_text", "summary", "protected_coverage_key"} {
+			if _, exists := item[forbidden]; exists {
+				t.Fatalf("bounded recall item exposed %s: %#v", forbidden, item)
+			}
+		}
+	}
+
+	directCoverage := mapFromAny(mapFromAny(plan["coverage"])["direct_entities"])
+	if intFromAny(directCoverage["requested_count"], -1) != intFromAny(assembly.MemoryDeliveryPlan["direct_entity_memory_requested_count"], -2) ||
+		intFromAny(directCoverage["delivered_count"], -1) != intFromAny(assembly.MemoryDeliveryPlan["direct_entity_memory_delivered_count"], -2) ||
+		intFromAny(directCoverage["gap_count"], -1) != intFromAny(assembly.MemoryDeliveryPlan["direct_entity_memory_gap"], -2) {
+		t.Fatalf("direct-entity coverage drifted from delivery plan: %#v", directCoverage)
+	}
+	if intFromAny(directCoverage["gap_count"], 0) == 0 {
+		t.Fatalf("missing direct-entity coverage was hidden: %#v", directCoverage)
+	}
+	if strings.Contains(finalTextBefore, "summer weather") {
+		t.Fatalf("unrelated memory filled an unused slot: %q", finalTextBefore)
+	}
+	if finalTextBefore != extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"]) ||
+		finalHashBefore != extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text_sha256"]) ||
+		!reflect.DeepEqual(orderBefore, stringsFromAny(assembly.MemoryDeliveryPlan["order"])) {
+		t.Fatalf("diagnostic recall plan mutated final delivery: before=%q after=%q", finalTextBefore, assembly.MemoryDeliveryPlan["final_text"])
+	}
+}
+
+func TestMemoryRecallPlanSeparatesDeliveryGapFromUnusedRequestedSlots(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		MemoryRecallQuery: "Mina checks the brass key.",
+		ActualMemoryText:  "[Memory]\n- Mina secured the brass key.",
+		Counts: map[string]any{
+			"recall_query_sources":        []string{"current_user_input"},
+			"selected_memory_total_count": 1,
+			"retrieval_methods": map[string]any{
+				"lexical": map[string]any{"status": "ready", "candidate_count": 1, "selected_count": 1},
+			},
+		},
+		MemoryDeliveryLineage: map[string]any{
+			"eligible_memory_count": 1,
+			"items":                 []map[string]any{{"source_row_id": 1, "turn_index": 2, "selection_lane": "relevant", "delivered": true, "delivery_status": "delivered_final"}},
+		},
+	}
+	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{
+		"_core_objective_memory_max_items_present": true,
+		"_core_objective_memory_max_items":         4,
+	})
+	plan := buildPrepareTurnMemoryRecallPlan("recall-gap-separation", map[string]any{"chat_session_id": "recall-gap-separation"}, out)
+	core := mapFromAny(mapFromAny(plan["coverage"])["core_objective_memory"])
+	if intFromAny(core["delivery_gap_count"], -1) != 0 || intFromAny(core["unused_requested_slots"], 0) == 0 || core["status"] != "covered" {
+		t.Fatalf("unused requested slots were misreported as a memory delivery gap: %#v", core)
+	}
+}
 
 func TestMEMDSevenClassPlanSeparatesProtectedGuidanceFromActualMemory(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
@@ -52,7 +202,7 @@ func TestMEMDSevenClassPlanSeparatesProtectedGuidanceFromActualMemory(t *testing
 	}
 }
 
-func TestMEMDRemovesObjectiveFactDuplicatesAcrossDeliveryClasses(t *testing.T) {
+func TestMEMDKeepsTextOnlyFactsAcrossClassesWithoutSourceCoordinates(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
 		LatestDirectEvidenceText: "the brass key is on the desk",
 		DirectEvidenceText:       "[Direct Evidence]\n- [vector, turn 9] the brass key is on the desk",
@@ -61,31 +211,62 @@ func TestMEMDRemovesObjectiveFactDuplicatesAcrossDeliveryClasses(t *testing.T) {
 	}
 	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
 	finalText := extractionStringFromAny(plan["final_text"])
-	if strings.Count(finalText, "the brass key is on the desk") != 2 {
-		t.Fatalf("objective duplicate was not removed or subjective meaning was lost: %q", finalText)
+	if strings.Count(finalText, "the brass key is on the desk") != 4 {
+		t.Fatalf("text-only facts were merged without source coordinates: %q", finalText)
 	}
 	classes, _ := plan["classes"].([]map[string]any)
 	for _, class := range classes {
-		if class["key"] == "world_state" && intFromAny(class["deduplicated_count"], 0) == 0 {
-			t.Fatalf("world-state duplicate was not traced: %#v", class)
+		if class["key"] == "world_state" && intFromAny(class["deduplicated_count"], 0) != 0 {
+			t.Fatalf("world-state text-only fact was deduplicated without coordinates: %#v", class)
 		}
 	}
 }
 
-func TestMEMDRemovesExactGoalDuplicateFromDirectEvidence(t *testing.T) {
+func TestMEMDKeepsCoordinateMissingRepeatedTextWithinClasses(t *testing.T) {
+	const repeated = "the bell rang twice"
+	out := prepareTurnInjectionAssembly{
+		LatestDirectEvidenceText: repeated,
+		DirectEvidenceText:       "[Direct Evidence]\n- " + repeated,
+		CharacterObjectiveText:   "[Character Objective States]\n- " + repeated,
+		CanonCharacterText:       "[Canonical Characters]\n- " + repeated,
+		CanonWorldText:           "[Canonical World States]\n- " + repeated,
+		WorldRulesText:           "[World Rules]\n- " + repeated,
+	}
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	for _, classKey := range []string{"direct_evidence", "character_objective", "world_state"} {
+		text := prepareTurnTestDeliveryClassText(plan, classKey)
+		if strings.Count(text, repeated) != 2 {
+			t.Fatalf("%s text-only projections were merged without source coordinates: %q", classKey, text)
+		}
+	}
+}
+
+func TestMEMDSubjectiveRelationshipKeepsCoordinateMissingRepeatedText(t *testing.T) {
+	out := prepareTurnInjectionAssembly{
+		CharacterPrivateText: "[Character Private Recollection]\n- Mira trusts Noah",
+		KGText:               "[Knowledge Graph]\n- Mira trusts Noah",
+	}
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	classText := prepareTurnTestDeliveryClassText(plan, "subjective_relationship")
+	if got := strings.Count(classText, "Mira trusts Noah"); got != 2 {
+		t.Fatalf("coordinate-missing subjective origins were merged: count=%d text=%q", got, classText)
+	}
+}
+
+func TestMEMDKeepsCoordinateMissingGoalAndDirectEvidenceDistinct(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
 		LatestDirectEvidenceText: "Restore the observatory clock",
 		PendingThreadText:        "[Pending Threads]\n- Restore the observatory clock",
 	}
 	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
 	finalText := extractionStringFromAny(plan["final_text"])
-	if strings.Count(finalText, "Restore the observatory clock") != 1 {
-		t.Fatalf("exact goal evidence was delivered through two classes: %q", finalText)
+	if strings.Count(finalText, "Restore the observatory clock") != 2 {
+		t.Fatalf("coordinate-missing goal and evidence were merged by text: %q", finalText)
 	}
 	classes, _ := plan["classes"].([]map[string]any)
 	for _, class := range classes {
-		if class["key"] == "unresolved_goal" && intFromAny(class["deduplicated_count"], 0) == 0 {
-			t.Fatalf("unresolved-goal duplicate was not traced: %#v", class)
+		if class["key"] == "unresolved_goal" && intFromAny(class["deduplicated_count"], 0) != 0 {
+			t.Fatalf("coordinate-missing unresolved goal was reported as a duplicate: %#v", class)
 		}
 	}
 }
@@ -240,7 +421,7 @@ func TestMEMDAutomaticHasNoFixedPerClassReservations(t *testing.T) {
 	}
 }
 
-func TestPayloadApplicationPlanKeepsNarrativeBudgetIndependentAndWhole(t *testing.T) {
+func TestPayloadApplicationPlanKeepsNarrativeBudgetIndependentAndOmitsHostRecentChat(t *testing.T) {
 	plan := buildPrepareTurnPayloadApplicationPlan(
 		"current user",
 		"[Original Work]\ncanon",
@@ -273,8 +454,8 @@ func TestPayloadApplicationPlanKeepsNarrativeBudgetIndependentAndWhole(t *testin
 	if intFromAny(trace["deferred_count"], 0) != 1 || boolFromAny(trace["mid_item_truncation"]) {
 		t.Fatalf("guidance trace=%#v", trace)
 	}
-	if extractionStringFromAny(plan["input_context_text"]) != "[Input Context]\nprevious" {
-		t.Fatalf("input context changed: %q", plan["input_context_text"])
+	if extractionStringFromAny(plan["input_context_text"]) != "" || intFromAny(plan["input_context_chars"], -1) != 0 {
+		t.Fatalf("host recent chat survived in payload plan: %#v", plan)
 	}
 }
 

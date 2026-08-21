@@ -2,12 +2,15 @@ package httpapi
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 const presentationViewModelContractVersion = "presentation.viewmodel.v1"
@@ -52,13 +55,16 @@ type presentationViewModelResponse struct {
 }
 
 type presentationTimelineModel struct {
-	Items         []map[string]any            `json:"items"`
-	Groups        []presentationTimelineGroup `json:"groups"`
-	Sessions      []presentationSessionRow    `json:"sessions"`
-	SelectedID    string                      `json:"selected_session_id"`
-	Summary       map[string]any              `json:"summary"`
-	EmptyState    string                      `json:"empty_state"`
-	LoadMoreState string                      `json:"load_more_state"`
+	Items             []map[string]any            `json:"items"`
+	Groups            []presentationTimelineGroup `json:"groups"`
+	Sessions          []presentationSessionRow    `json:"sessions"`
+	SelectedID        string                      `json:"selected_session_id"`
+	CurrentTurn       int                         `json:"current_turn"`
+	Summary           map[string]any              `json:"summary"`
+	EmptyState        string                      `json:"empty_state"`
+	LoadMoreState     string                      `json:"load_more_state"`
+	Worldline         worldlineViewModel          `json:"worldline"`
+	WorldlineTopology worldlineTopologyViewModel  `json:"worldline_topology"`
 }
 
 type presentationTimelineGroup struct {
@@ -109,7 +115,33 @@ func (s *Server) handlePresentationViewModel(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, map[string]any{"status": "error", "code": "invalid_presentation_snapshot"})
 		return
 	}
-	writeJSON(w, http.StatusOK, buildPresentationViewModel(req))
+	vm := buildPresentationViewModel(req)
+	currentSessionID := strings.TrimSpace(req.Timeline.CurrentSessionID)
+	selectedSessionID := strings.TrimSpace(req.Timeline.SelectedSessionID)
+	anchorSessionID := selectedSessionID
+	if anchorSessionID == "" {
+		anchorSessionID = currentSessionID
+	}
+	switch topologyStore := s.Store.(type) {
+	case store.WorldlineTopologySnapshotStore:
+		if anchorSessionID == "" {
+			vm.Timeline.WorldlineTopology = emptyWorldlineTopologyViewModel(currentSessionID, selectedSessionID, "session_anchor_unavailable")
+			break
+		}
+		snapshot, err := topologyStore.GetWorldlineTopologySnapshot(r.Context(), anchorSessionID, worldlineTopologyFamilyLimit)
+		if err != nil {
+			reason := "topology_snapshot_read_unavailable"
+			if errors.Is(err, store.ErrNotFound) {
+				reason = "current_session_not_routed"
+			}
+			vm.Timeline.WorldlineTopology = emptyWorldlineTopologyViewModel(currentSessionID, selectedSessionID, reason)
+			break
+		}
+		vm.Timeline.WorldlineTopology = buildWorldlineTopologyViewModel(snapshot, currentSessionID, selectedSessionID)
+	default:
+		vm.Timeline.WorldlineTopology = emptyWorldlineTopologyViewModel(currentSessionID, selectedSessionID, "topology_snapshot_store_unavailable")
+	}
+	writeJSON(w, http.StatusOK, vm)
 }
 
 func buildPresentationViewModel(req presentationViewModelRequest) presentationViewModelResponse {
@@ -127,6 +159,7 @@ func buildPresentationTimelineModel(input presentationTimelineInput) presentatio
 		nowMS = time.Now().UnixMilli()
 	}
 	visible := make([]map[string]any, 0, len(input.PendingItems)+len(input.Items))
+	currentTurn := 0
 	for _, item := range input.PendingItems {
 		if !presentationPendingVisible(item, input.SelectedSessionID, nowMS) {
 			continue
@@ -135,6 +168,12 @@ func buildPresentationTimelineModel(input presentationTimelineInput) presentatio
 	}
 	for _, item := range input.Items {
 		visible = append(visible, presentationTimelineItem(item))
+	}
+	for _, item := range input.Items {
+		turn := presentationInt(presentationFirst(item["turn_index"], item["turn_anchor"], item["source_turn"], item["to_turn"]))
+		if turn > currentTurn {
+			currentTurn = turn
+		}
 	}
 
 	groups := make([]presentationTimelineGroup, 0)
@@ -200,11 +239,34 @@ func buildPresentationTimelineModel(input presentationTimelineInput) presentatio
 	}
 	return presentationTimelineModel{
 		Items: visible, Groups: groups,
-		Sessions:   buildPresentationSessionRows(input.Sessions, input.SelectedSessionID, input.CurrentSessionID, input.LifecycleByID),
-		SelectedID: input.SelectedSessionID,
-		Summary:    map[string]any{"turns": len(groups), "items": len(visible), "total": total, "source_counts": input.Meta["source_counts"]},
-		EmptyState: emptyState, LoadMoreState: loadMoreState,
+		Sessions:          buildPresentationSessionRows(input.Sessions, input.SelectedSessionID, input.CurrentSessionID, input.LifecycleByID),
+		SelectedID:        input.SelectedSessionID,
+		CurrentTurn:       currentTurn,
+		Summary:           map[string]any{"turns": len(groups), "items": len(visible), "total": total, "source_counts": input.Meta["source_counts"]},
+		Worldline:         presentationWorldlineViewModel(input.Meta["worldline"], input.SelectedSessionID),
+		WorldlineTopology: emptyWorldlineTopologyViewModel(input.CurrentSessionID, input.SelectedSessionID, "topology_snapshot_not_loaded"),
+		EmptyState:        emptyState, LoadMoreState: loadMoreState,
 	}
+}
+
+func presentationWorldlineViewModel(value any, selectedSessionID string) worldlineViewModel {
+	vm := worldlineViewModel{
+		ContractVersion:  worldlineViewModelContract,
+		State:            "not_applicable",
+		CurrentSessionID: strings.TrimSpace(selectedSessionID),
+		Reason:           "no_confirmed_fork_lineage",
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil || json.Unmarshal(encoded, &vm) != nil {
+		return vm
+	}
+	if strings.TrimSpace(vm.ContractVersion) == "" {
+		vm.ContractVersion = worldlineViewModelContract
+	}
+	if strings.TrimSpace(vm.CurrentSessionID) == "" {
+		vm.CurrentSessionID = strings.TrimSpace(selectedSessionID)
+	}
+	return vm
 }
 
 func presentationTimelineItem(source map[string]any) map[string]any {
@@ -310,6 +372,7 @@ func buildPresentationExplorerModel(input presentationExplorerInput) presentatio
 		{Key: "trust", Count: presentationSliceLen(input.Trust["storylines"]) + presentationSliceLen(input.Trust["world_rules"]) + presentationSliceLen(input.Trust["hooks"])},
 		{Key: "world", Count: presentationWorldCount(input.WorldGraph)},
 		{Key: "entities", Count: presentationSliceLen(input.Entities["characters"]) + presentationSliceLen(input.Entities["locations"]) + presentationSliceLen(input.Entities["items"])},
+		{Key: "lorebook", Count: presentationInt(input.Totals["lorebook"])},
 	}
 	syncState := "unknown"
 	if input.ActiveChatSessionID != "" {

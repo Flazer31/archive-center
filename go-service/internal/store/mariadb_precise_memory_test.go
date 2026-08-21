@@ -99,7 +99,7 @@ func TestMariaDBPerspectiveReaderRequiresExactHolderAndIncludesLatestReviewBlock
 	defer db.Close()
 	m := &mariadbStore{db: db}
 	now := time.Unix(300, 0).UTC()
-	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.knowledge_holder_entity_id = \?[\s\S]+unit\.admission_state IN \('committed', 'review_required'\)[\s\S]+unit\.review_state IN \('source_observed', 'needs_review'\)[\s\S]+unit\.lifecycle_state = 'active'`).
+	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.knowledge_holder_entity_id = \?[\s\S]+unit\.epistemic_mode IN \('known', 'suspected', 'unknown', 'misinformed', 'hidden', 'revealed'\)[\s\S]+unit\.lifecycle_state = 'active'`).
 		WithArgs("session", "holder-rowan").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"unit_id", "chat_session_id", "source_turn_start", "source_turn_end",
@@ -130,7 +130,7 @@ func TestMariaDBPerspectiveReaderRequiresExactHolderAndIncludesLatestReviewBlock
 	}
 }
 
-func TestMariaDBActiveInteractionReaderReturnsOnlyCommittedActiveSourceUnits(t *testing.T) {
+func TestMariaDBActiveInteractionReaderReturnsActiveSourceUnitsAcrossReviewMetadata(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -138,7 +138,7 @@ func TestMariaDBActiveInteractionReaderReturnsOnlyCommittedActiveSourceUnits(t *
 	defer db.Close()
 	m := &mariadbStore{db: db}
 	now := time.Unix(350, 0).UTC()
-	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.memory_kind IN \('observation', 'boundary'\)[\s\S]+unit\.admission_state = 'committed'[\s\S]+unit\.review_state = 'source_observed'[\s\S]+unit\.lifecycle_state = 'active'`).
+	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+unit\.memory_kind IN \('observation', 'boundary'\)[\s\S]+unit\.lifecycle_state = 'active'`).
 		WithArgs("session").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"unit_id", "chat_session_id", "source_turn_start", "source_turn_end",
@@ -158,8 +158,8 @@ func TestMariaDBActiveInteractionReaderReturnsOnlyCommittedActiveSourceUnits(t *
 			"boundary", "session", 3, 3, "revision-3", "boundary", "withdrawn",
 			`{"contract_version":"interaction_boundary.v1"}`,
 			"alice-id", "", "bob-id", "", "alice-id->bob-id/touch",
-			"actor_scoped", "explicit_boundary", "subjective_episodic", "committed",
-			"source_observed", "owner_private", "", "", "active", now, now,
+			"actor_scoped", "explicit_boundary", "subjective_episodic", "review_required",
+			"needs_review", "owner_private", "", "", "active", now, now,
 		))
 	items, err := m.ListActiveInteractionMemoryUnits(context.Background(), "session")
 	if err != nil || len(items) != 2 || items[0].ActorEntityID != "alice-id" ||
@@ -171,18 +171,89 @@ func TestMariaDBActiveInteractionReaderReturnsOnlyCommittedActiveSourceUnits(t *
 	}
 }
 
+func TestMariaDBGeneralVectorPreciseMemoryReaderUsesActiveSourceAndCurrentEligibility(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+JOIN memory_source_revisions source_revision[\s\S]+source_revision\.lifecycle_state = 'active'[\s\S]+unit\.lifecycle_state = 'active'`).
+		WithArgs("session").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "unit_id", "chat_session_id", "admission_state", "review_state",
+			"visibility", "knowledge_holder_entity_id", "epistemic_mode", "lifecycle_state",
+		}).AddRow(
+			int64(1), "public-unit", "session", "committed", "source_observed",
+			"public", "", "direct", "active",
+		).AddRow(
+			int64(3), "review-public-unit", "session", "review_required", "needs_review",
+			"public", "", "direct", "active",
+		).AddRow(
+			int64(2), "private-unit", "session", "committed", "source_observed",
+			"owner_private", "holder", "known", "active",
+		))
+	items, err := m.ListGeneralVectorPreciseMemoryUnits(context.Background(), "session")
+	if err != nil || len(items) != 2 || items[0].UnitID != "public-unit" || items[1].UnitID != "review-public-unit" {
+		t.Fatalf("general precise inventory=%#v err=%v, want public and review-public units", items, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestPreciseMemoryPrivatePerspectiveSkipsGeneralVector(t *testing.T) {
 	for _, item := range []*PreciseMemoryUnit{
-		{Kind: "observation", Visibility: "owner_private", EpistemicMode: "known", KnowledgeHolderEntityID: "holder"},
-		{Kind: "observation", Visibility: "hidden", EpistemicMode: "hidden"},
-		{Kind: "observation", Visibility: "private", EpistemicMode: "misinformed"},
+		{Kind: "observation", Visibility: "public", EpistemicMode: "direct", KnowledgeHolderEntityID: "holder", AdmissionState: "committed", ReviewState: "source_observed"},
+		{Kind: "observation", Visibility: "private", EpistemicMode: "direct", AdmissionState: "committed", ReviewState: "source_observed"},
+		{Kind: "observation", Visibility: "public", EpistemicMode: "known", AdmissionState: "committed", ReviewState: "source_observed"},
 	} {
 		if preciseMemoryGeneralVectorEligible(item) {
 			t.Fatalf("private perspective became general-vector eligible: %+v", item)
 		}
 	}
-	if !preciseMemoryGeneralVectorEligible(&PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct"}) {
+	if !preciseMemoryGeneralVectorEligible(&PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct", AdmissionState: "committed", ReviewState: "source_observed"}) {
 		t.Fatal("public objective event lost general-vector eligibility")
+	}
+}
+
+func TestPreciseMemoryGeneralVectorEligibilityIgnoresReviewMetadataButKeepsPrivacy(t *testing.T) {
+	tests := []struct {
+		name string
+		item *PreciseMemoryUnit
+		want bool
+	}{
+		{
+			name: "committed source observed",
+			item: &PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct", AdmissionState: "committed", ReviewState: "source_observed"},
+			want: true,
+		},
+		{
+			name: "review required admission",
+			item: &PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct", AdmissionState: "review_required", ReviewState: "source_observed"},
+			want: true,
+		},
+		{
+			name: "needs review",
+			item: &PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct", AdmissionState: "committed", ReviewState: "needs_review"},
+			want: true,
+		},
+		{
+			name: "private visibility",
+			item: &PreciseMemoryUnit{Kind: "event", Visibility: "private", EpistemicMode: "direct", AdmissionState: "committed", ReviewState: "source_observed"},
+		},
+		{
+			name: "legacy unresolved",
+			item: &PreciseMemoryUnit{Kind: "event", Visibility: "public", EpistemicMode: "direct"},
+			want: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := PreciseMemoryGeneralVectorEligible(tt.item); got != tt.want {
+				t.Fatalf("PreciseMemoryGeneralVectorEligible(%+v) = %t, want %t", tt.item, got, tt.want)
+			}
+		})
 	}
 }
 
@@ -193,6 +264,7 @@ func TestPreciseMemoryUserProfileSkipsGeneralVector(t *testing.T) {
 		Visibility:     "user_private",
 		EpistemicMode:  "explicit_ooc_setting",
 		AdmissionState: "committed",
+		ReviewState:    "source_observed",
 		LifecycleState: "active",
 	}
 	if preciseMemoryGeneralVectorEligible(item) {

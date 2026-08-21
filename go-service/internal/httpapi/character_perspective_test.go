@@ -249,10 +249,18 @@ func TestCharacterPerspectivePacketProjectsLatestEpistemicStatePerHolderSubjectA
 		10000,
 	)
 	reviewDrops := mapFromAny(reviewPacket["dropped_counts"])
-	if reviewText != "" ||
-		intFromAny(reviewDrops["superseded_epistemic_state"], 0) != 1 ||
-		intFromAny(reviewDrops["latest_epistemic_state_requires_review"], 0) != 1 {
-		t.Fatalf("latest review blocker allowed old knowledge to revive: packet=%#v text=%q", reviewPacket, reviewText)
+	if !strings.Contains(reviewText, "suspected | vault / access: trapped") ||
+		strings.Contains(reviewText, "known | vault / access: open") ||
+		intFromAny(reviewDrops["superseded_epistemic_state"], 0) != 1 {
+		t.Fatalf("review metadata erased or revived owned knowledge incorrectly: packet=%#v text=%q", reviewPacket, reviewText)
+	}
+	wrongOwnerPacket, wrongOwnerText := buildCharacterPerspectivePacket(
+		[]store.PreciseMemoryUnit{latestReview},
+		map[string]any{"identity_state": "resolved", "current_pov_entity_id": "holder-jules"},
+		10000,
+	)
+	if wrongOwnerText != "" || intFromAny(mapFromAny(wrongOwnerPacket["dropped_counts"])["wrong_knowledge_holder"], 0) != 1 {
+		t.Fatalf("review item escaped its exact holder: packet=%#v text=%q", wrongOwnerPacket, wrongOwnerText)
 	}
 }
 
@@ -284,7 +292,8 @@ func TestPerspectiveScopedEvidenceCannotReenterThroughGeneralVectorHydration(t *
 	}
 
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{"id": "evidence:session:101", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "101", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			{"id": "evidence:session:102", "tier": "evidence", "source_table": "direct_evidence_records", "source_row_id": "102", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
@@ -326,7 +335,12 @@ func TestLegacyHolderScopedMemoryVectorCannotBypassTypedPerspectiveDelivery(t *t
 		},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
+		"memory_search_results": []map[string]any{
+			{"id": "memory:session:201", "tier": "memory", "source_table": "memories", "source_row_id": "201", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
+			{"id": "memory:session:202", "tier": "memory", "source_table": "memories", "source_row_id": "202", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
+		},
 		"search_results": []map[string]any{
 			{"id": "memory:session:201", "tier": "memory", "source_table": "memories", "source_row_id": "201", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			{"id": "memory:session:202", "tier": "memory", "source_table": "memories", "source_row_id": "202", "similarity": 0.9, "similarity_source": "cosine_from_query_and_stored_embedding"},
@@ -341,23 +355,629 @@ func TestLegacyHolderScopedMemoryVectorCannotBypassTypedPerspectiveDelivery(t *t
 	}
 }
 
-func TestMemoryAdmissionDetectsPerspectiveScopedContent(t *testing.T) {
+func TestPrivateTypedBucketsDoNotBecomeStandalonePublicProjection(t *testing.T) {
 	for _, key := range []string{
 		"belief_updates",
 		"protected_secrets",
 		"character_identity_accuracy",
 		"subjective_entity_memories",
 	} {
-		if !memoryAdmissionHasPerspectiveScopedContent(map[string]any{
+		projection := buildPublicMemoryProjection(map[string]any{
 			key: []any{map[string]any{"value": "private"}},
-		}) {
-			t.Fatalf("%s did not require typed perspective delivery", key)
+		}, "")
+		if projection.Eligible {
+			t.Fatalf("%s entered standalone public projection: %#v", key, projection)
 		}
 	}
-	if memoryAdmissionHasPerspectiveScopedContent(map[string]any{
+	objective := buildPublicMemoryProjection(map[string]any{
+		"turn_summary": "The bell is ringing.",
 		"state_claims": []any{map[string]any{"value": "public"}},
-	}) {
-		t.Fatal("objective state was incorrectly classified as perspective scoped")
+	}, "")
+	if !objective.Eligible {
+		t.Fatalf("objective state was not publicly searchable: %#v", objective)
+	}
+}
+
+func TestPublicMemoryProjectionKeepsObjectiveAndSourceObservedPublicInteractions(t *testing.T) {
+	publicItem := func(evidence string, fields map[string]any) map[string]any {
+		item := map[string]any{
+			"admission_state":  "committed",
+			"review_state":     "source_observed",
+			"visibility":       "public",
+			"evidence_excerpt": evidence,
+			"public_visibility_support": map[string]any{
+				"contract_version":     publicVisibilitySupportContract,
+				"support_kind":         "explicit_public_observation",
+				"visibility_assertion": evidence,
+			},
+		}
+		for key, value := range fields {
+			item[key] = value
+		}
+		return item
+	}
+
+	objective := buildPublicMemoryProjection(map[string]any{
+		"turn_summary":      "The public bell rang at noon.",
+		"evidence_excerpts": []any{"The public bell rang at noon."},
+		"kg_triples": []any{map[string]any{
+			"subject": "bell", "predicate": "rang_at", "object": "noon",
+		}},
+	}, "")
+	if !objective.Eligible || !strings.Contains(objective.SearchText.Text, "public bell") {
+		t.Fatalf("objective-only projection was not searchable: %#v", objective)
+	}
+
+	extraction := map[string]any{
+		"turn_summary": "Mira publicly displayed several interaction traits.",
+		"evidence_excerpts": []any{
+			"Mira publicly said she trusted Rowan.",
+			"Mira openly checked the gate twice.",
+			"Mira openly refused the bribe.",
+			`Mira publicly said, "Enough."`,
+		},
+		"relationship_observations": []any{publicItem("Mira publicly said she trusted Rowan.", map[string]any{
+			"source_entity": "Mira", "target_entity": "Rowan", "domain": "trust", "observation": "trusts Rowan",
+		})},
+		"habit_observations": []any{publicItem("Mira openly checked the gate twice.", map[string]any{
+			"subject_entity": "Mira", "behavior_key": "checks_gate", "observation_kind": "repeated_action",
+		})},
+		"character_profile_observations": []any{publicItem("Mira openly refused the bribe.", map[string]any{
+			"subject_entity": "Mira", "trait_key": "values_honesty", "supported_expression": "refused the bribe",
+		})},
+		"voice_observations": []any{publicItem(`Mira publicly said, "Enough."`, map[string]any{
+			"subject_entity": "Mira", "principle_key": "brief_imperatives", "utterance_expression": `"Enough."`,
+		})},
+	}
+	projection := buildPublicMemoryProjection(extraction, "")
+	if !projection.Eligible {
+		t.Fatalf("public interaction projection was not eligible: %#v", projection)
+	}
+	for _, key := range []string{"relationship_observations", "habit_observations", "character_profile_observations", "voice_observations"} {
+		if len(sliceFromAny(projection.Extraction[key])) != 1 {
+			t.Fatalf("%s was not retained in public projection: %#v", key, projection.Extraction)
+		}
+	}
+}
+
+func TestPublicProjectionDoesNotRequirePositiveProofForInteractionOrVoiceMeaning(t *testing.T) {
+	marker := strings.ToLower(t.Name())
+	fixture := map[string]any{
+		"interaction_events": []any{map[string]any{
+			"actor": marker + ":actor", "action": marker + ":action",
+		}},
+		"relationship_observations": []any{map[string]any{
+			"source_entity": marker + ":source", "target_entity": marker + ":target",
+			"observation": marker + ":relationship",
+		}},
+		"habit_observations": []any{map[string]any{
+			"subject_entity": marker + ":habit-subject", "behavior_key": marker + ":habit",
+		}},
+		"character_profile_observations": []any{map[string]any{
+			"subject_entity": marker + ":profile-subject", "trait_key": marker + ":profile",
+			"visibility": "public",
+		}},
+		"voice_observations": []any{map[string]any{
+			"subject_entity": marker + ":voice-subject", "principle_key": marker + ":voice",
+		}},
+	}
+	projection := buildPublicMemoryProjection(fixture, "")
+	if !projection.Eligible {
+		t.Fatalf("interaction/profile/voice meaning required absent positive-proof metadata: %#v", projection)
+	}
+	for _, key := range []string{
+		"interaction_events", "relationship_observations", "habit_observations",
+		"character_profile_observations", "voice_observations",
+	} {
+		if got := len(sliceFromAny(projection.Extraction[key])); got != 1 {
+			t.Fatalf("%s missing without admission/review/evidence/support metadata: %#v", key, projection.Extraction)
+		}
+	}
+	for _, want := range []string{marker + ":action", marker + ":relationship", marker + ":habit", marker + ":profile", marker + ":voice"} {
+		if !strings.Contains(projection.SearchText.Text, want) {
+			t.Fatalf("public projection search text missing %q: %q", want, projection.SearchText.Text)
+		}
+	}
+	if !strings.Contains(projection.SearchText.Text, marker+":voice-subject | "+marker+":voice") {
+		t.Fatalf("voice semantic summary lost its subject association: %q", projection.SearchText.Text)
+	}
+	fixture["relationship_observations"] = append(sliceFromAny(fixture["relationship_observations"]), map[string]any{
+		"observation":     marker + ":review-relationship",
+		"admission_state": "review_required", "review_state": "needs_review",
+	})
+	fixture["voice_observations"] = append(sliceFromAny(fixture["voice_observations"]), map[string]any{
+		"principle_key":   marker + ":review-voice",
+		"admission_state": "review_required", "review_state": "needs_review",
+	})
+	reviewed := buildPublicMemoryProjection(fixture, "")
+	if len(sliceFromAny(reviewed.Extraction["relationship_observations"])) != 2 ||
+		len(sliceFromAny(reviewed.Extraction["voice_observations"])) != 2 ||
+		!strings.Contains(reviewed.SearchText.Text, marker+":review-relationship") ||
+		!strings.Contains(reviewed.SearchText.Text, marker+":review-voice") {
+		t.Fatalf("review metadata was incorrectly treated as privacy: %#v", reviewed)
+	}
+
+	fixture["voice_observations"] = append(sliceFromAny(fixture["voice_observations"]), map[string]any{
+		"principle_key": marker + ":private-voice", "visibility": "owner_private",
+	})
+	blocked := buildPublicMemoryProjection(fixture, "")
+	if strings.Contains(blocked.SearchText.Text, marker+":private-voice") || len(sliceFromAny(blocked.Extraction["voice_observations"])) != 2 {
+		t.Fatalf("explicit private voice observation entered public projection: %#v", blocked)
+	}
+}
+
+func TestPublicInteractionProjectionDoesNotTreatScopeKeyNamesAsPrivate(t *testing.T) {
+	publicItem := func(evidence string) map[string]any {
+		return map[string]any{
+			"admission_state":  "committed",
+			"review_state":     "source_observed",
+			"visibility":       "public",
+			"evidence_excerpt": evidence,
+			"public_visibility_support": map[string]any{
+				"contract_version":     publicVisibilitySupportContract,
+				"support_kind":         "explicit_public_observation",
+				"visibility_assertion": evidence,
+			},
+		}
+	}
+
+	allowed := publicItem("Mira openly waved at Rowan.")
+	allowed["knowledge_holder"] = ""
+	allowed["perspective_owner"] = ""
+	allowed["secret_guard"] = false
+	allowed["knowledge_scope"] = map[string]any{
+		"known_by": []any{}, "unknown_to": []any{""}, "publicly_revealed": false,
+	}
+	projection := buildPublicMemoryProjection(map[string]any{
+		"evidence_excerpts":  []any{"Mira openly waved at Rowan."},
+		"interaction_events": []any{allowed},
+	}, "")
+	if !projection.Eligible || len(sliceFromAny(projection.Extraction["interaction_events"])) != 1 {
+		t.Fatalf("empty scope metadata blocked a proven public interaction: %#v", projection)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		key   string
+		value any
+	}{
+		{name: "holder", key: "knowledge_holder", value: "Rowan"},
+		{name: "scope", key: "knowledge_scope", value: map[string]any{"known_by": []any{"Rowan"}}},
+		{name: "reveal policy", key: "reveal_policy", value: "explicit_reveal_required"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := publicItem("Mira openly waved at Rowan.")
+			item[tc.key] = tc.value
+			kept := buildPublicMemoryProjection(map[string]any{
+				"evidence_excerpts":  []any{"Mira openly waved at Rowan."},
+				"interaction_events": []any{item},
+			}, "")
+			if !kept.Eligible || len(sliceFromAny(kept.Extraction["interaction_events"])) != 1 {
+				t.Fatalf("scope-shaped key name removed its enclosing public item: %#v", kept)
+			}
+		})
+	}
+	privateItem := publicItem("Mira openly waved at Rowan.")
+	privateItem["secret_guard"] = true
+	blocked := buildPublicMemoryProjection(map[string]any{
+		"evidence_excerpts":  []any{"Mira openly waved at Rowan."},
+		"interaction_events": []any{privateItem},
+	}, "")
+	if blocked.Eligible || len(sliceFromAny(blocked.Extraction["interaction_events"])) != 0 {
+		t.Fatalf("explicit private guard entered public projection: %#v", blocked)
+	}
+}
+
+func TestObjectiveProjectionKeepsUnscopedReviewItemsAlongsideLegacyAndCommittedItems(t *testing.T) {
+	legacyEvidence := "The legacy bell rang."
+	committedEvidence := "The committed gate opened."
+	reviewEvidence := "The unverified cipher named Night Glass."
+	projection := buildPublicMemoryProjection(map[string]any{
+		"turn_summary":      "Two verified state changes and the unverified Night Glass cipher were recorded.",
+		"evidence_excerpts": []any{legacyEvidence, committedEvidence, reviewEvidence},
+		"state_claims": []any{
+			map[string]any{
+				"subject": "legacy_bell", "state_slot": "ringing", "value": true,
+				"evidence_excerpt": legacyEvidence,
+			},
+			map[string]any{
+				"subject": "gate", "state_slot": "open", "value": true,
+				"evidence_excerpt": committedEvidence,
+				"admission_state":  "committed", "review_state": "source_observed", "visibility": "public",
+			},
+			map[string]any{
+				"subject": "cipher", "state_slot": "name", "value": "Night Glass",
+				"evidence_excerpt": reviewEvidence,
+				"admission_state":  "review_required", "review_state": "needs_review", "visibility": "public",
+			},
+		},
+	}, "")
+	if !projection.Eligible {
+		t.Fatalf("objective projection unexpectedly became ineligible: %#v", projection)
+	}
+	if got := len(sliceFromAny(projection.Extraction["state_claims"])); got != 3 {
+		t.Fatalf("objective projection kept %d items, want legacy+committed+review: %#v", got, projection.Extraction)
+	}
+	if !strings.Contains(projection.SearchText.Text, legacyEvidence) ||
+		!strings.Contains(projection.SearchText.Text, committedEvidence) {
+		t.Fatalf("admissible objective meaning was lost: %q", projection.SearchText.Text)
+	}
+	if !strings.Contains(projection.SearchText.Text, reviewEvidence) || !strings.Contains(projection.SearchText.Text, "Night Glass") {
+		t.Fatalf("unscoped review item was treated as private: %q", projection.SearchText.Text)
+	}
+}
+
+func TestMissingPrivateEvidenceDoesNotPoisonUnrelatedExactEvidence(t *testing.T) {
+	extraction := map[string]any{
+		"turn_summary": "The bell rang while Rowan learned something privately.",
+		"evidence_excerpts": []any{
+			"The public bell rang.",
+			"Mira whispered that the vault was open.",
+		},
+		"belief_updates": []any{
+			map[string]any{
+				"perspective_owner": "Rowan", "subject": "vault", "state_slot": "access", "value": "open",
+				"evidence_excerpt": "Mira whispered that the vault was open.",
+			},
+			map[string]any{
+				"perspective_owner": "Rowan", "subject": "password", "state_slot": "value", "value": "missing-link",
+			},
+		},
+		"state_claims": []any{map[string]any{
+			"subject": "bell", "state_slot": "ringing", "value": true,
+			"evidence_excerpt": "The public bell rang.",
+		}},
+	}
+	projection := buildPublicMemoryProjection(extraction, "")
+	if !projection.Eligible || !strings.Contains(projection.SearchText.Text, "bell ringing") {
+		t.Fatalf("missing private evidence poisoned unrelated public evidence: %#v", projection)
+	}
+	if strings.Contains(projection.SearchText.Text, "vault") || strings.Contains(projection.SearchText.Text, "password") || strings.Contains(projection.SearchText.Text, "Rowan") {
+		t.Fatalf("private holder material entered public projection: %q", projection.SearchText.Text)
+	}
+	if len(sliceFromAny(projection.Extraction["state_claims"])) != 1 {
+		t.Fatalf("exact public objective item was lost from mixed projection: %#v", projection.Extraction)
+	}
+
+	memories := []store.Memory{{ID: 1, TurnIndex: 4, SummaryJSON: mustCompactJSON(extraction)}}
+	evidence := []store.DirectEvidence{
+		{ID: 1, EvidenceText: "The public bell rang.", SourceTurnStart: 4, SourceTurnEnd: 4},
+		{ID: 2, EvidenceText: "Mira whispered that the vault was open.", SourceTurnStart: 4, SourceTurnEnd: 4},
+	}
+	safe, blocked := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
+	if len(safe) != 1 || safe[0].ID != 1 || !blocked[2] || blocked[1] {
+		t.Fatalf("exact evidence scope mismatch: safe=%#v blocked=%#v", safe, blocked)
+	}
+}
+
+func TestMixedProjectionDoesNotGloballySuppressEvidenceWhenPrivateLinkIsIncomplete(t *testing.T) {
+	publicExcerpt := "The public bell rang."
+	unlinkedPrivateExcerpt := "Rowan privately used the alias Night Orchid."
+	projection := buildPublicMemoryProjection(map[string]any{
+		"turn_summary":      "The bell rang while Rowan privately used an alias.",
+		"evidence_excerpts": []any{publicExcerpt, unlinkedPrivateExcerpt},
+		"state_claims": []any{map[string]any{
+			"subject": "bell", "state_slot": "ringing", "value": true,
+			"evidence_excerpt": publicExcerpt,
+		}},
+		"belief_updates": []any{map[string]any{
+			"perspective_owner": "Rowan", "subject": "identity",
+			"state_slot": "alias", "value": "Night Orchid",
+		}},
+	}, "")
+	if !projection.Eligible || !strings.Contains(projection.SearchText.Text, "bell ringing") ||
+		!strings.Contains(projection.SearchText.Text, publicExcerpt) ||
+		!strings.Contains(projection.SearchText.Text, unlinkedPrivateExcerpt) {
+		t.Fatalf("positive-linked public evidence was lost: %#v", projection)
+	}
+	serialized := mustCompactJSON(projection.Extraction)
+	if strings.Contains(serialized, "belief_updates") || strings.Contains(serialized, "perspective_owner") {
+		t.Fatalf("typed private bucket entered public projection: %s", serialized)
+	}
+}
+
+func TestMixedProjectionKeepsGroundedEventDescriptionsWithoutRawPrivateSummary(t *testing.T) {
+	marker := strings.ToLower(t.Name())
+	publicEventEvidence := marker + ":public-event-evidence"
+	publicDescriptionEvidence := marker + ":public-description-evidence"
+	privateEvidence := marker + ":private-evidence"
+	reviewEvidence := marker + ":review-evidence"
+	publicEventText := marker + ":public-event"
+	publicDescriptionText := marker + ":public-description"
+	crossMatchedObjectiveValue := marker + ":cross-matched-objective-value"
+	reviewValue := marker + ":review-value"
+	extraction := map[string]any{
+		"turn_summary": strings.Join([]string{publicEventText, publicDescriptionText, crossMatchedObjectiveValue, reviewValue}, " "),
+		"evidence_excerpts": []any{
+			publicEventEvidence,
+			publicDescriptionEvidence,
+			privateEvidence,
+			reviewEvidence,
+		},
+		"narrative_events": []any{
+			map[string]any{
+				"event":            publicEventText,
+				"evidence_excerpt": publicEventEvidence,
+			},
+			map[string]any{
+				"description":      publicDescriptionText,
+				"evidence_excerpt": publicDescriptionEvidence,
+				"visibility":       "public",
+			},
+		},
+		"state_claims": []any{
+			map[string]any{
+				"subject": marker + ":review-subject", "state_slot": "name", "value": reviewValue,
+				"evidence_excerpt": reviewEvidence,
+				"admission_state":  "review_required",
+				"review_state":     "needs_review",
+				"visibility":       "public",
+			},
+			map[string]any{
+				"subject": marker + ":cross-matched-objective-subject", "state_slot": "origin", "value": crossMatchedObjectiveValue,
+				"evidence_excerpt": privateEvidence,
+			},
+		},
+		"kg_triples": []any{map[string]any{
+			"subject": marker + ":kg-subject", "predicate": marker + ":kg-predicate", "object": marker + ":kg-object",
+		}},
+		"entities": map[string]any{"characters": []any{map[string]any{
+			"name":            marker + ":entity",
+			"identity_proof":  map[string]any{"kind": marker + ":proof"},
+			"knowledge_scope": map[string]any{"known_by": []any{marker + ":observer"}},
+		}}},
+		"protected_secrets": []any{
+			map[string]any{
+				"owner": marker + ":owner", "secret_kind": marker + ":secret-kind",
+				"secret_summary":   marker + ":private-secret-value",
+				"evidence_excerpt": privateEvidence,
+				"knowledge_scope":  map[string]any{"known_by": []any{marker + ":owner"}},
+			},
+		},
+	}
+
+	projection := buildPublicMemoryProjection(extraction, "")
+	if !projection.Eligible {
+		t.Fatalf("grounded public events were rejected with the mixed row: %#v", projection)
+	}
+	projectedSummary := memorySummaryFromParsed(projection.Extraction)
+	for _, want := range []string{publicEventText, publicDescriptionText} {
+		if !strings.Contains(projectedSummary, want) {
+			t.Fatalf("projected event/description missing %q: %q", want, projectedSummary)
+		}
+	}
+	serialized := mustCompactJSON(projection.Extraction)
+	for _, forbidden := range []string{marker + ":private-secret-value"} {
+		if strings.Contains(serialized, forbidden) {
+			t.Fatalf("private or review canary entered public projection: %s", serialized)
+		}
+	}
+	if got := len(sliceFromAny(projection.Extraction["narrative_events"])); got != len(sliceFromAny(extraction["narrative_events"])) {
+		t.Fatalf("grounded public events=%d, want fixture events=%d", got, len(sliceFromAny(extraction["narrative_events"])))
+	}
+	if got := len(sliceFromAny(projection.Extraction["state_claims"])); got != 2 ||
+		!strings.Contains(serialized, crossMatchedObjectiveValue) || !strings.Contains(serialized, reviewValue) {
+		t.Fatalf("same-evidence or review objective meaning was removed: %#v", projection.Extraction["state_claims"])
+	}
+	for _, retained := range []string{marker + ":kg-subject", marker + ":entity", marker + ":proof", marker + ":observer"} {
+		if !strings.Contains(serialized, retained) {
+			t.Fatalf("private sibling caused general KG/entity metadata %q to disappear: %s", retained, serialized)
+		}
+	}
+	if !strings.Contains(serialized, privateEvidence) {
+		t.Fatalf("same-turn objective evidence was globally removed by a private typed item: %s", serialized)
+	}
+
+	projectedMemory, ok := publicMemoryFromCanonical(store.Memory{
+		SummaryJSON: mustCompactJSON(extraction),
+	})
+	if !ok {
+		t.Fatal("canonical mixed memory did not produce a public memory projection")
+	}
+	rendered := prepareTurnMemorySummary(projectedMemory)
+	if strings.HasPrefix(rendered, "{") {
+		t.Fatalf("prepare-turn rendered raw JSON instead of readable public events: %q", rendered)
+	}
+	for _, want := range []string{publicEventText, publicDescriptionText} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("prepare-turn readable summary missing %q: %q", want, rendered)
+		}
+	}
+	for _, forbidden := range []string{marker + ":private-secret-value"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("prepare-turn readable summary leaked private or review canary: %q", rendered)
+		}
+	}
+}
+
+func TestMemoryAdmissionIncompletePrivateLinkDoesNotSuppressGeneralEvidenceVectors(t *testing.T) {
+	fake := &memoryAdmissionWorkerStore{}
+	srv := &Server{Store: fake}
+	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	marker := strings.ToLower(t.Name())
+	publicExcerpt := marker + ":public-evidence"
+	unlinkedExcerpt := marker + ":unlinked-evidence"
+	extraction := map[string]any{
+		"turn_summary":      marker + ":blended-summary",
+		"importance_score":  5,
+		"evidence_excerpts": []any{publicExcerpt, unlinkedExcerpt},
+		"state_claims": []any{map[string]any{
+			"subject": marker + ":subject", "state_slot": marker + ":slot", "value": marker + ":value",
+			"evidence_excerpt": publicExcerpt,
+		}},
+		"belief_updates": []any{map[string]any{
+			"perspective_owner": marker + ":owner", "subject": marker + ":private-subject",
+			"state_slot": marker + ":private-slot", "value": marker + ":private-value",
+		}},
+	}
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-missing-private-evidence",
+		LogicalTurnID:   "logical-turn-missing-private-evidence",
+	})
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx,
+		"session-missing-private-evidence",
+		12,
+		extraction,
+		publicExcerpt+" "+unlinkedExcerpt,
+		extractionStringFromAny(extraction["turn_summary"]),
+		"ignored canonical search text",
+		memorySearchTextBuild{},
+		completeTurnEmbeddingConfig{},
+		"[]",
+		"test-embedding",
+		[]float32{0.1, 0.2},
+		nil,
+		nil,
+		nil,
+		time.Unix(1200, 0),
+		&result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("memory admission failed: handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+	admission := fake.admissions[0]
+	if len(admission.Evidence) != 2 {
+		t.Fatalf("canonical mixed evidence was lost: %#v", admission.Evidence)
+	}
+	wantVectors := 1 + len(memorySearchStringValues(extraction["evidence_excerpts"]))
+	if len(admission.Vectors) != wantVectors || admission.Vectors[0].ArtifactType != "memory" {
+		t.Fatalf("incomplete private link suppressed general evidence vectors: %#v", admission.Vectors)
+	}
+	serialized := mustCompactJSON(admission.Vectors)
+	for _, retained := range []string{publicExcerpt, unlinkedExcerpt, marker + ":subject", marker + ":value"} {
+		if !strings.Contains(serialized, retained) {
+			t.Fatalf("general vector payload lost %q after an incomplete private link: %s", retained, serialized)
+		}
+	}
+	if strings.Contains(serialized, marker+":private-subject") || strings.Contains(serialized, marker+":private-value") {
+		t.Fatalf("typed private bucket entered general vector payload: %s", serialized)
+	}
+	if admission.Memory == nil ||
+		!strings.Contains(admission.Memory.SummaryJSON, marker+":private-value") ||
+		!strings.Contains(admission.Memory.Evidence, unlinkedExcerpt) {
+		t.Fatalf("canonical private extraction/evidence was not preserved: %+v", admission.Memory)
+	}
+}
+
+func TestPrepareTurnGeneralProjectionKeepsMixedPublicEvidenceAndCanonicalProtectedSource(t *testing.T) {
+	publicExcerpt := "The public bell rang at noon."
+	privateExcerpt := "Mira privately named herself the Silver Fox."
+	mixed := store.Memory{
+		ID:        31,
+		TurnIndex: 8,
+		SummaryJSON: mustCompactJSON(map[string]any{
+			"turn_summary":      "The bell rang while Mira privately revealed her identity.",
+			"evidence_excerpts": []any{publicExcerpt, privateExcerpt},
+			"state_claims": []any{map[string]any{
+				"subject": "bell", "state_slot": "ringing", "value": true,
+				"evidence_excerpt": publicExcerpt,
+			}},
+			"protected_secrets": []any{map[string]any{
+				"owner": "Mira", "secret_kind": "identity",
+				"secret_summary":    "Mira is the Silver Fox.",
+				"evidence_excerpt":  privateExcerpt,
+				"disclosure_policy": "owner_private_until_revealed",
+				"knowledge_scope":   map[string]any{"known_by": []any{"Mira"}},
+			}},
+		}),
+	}
+	privateOnly := store.Memory{
+		ID:        32,
+		TurnIndex: 9,
+		SummaryJSON: mustCompactJSON(map[string]any{
+			"turn_summary":      "Mira privately named the second vault key.",
+			"evidence_excerpts": []any{"Mira privately named the second vault key."},
+			"protected_secrets": []any{map[string]any{
+				"owner": "Mira", "secret_kind": "vault_key",
+				"secret_summary":    "The second vault key is Lark.",
+				"evidence_excerpt":  "Mira privately named the second vault key.",
+				"disclosure_policy": "owner_private_until_revealed",
+				"knowledge_scope":   map[string]any{"known_by": []any{"Mira"}},
+			}},
+		}),
+	}
+
+	canonicalSummary := mixed.SummaryJSON
+	if guard := prepareTurnProtectedMemoryGuard(mixed); !guard.Active {
+		t.Fatal("canonical protected source did not retain its typed/protected guard")
+	}
+	general, trace := projectPrepareTurnGeneralMemories([]store.Memory{mixed, privateOnly})
+	if len(general) != 1 || general[0].ID != mixed.ID {
+		t.Fatalf("general projection did not keep only the mixed public item: %#v", general)
+	}
+	if intFromAny(trace["public_memory_projection_input_count"], 0) != 2 ||
+		intFromAny(trace["public_memory_projection_output_count"], 0) != 1 {
+		t.Fatalf("general projection trace mismatch: %#v", trace)
+	}
+	projectedJSON := general[0].SummaryJSON
+	if !strings.Contains(projectedJSON, "bell") ||
+		strings.Contains(projectedJSON, privateExcerpt) ||
+		strings.Contains(projectedJSON, "Silver Fox") ||
+		strings.Contains(projectedJSON, "Mira") ||
+		strings.Contains(projectedJSON, "known_by") {
+		t.Fatalf("mixed general projection leaked or lost scoped material: %s", projectedJSON)
+	}
+	if mixed.SummaryJSON != canonicalSummary || !prepareTurnProtectedMemoryGuard(mixed).Active {
+		t.Fatalf("general projection mutated the canonical typed/protected source: %#v", mixed)
+	}
+
+	documents := buildUnifiedRetrievalDocuments("session-public-projection", general, nil, nil, nil, nil, nil)
+	if len(documents) != 1 {
+		t.Fatalf("safe retrieval document count=%d, want 1", len(documents))
+	}
+	documentJSON := mustCompactJSON(documents[0])
+	if !strings.Contains(documentJSON, "bell") ||
+		strings.Contains(documentJSON, privateExcerpt) ||
+		strings.Contains(documentJSON, "Silver Fox") ||
+		strings.Contains(documentJSON, "Mira") {
+		t.Fatalf("safe retrieval document used canonical private text: %s", documentJSON)
+	}
+
+	privateChatText := "Mira privately named herself the Silver Fox."
+	assembly := buildPrepareTurnInjectionAssembly(
+		[]store.Memory{mixed, privateOnly}, nil, nil,
+		[]store.ChatLog{{ID: 91, TurnIndex: 9, Role: "assistant", Content: privateChatText}},
+		nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		5, 9000, "bell ringing", "default", documents, nil, nil,
+		map[string]any{
+			"_character_perspective_text":            "[Character Perspective]\n- Mira hesitates without revealing the reason.",
+			"_character_perspective_candidate_count": 1,
+		},
+	)
+	if !strings.Contains(assembly.ActualMemoryText, "bell ringing") {
+		t.Fatalf("actual memory lane lost the mixed row public projection: %q", assembly.ActualMemoryText)
+	}
+	for _, privateText := range []string{privateExcerpt, "Silver Fox", "second vault key", privateChatText} {
+		if strings.Contains(assembly.ActualMemoryText, privateText) || strings.Contains(assembly.FallbackText, privateText) {
+			t.Fatalf("private text reentered general or fallback delivery: actual=%q fallback=%q", assembly.ActualMemoryText, assembly.FallbackText)
+		}
+	}
+	if !strings.Contains(assembly.ProtectedMemoryText, "Mira hesitates without revealing the reason") {
+		t.Fatalf("separate typed perspective lane was lost: %q", assembly.ProtectedMemoryText)
+	}
+	if intFromAny(assembly.Counts["public_memory_projection_input_count"], 0) != 2 ||
+		intFromAny(assembly.Counts["public_memory_projection_output_count"], 0) != 1 ||
+		boolFromAny(assembly.Counts["raw_chat_fallback_enabled"]) {
+		t.Fatalf("assembly projection/fallback trace mismatch: %#v", assembly.Counts)
+	}
+
+	recall := buildRecallResult(
+		"session-public-projection", "bell ringing", false,
+		[]store.Memory{mixed, privateOnly}, nil, nil, nil,
+		[]store.ChatLog{{ID: 91, TurnIndex: 9, Role: "assistant", Content: privateChatText}},
+		nil, nil, nil, nil, nil, "default", 5, "bell ringing",
+	)
+	recallDeliveryJSON := mustCompactJSON(map[string]any{
+		"items":        recall["items"],
+		"search":       recall["search"],
+		"documents":    recall["documents"],
+		"recall_lanes": recall["recall_lanes"],
+	})
+	if !strings.Contains(recallDeliveryJSON, "bell ringing") || strings.Contains(recallDeliveryJSON, privateExcerpt) || strings.Contains(recallDeliveryJSON, "Silver Fox") || strings.Contains(recallDeliveryJSON, "second vault key") {
+		t.Fatalf("recall delivery surfaces lost public projection or exposed private memory: %s", recallDeliveryJSON)
 	}
 }
 
@@ -419,6 +1039,7 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 			"subject":           "vault",
 			"state_slot":        "access",
 			"value":             "open",
+			"evidence_excerpt":  "Mira privately told Rowan the vault was open.",
 		}},
 	})
 	if len(private.Vectors) != 0 {
@@ -427,6 +1048,9 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 	if len(private.Evidence) != 1 ||
 		private.Evidence[0].EvidenceKind != "perspective_scoped_turn_excerpt" {
 		t.Fatalf("perspective evidence was not tagged for fail-closed recall: %#v", private.Evidence)
+	}
+	if private.Memory == nil || private.Memory.EmbeddingModel != "" {
+		t.Fatalf("private canonical memory stored a policy sentinel as embedding model: %+v", private.Memory)
 	}
 
 	mixed := run(map[string]any{
@@ -443,16 +1067,24 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 			"value":             "open",
 			"evidence_excerpt":  "Mira privately told Rowan the vault was open.",
 		}},
+		"state_claims": []any{map[string]any{
+			"subject":          "bell",
+			"state_slot":       "ringing",
+			"value":            true,
+			"evidence_excerpt": "The public bell rang.",
+		}},
 	})
-	if len(mixed.Vectors) != 1 ||
-		mixed.Vectors[0].ArtifactType != "evidence" ||
-		mixed.Vectors[0].EvidenceText != "The public bell rang." {
-		t.Fatalf("mixed turn did not retain only public evidence vector: %#v", mixed.Vectors)
+	if len(mixed.Vectors) != 2 ||
+		mixed.Vectors[0].ArtifactType != "memory" ||
+		!strings.Contains(mixed.Vectors[0].DocumentText, "bell ringing") ||
+		strings.Contains(mixed.Vectors[0].DocumentText, "vault") ||
+		strings.Contains(mixed.Vectors[0].DocumentText, "Mira") ||
+		mixed.Vectors[1].ArtifactType != "evidence" ||
+		mixed.Vectors[1].EvidenceText != "The public bell rang." {
+		t.Fatalf("mixed turn did not retain only its public general projection: %#v", mixed.Vectors)
 	}
-	if len(mixed.Evidence) != 2 ||
-		mixed.Evidence[0].EvidenceKind != "turn_excerpt" ||
-		mixed.Evidence[1].EvidenceKind != "perspective_scoped_turn_excerpt" {
-		t.Fatalf("mixed evidence classification mismatch: %#v", mixed.Evidence)
+	if len(mixed.Evidence) != 2 {
+		t.Fatalf("mixed canonical evidence was lost: %#v", mixed.Evidence)
 	}
 }
 

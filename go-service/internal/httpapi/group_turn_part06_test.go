@@ -26,7 +26,8 @@ func TestPrepareTurnVectorHydrationUsesVectorIDFallbackAndFiltersNonMemory(t *te
 		},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{
 				"id":    "episode:sess-vector:99",
@@ -64,7 +65,7 @@ func TestPrepareTurnVectorHydrationUsesVectorIDFallbackAndFiltersNonMemory(t *te
 	}
 }
 
-func TestPrepareTurnProtectedGuardDiversityRefillsTopK(t *testing.T) {
+func TestPrepareTurnProtectedGuardDiversityKeepsVectorTopKAndIndependentLexicalMatches(t *testing.T) {
 	memories := []store.Memory{}
 	vectorResults := []map[string]any{}
 	for i := 1; i <= 7; i++ {
@@ -90,24 +91,27 @@ func TestPrepareTurnProtectedGuardDiversityRefillsTopK(t *testing.T) {
 			"similarity": 0.80 - float64(i)/1000, "similarity_source": "cosine_from_query_and_stored_embedding",
 		})
 	}
-	vectorShadow := map[string]any{"search_result": "ok", "search_results": vectorResults}
+	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
 
 	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 10, 12000, "Gloria returns to the market.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria", "source": "client_meta"})
-	if got := strings.Count(assembly.MemoryText, "POV-scoped identity continuity:") + strings.Count(assembly.MemoryText, "Protected identity continuity:"); got != 1 {
-		t.Fatalf("protected identity guard count = %d, want 1: %q", got, assembly.MemoryText)
+	if got := strings.Count(assembly.MemoryText, "POV-scoped identity continuity:") + strings.Count(assembly.MemoryText, "Protected identity continuity:"); got != 7 {
+		t.Fatalf("protected identity guard count = %d, want all 7 distinct turn occurrences: %q", got, assembly.MemoryText)
 	}
-	if got := strings.Count(assembly.MemoryText, "Actual event memory"); got != 10 {
-		t.Fatalf("actual vector event count = %d, want 10 plus one item-count-exempt protected guard: %q", got, assembly.MemoryText)
+	if got := strings.Count(assembly.MemoryText, "Actual event memory"); got != 12 {
+		t.Fatalf("actual event count = %d, want 10 vector matches plus 2 independent lexical matches: %q", got, assembly.MemoryText)
 	}
-	if got := intFromAny(assembly.Counts["selected_memory_total_count"], 0); got != 11 {
-		t.Fatalf("selected memory count = %d, want 10 actual vector memories plus one guard: %#v", got, assembly.Counts)
+	if got := intFromAny(assembly.Counts["selected_memory_total_count"], 0); got != 19 {
+		t.Fatalf("selected memory count = %d, want 12 actual memories plus 7 distinct guards: %#v", got, assembly.Counts)
 	}
-	if got := intFromAny(assembly.Counts["actual_memory_selected_count"], 0); got != 10 {
-		t.Fatalf("actual memory count = %d, want 10: %#v", got, assembly.Counts)
+	if got := intFromAny(assembly.Counts["actual_memory_selected_count"], 0); got != 12 {
+		t.Fatalf("actual memory count = %d, want 12: %#v", got, assembly.Counts)
 	}
 	policy := mapFromAny(assembly.Counts["memory_recall_lane_policy"])
 	if got := intFromAny(policy["actual_memory_vector_selected"], 0); got != 10 {
 		t.Fatalf("vector actual memory count = %d, want 10: %#v", got, policy)
+	}
+	if got := intFromAny(policy["exact_phrase_selected_count"], 0); got != 2 {
+		t.Fatalf("exact phrase count = %d, want 2 non-vector matches after dedupe: %#v", got, policy)
 	}
 	if policy["protected_candidates_consume_actual_memory_target"] != false {
 		t.Fatalf("protected candidates consumed actual-memory target: %#v", policy)
@@ -142,15 +146,15 @@ func TestMEMCProtectedVectorDominanceRefillsOnlyEvidenceLinkedCanonicalMemories(
 		store.Memory{ID: 11, TurnIndex: 91, SummaryJSON: `{"turn_summary":"미나는 문이 닫힌 뒤 기록관에 들어갔다."}`, Importance: 0.5},
 		store.Memory{ID: 12, TurnIndex: 2, SummaryJSON: `{"turn_summary":"먼 옛날의 비 소식은 산맥 너머를 묘사했다."}`, Importance: 1.0},
 	)
-	vectorShadow := map[string]any{"search_result": "ok", "search_results": vectorResults}
+	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
 
 	assembly := buildPrepareTurnInjectionAssembly(
 		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		3, 12000, "Gloria가 시장조약의 붉은인장을 확인한다.", "default", nil, vectorShadow, nil,
 		map[string]any{"current_pov": "Gloria", "source": "client_meta"},
 	)
-	if got := strings.Count(assembly.MemoryText, "identity continuity:"); got != 1 {
-		t.Fatalf("protected identity guard count = %d, want 1: %q", got, assembly.MemoryText)
+	if got := strings.Count(assembly.MemoryText, "identity continuity:"); got != 8 {
+		t.Fatalf("protected identity guard count = %d, want all 8 distinct turn occurrences: %q", got, assembly.MemoryText)
 	}
 	for _, required := range []string{
 		"Gloria가 시장조약에 붉은인장을 찍었다.",
@@ -184,18 +188,18 @@ func TestMEMCProtectedVectorDominanceRefillsOnlyEvidenceLinkedCanonicalMemories(
 	}
 }
 
-func TestPrepareTurnMemoryLinesDeduplicateAfterProtectedRendering(t *testing.T) {
+func TestPrepareTurnMemoryLinesKeepProtectedRowsWithoutExactOccurrence(t *testing.T) {
 	memories := []store.Memory{
 		{ID: 1, TurnIndex: 1, SummaryJSON: `{"turn_summary":"First wording.","protected_secrets":[{"secret_kind":"identity","disclosure_policy":"owner_private_until_revealed"}]}`},
 		{ID: 2, TurnIndex: 2, SummaryJSON: `{"turn_summary":"Second wording.","protected_secrets":[{"secret_kind":"identity","disclosure_policy":"owner_private_until_revealed"}]}`},
 	}
 	selection := prepareTurnMemoryLaneSelection{Relevant: memories, VectorScores: map[string]float64{}, RelevantScores: map[string]float64{}}
 	lines, trace := prepareTurnMemoryLaneLines(selection, nil, nil)
-	if len(lines) != 1 {
-		t.Fatalf("final rendered lines = %d, want 1: %#v", len(lines), lines)
+	if len(lines) != 2 {
+		t.Fatalf("final rendered lines = %d, want 2 distinct source rows: %#v", len(lines), lines)
 	}
-	if got := intFromAny(trace["final_render_duplicate_count"], 0); got != 1 {
-		t.Fatalf("final render duplicate count = %d, want 1: %#v", got, trace)
+	if got := intFromAny(trace["final_render_duplicate_count"], 0); got != 0 {
+		t.Fatalf("final render duplicate count = %d, want 0 without exact occurrence: %#v", got, trace)
 	}
 }
 
@@ -229,8 +233,8 @@ func TestMEMBSamePersonSecretKindMergesOnceWithoutWeakeningProtection(t *testing
 		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		5, 9000, "Mina reviews the hidden plan and surveillance duty.", "default", nil, nil, nil,
 	)
-	if got := strings.Count(assembly.MemoryText, "kind=hidden_plan"); got != 1 {
-		t.Fatalf("same-person hidden_plan guard count = %d, want 1: %q", got, assembly.MemoryText)
+	if got := strings.Count(assembly.MemoryText, "kind=hidden_plan"); got != 3 {
+		t.Fatalf("different-turn/policy hidden_plan guard count = %d, want 3: %q", got, assembly.MemoryText)
 	}
 	if got := strings.Count(assembly.MemoryText, "kind=surveillance"); got != 1 {
 		t.Fatalf("separate surveillance kind count = %d, want 1: %q", got, assembly.MemoryText)
@@ -251,18 +255,18 @@ func TestMEMBSamePersonSecretKindMergesOnceWithoutWeakeningProtection(t *testing
 			t.Fatalf("merged protection leaked secret source %q: %q", leaked, assembly.MemoryText)
 		}
 	}
-	foundMergedHiddenPlan := false
+	hiddenPlanRows := 0
 	for _, raw := range sliceFromAny(assembly.MemoryDeliveryLineage["items"]) {
 		item := mapFromAny(raw)
-		if item["protected_coverage_key"] == "secret|mina|hidden_plan" {
-			foundMergedHiddenPlan = true
-			if got := intFromAny(item["merged_source_count"], 0); got != len(memories) {
-				t.Fatalf("hidden_plan merged source count = %d, want %d: %#v", got, len(memories), item)
+		if strings.Contains(extractionStringFromAny(item["final_text"]), "kind=hidden_plan") {
+			hiddenPlanRows++
+			if got := intFromAny(item["merged_source_count"], 0); got != 1 {
+				t.Fatalf("different protected occurrences merged: %#v", item)
 			}
 		}
 	}
-	if !foundMergedHiddenPlan {
-		t.Fatalf("hidden_plan coverage lineage missing: %#v", assembly.MemoryDeliveryLineage)
+	if hiddenPlanRows != 3 {
+		t.Fatalf("hidden_plan lineage rows=%d, want 3: %#v", hiddenPlanRows, assembly.MemoryDeliveryLineage)
 	}
 }
 
@@ -276,7 +280,8 @@ func TestMEMBAmbiguousAliasDoesNotMergeDifferentPeople(t *testing.T) {
 		{ID: 6, TurnIndex: 6, SummaryJSON: `{"turn_summary":"Shade returned before dawn."}`},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{"id": "memory:sess-mem-b:3", "source_table": "memories", "source_row_id": "3", "similarity": 0.91, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			{"id": "memory:sess-mem-b:4", "source_table": "memories", "source_row_id": "4", "similarity": 0.89, "similarity_source": "cosine_from_query_and_stored_embedding"},
@@ -299,8 +304,7 @@ func TestMEMBAmbiguousAliasDoesNotMergeDifferentPeople(t *testing.T) {
 	ambiguousGroups := 0
 	for _, raw := range sliceFromAny(assembly.MemoryDeliveryLineage["items"]) {
 		item := mapFromAny(raw)
-		key := extractionStringFromAny(item["protected_coverage_key"])
-		if strings.HasPrefix(key, "secret|ambiguous:shade:") && strings.HasSuffix(key, "|hidden_plan") {
+		if strings.Contains(extractionStringFromAny(item["final_text"]), "kind=hidden_plan") {
 			ambiguousGroups++
 			if got := intFromAny(item["merged_source_count"], 0); got != 1 {
 				t.Fatalf("ambiguous alias group merged sources: %#v", item)
@@ -609,16 +613,16 @@ func TestRecentPrepareTurnRawTurnKeepsOnlyPreviousLogicalTurn(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnRelationshipRecallRejectsSingleEndpointHistory(t *testing.T) {
+func TestPrepareTurnRelationshipRecallKeepsSingleEndpointHistory(t *testing.T) {
 	query := "Alice and Eve inspect the sealed gate."
-	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "met", Object: "Rowan"}); ok || reason != "single_endpoint_only" {
-		t.Fatalf("single-endpoint historical edge accepted: ok=%v reason=%q", ok, reason)
+	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "met", Object: "Rowan"}); !ok || reason != "single_endpoint_current" {
+		t.Fatalf("single-endpoint historical edge was discarded: ok=%v reason=%q", ok, reason)
 	}
 	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "trusts", Object: "Eve"}); !ok || reason != "both_endpoints_current" {
 		t.Fatalf("current two-endpoint edge rejected: ok=%v reason=%q", ok, reason)
 	}
-	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "carries", Object: "sealed key"}); !ok || reason != "endpoint_plus_relation_evidence" {
-		t.Fatalf("endpoint plus event evidence rejected: ok=%v reason=%q", ok, reason)
+	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "carries", Object: "sealed key"}); !ok || reason != "single_endpoint_current" {
+		t.Fatalf("single-endpoint event edge rejected: ok=%v reason=%q", ok, reason)
 	}
 
 	raw := `{"Eve":{"trust":74},"Rowan":{"trust":20}}`
@@ -631,7 +635,36 @@ func TestPrepareTurnRelationshipRecallRejectsSingleEndpointHistory(t *testing.T)
 	}
 }
 
-func TestPrepareTurnRecallLanesUseRawFallbackWhenVectorIndexNotReady(t *testing.T) {
+func TestKGTripleDuplicateScopeIsSameSourceTurnOnly(t *testing.T) {
+	existing := []store.KGTriple{{
+		ChatSessionID: "session-a",
+		Subject:       "Alice",
+		Predicate:     "visits",
+		Object:        "the archive",
+		SourceTurn:    4,
+		ValidFrom:     4,
+	}}
+	if !kgTripleAlreadyExistsForTurn(existing, "session-a", 4, "Alice", "visits", "the archive", 4, 0) {
+		t.Fatal("same-source-turn duplicate was not recognized")
+	}
+	if kgTripleAlreadyExistsForTurn(existing, "session-a", 9, "Alice", "visits", "the archive", 9, 0) {
+		t.Fatal("a repeated event on a different source turn was discarded")
+	}
+}
+
+func TestCollapsePrepareTurnWorldRulesKeepsSameKeyDifferentValues(t *testing.T) {
+	rules := []store.WorldRule{
+		{ID: 1, ChatSessionID: "session-a", Scope: "world", Category: "access", Key: "gate", ValueJSON: `"open"`},
+		{ID: 2, ChatSessionID: "session-a", Scope: "world", Category: "access", Key: "gate", ValueJSON: `"closed"`},
+		{ID: 3, ChatSessionID: "session-a", Scope: "world", Category: "access", Key: "gate", ValueJSON: `"open"`},
+	}
+	collapsed := collapsePrepareTurnWorldRules(rules)
+	if len(collapsed) != 2 {
+		t.Fatalf("same key with distinct values must remain while exact duplicates collapse: %#v", collapsed)
+	}
+}
+
+func TestPrepareTurnRecallLanesDoNotUseRawFallbackWhenVectorIndexNotReady(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnMemories: []store.Memory{
 			{ID: 1, ChatSessionID: "sess-vector-degrade", TurnIndex: 1, SummaryJSON: `{"turn_summary":"old memory one"}`},
@@ -677,8 +710,17 @@ func TestPrepareTurnRecallLanesUseRawFallbackWhenVectorIndexNotReady(t *testing.
 	}
 	recallLanes := recall["recall_lanes"].(map[string]any)
 	rawFallback := recallLanes["raw_fallback"].(map[string]any)
-	if rawFallback["active"] != true || rawFallback["count"] != float64(4) {
+	if rawFallback["active"] != false || rawFallback["count"] != float64(0) {
 		t.Fatalf("raw_fallback lane mismatch: %+v", rawFallback)
+	}
+	deliverySurfaces := mustCompactJSON(map[string]any{
+		"items":        recall["items"],
+		"search":       recall["search"],
+		"documents":    recall["documents"],
+		"recall_lanes": recall["recall_lanes"],
+	})
+	if strings.Contains(deliverySurfaces, "first raw turn") || strings.Contains(deliverySurfaces, "second assistant raw turn") {
+		t.Fatalf("raw chat reentered recall delivery after public projection boundary: %s", deliverySurfaces)
 	}
 }
 

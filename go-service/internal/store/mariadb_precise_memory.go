@@ -16,6 +16,7 @@ var _ PreciseMemoryWriter = (*mariadbStore)(nil)
 var _ PreciseMemoryWriteAvailability = (*mariadbStore)(nil)
 var _ CharacterPerspectiveMemoryReader = (*mariadbStore)(nil)
 var _ ActiveInteractionMemoryReader = (*mariadbStore)(nil)
+var _ GeneralVectorPreciseMemoryReader = (*mariadbStore)(nil)
 
 func (m *mariadbStore) PreciseMemoryWritesEnabled() bool {
 	return m != nil && m.db != nil
@@ -80,8 +81,6 @@ func (m *mariadbStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context, 
 		WHERE unit.chat_session_id = ?
 		  AND unit.memory_kind = 'observation'
 		  AND unit.knowledge_holder_entity_id = ?
-		  AND unit.admission_state IN ('committed', 'review_required')
-		  AND unit.review_state IN ('source_observed', 'needs_review')
 		  AND unit.epistemic_mode IN ('known', 'suspected', 'unknown', 'misinformed', 'hidden', 'revealed')
 		  AND unit.lifecycle_state = 'active'
 		ORDER BY unit.source_turn_start ASC, unit.unit_id ASC
@@ -143,8 +142,6 @@ func (m *mariadbStore) ListActiveInteractionMemoryUnits(ctx context.Context, cha
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE unit.chat_session_id = ?
 		  AND unit.memory_kind IN ('observation', 'boundary')
-		  AND unit.admission_state = 'committed'
-		  AND unit.review_state = 'source_observed'
 		  AND unit.lifecycle_state = 'active'
 		ORDER BY unit.source_turn_start ASC, unit.unit_id ASC
 	`, chatSessionID)
@@ -169,6 +166,54 @@ func (m *mariadbStore) ListActiveInteractionMemoryUnits(ctx context.Context, cha
 			return nil, err
 		}
 		out = append(out, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (m *mariadbStore) ListGeneralVectorPreciseMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT
+			unit.id, unit.unit_id, unit.chat_session_id,
+			unit.admission_state, unit.review_state, unit.visibility,
+			COALESCE(unit.knowledge_holder_entity_id, ''),
+			unit.epistemic_mode, unit.lifecycle_state
+		FROM precise_memory_units unit
+		JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = unit.chat_session_id
+		 AND source_revision.source_revision = unit.source_revision
+		 AND source_revision.lifecycle_state = 'active'
+		WHERE unit.chat_session_id = ?
+		  AND unit.lifecycle_state = 'active'
+		ORDER BY unit.id ASC
+	`, chatSessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []PreciseMemoryUnit{}
+	for rows.Next() {
+		var item PreciseMemoryUnit
+		if err := rows.Scan(
+			&item.ID, &item.UnitID, &item.ChatSessionID,
+			&item.AdmissionState, &item.ReviewState, &item.Visibility,
+			&item.KnowledgeHolderEntityID, &item.EpistemicMode,
+			&item.LifecycleState,
+		); err != nil {
+			return nil, err
+		}
+		if PreciseMemoryGeneralVectorEligible(&item) {
+			out = append(out, item)
+		}
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -218,7 +263,7 @@ func savePreciseMemoryUnitTx(ctx context.Context, tx *sql.Tx, item *PreciseMemor
 		nullableString(item.SourceMessageID), nullableString(item.SourceGenerationID),
 		item.SourceContentHash, item.SourceRole, item.SourceSpanStart,
 		item.SourceSpanEnd, item.EvidenceExcerpt, item.EvidenceHash,
-		item.RootEvidenceID, item.DirectEvidenceIDsJSON, item.Kind,
+		nullablePositiveInt64(item.RootEvidenceID), item.DirectEvidenceIDsJSON, item.Kind,
 		nullableString(item.Subtype), item.PayloadJSON,
 		nullableString(item.ActorEntityID), nullableString(item.SubjectEntityID),
 		nullableString(item.AffectedEntityID), nullableString(item.LocationEntityID),
@@ -339,7 +384,10 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		return false, nil
 	}
 	documentID := "precise_memory:" + item.ChatSessionID + ":" + item.UnitID
-	documentText := strings.TrimSpace(item.EvidenceExcerpt)
+	documentText := PreciseMemorySemanticText(item)
+	if documentText == "" {
+		return false, nil
+	}
 	documentJSON, err := json.Marshal(map[string]any{
 		"ID":            documentID,
 		"ChatSessionID": item.ChatSessionID,
@@ -373,7 +421,7 @@ func enqueuePreciseMemoryVectorTx(ctx context.Context, tx *sql.Tx, item *Precise
 		CreatedAt:           nonZeroTime(item.CreatedAt),
 		UpdatedAt:           nonZeroTime(item.UpdatedAt),
 	}
-	return enqueueMemoryVectorOperation(ctx, tx, outbox)
+	return enqueueAdmissionVectorOperation(ctx, tx, outbox)
 }
 
 func preciseMemoryVectorOutboxStatus(item *PreciseMemoryUnit) string {

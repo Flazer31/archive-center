@@ -37,9 +37,10 @@ func TestArchiveCenterJSPersonaCapsuleUIMarkers(t *testing.T) {
 		`persona.candidate.title`,
 		`persona.candidate.approve`,
 		`persona.status.candidateProposed`,
-		`["persona", t("persona.tab")]`,
+		`["persona", t('persona.tab')]`,
 		`data-tab-jump="' + id + '"`,
-		`data-tab-panel="persona"`,
+		`class="mo-subtabs mo-settings-subtabs mo-extension-subtabs"`,
+		`data-tab-panel="${_settingsActiveTab}"`,
 		`id="mo-persona-capsule-root"`,
 		`data-persona-capsule-create="true"`,
 		`data-persona-entity-memory-load="true"`,
@@ -73,21 +74,72 @@ func TestArchiveCenterJSPersonaCapsuleUIMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSGLM52ReasoningEffortMarkers(t *testing.T) {
+func TestArchiveCenterJSGLMUsesDocumentedThinkingToggle(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`function resolveGLMThinkingMode`,
-		`glm_52_reasoning_effort`,
-		`["none", "minimal", "low", "medium", "high", "xhigh", "max"]`,
+		`/(^|\/)glm[-_]/`,
+		`mode: "glm_toggle"`,
+		`effortOptions: ["enable", "disable"]`,
 		`function applyReasoningFieldsToPayload`,
-		`payload.glm_thinking_type = "disabled"`,
-		`payload.glm_thinking_type = "enabled"`,
-		`payload.reasoning_effort = effort`,
-		`GLM-5.2 thinking.type + reasoning_effort`,
+		`payload.glm_thinking_type = (effort === "disable" || effort === "disabled") ? "disabled" : "enabled"`,
+		`GLM thinking.type`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing GLM-5.2 reasoning marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{`glm_52_reasoning_effort`, `GLM-5.2 thinking.type + reasoning_effort`} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js kept undocumented GLM marker %q", forbidden)
+		}
+	}
+}
+
+func TestArchiveCenterJSReasoningFamilyUsesKnownModelNamesBeforeProviderFallback(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
+		`/(^|\/)gemini[-_]/`,
+		`/(^|\/)glm[-_]/`,
+		`/(^|\/)claude[-_]/`,
+		`function resolveGPTReasoningEffortOptions(model)`,
+		`return ["none", "low", "medium", "high", "xhigh", "max"]`,
+		`const gptEffortOptions = resolveGPTReasoningEffortOptions(model)`,
+		`family === "gpt" && gptEffortOptions.length > 0`,
+		`Auto uses the model name and version first and omits reasoning fields when the contract is unknown`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing model-first reasoning marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		`gemini-(?:3(?:\D|$)|[4-9]`,
+		`mo-sourceSearchPlannerReasoningEffortRow`,
+		`resolveReasoningControls(value, preset ? preset.value : "auto", model ? model.value : "")`,
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js kept out-of-scope or speculative reasoning marker %q", forbidden)
+		}
+	}
+}
+
+func TestArchiveCenterJSDeepSeekV4ReasoningMarkers(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	required := []string{
+		`deepseek_v4: {`,
+		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
+		`mode: "deepseek_v4_reasoning_effort"`,
+		`effortOptions: ["none", "high", "max"]`,
+		`normalizedValue === "low" || normalizedValue === "medium"`,
+		`normalizedValue === "xhigh"`,
+		`controls.family === "deepseek_v4"`,
+		`payload.reasoning_effort = effort || "none"`,
+		`DeepSeek V4 thinking.type + reasoning_effort`,
+	}
+	for _, needle := range required {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing DeepSeek V4 reasoning marker %q", needle)
 		}
 	}
 }

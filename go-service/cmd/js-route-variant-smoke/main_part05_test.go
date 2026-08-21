@@ -7,29 +7,6 @@ import (
 
 // SEQ-16.5-P142: input context builder slot governor — validates that
 // Archive Center.js contains the input context slot governor surface markers.
-func TestArchiveCenterJSSeq165P142InputContextSlotGovernorMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildInputContext(userInput, orchResult, bundledContinuityText, governorContext) {",
-		"slotGovernorPolicyVersion: \"s16.5-ig.v1\"",
-		"slotGovernorMode: \"turn_need_risk_slot_governor\"",
-		"const budget = Math.max(1, Math.floor(Number(settings.maxInputContextChars) || DEFAULT_SETTINGS.maxInputContextChars));",
-		"function buildTemporalCandidate() {",
-		"function buildSceneCandidate() {",
-		"function buildEntityCandidate() {",
-		"function buildSagaCandidate() {",
-		"mandatory: true",
-		"staleArcDemotionApplied",
-		"helperOverlapSuppressionApplied",
-		"supportLaneNote: \"Support-only anchor lane; does not overwrite canonical state.\"",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P142 input context slot governor marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P143: transparency / preview / runtime trace extend — validates that
 // Archive Center.js contains the transparency/preview/runtime trace extension markers.
 func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t *testing.T) {
@@ -61,267 +38,43 @@ func TestArchiveCenterJSSeq165P143TransparencyPreviewRuntimeTraceExtendMarkers(t
 	}
 }
 
-// SEQ-16.5-P144: backend/main.py input_context_text handoff anchor metadata
-// alignment — validates that Archive Center.js contains the handoff alignment markers.
-func TestArchiveCenterJSSeq165P144HandoffAnchorMetadataAlignmentMarkers(t *testing.T) {
+// SEQ-16.5-P144: recent chat is retained by the host and is not inserted again.
+func TestArchiveCenterJSSeq165P144DoesNotReinjectHostRecentChat(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"const inputContextText = String(plan.input_context_text || \"\")",
-		"injectInputContextBeforeUser(finalPayload, inputContextText)",
 		"injectionTextSource: \"go_payload_application_plan.v1\"",
-		"input_context_hash",
 		"apply_exact_text_without_reassembly",
+		"source: \"risu_host_recent_chat\"",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-16.5-P144 handoff anchor metadata alignment marker %q", needle)
 		}
 	}
+	if strings.Contains(src, "injectInputContextBeforeUser") || strings.Contains(src, "[Archive Center — Input Context]") {
+		t.Fatal("Archive Center.js still contains the removed recent-chat reinjection path")
+	}
 }
 
 // SEQ-16.5-P145: Step 16.8 stale-arc guard carry-in / Step 17 evaluation ops
 // carry-in replay/inspection hooks — validates that Archive Center.js contains
 // the stale-arc guard and carry-in hook markers.
-func TestArchiveCenterJSSeq165P145StaleArcGuardCarryInHooksMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {",
-		"const oldArcForegroundGuard = budgetPolicy.oldArcForegroundGuard && typeof budgetPolicy.oldArcForegroundGuard === \"object\"",
-		"function normalizeOldArcDecision(entry, lane) {",
-		"function buildOldArcFailureTaxonomy(decisions) {",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"primaryClass",
-		"secondaryClasses",
-		"validDelayedPayoffRescue",
-		"foregroundHijackRisk",
-		"arcMonopolyAttempt",
-		"sceneMonopolyRisk",
-		"splitTrace",
-		"recallGainCount",
-		"monopolyCostCount",
-		"explicitAlignmentKeepCount",
-		"currentSceneKeepCount",
-		"noAlignmentDemoteCount",
-		"redirectedSuppressCount",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P145 stale-arc guard carry-in hooks marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P169: helper injection adaptive floor / ceiling decision value.
-func TestArchiveCenterJSSeq165P169DecisionAdaptiveFloorCeilingMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars",
-		"current_chat_tokens: prepareInjectionBudget.currentChatTokens",
-		"context_window_tokens: prepareInjectionBudget.contextWindowTokens",
-		"current_chat_chars: prepareInjectionBudget.currentChatChars",
-		"extra_chars: prepareInjectionBudget.userExtraBudgetChars",
-		"parts.push(b.text);",
-		"const step13TokenTruthFloorCoreLabels = [\"latest_direct_evidence\", \"recent_raw_turn\", \"active_state\", \"canonical_state_layer\"];",
-		"const step13TokenTruthFloorContinuityLabels = [\"storylines\", \"episode\", \"chapter\", \"arc\", \"saga\"];",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P169 adaptive floor/ceiling decision marker %q", needle)
-		}
-	}
-	if strings.Contains(src, `parts.push("[Character Private Recollection]\n" + b.text);`) {
-		t.Fatal("Archive Center.js must not add a second Character Private Recollection heading")
-	}
-	if strings.Contains(src, `parts.push("[Persona Recollection]\n" + b.text);`) {
-		t.Fatal("Archive Center.js must not add a second Persona Recollection heading")
-	}
-}
-
 // SEQ-16.5-P170: input context max slot 2 vs 3 decision value.
-func TestArchiveCenterJSSeq165P170DecisionMaxSlotMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"slotGovernorPolicyVersion: \"s16.5-ig.v1\"",
-		"slotGovernorMode: \"turn_need_risk_slot_governor\"",
-		"maxSlots: 0",
-		"let maxSlots = 2",
-		"function buildTemporalCandidate() {",
-		"function buildSceneCandidate() {",
-		"function buildEntityCandidate() {",
-		"function buildSagaCandidate() {",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P170 max slot decision marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P171: runtime token hint telemetry-only / secondary safety cap
 // decision value.
-func TestArchiveCenterJSSeq165P171DecisionRuntimeTokenHintMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"const runtimeTokenSourceIsEstimate = normalizedRuntimeTokenSource === \"message_char_estimate\";",
-		"const runtimeTieringEnabled = !!(normalizedRuntimeTokenSource && normalizedRuntimeTokenSource !== \"none\");",
-		"const runtimeBudgetAdaptiveEligible = !!(runtimeTieringEnabled && Number.isFinite(runtimeTokens) && runtimeTokens > 0);",
-		"const step13TokenEstimatorLowConfidenceSources = [\"none\", \"message_char_estimate\"];",
-		"const step13TokenEstimatorDriftTelemetryFields = [",
-		"manualBudgetLimit",
-		"budgetLimit",
-		"budgetLimitSource",
-		"runtimeCurrentChatTokens",
-		"runtimeCurrentChatTokensEffective",
-		"contextProfile",
-		"contextProfileSource",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P171 runtime token hint decision marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P172: [Saga] / [Chapter] anchor competition vs fallback ladder
 // decision value.
-func TestArchiveCenterJSSeq165P172DecisionSagaChapterAnchorLadderMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildSagaCandidate() {",
-		"label: \"Saga Anchor\"",
-		"family: \"saga\"",
-		"source: \"storylines\"",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P172 saga/chapter anchor ladder decision marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P173: explicit user-input specificity heuristic/classifier
 // decision value.
-func TestArchiveCenterJSSeq165P173DecisionExplicitUserInputSpecificityMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);",
-		"const temporalQuery = isTemporalQueryInput(rawInput);",
-		"const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);",
-		"const longGapResume = continuityTriggerMode === \"idle_reentry\";",
-		"const explicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(rawInput);",
-		"const strongUserIntent = rawInput.length >= 48 || rawInput.split(/\\s+/).filter(Boolean).length >= 10;",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P173 explicit user-input specificity decision marker %q", needle)
-		}
-	}
-	if strings.Contains(src, "idleGapMs >= longGapThresholdMs") {
-		t.Fatal("Archive Center.js restored a hidden elapsed-time resume policy")
-	}
-}
-
 // SEQ-16.5-P177: Step 16.8 stale-arc suppression slice baseline compare.
-func TestArchiveCenterJSSeq165P177Step168BaselineCompareMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"primaryClass",
-		"validDelayedPayoffRescue",
-		"foregroundHijackRisk",
-		"arcMonopolyAttempt",
-		"sceneMonopolyRisk",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P177 Step 16.8 baseline compare marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P178: Step 16.8 reason visibility / monopoly replay guard lane.
-func TestArchiveCenterJSSeq165P178Step168ReasonVisibilityGuardLaneMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"secondaryClasses",
-		"explicitRedirectionOnly",
-		"validDelayedPayoffRescue",
-		"foregroundHijackRisk",
-		"sceneMonopolyRisk",
-		"arcMonopolyAttempt",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P178 Step 16.8 reason visibility guard lane marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P179: Step 16.8 completion Step 17 evaluation baseline direct
 // handoff gate.
-func TestArchiveCenterJSSeq165P179Step17DirectHandoffGateMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"const oldArcForegroundGuard = budgetPolicy.oldArcForegroundGuard && typeof budgetPolicy.oldArcForegroundGuard === \"object\"",
-		"function normalizeOldArcDecision(entry, lane) {",
-		"function buildOldArcFailureTaxonomy(decisions) {",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P179 Step 17 direct handoff gate marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P183: Step 17 evaluation harness static 3000/800 baseline + 16.5+16.8
 // baseline.
-func TestArchiveCenterJSSeq165P183Step17EvaluationHarnessBaselineMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars",
-		"const budget = Math.max(1, Math.floor(Number(settings.maxInputContextChars) || DEFAULT_SETTINGS.maxInputContextChars));",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"slotGovernorPolicyVersion: \"s16.5-ig.v1\"",
-		"slotGovernorMode: \"turn_need_risk_slot_governor\"",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P183 Step 17 evaluation harness baseline marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.5-P184: Step 17 ops budget tuning governor behavior trace
 // interpretation document.
-func TestArchiveCenterJSSeq165P184Step17OpsTraceInterpretationMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {",
-		"function logTurnTraceSummary() {",
-		"function renderTurnTraceRows() {",
-		"policyVersion: \"s16.8-ft.v1\"",
-		"mode: \"recall_gain_vs_monopoly_cost_split\"",
-		"decisionCounts",
-		"recallGainCount",
-		"monopolyCostCount",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.5-P184 Step 17 ops trace interpretation marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P99: stale-arc ceiling — no-user-mention stale arc rescue auto-foreground.
 func TestArchiveCenterJSSeq168P99StaleArcCeilingMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -338,54 +91,8 @@ func TestArchiveCenterJSSeq168P99StaleArcCeilingMarkers(t *testing.T) {
 }
 
 // SEQ-16.8-P100: scene alignment — old arc explicit query alignment or fresh scene evidence.
-func TestArchiveCenterJSSeq168P100SceneAlignmentMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"explicit_query_alignment",
-		"current_scene_evidence",
-		"oldArcForegroundGuard",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P100 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P101: reason trace — old arc keep/drop/suppress inspectable.
-func TestArchiveCenterJSSeq168P101ReasonTraceMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"coprocessor_reason_trace",
-		"supported_reason_codes",
-		"keep",
-		"drop",
-		"suppress",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P101 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P102: failure split — tail recall gain foreground monopoly failure class.
-func TestArchiveCenterJSSeq168P102FailureSplitMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"buildOldArcFailureTaxonomy",
-		"primaryClass",
-		"secondaryClasses",
-		"foreground_hijack_risk",
-		"arc_monopoly_attempt",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P102 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P103: packet synthesis — Step 21 packet/new-scene synthesis Step 22 long-horizon subsystem.
 func TestArchiveCenterJSSeq168P103PacketSynthesisMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -418,20 +125,6 @@ func TestArchiveCenterJSSeq168P107CallbackBiasCeilingMarkers(t *testing.T) {
 }
 
 // SEQ-16.8-P108: callback scene alignment — 16.8-1b callback rescue current-scene alignment define.
-func TestArchiveCenterJSSeq168P108CallbackSceneAlignmentMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"current_scene_evidence",
-		"explicit_query_alignment",
-		"input_current_scene_anchor",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P108 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P109: stale callback suppression — 16.8-1c stale callback suppression trigger define.
 func TestArchiveCenterJSSeq168P109StaleCallbackSuppressionMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -464,23 +157,6 @@ func TestArchiveCenterJSSeq168P113OldArcForegroundVisibilityMarkers(t *testing.T
 }
 
 // SEQ-16.8-P114: reason code vocabulary — 16.8-2b keep/drop/suppress/demote reason code vocabulary define.
-func TestArchiveCenterJSSeq168P114ReasonCodeVocabularyMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"coprocessor_reason_trace",
-		"supported_reason_codes",
-		"keep",
-		"drop",
-		"suppress",
-		"demote",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P114 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P115: preview/audit/transparency — 16.8-2c preview/audit/transparency surface define.
 func TestArchiveCenterJSSeq168P115PreviewAuditTransparencyMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -497,112 +173,12 @@ func TestArchiveCenterJSSeq168P115PreviewAuditTransparencyMarkers(t *testing.T) 
 }
 
 // SEQ-16.8-P119: foreground hijack taxonomy — 16.8-3a foreground hijack/arc monopoly failure taxonomy define.
-func TestArchiveCenterJSSeq168P119ForegroundHijackTaxonomyMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"buildOldArcFailureTaxonomy",
-		"foreground_hijack_risk",
-		"arc_monopoly_attempt",
-		"sceneMonopolyRisk",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P119 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P120: delayed payoff split — 16.8-3b valid delayed payoff rescue vs scene monopoly split define.
-func TestArchiveCenterJSSeq168P120DelayedPayoffSplitMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"validDelayedPayoffRescue",
-		"sceneMonopolyRisk",
-		"valid_delayed_payoff_rescue",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P120 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P121: recall gain/monopoly cost split — 16.8-3c recall gain/monopoly cost split trace schema define.
-func TestArchiveCenterJSSeq168P121RecallGainMonopolySplitMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"recallGainCount",
-		"monopolyCostCount",
-		"splitTrace",
-		"recall_gain_vs_monopoly_cost_split",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P121 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P125: stale arc revival replay — 16.8-4a stale arc revival/single-incident monopoly replay define.
-func TestArchiveCenterJSSeq168P125StaleArcRevivalReplayMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"buildOldArcReplayGate",
-		"single_incident_monopoly_attempt",
-		"staleArcRevivalReplay",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P125 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P126: tail recall vs foreground hijack gate — 16.8-4b tail recall vs foreground hijack gate define.
-func TestArchiveCenterJSSeq168P126TailRecallHijackGateMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"buildOldArcReplayGate",
-		"tailRecallVsForegroundHijackGate",
-		"tail_recall_with_monopoly_cost",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P126 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P127: narrative diversity gate — 16.8-4c narrative diversity gate define.
-func TestArchiveCenterJSSeq168P127NarrativeDiversityGateMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"narrativeDiversityGate",
-		"stale_arc_replay_and_diversity_adoption_gate",
-		"scene diversity stayed clear of old-arc monopoly pressure",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P127 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P128: arc monopoly gate — 16.8-4d arc monopoly gate define.
-func TestArchiveCenterJSSeq168P128ArcMonopolyGateMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"arc_monopoly_attempt",
-		"arcMonopolyAttempt",
-		"arcMonopolyGate",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P128 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P132: Archive Center.js continuity rescue owner surface.
 func TestArchiveCenterJSSeq168P132JSContinuityRescueMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -623,13 +199,22 @@ func TestArchiveCenterJSSeq168P132JSContinuityRescueMarkers(t *testing.T) {
 func TestArchiveCenterJSSeq168P133JSPromptAssemblyGuardMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"assembleInjectionWithBudget",
 		"applyContextInjection",
-		"buildAdaptiveInjectionGovernorTrace",
+		"applyGoPayloadApplicationPlan",
+		"payload_application_plan.v1",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing SEQ-16.8-P133 marker %q", needle)
+		}
+	}
+	for _, removed := range []string{
+		"function buildInputContext(",
+		"function buildAdaptiveInjectionGovernorTrace(",
+		"function assembleInjectionWithBudget(",
+	} {
+		if strings.Contains(src, removed) {
+			t.Fatalf("Archive Center.js restored obsolete JavaScript policy owner %q", removed)
 		}
 	}
 }
@@ -650,38 +235,7 @@ func TestArchiveCenterJSSeq168P134JSTracePreviewTransparencyMarkers(t *testing.T
 }
 
 // SEQ-16.8-P135: replay corpus/inspection baseline add.
-func TestArchiveCenterJSSeq168P135ReplayCorpusBaselineMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"replayScenarios",
-		"single_incident_monopoly_attempt",
-		"tail_recall_with_monopoly_cost",
-		"valid_delayed_payoff_rescue",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P135 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P136: backend/main.py storyline/pending-thread read metadata alignment — suppression trace confirm.
-func TestArchiveCenterJSSeq168P136BackendMetadataAlignmentMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"storylineCount",
-		"pendingThreadCount",
-		"suppressionTriggerActive",
-		"guidance_metadata",
-		"max_input_context_chars",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P136 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P162: Decision outcome — stale arc ceiling judged by explicit
 // alignment / current-scene evidence / explicit redirection, not turn-gap alone.
 func TestArchiveCenterJSSeq168P162DecisionOutcomeCeilingNotTurnGapMarkers(t *testing.T) {
@@ -704,22 +258,6 @@ func TestArchiveCenterJSSeq168P162DecisionOutcomeCeilingNotTurnGapMarkers(t *tes
 }
 
 // SEQ-16.8-P163: current-scene evidence minimum criteria.
-func TestArchiveCenterJSSeq168P163CurrentSceneEvidenceMinCriteriaMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"currentSceneEvidence",
-		"activeState",
-		"latestDirectEvidence",
-		"recentRawTurn",
-		"inspectable",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P163 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P164: open / paused thread ceiling family, pending_threads guard.
 func TestArchiveCenterJSSeq168P164PendingThreadsGuardMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -740,23 +278,6 @@ func TestArchiveCenterJSSeq168P164PendingThreadsGuardMarkers(t *testing.T) {
 
 // SEQ-16.8-P165: reason visibility lane extends to adaptive trace / continuity
 // trace / input transparency.
-func TestArchiveCenterJSSeq168P165ReasonVisibilityLaneMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"_inputTransparency",
-		"buildContinuityTraceState",
-		"applyContinuityTraceState",
-		"reason",
-		"inspectable",
-		"trace",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-16.8-P165 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-16.8-P166: diversity gate default diagnostic warn, arc_monopoly_attempt
 // Step 17 handoff block signal.
 func TestArchiveCenterJSSeq168P166DiversityGateDiagnosticWarnMarkers(t *testing.T) {
@@ -795,23 +316,6 @@ func TestArchiveCenterJSSeq17P230EvaluationSplitMarkers(t *testing.T) {
 }
 
 // SEQ-17-P231: ops procedure documentation surface.
-func TestArchiveCenterJSSeq17P231OpsProcedureSurfaceMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"promotion",
-		"backfill",
-		"rebuild",
-		"reembed",
-		"migration",
-		"health",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-17-P231 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-17-P232: inspection lane boundary surface.
 func TestArchiveCenterJSSeq17P232InspectionLaneBoundaryMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -920,21 +424,6 @@ func TestArchiveCenterJSSeq17P240FailureSplitReplayMarkers(t *testing.T) {
 // SEQ-17-P241: 17-1d Step 14~16 regression corpus define.
 // NOTE: Step 17 evaluation surface is primarily Go backend; JS runtime does not
 // expose direct regression corpus markers. Verified by Go contract test only.
-func TestArchiveCenterJSSeq17P241RegressionCorpusMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"regression",
-		"corpus",
-		"seq14",
-		"seq15",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-17-P241 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-17-P242: 17-1e freshness lag metric define.
 func TestArchiveCenterJSSeq17P242FreshnessLagMetricMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -972,23 +461,6 @@ func TestArchiveCenterJSSeq17P286PromotionBackfillRebuildMarkers(t *testing.T) {
 }
 
 // SEQ-17-P287: 17-2b reembed / migration / health probe document.
-func TestArchiveCenterJSSeq17P287ReembedMigrationHealthProbeMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"reembed",
-		"migration",
-		"health",
-		"probe",
-		"audit",
-		"dry_run",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-17-P287 marker %q", needle)
-		}
-	}
-}
-
 // SEQ-17-P288: 17-2c failure mode / fallback / rollback runbook cleanup.
 // NOTE: Step 17 runbook is Go backend surface; JS runtime does not
 // expose direct runbook markers. Verified by Go contract test only.

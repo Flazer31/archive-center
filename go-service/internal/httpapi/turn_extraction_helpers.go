@@ -459,7 +459,20 @@ func worldRuleItemsForSave(extraction map[string]any) []any {
 		if scope != "" {
 			rule["scope"] = scope
 		}
-		sig := strings.ToLower(scope) + "\x00" + strings.ToLower(scopeName) + "\x00" + strings.ToLower(key)
+		value := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(rule, "value"),
+			stringFromMap(rule, "value_json"),
+			stringFromMap(rule, "description"),
+			stringFromMap(rule, "summary"),
+		))
+		category := strings.TrimSpace(stringFromMap(rule, "category"))
+		sig := strings.Join([]string{
+			strings.ToLower(scope),
+			strings.ToLower(scopeName),
+			strings.ToLower(category),
+			strings.ToLower(key),
+			strings.ToLower(value),
+		}, "\x00")
 		if seen[sig] {
 			return
 		}

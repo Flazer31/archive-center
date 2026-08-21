@@ -265,36 +265,34 @@ func normalizeReversibleStateSlot(raw string) string {
 	return strings.Trim(string(out), "_")
 }
 
-func reversibleStateSourceUnitID(sourceRevision, domain, subjectEntityID, slot string) string {
+func reversibleStateSourceUnitID(sourceRevision, domain, subjectEntityID, slot string, sourceOrdinal int) string {
 	sum := sha256.Sum256([]byte(strings.Join([]string{
 		reversibleStateContractVersion,
 		strings.TrimSpace(sourceRevision),
 		strings.TrimSpace(domain),
 		strings.TrimSpace(subjectEntityID),
 		strings.TrimSpace(slot),
+		fmt.Sprint(sourceOrdinal),
 	}, "\x1f")))
 	return "reversible:" + hex.EncodeToString(sum[:])
 }
 
-func reversibleStateSubject(projection *entityIdentityProjection, domain, subject string, spanStart, spanEnd int) (*entityIdentityOccurrence, string) {
+func reversibleStateSubject(projection *entityIdentityProjection, domain, subject string) (*entityIdentityOccurrence, string) {
 	if projection == nil {
 		return nil, "entity_identity_projection_unavailable"
 	}
-	occurrence, reviewState, ambiguous := projection.resolveUnique(subject)
+	occurrence, _, ambiguous := projection.resolveUnique(subject)
 	if ambiguous {
 		return nil, "subject_identity_ambiguous"
 	}
-	if occurrence == nil || reviewState != "source_observed" || occurrence.ReviewState != "source_observed" {
-		return nil, "subject_identity_not_source_observed"
+	if occurrence == nil {
+		return nil, "subject_identity_unavailable"
 	}
 	if !map[string]bool{
 		"session_npc": true, "session_player": true, "session_item": true,
 		"session_location": true, "session_group": true,
 	}[occurrence.Namespace] {
 		return nil, "subject_namespace_not_fictional"
-	}
-	if !projection.surfaceAppearsIndependentlyWithinSourceSpan(subject, spanStart, spanEnd) {
-		return nil, "subject_not_within_evidence_span"
 	}
 	if (domain == "body" || domain == "emotion" || domain == "possession") &&
 		occurrence.EntityKind != "character" && occurrence.EntityKind != "player" {
@@ -574,83 +572,23 @@ func (s *Server) saveReversibleStatesFromExtraction(
 		return
 	}
 	observationContext := reversibleObservationContext(ctx, s.Store, sid)
-	proposalKeyCounts := map[string]int{}
-	for _, proposal := range proposals {
-		key := strings.Join([]string{
-			extractionStringFromAny(proposal["domain"]),
-			comparableEntityKey(extractionStringFromAny(proposal["subject_name"])),
-			extractionStringFromAny(proposal["state_slot"]),
-		}, "\x1f")
-		proposalKeyCounts[key]++
-	}
 	for index, proposal := range proposals {
 		domain := extractionStringFromAny(proposal["domain"])
 		statusKey := reversibleStateDomains[domain]
-		proposalKey := strings.Join([]string{
-			domain,
-			comparableEntityKey(extractionStringFromAny(proposal["subject_name"])),
-			extractionStringFromAny(proposal["state_slot"]),
-		}, "\x1f")
-		if proposalKeyCounts[proposalKey] > 1 {
-			result.addSkipReason("reversible_states", "duplicate_source_slot_rejected", map[string]any{
-				"index": index, "domain": domain, "state_slot": extractionStringFromAny(proposal["state_slot"]),
-			})
-			continue
-		}
 		excerpt := sanitizeEvidenceExcerptForTurn(extractionStringFromAny(proposal["evidence_excerpt"]), content)
-		if excerpt == "" {
-			result.addSkipReason("reversible_states", "evidence_excerpt_not_grounded", map[string]any{"index": index})
-			continue
-		}
 		proposal["evidence_excerpt"] = excerpt
-		evidenceIDs := storyClockMatchingEvidenceIDs(evidence, sid, turnIndex, excerpt)
-		if len(evidenceIDs) == 0 {
-			result.addSkipReason("reversible_states", "direct_evidence_required", map[string]any{"index": index})
-			continue
-		}
-		spanStart := strings.Index(content, excerpt)
-		spanEnd := spanStart + len(excerpt)
-		if spanStart < 0 {
-			result.addSkipReason("reversible_states", "evidence_span_not_found", map[string]any{"index": index})
-			continue
+		evidenceIDs := []int64{}
+		if excerpt != "" {
+			evidenceIDs = storyClockMatchingEvidenceIDs(evidence, sid, turnIndex, excerpt)
 		}
 		subjectName := extractionStringFromAny(proposal["subject_name"])
-		subject, subjectReason := reversibleStateSubject(identities, domain, subjectName, spanStart, spanEnd)
+		subject, subjectReason := reversibleStateSubject(identities, domain, subjectName)
 		if subject == nil {
 			result.addSkipReason("reversible_states", subjectReason, map[string]any{"index": index, "subject_name": subjectName})
 			continue
 		}
 		valueMap := mapFromAny(proposal["value"])
-		if valueText := strings.TrimSpace(extractionStringFromAny(valueMap["text"])); valueText != "" &&
-			!strings.Contains(excerpt, valueText) {
-			result.addSkipReason("reversible_states", "value_not_evidence_bound", map[string]any{"index": index})
-			continue
-		}
-		if domain == "body" {
-			body := mapFromAny(valueMap["body"])
-			bodyGrounded := true
-			for _, key := range []string{"subtype", "affected_area"} {
-				asserted := strings.TrimSpace(extractionStringFromAny(body[key]))
-				if asserted != "" && !strings.Contains(excerpt, asserted) {
-					bodyGrounded = false
-				}
-			}
-			if !bodyGrounded {
-				result.addSkipReason("reversible_states", "body_metadata_not_evidence_bound", map[string]any{"index": index})
-				continue
-			}
-		}
 		validity := mapFromAny(proposal["validity"])
-		validityGrounded := true
-		for _, key := range []string{"valid_from", "valid_to"} {
-			if asserted := strings.TrimSpace(extractionStringFromAny(validity[key])); asserted != "" && !strings.Contains(excerpt, asserted) {
-				validityGrounded = false
-			}
-		}
-		if !validityGrounded {
-			result.addSkipReason("reversible_states", "validity_not_evidence_bound", map[string]any{"index": index})
-			continue
-		}
 		if err := validateReversibleValidityRange(validity); err != nil {
 			result.addSkipReason("reversible_states", "validity_range_reversed", map[string]any{"index": index})
 			continue
@@ -676,10 +614,11 @@ func (s *Server) saveReversibleStatesFromExtraction(
 				newerSameLabelTurn = candidate.SourceTurn
 			}
 		}
-		// Exact replay follows the accepted source occurrence identity. A
-		// display label is never a current-owner or idempotency key.
+		// Exact replay follows the accepted source occurrence identity. The
+		// proposal ordinal keeps multiple same-slot observations from the same
+		// accepted source distinct without inventing evidence.
 		sourceUnitID := reversibleStateSourceUnitID(
-			source.Revision, domain, subject.StableEntityID, slot,
+			source.Revision, domain, subject.StableEntityID, slot, index,
 		)
 		if _, err := atomicStore.GetReversibleStatusEventBySourceUnit(ctx, sid, source.Revision, sourceUnitID); err == nil {
 			result.addSkipReason("reversible_states", "source_unit_replay_idempotent", map[string]any{"source_unit_id": sourceUnitID})
@@ -699,7 +638,9 @@ func (s *Server) saveReversibleStatesFromExtraction(
 		}
 		previousJSON := mustCompactJSON(projection)
 		claimCurrentEligible, claimResolution := reversibleStateCurrentClaimEligibility(extraction, proposal, excerpt)
-		currentAllowed := identityCurrentEligible && claimCurrentEligible &&
+		explicitPrivate := extractionStringFromAny(proposal["visibility"]) != "public" ||
+			extractionStringFromAny(proposal["sensitivity"]) == "reproductive"
+		currentAllowed := identityCurrentEligible && claimCurrentEligible && !explicitPrivate &&
 			extractionStringFromAny(proposal["scene_scope"]) == "current" &&
 			extractionStringFromAny(proposal["authority"]) == "canonical_in_fiction" &&
 			extractionStringFromAny(proposal["assertion_kind"]) == "literal"
@@ -711,6 +652,9 @@ func (s *Server) saveReversibleStatesFromExtraction(
 		} else if !claimCurrentEligible {
 			currentAllowed = false
 			resolutionStatus = claimResolution
+		} else if explicitPrivate {
+			currentAllowed = false
+			resolutionStatus = "private_or_sensitive_history_only"
 		} else if newerSameLabelTurn > turnIndex {
 			currentAllowed = false
 			resolutionStatus = "older_turn_same_label_history_only"

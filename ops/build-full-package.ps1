@@ -171,8 +171,10 @@ function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
     if (Test-Path -LiteralPath $pluginPath -PathType Leaf) {
         $text = [System.IO.File]::ReadAllText($pluginPath, [System.Text.Encoding]::UTF8)
         $next = [regex]::Replace($text, '(?m)^//@display-name Archive Center .+$', "//@display-name Archive Center $version")
-        $next = [regex]::Replace($next, '(?m)^//@version .+$', "//@version $version")
-        $next = [regex]::Replace($next, '(?m)^(\s*const VERSION = )"[^"]+";', ('$1"' + $version + '";'))
+        if ($version -match '^\d+\.\d+\.\d+$') {
+            $next = [regex]::Replace($next, '(?m)^//@version .+$', "//@version $version")
+            $next = [regex]::Replace($next, '(?m)^(\s*const VERSION = )"[^"]+";', ('$1"' + $version + '";'))
+        }
         if ($next -ne $text) {
             [System.IO.File]::WriteAllText($pluginPath, $next, $utf8NoBom)
         }

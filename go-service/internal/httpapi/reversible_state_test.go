@@ -207,7 +207,7 @@ func TestReversibleStateDomainsAndPreparePrivacyBoundary(t *testing.T) {
 	result := saveReversibleTurn(t, fake, 10, "rev-domains",
 		"Mina had a high fever. Mina arrived at the north gate. Mina held the brass key. Mina felt afraid. Sacred Sword was broken.",
 		[]any{body, location, possession, emotion, entity}, characters, items)
-	if result.PhysicalConditions != 1 || result.EntityConditions != 1 || len(fake.savedStatusEvents) != 5 {
+	if result.PhysicalConditions != 1 || result.EntityConditions != 1 || len(fake.savedStatusEvents) != 5 || len(fake.returnStatusCurrent) != 3 {
 		t.Fatalf("five reversible domains were not persisted: result=%#v events=%#v", result, fake.savedStatusEvents)
 	}
 
@@ -217,10 +217,7 @@ func TestReversibleStateDomainsAndPreparePrivacyBoundary(t *testing.T) {
 		t.Fatalf("prepare packet should expose only public ordinary current state: %#v", packet)
 	}
 	excluded, ok := packet["excluded_counts"].(map[string]int)
-	if !ok ||
-		excluded["sensitive"] != 0 ||
-		excluded["non_public"] != 2 ||
-		excluded["private_emotion"] != 1 {
+	if !ok || excluded["sensitive"] != 0 || excluded["non_public"] != 0 || excluded["private_emotion"] != 0 {
 		t.Fatalf("privacy exclusion accounting mismatch: %#v", excluded)
 	}
 	if strings.Contains(text, "high fever") || strings.Contains(text, "felt afraid") ||
@@ -343,7 +340,7 @@ func TestReversibleStateAmbiguousSameLabelPriorSlotsStayHistoryOnly(t *testing.T
 	}
 }
 
-func TestReversibleBodyMetadataMustBeExactSourceText(t *testing.T) {
+func TestReversibleBodyMetadataStoresHistoryWithoutExactSourceText(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	characters := []any{map[string]any{"name": "Mina", "entity_type": "character"}}
 	proposal := reversibleStateProposal("body", "set", "Mina", "body_condition",
@@ -355,21 +352,21 @@ func TestReversibleBodyMetadataMustBeExactSourceText(t *testing.T) {
 	}
 	result := saveReversibleTurn(t, fake, 1, "rev-body-metadata",
 		"Mina felt nauseous.", []any{proposal}, characters, nil)
-	if len(fake.savedStatusEvents) != 0 || len(fake.returnStatusCurrent) != 0 {
-		t.Fatalf("unsupported reproductive interpretation reached canonical state: %#v", fake.savedStatusEvents)
+	if len(fake.savedStatusEvents) != 1 || len(fake.returnStatusCurrent) != 0 {
+		t.Fatalf("sensitive observation was not retained as history-only: events=%#v current=%#v", fake.savedStatusEvents, fake.returnStatusCurrent)
 	}
-	found := false
+	if fake.savedStatusEvents[0].EventState != "history_only" ||
+		!strings.Contains(fake.savedStatusEvents[0].EvidenceJSON, "private_or_sensitive_history_only") {
+		t.Fatalf("sensitive observation became current: %#v", fake.savedStatusEvents[0])
+	}
 	for _, decision := range result.SkipReasons {
 		if extractionStringFromAny(decision["reason"]) == "body_metadata_not_evidence_bound" {
-			found = true
+			t.Fatalf("exact-text gate still rejected broad semantic storage: %#v", result.SkipReasons)
 		}
-	}
-	if !found {
-		t.Fatalf("body metadata rejection was not observable: %#v", result.RetentionDecisions)
 	}
 }
 
-func TestReversibleStateDuplicateSourceSlotRejectsAllCandidates(t *testing.T) {
+func TestReversibleStateSameSourceSlotStoresDistinctObservations(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	characters := []any{map[string]any{"name": "Mina", "entity_type": "character"}}
 	first := reversibleStateProposal("emotion", "set", "Mina", "current_emotion",
@@ -378,18 +375,30 @@ func TestReversibleStateDuplicateSourceSlotRejectsAllCandidates(t *testing.T) {
 		"Mina looked calm, then became afraid.", "became afraid")
 	result := saveReversibleTurn(t, fake, 1, "rev-duplicate-slot",
 		"Mina looked calm, then became afraid.", []any{first, second}, characters, nil)
-	if len(fake.savedStatusEvents) != 0 || len(fake.returnStatusCurrent) != 0 {
-		t.Fatalf("duplicate source slot selected an array-order winner: events=%#v current=%#v",
+	if len(fake.savedStatusEvents) != 2 || len(fake.returnStatusCurrent) != 1 {
+		t.Fatalf("same-slot observations were not both retained: events=%#v current=%#v",
 			fake.savedStatusEvents, fake.returnStatusCurrent)
 	}
-	duplicateReasons := 0
+	firstEvidence := map[string]any{}
+	secondEvidence := map[string]any{}
+	if err := json.Unmarshal([]byte(fake.savedStatusEvents[0].EvidenceJSON), &firstEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal([]byte(fake.savedStatusEvents[1].EvidenceJSON), &secondEvidence); err != nil {
+		t.Fatal(err)
+	}
+	if extractionStringFromAny(firstEvidence["source_unit_id"]) == extractionStringFromAny(secondEvidence["source_unit_id"]) {
+		t.Fatalf("same-slot observations collided on source identity: %#v", fake.savedStatusEvents)
+	}
+	projection := currentReversibleProjection(t, fake, reversibleEmotionStatusKey)
+	current := mapFromAny(mapFromAny(mapFromAny(projection["slots"])["current_emotion"])["value"])
+	if extractionStringFromAny(current["text"]) != "became afraid" {
+		t.Fatalf("ordered same-slot observations did not leave the last current value: %#v", projection)
+	}
 	for _, decision := range result.SkipReasons {
 		if extractionStringFromAny(decision["reason"]) == "duplicate_source_slot_rejected" {
-			duplicateReasons++
+			t.Fatalf("duplicate-slot gate still rejected semantic storage: %#v", result.SkipReasons)
 		}
-	}
-	if duplicateReasons != 2 {
-		t.Fatalf("duplicate rejection was not reported for both candidates: %#v", result.SkipReasons)
 	}
 }
 

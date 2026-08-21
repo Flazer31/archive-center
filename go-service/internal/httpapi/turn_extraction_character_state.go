@@ -75,12 +75,6 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			result.addSkipReason("character_deltas", "missing_name", map[string]any{"index": characterDeltaIndex})
 			continue
 		}
-		evidence := interactionAdmissionEvidence(charDelta)
-		if evidence != "" && (!criticEvidenceOccursInSource(evidence, completedTurnText) ||
-			!interactionExplicitExpressionOccursInEvidence(extractionFirstNonEmpty(stringFromMap(charDelta, "name_expression"), rawName), evidence)) {
-			result.addSkipReason("character_deltas", "current_projection_source_binding_missing", map[string]any{"index": characterDeltaIndex, "name": rawName})
-			continue
-		}
 		currentItems := sanitizeLegacyReversibleCharacterDeltas([]any{charDelta})
 		if len(currentItems) == 0 {
 			continue

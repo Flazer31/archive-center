@@ -132,11 +132,18 @@ func TestPrepareTurnVectorShadowDropsInactiveRevisionBeforePreview(t *testing.T)
 	if strings.Contains(fmt.Sprint(previews), "stale high similarity secret") {
 		t.Fatalf("stale source text leaked into preview: %#v", previews)
 	}
+	memoryPreviews, ok := shadow["memory_search_results"].([]map[string]any)
+	if !ok || len(memoryPreviews) != 1 || memoryPreviews[0]["id"] != "memory:session:active" {
+		t.Fatalf("inactive revisions reached aggregate-memory preview: %#v", shadow["memory_search_results"])
+	}
 	filterTrace, _ := shadow["source_revision_filter"].(map[string]any)
+	memoryFilterTrace, _ := shadow["memory_source_revision_filter"].(map[string]any)
 	if filterTrace["status"] != "applied" || filterTrace["dropped_count"] != 3 ||
 		filterTrace["dropped_missing_revision"] != 1 ||
-		filterTrace["checked_count"] != 2 || lifecycleStore.checks["session:sar_stale"] != 1 {
-		t.Fatalf("revision filter trace=%#v checks=%#v", filterTrace, lifecycleStore.checks)
+		filterTrace["checked_count"] != 2 ||
+		memoryFilterTrace["status"] != "applied" || memoryFilterTrace["dropped_count"] != 3 ||
+		lifecycleStore.checks["session:sar_stale"] != 2 {
+		t.Fatalf("revision filter trace=%#v memory_trace=%#v checks=%#v", filterTrace, memoryFilterTrace, lifecycleStore.checks)
 	}
 }
 

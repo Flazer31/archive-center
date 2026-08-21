@@ -103,6 +103,65 @@ func TestPrepareTurnCharacterPrivateRecollectionLane(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnReadsCandidatesThenFiltersUnmatchedPrivateMemory(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnEntityOwners: []store.ProtagonistEntityMemoryOwner{
+			{OwnerEntityKey: "mina", OwnerEntityName: "Mina"},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{ID: 1, OwnerEntityKey: "mina", OwnerEntityName: "Mina", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: "sess-owner-miss", MemoryText: "Mina's unrelated private memory."},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(`{"chat_session_id":"sess-owner-miss","turn_index":4,"raw_user_input":"Rowan checks the empty harbor.","settings":{"injection_enabled":true,"max_injection_chars":9000}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.entityMemoryReadCount != 1 {
+		t.Fatalf("private memory candidates were skipped before semantic filtering: count=%d", fake.entityMemoryReadCount)
+	}
+	if strings.Contains(rec.Body.String(), "Mina's unrelated private memory") {
+		t.Fatalf("unmatched private memory reached prepare-turn: %s", rec.Body.String())
+	}
+}
+
+func TestPrepareTurnReadsPrivateMemoryForOwnerCarriedByPreviousEvent(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnMemories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-owner-previous-event", TurnIndex: 3, SummaryJSON: `{"turn_summary":"Mina waits with Rowan at the harbor."}`},
+		},
+		returnEntityOwners: []store.ProtagonistEntityMemoryOwner{
+			{OwnerEntityKey: "mina", OwnerEntityName: "Mina"},
+		},
+		returnEntityMemories: []store.ProtagonistEntityMemory{
+			{ID: 1, OwnerEntityKey: "mina", OwnerEntityName: "Mina", OwnerEntityRole: "npc", OwnerVisibility: "owner_private", SourceChatSessionID: "sess-owner-previous-event", MemoryText: "Mina remembers Rowan's promise at the harbor."},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(`{"chat_session_id":"sess-owner-previous-event","turn_index":4,"raw_user_input":"Rowan checks the harbor.","settings":{"injection_enabled":true,"max_injection_chars":9000}}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if fake.entityMemoryReadCount != 1 {
+		t.Fatalf("private memory read count=%d, want one read for owner carried by the relevant previous event", fake.entityMemoryReadCount)
+	}
+	if len(fake.entityMemoryFilters) != 1 || len(fake.entityMemoryFilters[0].OwnerEntityKeys) != 1 || fake.entityMemoryFilters[0].OwnerEntityKeys[0] != "mina" {
+		t.Fatalf("owner filter=%#v, want Mina from the relevant previous event", fake.entityMemoryFilters)
+	}
+}
+
 func TestPrepareTurnBatchesCurrentNPCMemoryOwnersIntoOneRead(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnEntityOwners: []store.ProtagonistEntityMemoryOwner{
@@ -449,7 +508,7 @@ func TestPrepareTurnEntityRecollectionRelevanceFiltersUnrelatedNPCMemory(t *test
 	if !ok {
 		t.Fatalf("entity_recollection_relevance surface missing")
 	}
-	if relevance["character_private_before_filter"] != float64(3) || relevance["character_private_after_filter"] != float64(1) || relevance["character_private_dropped_count"] != float64(2) {
+	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) || relevance["character_private_dropped_count"] != float64(1) {
 		t.Fatalf("unexpected relevance counts: %+v", relevance)
 	}
 	if relevance["blocks_unrelated_session_memory"] != true || relevance["blocks_unrelated_entity_memory"] != true {
@@ -531,7 +590,7 @@ func TestPrepareTurnCharacterPrivateRecollectionBlocksStaleOwnerMention(t *testi
 	if !ok {
 		t.Fatalf("entity_recollection_relevance surface missing")
 	}
-	if relevance["character_private_before_filter"] != float64(2) || relevance["character_private_after_filter"] != float64(1) {
+	if relevance["character_private_before_filter"] != float64(1) || relevance["character_private_after_filter"] != float64(1) {
 		t.Fatalf("unexpected stale-owner relevance counts: %+v", relevance)
 	}
 	if relevance["character_private_gate"] != "owner_entity_must_match_current_user_input_or_observed_current_scene_entity" {
@@ -762,7 +821,7 @@ func TestPrepareTurnEpisodeDenseAnchorsSurviveSummaryText(t *testing.T) {
 			CreatedAt:               time.Unix(20, 0),
 		},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "", "wide_context_700k", nil, nil, nil)
+	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "Alice opens the sealed gate.", "wide_context_700k", nil, nil, nil)
 	if !strings.Contains(assembly.EpisodeText, "key_event=Alice opens the sealed gate") {
 		t.Fatalf("episode_text missing key event anchor: %s", assembly.EpisodeText)
 	}
@@ -780,7 +839,7 @@ func TestPrepareTurnEpisodeDoesNotRepeatSummaryAsKeyEvent(t *testing.T) {
 		SummaryText: "memory: Alice opens the sealed gate",
 		KeyEvents:   `["memory: Alice opens the sealed gate"]`,
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "", "wide_context_700k", nil, nil, nil)
+	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "Alice opens the sealed gate.", "wide_context_700k", nil, nil, nil)
 	if strings.Contains(assembly.EpisodeText, "key_event=memory: Alice opens the sealed gate") {
 		t.Fatalf("episode summary repeated as key event: %s", assembly.EpisodeText)
 	}
@@ -1025,7 +1084,8 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 		},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{
 				"id":                      "memory:sess-vector:1",
@@ -1087,7 +1147,8 @@ func TestPrepareTurnVectorReadyLeavesUnusedTopKEmptyInsteadOfInjectingUnrelatedR
 		{ID: 3, TurnIndex: 10, SummaryJSON: `{"turn_summary":"Another unrelated recent tail."}`, Importance: 8},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{"id": "memory:sess-vector:1", "source_table": "memories", "source_row_id": "1", "similarity": 0.84, "similarity_source": "cosine_from_query_and_stored_embedding"},
 		},
@@ -1251,7 +1312,8 @@ func TestPrepareTurnRejectsLowSimilarityVectorAndUsesQueryRelevantFallback(t *te
 		{ID: 2, TurnIndex: 20, SummaryJSON: `{"turn_summary":"The party leaves the clinic and enters the shopping street."}`, Importance: 0.5},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{
 				"id":                "memory:sess-vector:1",
@@ -1429,8 +1491,8 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 	counts := mapFromAny(model["counts"])
 	for key, want := range map[string]int{
 		"vector_found":                   1,
-		"vector_hydrated":                1,
-		"vector_injected":                1,
+		"vector_hydrated":                0,
+		"vector_injected":                0,
 		"memory_injected":                2,
 		"actual_memory_selected_count":   1,
 		"protected_guard_selected_count": 1,
@@ -1441,6 +1503,10 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 		if got := intFromAny(counts[key], 0); got != want {
 			t.Fatalf("input_transparency_model.counts[%s] = %d, want %d; counts=%#v", key, got, want, counts)
 		}
+	}
+	vectorRecall := mapFromAny(mapFromAny(counts["memory_recall_lane_policy"])["vector_recall"])
+	if got := intFromAny(vectorRecall["scope_filtered_count"], 0); got != 1 {
+		t.Fatalf("private vector hit scope-filtered count = %d, want 1; vector_recall=%#v", got, vectorRecall)
 	}
 	related := map[string]any(nil)
 	protected := map[string]any(nil)
@@ -1574,21 +1640,21 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if got := intFromAny(lineage["top_k_memory_target"], 0); got != 5 {
 		t.Fatalf("top_k target = %d, want 5", got)
 	}
-	if got := intFromAny(lineage["final_delivered_count"], 0); got != 5 {
-		t.Fatalf("final delivered = %d, want all five distinct current-relevant records within the global envelope; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_delivered_count"], 0); got != 6 {
+		t.Fatalf("final delivered = %d, want all six distinct source occurrences within the global envelope; lineage=%#v", got, lineage)
 	}
-	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 4 {
-		t.Fatalf("protected guard count = %d, want all four distinct current-relevant guards without an automatic class quota; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["final_protected_guard_count"], 0); got != 5 {
+		t.Fatalf("protected guard count = %d, want all five distinct protected source occurrences without an automatic class quota; lineage=%#v", got, lineage)
 	}
 	if got := intFromAny(lineage["final_actual_memory_count"], 0); got != 1 {
 		t.Fatalf("actual memory count = %d, want 1; lineage=%#v", got, lineage)
 	}
-	if got := intFromAny(lineage["pre_render_protected_duplicate_count"], 0); got != 1 {
-		t.Fatalf("pre-render protected duplicate count = %d, want 1; lineage=%#v", got, lineage)
+	if got := intFromAny(lineage["pre_render_protected_duplicate_count"], 0); got != 0 {
+		t.Fatalf("pre-render protected duplicate count = %d, want 0 because the identity rows come from different turns; lineage=%#v", got, lineage)
 	}
 	duplicates := sliceFromAny(lineage["pre_render_protected_duplicates"])
-	if len(duplicates) != 1 || intFromAny(mapFromAny(duplicates[0])["source_row_id"], 0) != 9 {
-		t.Fatalf("row 9 must be traced as the duplicate protected identity: %#v", duplicates)
+	if len(duplicates) != 0 {
+		t.Fatalf("different-turn protected identities must not be traced as duplicates: %#v", duplicates)
 	}
 	if issues := strings.Join(stringsFromAny(lineage["known_issue_codes"]), ","); issues != "" {
 		t.Fatalf("resolved protected-slot issue remained in lineage: %#v", lineage["known_issue_codes"])
@@ -1607,17 +1673,17 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 		item := mapFromAny(raw)
 		if boolFromAny(item["delivered"]) {
 			deliveredRows[intFromAny(item["source_row_id"], 0)] = true
-			if item["source_table"] != "memories" || item["vector_hit"] != true {
+			if item["source_table"] != "memories" {
 				t.Fatalf("delivered lineage item lost store/vector provenance: %#v", item)
+			}
+			if boolFromAny(item["protected_guard"]) == boolFromAny(item["vector_hit"]) {
+				t.Fatalf("only the public objective row may retain vector-hit provenance: %#v", item)
 			}
 		}
 	}
-	for _, id := range []int{11, 2, 17, 12, 31} {
+	for _, id := range []int{11, 9, 2, 17, 12, 31} {
 		if !deliveredRows[id] {
 			t.Fatalf("source row %d missing from final delivery lineage: %#v", id, lineage["items"])
 		}
-	}
-	if deliveredRows[9] {
-		t.Fatalf("duplicate identity row 9 must not consume a final slot: %#v", lineage["items"])
 	}
 }

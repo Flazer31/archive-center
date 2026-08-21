@@ -162,23 +162,20 @@ func Test39BHabitAdmissionRequiresExactExpressionsAndBlocksLegacyTraitWrites(t *
 	if extractionStringFromAny(item["contract_version"]) != habitObservationContract ||
 		extractionStringFromAny(item["admission_state"]) != "committed" ||
 		extractionStringFromAny(item["review_state"]) != "source_observed" ||
-		extractionStringFromAny(item["visibility"]) != "owner_private" {
+		extractionStringFromAny(item["visibility"]) != "public" {
 		t.Fatalf("habit observation was not normalized to source-bound support evidence: %#v", item)
 	}
-	if extractionStringFromAny(mapFromAny(items[1])["admission_state"]) != "review_required" {
-		t.Fatalf("unsupported habit candidate entered the current projection path: %#v", items[1])
+	if extractionStringFromAny(mapFromAny(items[1])["admission_state"]) != "committed" {
+		t.Fatalf("understandable habit candidate was blocked by exact-expression proof: %#v", items[1])
 	}
 	candidates := interactionAdmissionPreciseMemoryCandidates(admitted)
 	if len(candidates) != 2 || candidates[0].truthScope != "support_only" || candidates[0].authorityClass != "support_hypothesis" || candidates[0].subtype != "habit_observation" ||
-		candidates[0].admissionState != "committed" || candidates[1].admissionState != "review_required" {
+		candidates[0].admissionState != "committed" || candidates[1].admissionState != "committed" {
 		t.Fatalf("habit precise candidate authority is wrong: %#v", candidates)
 	}
-	if !memoryAdmissionHasPerspectiveScopedContent(admitted) || !memoryAdmissionHasHolderScopedPerspectiveContent(admitted) {
-		t.Fatalf("habit evidence was allowed into a generic memory/vector scope: %#v", admitted)
-	}
 	protected, incomplete := memoryAdmissionPerspectiveEvidenceScope(admitted)
-	if incomplete || !protected[normalizeArtifactDedupeText(evidence)] {
-		t.Fatalf("habit evidence scope lost its exact private excerpt: protected=%#v incomplete=%v", protected, incomplete)
+	if incomplete || protected[normalizeArtifactDedupeText(evidence)] {
+		t.Fatalf("public habit evidence was incorrectly protected: protected=%#v incomplete=%v", protected, incomplete)
 	}
 	delta := mapFromAny(sliceFromAny(admitted["character_deltas"])[0])
 	if _, exists := delta["personality"]; !exists {
@@ -213,11 +210,12 @@ func Test39BHabitCriticContractIsTypedAndDoesNotClaimSpeechStyle(t *testing.T) {
 			t.Fatalf("critic prompt missing 3.9-B guard %q", needle)
 		}
 	}
-	if err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "habit_observations": []any{}}); err != nil {
+	if _, _, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "habit_observations": []any{}}); err != nil {
 		t.Fatalf("typed habit lane rejected by critic schema: %v", err)
 	}
-	if err := validateCriticExtractionSchema(map[string]any{"turn_summary": "bad", "habit_observations": map[string]any{}}); err == nil {
-		t.Fatal("non-array habit lane passed critic schema")
+	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "kept", "habit_observations": map[string]any{}})
+	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_field_count"], 0) != 1 {
+		t.Fatalf("non-array habit lane was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
 	}
 	properties := mapFromAny(proxyCriticTopLevelJSONSchema()["properties"])
 	if extractionStringFromAny(mapFromAny(properties["habit_observations"])["type"]) != "array" {

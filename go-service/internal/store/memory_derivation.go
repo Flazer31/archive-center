@@ -11,6 +11,7 @@ const (
 	MemoryReprocessingJobContract      = "memory_reprocessing_job.v1"
 	MemorySourceRevisionContract       = "memory_source_revision.v1"
 	MemoryVectorOutboxContract         = "memory_vector_outbox.v1"
+	MemoryPublicProjectionIndex        = "memory_public_projection.v1"
 )
 
 var (
@@ -19,6 +20,33 @@ var (
 	ErrLeaseExpired             = errors.New("work lease is expired or no longer owned")
 	ErrMemoryReprocessingLeased = errors.New("memory reprocessing job has an active lease")
 )
+
+type memoryAdmissionVectorReplayContextKey struct{}
+
+type memoryAdmissionVectorReplayOptions struct {
+	Refresh              bool
+	ReconcileEligibility bool
+}
+
+// WithMemoryAdmissionVectorReplay marks one canonical admission replay as a
+// vector-maintenance pass. The option is request-local only: it does not add a
+// second queue or persist administrative state. ReconcileEligibility lets the
+// admission transaction cancel stale aggregate upserts and enqueue deletes;
+// Refresh also reactivates the exact existing outbox operations.
+func WithMemoryAdmissionVectorReplay(ctx context.Context, refresh, reconcileEligibility bool) context.Context {
+	return context.WithValue(ctx, memoryAdmissionVectorReplayContextKey{}, memoryAdmissionVectorReplayOptions{
+		Refresh:              refresh,
+		ReconcileEligibility: reconcileEligibility,
+	})
+}
+
+func memoryAdmissionVectorReplayFromContext(ctx context.Context) memoryAdmissionVectorReplayOptions {
+	if ctx == nil {
+		return memoryAdmissionVectorReplayOptions{}
+	}
+	options, _ := ctx.Value(memoryAdmissionVectorReplayContextKey{}).(memoryAdmissionVectorReplayOptions)
+	return options
+}
 
 // MemorySourceRevision is the durable Host-observed raw turn pair. BranchID is
 // nullable because source_acceptance_observation.v1 does not expose branch

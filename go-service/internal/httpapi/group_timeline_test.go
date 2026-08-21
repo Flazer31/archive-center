@@ -54,6 +54,38 @@ func TestTimelineEmptyStore(t *testing.T) {
 	}
 }
 
+func TestTimelineMetaUsesPersistedWorldlineViewModel(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store: store.NewNoopStore(),
+		lineage: []store.ForkLineageRecord{{
+			ContractVersion: store.ForkLineageContractVersion, LineageState: "confirmed",
+			ChatSessionID: "child-session", CopiedFromSessionID: "parent-session",
+			ForkTurn: 7, ForkSourceMessageID: "source-message", IdempotencyKey: "risu-worldline:key",
+		}},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = st
+	req := httptest.NewRequest(http.MethodGet, "/timeline?sessionId=child-session", nil)
+	rec := httptest.NewRecorder()
+	srv.handleTimeline(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Meta map[string]json.RawMessage `json:"meta"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	var vm worldlineViewModel
+	if err := json.Unmarshal(payload.Meta["worldline"], &vm); err != nil {
+		t.Fatal(err)
+	}
+	if vm.State != "confirmed" || vm.ParentSessionID != "parent-session" || vm.ForkTurn != 7 {
+		t.Fatalf("worldline=%+v", vm)
+	}
+}
+
 // TestTimelinePopulatedStore returns merged items newest-first with correct meta.
 func TestTimelinePopulatedStore(t *testing.T) {
 	fake := &memoryFakeStore{
@@ -211,6 +243,53 @@ func TestTimelineBeforeTurnPagination(t *testing.T) {
 	}
 	if meta["next_before_turn"] != float64(0) {
 		t.Errorf("next_before_turn = %v, want 0", meta["next_before_turn"])
+	}
+}
+
+func TestTimelineExactTurnReturnsOnlySelectedTurnItems(t *testing.T) {
+	fake := &memoryFakeStore{
+		chatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-focus", TurnIndex: 101, Role: "user", Content: "latest", CreatedAt: time.Now()},
+			{ID: 2, ChatSessionID: "sess-focus", TurnIndex: 12, Role: "user", Content: "selected user", CreatedAt: time.Now()},
+			{ID: 3, ChatSessionID: "sess-focus", TurnIndex: 12, Role: "char", Content: "selected assistant", CreatedAt: time.Now()},
+			{ID: 4, ChatSessionID: "sess-focus", TurnIndex: 11, Role: "user", Content: "older", CreatedAt: time.Now()},
+		},
+		memories: []store.Memory{
+			{ID: 5, ChatSessionID: "sess-focus", TurnIndex: 12, SummaryJSON: `{"summary":"selected memory"}`, CreatedAt: time.Now()},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodGet, "/timeline?sessionId=sess-focus&turn=12&limit=200", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	items := resp["items"].([]any)
+	if len(items) != 3 {
+		t.Fatalf("items count = %d, want 3 selected-turn items", len(items))
+	}
+	for _, raw := range items {
+		item := raw.(map[string]any)
+		if item["turn_index"] != float64(12) {
+			t.Fatalf("turn_index = %v, want exact turn 12", item["turn_index"])
+		}
+	}
+	meta := resp["meta"].(map[string]any)
+	if meta["turn"] != float64(12) {
+		t.Fatalf("meta.turn = %v, want 12", meta["turn"])
+	}
+	if meta["next_before_turn"] != float64(0) {
+		t.Fatalf("next_before_turn = %v, want 0 for exact turn", meta["next_before_turn"])
 	}
 }
 

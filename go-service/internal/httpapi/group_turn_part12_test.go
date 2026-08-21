@@ -240,14 +240,15 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 
 	t.Run("critic_prompt_includes_language_memory_contract", func(t *testing.T) {
 		languageContext := map[string]any{
-			"contract_version":        "language_memory.v1",
-			"session_output_language": "en",
-			"output_language_source":  "explicit_override",
-			"raw_user_language":       "ko",
-			"summary_language":        "en",
-			"search_text_policy":      "summary_plus_raw_plus_aliases",
-			"locked_for_turn":         true,
-			"raw_evidence_rewritten":  true,
+			"contract_version":          "language_memory.v1",
+			"session_output_language":   "en",
+			"output_language_source":    "current_assistant",
+			"raw_user_language":         "ko",
+			"assistant_output_language": "en",
+			"summary_language":          "en",
+			"search_text_policy":        "summary_plus_raw_plus_aliases",
+			"locked_for_turn":           true,
+			"raw_evidence_rewritten":    true,
 		}
 		prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPromptWithLanguageContext(
 			"sess-p83-lang", 4,

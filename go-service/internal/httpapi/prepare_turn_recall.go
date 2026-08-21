@@ -15,7 +15,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
-func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTurnRequest, limit int) map[string]any {
+func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTurnRequest, limit int, historyScopes ...prepareTurnHistoryScope) map[string]any {
 	shadow := map[string]any{
 		"status":                       "unconfigured",
 		"engine":                       "chromadb",
@@ -114,17 +114,58 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	limit = prepareTurnRecallLimit(limit)
 	candidateLimit := limit
 	filter := strings.TrimSpace(clientMetaString(req.ClientMeta, "chroma_filter"))
-	if filter == "" {
-		filter = fmt.Sprintf("chat_session_id == %q", req.ChatSessionID)
+	searchSessionIDs := prepareTurnVectorHistorySessionIDs(req.ChatSessionID, historyScopes)
+	searchAcrossSessions := func(searchFilter func(string) string) ([]vector.VectorDocument, error) {
+		results := []vector.VectorDocument{}
+		var firstErr error
+		for _, searchSessionID := range searchSessionIDs {
+			sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, queryVector, candidateLimit, searchFilter(searchSessionID))
+			switch {
+			case searchErr == nil:
+				for index := range sessionResults {
+					if strings.TrimSpace(sessionResults[index].ChatSessionID) == "" {
+						sessionResults[index].ChatSessionID = searchSessionID
+					}
+				}
+				results = append(results, sessionResults...)
+			case errors.Is(searchErr, vector.ErrNotFound):
+			default:
+				if firstErr == nil {
+					firstErr = searchErr
+				}
+			}
+		}
+		if len(results) > 0 {
+			sort.SliceStable(results, func(i, j int) bool {
+				if results[i].SimilarityAvailable != results[j].SimilarityAvailable {
+					return results[i].SimilarityAvailable
+				}
+				if results[i].Similarity != results[j].Similarity {
+					return results[i].Similarity > results[j].Similarity
+				}
+				return results[i].Distance < results[j].Distance
+			})
+			return results, nil
+		}
+		if firstErr != nil {
+			return nil, firstErr
+		}
+		return nil, vector.ErrNotFound
 	}
 	shadow["search_attempted"] = true
 	shadow["query_vector_key"] = queryKey
 	shadow["query_vector_dim"] = len(queryVector)
 	shadow["limit"] = limit
 	shadow["candidate_limit"] = candidateLimit
-	shadow["candidate_policy"] = "ui_configured_vector_recall_limit"
+	shadow["candidate_policy"] = "ui_configured_vector_recall_limit_per_worldline_history_session"
 	shadow["filter"] = filter
-	results, err := s.Vector.Search(ctx, req.ChatSessionID, queryVector, candidateLimit, filter)
+	shadow["history_session_ids"] = searchSessionIDs
+	results, err := searchAcrossSessions(func(searchSessionID string) string {
+		if filter != "" {
+			return filter
+		}
+		return fmt.Sprintf("chat_session_id == %q", searchSessionID)
+	})
 	switch {
 	case err == nil:
 		results, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, results)
@@ -150,7 +191,56 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 		shadow["search_result"] = "error"
 		shadow["search_error"] = err.Error()
 	}
+	memoryFilter := `tier == "memory"`
+	shadow["memory_search_attempted"] = true
+	shadow["memory_search_filter"] = memoryFilter
+	memoryResults, memoryErr := searchAcrossSessions(func(string) string { return memoryFilter })
+	switch {
+	case memoryErr == nil:
+		memoryResults, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, memoryResults)
+		shadow["memory_source_revision_filter"] = revisionFilter
+		if len(memoryResults) == 0 {
+			shadow["memory_search_result"] = "not_found"
+		} else {
+			shadow["memory_search_result"] = "ok"
+		}
+		shadow["memory_search_result_count"] = len(memoryResults)
+		shadow["memory_search_results"] = vectorDocumentSearchPreview(memoryResults)
+	case errors.Is(memoryErr, vector.ErrNotFound):
+		shadow["memory_search_result"] = "not_found"
+		shadow["memory_search_result_count"] = 0
+		shadow["memory_search_results"] = []map[string]any{}
+	case errors.Is(memoryErr, vector.ErrNotEnabled):
+		shadow["memory_search_result"] = "err_not_enabled"
+		shadow["memory_search_result_count"] = 0
+		shadow["memory_search_results"] = []map[string]any{}
+	default:
+		shadow["memory_search_result"] = "error"
+		shadow["memory_search_result_count"] = 0
+		shadow["memory_search_results"] = []map[string]any{}
+		shadow["memory_search_error"] = memoryErr.Error()
+	}
 	return shadow
+}
+
+func prepareTurnVectorHistorySessionIDs(fallbackSessionID string, historyScopes []prepareTurnHistoryScope) []string {
+	sessionIDs := []string{}
+	seen := map[string]bool{}
+	if len(historyScopes) > 0 {
+		for _, segment := range historyScopes[0].Segments {
+			sessionID := strings.TrimSpace(segment.SessionID)
+			if sessionID != "" && !seen[sessionID] {
+				seen[sessionID] = true
+				sessionIDs = append(sessionIDs, sessionID)
+			}
+		}
+		return sessionIDs
+	}
+	fallbackSessionID = strings.TrimSpace(fallbackSessionID)
+	if fallbackSessionID != "" {
+		sessionIDs = append(sessionIDs, fallbackSessionID)
+	}
+	return sessionIDs
 }
 
 func (s *Server) filterPrepareTurnActiveSourceRevisionVectors(
@@ -255,8 +345,8 @@ func buildPrepareTurnVectorReadiness(shadow map[string]any) map[string]any {
 			"reason":                        "vector_shadow_missing",
 			"fallback_recommended":          true,
 			"reindex_recommended":           false,
-			"degrade_mode":                  "raw_recent_fallback",
-			"fallback_lane":                 "raw_fallback",
+			"degrade_mode":                  "public_lexical_relevant_deep",
+			"fallback_lane":                 "mariadb_public_projection",
 			"embedding_ready_before_search": false,
 		}
 	}
@@ -311,8 +401,8 @@ func buildPrepareTurnVectorReadiness(shadow map[string]any) map[string]any {
 		"search_attempted":              searchAttempted,
 		"search_result":                 nilIfEmpty(searchResult),
 		"fallback_recommended":          fallbackRecommended,
-		"fallback_lane":                 "raw_fallback",
-		"degrade_mode":                  "recent_relevant_deep_raw_fallback",
+		"fallback_lane":                 "mariadb_public_projection",
+		"degrade_mode":                  "public_lexical_relevant_deep",
 		"reindex_recommended":           reindexRecommended,
 		"embedding_ready_before_search": modelReady && totalCount > 0,
 	}
@@ -473,6 +563,7 @@ type prepareTurnMemoryLaneSelection struct {
 	Recent                  []store.Memory
 	Relevant                []store.Memory
 	Deep                    []store.Memory
+	ProtectedSelected       []store.Memory
 	DirectlyReferenced      []string
 	ProtectedCandidates     []store.Memory
 	ProtectedAliasCanonical map[string]string
@@ -492,6 +583,8 @@ func prepareTurnEventMemoryQuery(ctx prepareTurnRecollectionContext, directlyRef
 
 type prepareTurnRecallEvidence struct {
 	Eligible          bool
+	ExactPhrase       bool
+	LexicalOverlap    bool
 	StructuredAnchors []string
 	OverlapTerms      []string
 }
@@ -517,10 +610,13 @@ func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTur
 			evidence.OverlapTerms = append(evidence.OverlapTerms, term)
 		}
 	}
+	memoryText := prepareTurnMemoryRelevanceText(item)
+	evidence.ExactPhrase = prepareTurnSharedRecallPhrase(query, memoryText)
+	evidence.LexicalOverlap = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(queryTerms, memoryText)
 	parsed := parseJSONMap(item.SummaryJSON)
 	protected := len(sliceFromAny(parsed["protected_secrets"])) > 0 ||
 		len(sliceFromAny(parsed["character_identity_accuracy"])) > 0
-	evidence.Eligible = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(queryTerms, prepareTurnMemoryRelevanceText(item)) ||
+	evidence.Eligible = evidence.ExactPhrase || evidence.LexicalOverlap ||
 		(protected && len(evidence.StructuredAnchors) > 0)
 	return evidence
 }
@@ -712,10 +808,6 @@ func prepareTurnDirectEntityMentionRank(rawUserInput, characterName string, alia
 	return 0
 }
 
-// A knowledge-graph edge is not current merely because one endpoint appears in
-// the scene. It needs both endpoints, or an endpoint plus corroborating relation
-// or event terms. This prevents every historical edge of a current character
-// from consuming the relationship budget.
 func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, string) {
 	subjectMatched := prepareTurnRecallContainsAnchor(query, triple.Subject)
 	objectMatched := prepareTurnRecallContainsAnchor(query, triple.Object)
@@ -723,16 +815,7 @@ func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, str
 		return true, "both_endpoints_current"
 	}
 	if subjectMatched || objectMatched {
-		complementaryEvidence := strings.TrimSpace(triple.Predicate)
-		if subjectMatched {
-			complementaryEvidence = strings.TrimSpace(complementaryEvidence + " " + triple.Object)
-		} else {
-			complementaryEvidence = strings.TrimSpace(triple.Subject + " " + complementaryEvidence)
-		}
-		if prepareTurnSupportRecallEligible(query, complementaryEvidence) {
-			return true, "endpoint_plus_relation_evidence"
-		}
-		return false, "single_endpoint_only"
+		return true, "single_endpoint_current"
 	}
 	line := strings.TrimSpace(triple.Subject + " " + triple.Predicate + " " + triple.Object)
 	if prepareTurnSupportRecallEligible(query, line) {
@@ -873,6 +956,10 @@ func selectPrepareTurnMemoryLanes(memories []store.Memory, query string, topK in
 }
 
 func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query string, topK int, vectorShadow map[string]any, directlyReferencedEntityGroups ...[]string) prepareTurnMemoryLaneSelection {
+	return selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, memories, query, topK, vectorShadow, directlyReferencedEntityGroups...)
+}
+
+func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydrationMemories []store.Memory, query string, topK int, vectorShadow map[string]any, directlyReferencedEntityGroups ...[]string) prepareTurnMemoryLaneSelection {
 	vectorLimit := prepareTurnRecallLimit(topK)
 	directlyReferencedEntities := []string{}
 	if len(directlyReferencedEntityGroups) > 0 {
@@ -952,9 +1039,6 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	protectedAliasCanonical, protectedAmbiguousAliases := prepareTurnProtectedAliasResolution(clean)
 	out.ProtectedAliasCanonical = protectedAliasCanonical
 	out.ProtectedAmbiguousAlias = protectedAmbiguousAliases
-	selectedProtectedCoverage := map[string]bool{}
-	protectedDuplicateMemories := map[string]bool{}
-	protectedDuplicateCandidates := []map[string]any{}
 	protectedCandidateMemories := map[string]bool{}
 	for _, item := range clean {
 		if !prepareTurnProtectedMemoryGuard(item).Active {
@@ -971,6 +1055,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	actualMemoryRelevantRefillSelectedCount := 0
 	actualMemoryDeepRefillSelectedCount := 0
 	actualMemoryRecentRefillSelectedCount := 0
+	exactPhraseSelectedCount := 0
+	lexicalSelectedCount := 0
 	acceptProtectedCoverage := func(item store.Memory) (bool, bool) {
 		if !prepareTurnProtectedMemoryGuard(item).Active {
 			return true, false
@@ -980,44 +1066,17 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			protectedCandidateMemories[memoryKey] = true
 			out.ProtectedCandidates = append(out.ProtectedCandidates, item)
 		}
-		keys := prepareTurnProtectedMemoryCoverageKeys(item, protectedAliasCanonical, protectedAmbiguousAliases)
-		if len(keys) == 0 {
-			return true, true
-		}
-		hasNewCoverage := false
-		for _, key := range keys {
-			if !selectedProtectedCoverage[key] {
-				hasNewCoverage = true
-				break
-			}
-		}
-		if !hasNewCoverage {
-			if !protectedDuplicateMemories[memoryKey] {
-				protectedDuplicateMemories[memoryKey] = true
-				protectedDuplicateCandidates = append(protectedDuplicateCandidates, map[string]any{
-					"source_table":  "memories",
-					"source_row_id": prepareTurnMemorySourceRowID(item),
-					"turn_index":    item.TurnIndex,
-					"reason":        "protected_coverage_duplicate",
-					"coverage_keys": keys,
-				})
-			}
-			return false, true
-		}
 		if protectedSelectedCount >= candidateLimit {
 			candidateLimitRejected++
 			return false, true
 		}
-		for _, key := range keys {
-			selectedProtectedCoverage[key] = true
-		}
 		return true, true
 	}
-	vectorCandidateLimit := len(prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]))
+	vectorCandidateLimit := len(prepareTurnVectorMemorySearchResultMaps(vectorShadow))
 	if vectorCandidateLimit <= 0 {
 		vectorCandidateLimit = vectorLimit
 	}
-	vectorHydration := prepareTurnHydrateVectorMemoryHits(clean, vectorShadow, vectorCandidateLimit)
+	vectorHydration := prepareTurnHydrateVectorMemoryHits(vectorHydrationMemories, vectorShadow, vectorCandidateLimit)
 	vectorRecallReady := prepareTurnVectorRecallReady(vectorHydration.Trace)
 	vectorRecallAttempted := prepareTurnVectorSearchAttempted(vectorShadow)
 	vectorScopeRejected := 0
@@ -1026,13 +1085,11 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		if !protected && actualMemoryVectorSelectedCount >= vectorLimit {
 			continue
 		}
-		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 {
-			evidence := prepareTurnMemoryRecallEvidence(query, item)
-			matchesDirectEntity := len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) > 0
-			if !evidence.Eligible && !matchesDirectEntity {
-				vectorScopeRejected++
-				continue
-			}
+		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 &&
+			len(prepareTurnMemoryCharacterAnchors(item)) > 0 &&
+			len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) == 0 {
+			vectorScopeRejected++
+			continue
 		}
 		accepted, protected := acceptProtectedCoverage(item)
 		if !accepted {
@@ -1091,6 +1148,8 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 	}
 	scored := []scoredMemory{}
 	relevantCandidates := 0
+	exactPhraseCandidates := 0
+	lexicalCandidates := 0
 	lexicalRejectedCandidates := 0
 	for _, item := range clean {
 		key := prepareTurnMemoryLaneKey(item)
@@ -1103,6 +1162,11 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 				relevantCandidates++
 			} else {
 				lexicalRejectedCandidates++
+			}
+			if evidence.ExactPhrase {
+				exactPhraseCandidates++
+			} else if evidence.LexicalOverlap {
+				lexicalCandidates++
 			}
 		}
 		recency := 0.0
@@ -1127,6 +1191,9 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		ia := scored[i]
 		ja := scored[j]
 		if queryPresent {
+			if ia.evidence.ExactPhrase != ja.evidence.ExactPhrase {
+				return ia.evidence.ExactPhrase
+			}
 			ir := ia.relevance > 0
 			jr := ja.relevance > 0
 			if ir != jr {
@@ -1184,6 +1251,11 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 		if candidate.evidence.Eligible {
 			out.Relevant = append(out.Relevant, candidate.item)
 			out.RelevantScores[candidate.key] = candidate.relevance
+			if candidate.evidence.ExactPhrase {
+				exactPhraseSelectedCount++
+			} else if candidate.evidence.LexicalOverlap {
+				lexicalSelectedCount++
+			}
 			if !protected {
 				actualMemoryRelevantRefillSelectedCount++
 			}
@@ -1264,27 +1336,31 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 			}
 		}
 	}
-	if !vectorActualReady {
-		for _, candidate := range scored {
-			if selectCandidate(candidate) {
-				markDirectCoverage(candidate.item)
-			}
+	for _, candidate := range scored {
+		if selectCandidate(candidate) {
+			markDirectCoverage(candidate.item)
 		}
 	}
-	out.Trace["general_lexical_refill_skipped_after_vector_success"] = vectorActualReady
+	out.Trace["general_lexical_refill_skipped_after_vector_success"] = false
+	out.Trace["general_lexical_evaluated_with_vector_success"] = vectorActualReady
 	out.Trace["vector_selected"] = len(out.VectorRelevant)
 	out.Trace["recent_selected"] = len(out.Recent)
 	out.Trace["relevant_selected"] = len(out.Relevant)
 	out.Trace["deep_selected"] = len(out.Deep)
 	out.Trace["selected_total"] = prepareTurnSelectedMemoryCount(out)
 	out.Trace["relevant_candidates"] = relevantCandidates
+	out.Trace["exact_phrase_candidate_count"] = exactPhraseCandidates
+	out.Trace["exact_phrase_selected_count"] = exactPhraseSelectedCount
+	out.Trace["lexical_candidate_count"] = lexicalCandidates
+	out.Trace["lexical_selected_count"] = lexicalSelectedCount
 	out.Trace["lexical_rejected_candidate_count"] = lexicalRejectedCandidates
 	out.Trace["query_present_recent_fill_disabled"] = queryPresent
 	out.Trace["average_importance"] = avgImportance
 	out.Trace["relevant_degraded_reason"] = nilIfEmpty(relevantDegradedReason(query, len(out.Relevant), relevantCandidates))
-	out.Trace["protected_duplicate_candidate_count"] = len(protectedDuplicateMemories)
-	out.Trace["protected_duplicate_candidates"] = protectedDuplicateCandidates
-	out.Trace["protected_coverage_key_count"] = len(selectedProtectedCoverage)
+	out.Trace["protected_duplicate_candidate_count"] = 0
+	out.Trace["protected_duplicate_candidates"] = []map[string]any{}
+	out.Trace["protected_coverage_key_count"] = 0
+	out.Trace["protected_selector_dedupe_policy"] = "defer_exact_source_scope_grouping_to_final_render"
 	out.Trace["actual_memory_selected"] = actualMemorySelectedCount
 	out.Trace["protected_guard_selected"] = protectedSelectedCount
 	out.Trace["protected_guard_candidate_safety_limit"] = candidateLimit
@@ -1490,11 +1566,11 @@ func prepareTurnVectorSearchAttempted(vectorShadow map[string]any) bool {
 	if vectorShadow == nil {
 		return false
 	}
-	return boolFromAny(vectorShadow["search_attempted"])
+	return boolFromAny(vectorShadow["memory_search_attempted"])
 }
 
 func prepareTurnSelectedMemoryCount(selection prepareTurnMemoryLaneSelection) int {
-	return len(selection.VectorRelevant) + len(selection.Recent) + len(selection.Relevant) + len(selection.Deep)
+	return len(selection.VectorRelevant) + len(selection.Recent) + len(selection.Relevant) + len(selection.Deep) + len(selection.ProtectedSelected)
 }
 
 func prepareTurnRecallMemoryCount(selection prepareTurnMemoryLaneSelection) int {
@@ -1535,6 +1611,7 @@ func prepareTurnMemoryLaneCounters(selection prepareTurnMemoryLaneSelection, inj
 		"relevant_memory_count":                         len(selection.Relevant),
 		"deep_memory_count":                             len(selection.Deep),
 		"recent_memory_count":                           len(selection.Recent),
+		"protected_memory_selected_count":               len(selection.ProtectedSelected),
 		"protected_memory_dropped_count":                intFromAny(selection.Trace["protected_memory_dropped_count"], 0),
 		"protected_memory_gate":                         stringFromMap(selection.Trace, "protected_memory_gate"),
 		"selected_memory_total_count":                   prepareTurnSelectedMemoryCount(selection),
@@ -1555,37 +1632,67 @@ func mergePrepareTurnMemoryLaneCounters(counts map[string]any, selection prepare
 	}
 }
 
-func collapsePrepareTurnMemoryLaneSelection(selection prepareTurnMemoryLaneSelection) prepareTurnMemoryLaneSelection {
-	seen := map[string]bool{}
-	collapsed := 0
-	collapseLane := func(items []store.Memory) []store.Memory {
-		out := make([]store.Memory, 0, len(items))
-		for _, item := range items {
-			key := collapseTextKey(prepareTurnMemorySummary(item))
-			if key == "" {
-				key = prepareTurnMemoryLaneKey(item)
-			}
-			if key != "" && seen[key] {
-				collapsed++
-				continue
-			}
-			if key != "" {
-				seen[key] = true
-			}
-			out = append(out, item)
+func prepareTurnMemorySourceOccurrenceKey(item store.Memory) string {
+	sessionID := strings.TrimSpace(item.ChatSessionID)
+	if sessionID == "" || item.TurnIndex == 0 {
+		return ""
+	}
+	coordinates := map[string]any{}
+	coordinateConflict := false
+	setCoordinate := func(key string, value any) {
+		if key == "source_content_hash" {
+			key = "content_hash"
+		} else if key == "source_turn_index" {
+			key = "source_turn_start"
 		}
-		return out
+		if existing, ok := coordinates[key]; ok {
+			if mustCompactJSON(existing) != mustCompactJSON(value) {
+				coordinateConflict = true
+			}
+			return
+		}
+		coordinates[key] = value
 	}
-	selection.VectorRelevant = collapseLane(selection.VectorRelevant)
-	selection.Relevant = collapseLane(selection.Relevant)
-	selection.Deep = collapseLane(selection.Deep)
-	selection.Recent = collapseLane(selection.Recent)
-	if selection.Trace == nil {
-		selection.Trace = map[string]any{}
+	for _, payload := range []map[string]any{parseJSONMap(item.SummaryJSON), parseJSONMap(item.Evidence)} {
+		for _, key := range []string{
+			"source_revision", "precise_memory_unit_id", "source_occurrence_id",
+			"logical_turn_id", "generation_id", "source_turn_start", "source_turn_end",
+			"source_turn_index", "source_message_id", "source_message_ids", "content_hash", "source_content_hash",
+		} {
+			if value, ok := payload[key]; ok && strings.TrimSpace(fmt.Sprint(value)) != "" {
+				setCoordinate(key, value)
+			}
+		}
+		if source := mapFromAny(payload["source"]); len(source) > 0 {
+			for _, key := range []string{
+				"source_revision", "precise_memory_unit_id", "source_occurrence_id",
+				"logical_turn_id", "generation_id", "source_turn_start", "source_turn_end",
+				"source_turn_index", "source_message_id", "source_message_ids", "content_hash", "source_content_hash",
+			} {
+				if value, ok := source[key]; ok && strings.TrimSpace(fmt.Sprint(value)) != "" {
+					setCoordinate(key, value)
+				}
+			}
+		}
 	}
-	selection.Trace["memory_collapsed_count"] = collapsed
-	selection.Trace["selected_total_after_collapse"] = prepareTurnSelectedMemoryCount(selection)
-	return selection
+	revision := strings.TrimSpace(extractionStringFromAny(coordinates["source_revision"]))
+	unitID := strings.TrimSpace(extractionStringFromAny(coordinates["precise_memory_unit_id"]))
+	occurrenceID := strings.TrimSpace(extractionStringFromAny(coordinates["source_occurrence_id"]))
+	contentHash := strings.TrimSpace(extractionFirstNonEmpty(
+		extractionStringFromAny(coordinates["content_hash"]),
+		extractionStringFromAny(coordinates["source_content_hash"]),
+	))
+	fromTurn := intFromAny(coordinates["source_turn_start"], 0)
+	toTurn := intFromAny(coordinates["source_turn_end"], fromTurn)
+	if !coordinateConflict && revision != "" && (unitID != "" || occurrenceID != "") && contentHash != "" && fromTurn > 0 && toTurn >= fromTurn {
+		coordinates["source_turn_start"] = fromTurn
+		coordinates["source_turn_end"] = toTurn
+		return strings.Join([]string{sessionID, mustCompactJSON(coordinates), strconv.Itoa(fromTurn), strconv.Itoa(toTurn)}, "\x1f")
+	}
+	if item.ID > 0 {
+		return fmt.Sprintf("memory-row:%s:%d:%d", sessionID, item.TurnIndex, item.ID)
+	}
+	return ""
 }
 
 func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLaneSelection, ctx prepareTurnRecollectionContext, perspectiveContext map[string]any) prepareTurnMemoryLaneSelection {
@@ -1596,6 +1703,9 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 		for _, item := range lane {
 			selectedKeys[prepareTurnMemoryLaneKey(item)] = true
 		}
+	}
+	for _, item := range selection.ProtectedSelected {
+		selectedKeys[prepareTurnMemoryLaneKey(item)] = true
 	}
 	filterLane := func(lane string, items []store.Memory) []store.Memory {
 		out := make([]store.Memory, 0, len(items))
@@ -1618,6 +1728,7 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	selection.Relevant = filterLane("relevant", selection.Relevant)
 	selection.Deep = filterLane("deep", selection.Deep)
 	selection.Recent = filterLane("recent", selection.Recent)
+	selection.ProtectedSelected = filterLane("protected", selection.ProtectedSelected)
 	for _, item := range selection.ProtectedCandidates {
 		if selectedKeys[prepareTurnMemoryLaneKey(item)] {
 			continue
@@ -1642,52 +1753,20 @@ func filterPrepareTurnProtectedMemoryLaneSelection(selection prepareTurnMemoryLa
 	return selection
 }
 
-func prefilterPrepareTurnProtectedAggregateMemories(items []store.Memory) ([]store.Memory, map[string]any) {
-	out := make([]store.Memory, 0, len(items))
-	droppedReasons := map[string]any{}
-	for _, item := range items {
-		parsed := parseJSONMap(item.SummaryJSON)
-		secrets := sliceFromAny(parsed["protected_secrets"])
-		identities := sliceFromAny(parsed["character_identity_accuracy"])
-		if len(secrets) == 0 && len(identities) == 0 {
-			out = append(out, item)
-			continue
-		}
-		public := len(secrets) > 0
-		for _, raw := range secrets {
-			scope := mapFromAny(mapFromAny(raw)["knowledge_scope"])
-			if !boolFromAny(scope["publicly_revealed"]) {
-				public = false
-				break
-			}
-		}
-		if public && len(identities) == 0 {
-			out = append(out, item)
-			continue
-		}
-		droppedReasons["private_aggregate_requires_precise_holder_projection"] =
-			intFromAny(droppedReasons["private_aggregate_requires_precise_holder_projection"], 0) + 1
-	}
-	return out, map[string]any{
-		"protected_memory_pre_rank_input_count":   len(items),
-		"protected_memory_pre_rank_output_count":  len(out),
-		"protected_memory_pre_rank_dropped_count": len(items) - len(out),
-		"protected_memory_pre_rank_drop_reasons":  droppedReasons,
-	}
-}
-
-func prefilterPrepareTurnHolderScopedPerspectiveMemories(items []store.Memory) ([]store.Memory, map[string]any) {
+// projectPrepareTurnGeneralMemories produces the public-only copy consumed by
+// ordinary lexical/vector selection and general memory delivery. Typed and
+// protected guidance remains on its separate canonical reader path.
+func projectPrepareTurnGeneralMemories(items []store.Memory) ([]store.Memory, map[string]any) {
 	out := make([]store.Memory, 0, len(items))
 	for _, item := range items {
-		if memoryAdmissionHasHolderScopedPerspectiveContent(parseJSONMap(item.SummaryJSON)) {
-			continue
+		if projected, ok := publicMemoryFromCanonical(item); ok {
+			out = append(out, projected)
 		}
-		out = append(out, item)
 	}
 	return out, map[string]any{
-		"holder_scoped_memory_pre_rank_input_count":   len(items),
-		"holder_scoped_memory_pre_rank_output_count":  len(out),
-		"holder_scoped_memory_pre_rank_dropped_count": len(items) - len(out),
+		"public_memory_projection_input_count":   len(items),
+		"public_memory_projection_output_count":  len(out),
+		"public_memory_projection_dropped_count": len(items) - len(out),
 	}
 }
 
@@ -1804,25 +1883,49 @@ func mergePrepareTurnWorldRulesForInjection(priority, rest []store.WorldRule) []
 
 func collapsePrepareTurnWorldRules(items []store.WorldRule) []store.WorldRule {
 	out := make([]store.WorldRule, 0, len(items))
-	seen := map[string]bool{}
+	groupIndex := map[string]int{}
 	for _, item := range items {
 		if item.Suppressed {
 			continue
 		}
-		key := strings.Join([]string{
+		keyParts := []string{
+			strings.TrimSpace(item.ChatSessionID),
 			collapseTextKey(item.Scope),
 			collapseTextKey(item.ScopeName),
 			collapseTextKey(item.Category),
 			collapseTextKey(item.Key),
-			collapseTextKey(item.ValueJSON),
-		}, "|")
-		if strings.Trim(key, "|") == "" {
+			strings.TrimSpace(item.ValueJSON),
+		}
+		key := strings.Join(keyParts, "\x1f")
+		if strings.Trim(strings.Join(keyParts[1:], ""), " ") == "" {
+			if item.ID <= 0 {
+				out = append(out, item)
+				continue
+			}
+			key = fmt.Sprintf("row:%d", item.ID)
+		}
+		if index, ok := groupIndex[key]; ok {
+			current := out[index]
+			preferCandidate := item.UserCorrected != current.UserCorrected && item.UserCorrected
+			if item.UserCorrected == current.UserCorrected && item.Pinned != current.Pinned {
+				preferCandidate = item.Pinned
+			}
+			if item.UserCorrected == current.UserCorrected && item.Pinned == current.Pinned {
+				switch {
+				case item.UpdatedAt.After(current.UpdatedAt):
+					preferCandidate = true
+				case item.UpdatedAt.Equal(current.UpdatedAt) && item.SourceTurn > current.SourceTurn:
+					preferCandidate = true
+				case item.UpdatedAt.Equal(current.UpdatedAt) && item.SourceTurn == current.SourceTurn && len([]rune(item.ValueJSON)) > len([]rune(current.ValueJSON)):
+					preferCandidate = true
+				}
+			}
+			if preferCandidate {
+				out[index] = item
+			}
 			continue
 		}
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
+		groupIndex[key] = len(out)
 		out = append(out, item)
 	}
 	return out
@@ -1881,6 +1984,9 @@ func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelecti
 	for _, item := range selection.Recent {
 		add(item)
 	}
+	for _, item := range selection.ProtectedSelected {
+		add(item)
+	}
 	return counts
 }
 
@@ -1930,9 +2036,9 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 		out.Trace["reason"] = "vector_shadow_missing"
 		return out
 	}
-	if strings.TrimSpace(stringFromMap(vectorShadow, "search_result")) != "ok" {
+	if strings.TrimSpace(stringFromMap(vectorShadow, "memory_search_result")) != "ok" {
 		out.Trace["status"] = "skipped"
-		out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_result"))
+		out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "memory_search_result"))
 		if out.Trace["reason"] == "" {
 			out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_skipped_reason"))
 		}
@@ -1945,7 +2051,7 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 		}
 	}
 	seen := map[int64]bool{}
-	hits := prepareTurnVectorSearchResultMaps(vectorShadow["search_results"])
+	hits := prepareTurnVectorMemorySearchResultMaps(vectorShadow)
 	out.Trace["status"] = "ready"
 	out.Trace["input_hit_count"] = len(hits)
 	hitRawLanguageCounts := map[string]int{}
@@ -1991,10 +2097,12 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
 			out.Trace["duplicate_count"] = intFromAny(out.Trace["duplicate_count"], 0) + 1
 			continue
 		}
-		if memoryAdmissionHasHolderScopedPerspectiveContent(parseJSONMap(item.SummaryJSON)) {
+		projected, projectionOK := publicMemoryFromCanonical(item)
+		if !projectionOK {
 			out.Trace["scope_filtered_count"] = intFromAny(out.Trace["scope_filtered_count"], 0) + 1
 			continue
 		}
+		item = projected
 		score, scoreOK := prepareTurnVectorHitSimilarity(hit)
 		if !scoreOK {
 			out.Trace["score_missing_count"] = intFromAny(out.Trace["score_missing_count"], 0) + 1
@@ -2168,20 +2276,13 @@ func filterPrepareTurnPerspectiveScopedEvidence(
 	evidence []store.DirectEvidence,
 	memories []store.Memory,
 ) ([]store.DirectEvidence, map[int64]bool) {
-	protectedTurns := map[int]bool{}
 	protectedEvidenceKeysByTurn := map[int]map[string]bool{}
 	for _, memory := range memories {
 		if memory.TurnIndex <= 0 {
 			continue
 		}
 		extraction := parseJSONMap(memory.SummaryJSON)
-		if !memoryAdmissionHasPerspectiveScopedContent(extraction) {
-			continue
-		}
-		keys, incomplete := memoryAdmissionPerspectiveEvidenceScope(extraction)
-		if incomplete {
-			protectedTurns[memory.TurnIndex] = true
-		}
+		keys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
 		if len(keys) > 0 {
 			protectedEvidenceKeysByTurn[memory.TurnIndex] = keys
 		}
@@ -2208,19 +2309,11 @@ func filterPrepareTurnPerspectiveScopedEvidence(
 		}
 		blocked := false
 		if start > 0 && end > 0 {
-			for turn := range protectedTurns {
-				if turn >= start && turn <= end {
+			evidenceKey := normalizeArtifactDedupeText(item.EvidenceText)
+			for turn, protectedKeys := range protectedEvidenceKeysByTurn {
+				if turn >= start && turn <= end && protectedKeys[evidenceKey] {
 					blocked = true
 					break
-				}
-			}
-			if !blocked {
-				evidenceKey := normalizeArtifactDedupeText(item.EvidenceText)
-				for turn, protectedKeys := range protectedEvidenceKeysByTurn {
-					if turn >= start && turn <= end && protectedKeys[evidenceKey] {
-						blocked = true
-						break
-					}
 				}
 			}
 		}
@@ -2261,7 +2354,7 @@ func prepareTurnVectorHistoryRowIDs(vectorShadow map[string]any) ([]int64, []int
 	evidenceIDs := []int64{}
 	seenMemory := map[int64]bool{}
 	seenEvidence := map[int64]bool{}
-	for _, hit := range prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]) {
+	for _, hit := range prepareTurnVectorMemorySearchResultMaps(vectorShadow) {
 		score, ok := prepareTurnVectorHitSimilarity(hit)
 		if !ok || !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
 			continue
@@ -2275,6 +2368,15 @@ func prepareTurnVectorHistoryRowIDs(vectorShadow map[string]any) ([]int64, []int
 				seenMemory[id] = true
 				memoryIDs = append(memoryIDs, id)
 			}
+		}
+	}
+	for _, hit := range prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]) {
+		score, ok := prepareTurnVectorHitSimilarity(hit)
+		if !ok || !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
+			continue
+		}
+		id := prepareTurnVectorSourceRowID(hit)
+		if id <= 0 {
 			continue
 		}
 		sourceTable := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "source_table")))
@@ -2395,6 +2497,16 @@ func prepareTurnVectorSearchResultMaps(value any) []map[string]any {
 	}
 }
 
+func prepareTurnVectorMemorySearchResultMaps(vectorShadow map[string]any) []map[string]any {
+	if vectorShadow == nil {
+		return nil
+	}
+	if value, exists := vectorShadow["memory_search_results"]; exists {
+		return prepareTurnVectorSearchResultMaps(value)
+	}
+	return prepareTurnVectorSearchResultMaps(vectorShadow["search_results"])
+}
+
 func prepareTurnVectorHitSimilarity(hit map[string]any) (float64, bool) {
 	if hit == nil {
 		return 0, false
@@ -2427,16 +2539,6 @@ func prepareTurnMemoryAlreadySelected(selection prepareTurnMemoryLaneSelection, 
 		}
 	}
 	return false
-}
-
-func prepareTurnNeedsRawFallback(selection prepareTurnMemoryLaneSelection) bool {
-	if boolFromAny(selection.Trace["vector_recall_ready"]) {
-		return false
-	}
-	if boolFromAny(selection.Trace["vector_recall_attempted"]) {
-		return false
-	}
-	return prepareTurnRecallMemoryCount(selection) == 0
 }
 
 func relevantDegradedReason(query string, selected, candidates int) string {

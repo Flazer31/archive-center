@@ -61,7 +61,7 @@ func (m *mariadbStore) stageFailedMemoryAdmissionResult(ctx context.Context, adm
 	updatedAt := nonZeroTime(admission.CreatedAt)
 	res, err := m.db.ExecContext(ctx, `
 		UPDATE memory_source_revisions
-		SET derived_admission_state = 'staged',
+		SET derived_admission_state = 'pending',
 		    derived_admission_version = ?,
 		    derived_extractor_version = ?,
 		    derived_index_version = ?,
@@ -103,7 +103,7 @@ func (m *mariadbStore) stageFailedMemoryAdmissionResult(ctx context.Context, adm
 	if err != nil {
 		return err
 	}
-	if (admissionState == "staged" || admissionState == "committed") &&
+	if (admissionState == "pending" || admissionState == "committed") &&
 		derivationVersion == admission.DerivationVersion &&
 		extractorVersion == admission.ExtractorVersion &&
 		indexVersion == admission.IndexVersion &&
@@ -115,6 +115,7 @@ func (m *mariadbStore) stageFailedMemoryAdmissionResult(ctx context.Context, adm
 
 func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission *MemoryAdmission) (MemoryAdmissionResult, error) {
 	var result MemoryAdmissionResult
+	vectorReplay := memoryAdmissionVectorReplayFromContext(ctx)
 	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return result, err
@@ -152,15 +153,25 @@ func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission 
 		derivationVersion == admission.DerivationVersion &&
 		extractorVersion == admission.ExtractorVersion &&
 		indexVersion == admission.IndexVersion {
-		result.Idempotent = true
-		result.ExistingResultHash = existingResultHash.String
-		result.ExistingResultJSON = existingResultJSON.String
-		result.CommittedResultHash = existingResultHash.String
-		if err := tx.Commit(); err != nil {
-			return result, err
+		if vectorReplay.Refresh &&
+			(existingResultHash.String != admission.ResultHash ||
+				existingResultJSON.String != admission.ResultJSON) {
+			return result, fmt.Errorf("memory admission committed result conflict")
 		}
-		committed = true
-		return result, nil
+		if vectorReplay.Refresh {
+			// The committed extraction is unchanged. Continue only to rebuild its
+			// deterministic projections and reactivate the exact outbox rows.
+		} else {
+			result.Idempotent = true
+			result.ExistingResultHash = existingResultHash.String
+			result.ExistingResultJSON = existingResultJSON.String
+			result.CommittedResultHash = existingResultHash.String
+			if err := tx.Commit(); err != nil {
+				return result, err
+			}
+			committed = true
+			return result, nil
+		}
 	}
 
 	memoryID, inserted, updated, err := commitAdmissionMemoryTx(ctx, tx, admission.Memory)
@@ -198,6 +209,16 @@ func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission 
 	result.PreciseReactivated = preciseResult.reactivated
 	result.PreciseRetired = preciseResult.retired
 	result.VectorOperations += preciseResult.vectorOperations
+
+	if vectorReplay.ReconcileEligibility {
+		reconciled, err := reconcileAdmissionAggregateVectorEligibilityTx(
+			ctx, tx, admission, memoryID, evidenceByText,
+		)
+		if err != nil {
+			return result, err
+		}
+		result.VectorOperations += reconciled
+	}
 
 	vectorCount, err := enqueueAdmissionVectorsTx(ctx, tx, admission, memoryID, evidenceByText)
 	if err != nil {
@@ -492,8 +513,14 @@ func reconcileAdmissionEvidenceTx(
 		`, prior.id, admission.ChatSessionID); err != nil {
 			return nil, result, err
 		}
+		documentID := "evidence:" + admission.ChatSessionID + ":" + strconv.FormatInt(prior.id, 10)
+		if err := cancelAdmissionPendingVectorUpsertsTx(
+			ctx, tx, documentID, "retired_evidence", admission.CreatedAt,
+		); err != nil {
+			return nil, result, err
+		}
 		queued, err := enqueueAdmissionVectorDeleteTx(
-			ctx, tx, admission, "evidence:"+admission.ChatSessionID+":"+strconv.FormatInt(prior.id, 10),
+			ctx, tx, admission, documentID,
 			"active", "retired_evidence",
 		)
 		if err != nil {
@@ -515,9 +542,14 @@ func reconcileAdmissionEvidenceTx(
 		`, duplicate.id, admission.ChatSessionID); err != nil {
 			return nil, result, err
 		}
+		documentID := "evidence:" + admission.ChatSessionID + ":" + strconv.FormatInt(duplicate.id, 10)
+		if err := cancelAdmissionPendingVectorUpsertsTx(
+			ctx, tx, documentID, "duplicate_evidence", admission.CreatedAt,
+		); err != nil {
+			return nil, result, err
+		}
 		queued, err := enqueueAdmissionVectorDeleteTx(
-			ctx, tx, admission,
-			"evidence:"+admission.ChatSessionID+":"+strconv.FormatInt(duplicate.id, 10),
+			ctx, tx, admission, documentID,
 			"active", "duplicate_evidence",
 		)
 		if err != nil {
@@ -529,6 +561,23 @@ func reconcileAdmissionEvidenceTx(
 		result.retired++
 	}
 	return evidenceByText, result, nil
+}
+
+func cancelAdmissionPendingVectorUpsertsTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	documentID string,
+	reason string,
+	at time.Time,
+) error {
+	_, err := tx.ExecContext(ctx, `
+		UPDATE memory_vector_outbox
+		SET status = 'stale_rejected', lease_owner = NULL, lease_until = NULL,
+		    retry_after = NULL, last_error = ?, updated_at = ?
+		WHERE document_id = ? AND operation = 'upsert'
+		  AND status IN ('pending', 'retryable', 'needs_embedding')
+	`, reason, nonZeroTime(at), documentID)
+	return err
 }
 
 type admissionPreciseRow struct {
@@ -584,7 +633,7 @@ func reconcileAdmissionPreciseMemoryTx(
 				SET root_evidence_id = ?, direct_evidence_ids_json = ?,
 				    lifecycle_state = 'active', updated_at = ?
 				WHERE id = ? AND source_revision = ? AND idempotency_key = ?
-			`, unit.RootEvidenceID, unit.DirectEvidenceIDsJSON,
+			`, nullablePositiveInt64(unit.RootEvidenceID), unit.DirectEvidenceIDsJSON,
 				nonZeroTime(unit.UpdatedAt), prior.id, unit.SourceRevision,
 				unit.IdempotencyKey); err != nil {
 				return result, err
@@ -616,7 +665,7 @@ func reconcileAdmissionPreciseMemoryTx(
 					SET status = 'stale_rejected', lease_owner = NULL, lease_until = NULL,
 					    last_error = 'private_precise_memory', updated_at = ?
 					WHERE document_id = ? AND operation = 'upsert'
-					  AND status IN ('pending', 'leased', 'retryable', 'needs_embedding')
+					  AND status IN ('pending', 'retryable', 'needs_embedding')
 				`, nonZeroTime(admission.CreatedAt), documentID); err != nil {
 					return result, err
 				}
@@ -679,7 +728,7 @@ func reconcileAdmissionPreciseMemoryTx(
 			SET status = 'stale_rejected', lease_owner = NULL, lease_until = NULL,
 			    last_error = 'precise_unit_replaced', updated_at = ?
 			WHERE document_id = ? AND operation = 'upsert'
-			  AND status IN ('pending', 'leased', 'retryable', 'needs_embedding')
+			  AND status IN ('pending', 'retryable', 'needs_embedding')
 		`, nonZeroTime(admission.CreatedAt), documentID); err != nil {
 			return result, err
 		}
@@ -695,6 +744,171 @@ func reconcileAdmissionPreciseMemoryTx(
 		result.retired++
 	}
 	return result, nil
+}
+
+// reconcileAdmissionAggregateVectorEligibilityTx removes only vector
+// projections that the canonical admission deliberately omitted. Canonical DB
+// rows and the committed extraction remain intact. This is enabled only for a
+// request-scoped administrative replay, so a temporarily unconfigured vector
+// backend cannot be mistaken for a private/no-public projection.
+func reconcileAdmissionAggregateVectorEligibilityTx(
+	ctx context.Context,
+	tx *sql.Tx,
+	admission *MemoryAdmission,
+	memoryID int64,
+	evidenceByText map[string]int64,
+) (int, error) {
+	desired := map[string]bool{}
+	for _, item := range admission.Vectors {
+		var rowID int64
+		switch item.ArtifactType {
+		case "memory":
+			rowID = memoryID
+		case "evidence":
+			rowID = evidenceByText[strings.TrimSpace(item.EvidenceText)]
+		default:
+			continue
+		}
+		if rowID > 0 {
+			desired[item.ArtifactType+":"+admission.ChatSessionID+":"+strconv.FormatInt(rowID, 10)] = true
+		}
+	}
+
+	if memoryID <= 0 {
+		err := tx.QueryRowContext(ctx, `
+			SELECT id
+			FROM memories
+			WHERE chat_session_id = ? AND turn_index = ?
+			ORDER BY id
+			LIMIT 1
+			FOR UPDATE
+		`, admission.ChatSessionID, admission.TurnIndex).Scan(&memoryID)
+		if err != nil && err != sql.ErrNoRows {
+			return 0, err
+		}
+	}
+
+	candidates := map[string]string{}
+	if memoryID > 0 {
+		candidates["memory:"+admission.ChatSessionID+":"+strconv.FormatInt(memoryID, 10)] = "no_public_memory_projection"
+	}
+	for _, evidenceID := range evidenceByText {
+		if evidenceID > 0 {
+			candidates["evidence:"+admission.ChatSessionID+":"+strconv.FormatInt(evidenceID, 10)] = "non_public_evidence_projection"
+		}
+	}
+
+	queued := 0
+	for documentID, reason := range candidates {
+		if desired[documentID] {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `
+			UPDATE memory_vector_outbox
+			SET status = 'stale_rejected', lease_owner = NULL, lease_until = NULL,
+			    retry_after = NULL, last_error = ?, updated_at = ?
+			WHERE document_id = ? AND operation = 'upsert'
+			  AND status IN ('pending', 'retryable', 'needs_embedding')
+		`, reason, nonZeroTime(admission.CreatedAt), documentID); err != nil {
+			return queued, err
+		}
+		inserted, err := enqueueAdmissionVectorDeleteTx(
+			ctx, tx, admission, documentID, "active", reason,
+		)
+		if err != nil {
+			return queued, err
+		}
+		if inserted {
+			queued++
+		}
+	}
+	return queued, nil
+}
+
+func enqueueAdmissionVectorOperation(
+	ctx context.Context,
+	exec memoryDerivationSQLExecutor,
+	item *MemoryVectorOutboxItem,
+) (bool, error) {
+	if !memoryAdmissionVectorReplayFromContext(ctx).Refresh {
+		return enqueueMemoryVectorOperation(ctx, exec, item)
+	}
+	if item == nil || strings.TrimSpace(item.OperationKey) == "" {
+		return false, fmt.Errorf("invalid memory vector outbox item")
+	}
+	documentJSON := strings.TrimSpace(item.DocumentJSON)
+	if documentJSON != "" && !json.Valid([]byte(documentJSON)) {
+		return false, fmt.Errorf("invalid memory vector document JSON")
+	}
+	var operation, sid, revision, documentID, requiredSourceState, status, sourceState string
+	var outboxID int64
+	var leaseUntil sql.NullTime
+	err := exec.QueryRowContext(ctx, `
+		SELECT o.id, o.operation, o.chat_session_id, o.source_revision,
+		       o.document_id, o.required_source_state, o.status,
+		       o.lease_until, s.lifecycle_state
+		FROM memory_vector_outbox o
+		JOIN memory_source_revisions s
+		  ON s.chat_session_id = o.chat_session_id
+		 AND s.source_revision = o.source_revision
+		WHERE o.operation_key = ?
+		FOR UPDATE
+	`, item.OperationKey).Scan(
+		&outboxID, &operation, &sid, &revision, &documentID,
+		&requiredSourceState, &status, &leaseUntil, &sourceState,
+	)
+	if err == sql.ErrNoRows {
+		return enqueueMemoryVectorOperation(ctx, exec, item)
+	}
+	if err != nil {
+		return false, err
+	}
+	if operation != item.Operation || sid != item.ChatSessionID ||
+		revision != item.SourceRevision || documentID != item.DocumentID ||
+		requiredSourceState != item.RequiredSourceState {
+		return false, fmt.Errorf("memory vector operation idempotency conflict")
+	}
+	if (requiredSourceState == "active" && sourceState != "active") ||
+		(requiredSourceState == "inactive" && sourceState == "active") {
+		return false, ErrSourceRevisionStale
+	}
+	now := time.Now().UTC()
+	if status == "leased" && leaseUntil.Valid && leaseUntil.Time.After(now) {
+		return false, ErrMemoryReprocessingLeased
+	}
+	var newer int
+	if err := exec.QueryRowContext(ctx, `
+		SELECT COUNT(*)
+		FROM memory_vector_outbox
+		WHERE document_id = ? AND id > ?
+	`, documentID, outboxID).Scan(&newer); err != nil {
+		return false, err
+	}
+	if newer > 0 {
+		return false, fmt.Errorf("memory vector refresh is superseded by a newer operation")
+	}
+	targetStatus := strings.TrimSpace(item.Status)
+	if targetStatus == "" {
+		targetStatus = "pending"
+	}
+	updated, err := exec.ExecContext(ctx, `
+		UPDATE memory_vector_outbox
+		SET document_json = ?, embedding_ready = ?, status = ?, attempts = 0,
+		    retry_after = NULL, lease_owner = NULL, lease_until = NULL,
+		    last_error = NULL, updated_at = ?
+		WHERE operation_key = ?
+		  AND (status <> 'leased' OR lease_until IS NULL OR lease_until <= ?)
+	`, nullableString(documentJSON), item.EmbeddingReady, targetStatus,
+		nonZeroTime(item.UpdatedAt), item.OperationKey, now)
+	if err != nil {
+		return false, err
+	}
+	if affected, err := updated.RowsAffected(); err != nil {
+		return false, err
+	} else if affected != 1 {
+		return false, ErrMemoryReprocessingLeased
+	}
+	return true, nil
 }
 
 func enqueueAdmissionVectorsTx(
@@ -763,7 +977,7 @@ func enqueueAdmissionVectorsTx(
 			CreatedAt:           nonZeroTime(admission.CreatedAt),
 			UpdatedAt:           nonZeroTime(admission.CreatedAt),
 		}
-		inserted, err := enqueueMemoryVectorOperation(ctx, tx, outbox)
+		inserted, err := enqueueAdmissionVectorOperation(ctx, tx, outbox)
 		if err != nil {
 			return queued, err
 		}
@@ -817,7 +1031,7 @@ func enqueueAdmissionVectorDeleteTx(
 		CreatedAt:           nonZeroTime(admission.CreatedAt),
 		UpdatedAt:           nonZeroTime(admission.CreatedAt),
 	}
-	return enqueueMemoryVectorOperation(ctx, tx, item)
+	return enqueueAdmissionVectorOperation(ctx, tx, item)
 }
 
 func memoryAdmissionVectorOperationKey(operation string, admission *MemoryAdmission, documentID string) string {

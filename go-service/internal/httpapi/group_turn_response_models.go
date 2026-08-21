@@ -34,7 +34,11 @@ func buildRecallResult(
 		status = "degraded"
 	}
 	topK = prepareTurnRecallLimit(topK)
-	recallLimit := len(memories) + len(evidence) + len(kgTriples) + len(episodeSums) + len(chatLogs) + len(storylines) + len(worldRules) + len(pendingThreads)
+	canonicalMemoryCount := len(memories)
+	canonicalMemories := memories
+	memories, publicProjectionTrace := projectPrepareTurnGeneralMemories(canonicalMemories)
+	evidence, _ = filterPrepareTurnPerspectiveScopedEvidence(evidence, canonicalMemories)
+	recallLimit := len(memories) + len(evidence) + len(kgTriples) + len(episodeSums) + len(storylines) + len(worldRules) + len(pendingThreads)
 
 	var items []map[string]any
 	if strings.TrimSpace(memoryRecallQuery) == "" {
@@ -88,37 +92,7 @@ func buildRecallResult(
 			"text":   text,
 		})
 	}
-	fallbackBound := 0
-	rawFallbackLogs := []store.ChatLog{}
 	vectorReadiness := buildPrepareTurnVectorReadiness(vectorShadow)
-	vectorReadinessStatus := strings.TrimSpace(stringFromMap(vectorReadiness, "status"))
-	vectorSearchAttempted := boolFromAny(vectorReadiness["search_attempted"])
-	vectorFallbackApplies := !vectorSearchAttempted &&
-		boolFromAny(vectorReadiness["fallback_recommended"]) &&
-		vectorReadinessStatus != "disabled" &&
-		vectorReadinessStatus != "vector_store_disabled" &&
-		vectorReadinessStatus != "chromadb_unconfigured"
-	rawFallbackActive := prepareTurnNeedsRawFallback(memorySelection) || vectorFallbackApplies
-	if rawFallbackActive && len(chatLogs) > 0 {
-		rawFallbackLogs = selectRecentChatLogsByTurn(chatLogs, recallLimit)
-		for _, cl := range rawFallbackLogs {
-			content := strings.TrimSpace(cl.Content)
-			content = strings.Join(strings.Fields(content), " ")
-			if content == "" {
-				continue
-			}
-			items = append(items, map[string]any{
-				"kind":       "chat_log",
-				"source":     "chat_log",
-				"lane":       "raw_fallback",
-				"id":         cl.ID,
-				"turn_index": cl.TurnIndex,
-				"role":       cl.Role,
-				"content":    content,
-			})
-			fallbackBound++
-		}
-	}
 
 	var kgItems []map[string]any
 	for i, k := range kgTriples {
@@ -150,30 +124,35 @@ func buildRecallResult(
 	}
 
 	counts := map[string]any{
-		"memories_total":          len(memories),
-		"memories_bound":          prepareTurnSelectedMemoryCount(memorySelection),
-		"memory_count":            prepareTurnSelectedMemoryCount(memorySelection),
-		"top_k_memory_target":     topK,
-		"support_candidate_limit": recallLimit,
-		"top_k_definition":        "vector_memory_search_limit_only",
-		"vector_memory_bound":     len(memorySelection.VectorRelevant),
-		"recent_memory_bound":     len(memorySelection.Recent),
-		"relevant_memory_bound":   len(memorySelection.Relevant),
-		"deep_memory_bound":       len(memorySelection.Deep),
-		"evidence_total":          len(evidence),
-		"evidence_bound":          minInt(len(evidence), recallLimit),
-		"kg_total":                len(kgTriples),
-		"kg_bound":                minInt(len(kgTriples), recallLimit),
-		"episodes_total":          len(episodeSums),
-		"episodes_bound":          minInt(len(episodeSums), recallLimit),
-		"chat_logs_total":         len(chatLogs),
-		"fallback_total":          len(chatLogs),
-		"fallback_bound":          fallbackBound,
-		"fallback_count":          fallbackBound,
-		"has_fallback":            fallbackBound > 0,
+		"memories_total":           canonicalMemoryCount,
+		"public_memories_total":    len(memories),
+		"memories_bound":           prepareTurnSelectedMemoryCount(memorySelection),
+		"memory_count":             prepareTurnSelectedMemoryCount(memorySelection),
+		"top_k_memory_target":      topK,
+		"support_candidate_limit":  recallLimit,
+		"top_k_definition":         "vector_memory_search_limit_only",
+		"vector_memory_bound":      len(memorySelection.VectorRelevant),
+		"recent_memory_bound":      len(memorySelection.Recent),
+		"relevant_memory_bound":    len(memorySelection.Relevant),
+		"deep_memory_bound":        len(memorySelection.Deep),
+		"evidence_total":           len(evidence),
+		"evidence_bound":           minInt(len(evidence), recallLimit),
+		"kg_total":                 len(kgTriples),
+		"kg_bound":                 minInt(len(kgTriples), recallLimit),
+		"episodes_total":           len(episodeSums),
+		"episodes_bound":           minInt(len(episodeSums), recallLimit),
+		"chat_logs_total":          len(chatLogs),
+		"fallback_total":           0,
+		"fallback_bound":           0,
+		"fallback_count":           0,
+		"has_fallback":             false,
+		"raw_chat_fallback_reason": "chat_logs_have_no_public_memory_projection_use_input_context",
+	}
+	for key, value := range publicProjectionTrace {
+		counts[key] = value
 	}
 	mergePrepareTurnMemoryLaneCounters(counts, memorySelection, false)
-	recallLanes := buildPrepareTurnRecallLanes(memorySelection, rawFallbackLogs, vectorReadiness, topK)
+	recallLanes := buildPrepareTurnRecallLanes(memorySelection, vectorReadiness, topK)
 
 	wouldCallVector := false
 	if attempted, ok := vectorShadow["search_attempted"].(bool); ok {
@@ -224,7 +203,7 @@ func buildRecallResult(
 		})
 	}
 
-	documents := buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, chatLogs)
+	documents := buildUnifiedRetrievalDocuments(sid, memories, evidence, kgTriples, episodeSums, resumePack, nil)
 	documentSchema := retrievalDocumentSchemaQ1()
 	indexSnapshot := retrievalIndexSnapshotFromDocuments(sid, documents)
 	annSnapshot := buildANNCandidateSnapshotQ2(documents, vectorShadow)
@@ -407,7 +386,7 @@ func buildRecallResult(
 	searchBundle := map[string]any{
 		"items":          items,
 		"memory_count":   prepareTurnSelectedMemoryCount(memorySelection),
-		"fallback_count": fallbackBound,
+		"fallback_count": 0,
 		"total_count":    len(items),
 		"counts":         counts,
 	}
@@ -496,14 +475,14 @@ func buildRecallResult(
 				"recent_memory_count":     len(memorySelection.Recent),
 				"relevant_memory_count":   len(memorySelection.Relevant),
 				"deep_memory_count":       len(memorySelection.Deep),
-				"raw_fallback_count":      fallbackBound,
+				"raw_fallback_count":      0,
 				"vector_readiness_status": vectorReadiness["status"],
 			},
 		},
 	}
 }
 
-func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFallbackLogs []store.ChatLog, vectorReadiness map[string]any, topK int) map[string]any {
+func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, vectorReadiness map[string]any, topK int) map[string]any {
 	laneItems := func(lane string, memories []store.Memory) []map[string]any {
 		out := make([]map[string]any, 0, len(memories))
 		for _, item := range memories {
@@ -535,22 +514,6 @@ func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFa
 		}
 		return out
 	}
-	rawItems := make([]map[string]any, 0, len(rawFallbackLogs))
-	for _, cl := range rawFallbackLogs {
-		content := compactPrepareTurnLine(cl.Content, 0)
-		if content == "" {
-			continue
-		}
-		rawItems = append(rawItems, map[string]any{
-			"lane":       "raw_fallback",
-			"kind":       "chat_log",
-			"id":         cl.ID,
-			"turn_index": cl.TurnIndex,
-			"role":       cl.Role,
-			"content":    content,
-			"reason":     "vector_or_memory_recall_degraded_raw_turn_support",
-		})
-	}
 	return map[string]any{
 		"version":             "r3.recall_lanes.v1",
 		"top_k_definition":    "vector_memory_search_limit_only",
@@ -577,15 +540,15 @@ func buildPrepareTurnRecallLanes(selection prepareTurnMemoryLaneSelection, rawFa
 			"policy": "high_importance_older_memory",
 		},
 		"raw_fallback": map[string]any{
-			"count":      len(rawItems),
-			"items":      rawItems,
-			"active":     len(rawItems) > 0,
-			"policy":     "recent_raw_turns_support_only",
-			"truth_role": "fallback_support_not_canonical_truth",
+			"count":      0,
+			"items":      []map[string]any{},
+			"active":     false,
+			"policy":     "disabled_chat_logs_have_no_public_memory_projection",
+			"truth_role": "input_context_owns_previous_completed_turn",
 		},
 		"vector_readiness":      vectorReadiness,
 		"selection_trace":       selection.Trace,
-		"selected_total":        prepareTurnSelectedMemoryCount(selection) + len(rawItems),
+		"selected_total":        prepareTurnSelectedMemoryCount(selection),
 		"no_user_input_rewrite": true,
 	}
 }

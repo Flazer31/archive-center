@@ -269,7 +269,8 @@ func TestPrepareTurnVectorCurrentPairDoesNotAddSecondPairMemory(t *testing.T) {
 		{ID: 2, TurnIndex: 40, SummaryJSON: `{"turn_summary":"베라와 주인공의 최근 사건","characters":["베라","주인공"]}`, Importance: 0.5},
 	}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{{
 			"id": "memory:test:2", "tier": "memory", "similarity": 0.9,
 			"similarity_source": "cosine_from_query_and_stored_embedding",
@@ -498,8 +499,8 @@ func TestPrepareTurnWorldEpisodeAndCanonicalRequireCurrentSceneRelevance(t *test
 			{ID: 2, LayerType: "world_state", Content: `{"harbor":"Juno's passport is missing"}`, Confidence: 0.9},
 		},
 		[]store.EpisodeSummary{
-			{ID: 1, FromTurn: 1, ToTurn: 3, SummaryText: "Mira found the brass gate key"},
-			{ID: 2, FromTurn: 4, ToTurn: 6, SummaryText: "Juno searched the harbor for a passport"},
+			{ID: 1, ChatSessionID: "scene-relevance", FromTurn: 1, ToTurn: 3, SummaryText: "Mira found the brass gate key"},
+			{ID: 2, ChatSessionID: "scene-relevance", FromTurn: 4, ToTurn: 6, SummaryText: "Juno searched the harbor for a passport"},
 		},
 		nil, nil, nil,
 		5, 9000, "Mira turns the brass key at the gate.", "default", nil, nil, nil,

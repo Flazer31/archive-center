@@ -300,7 +300,8 @@ func prepareTurnCharacterProfileItem(
 		"source_ref": ref, "source_metadata": source, "class": class, "kind": kind,
 		"subject_entity_id": subjectID, "subject_label": subjectLabel,
 		"counterpart_entity_id": nilIfEmpty(counterpartID), "counterpart_label": nilIfEmpty(counterpartLabel),
-		"profile_section": section, "visibility": visibility, "privacy_guard": nilIfEmpty(guard),
+		"profile_section": section, "trait_domain": nilIfEmpty(domain), "trait_key": traitKey,
+		"visibility": visibility, "privacy_guard": nilIfEmpty(guard),
 		"direct_entity_relevance": prepareTurnCharacterMemoryEntityInList(subjectID, subjectLabel, scope.Direct),
 		"text":                    line, "delivered": false,
 	}, true
@@ -369,6 +370,7 @@ func prepareTurnVoiceBehaviorItems(
 		items = append(items, map[string]any{
 			"source_ref": ref, "source_metadata": supportRefs[0], "support_source_metadata": supportRefs,
 			"class": "character_objective", "kind": "voice_behavior", "subject_entity_id": subjectID, "subject_label": subjectLabel,
+			"voice_domain": nilIfEmpty(domain), "voice_principle_key": principleKey,
 			"visibility": extractionStringFromAny(supportRefs[0]["visibility"]), "privacy_guard": nilIfEmpty(guard),
 			"direct_entity_relevance": prepareTurnCharacterMemoryEntityInList(subjectID, subjectLabel, scope.Direct),
 			"counterevidence_present": len(counterRefs) > 0, "exception_present": len(exceptionRefs) > 0,
@@ -608,14 +610,14 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 	if len(support) == 0 || extractionStringFromAny(support["status"]) == "fail_closed" {
 		return support
 	}
-	deliveredClassItems := map[string]map[string]bool{}
+	deliveredClassItems := map[string]map[string]int{}
 	for _, raw := range outputFidelityLineageSlice(plan["classes"]) {
 		class := mapFromAny(raw)
 		classKey := extractionStringFromAny(class["key"])
-		deliveredClassItems[classKey] = map[string]bool{}
+		deliveredClassItems[classKey] = map[string]int{}
 		for _, item := range prepareTurnDeliveryItems(extractionStringFromAny(class["text"])) {
 			if itemKey := collapseTextKey(item); itemKey != "" {
-				deliveredClassItems[classKey][itemKey] = true
+				deliveredClassItems[classKey][itemKey]++
 			}
 		}
 	}
@@ -628,7 +630,11 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
 		class := extractionStringFromAny(item["class"])
 		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		wasDelivered := ref != "" && text != "" && deliveredClassItems[class][collapseTextKey(text)]
+		textKey := collapseTextKey(text)
+		wasDelivered := ref != "" && text != "" && deliveredClassItems[class][textKey] > 0
+		if wasDelivered {
+			deliveredClassItems[class][textKey]--
+		}
 		item["delivered"] = wasDelivered
 		items = append(items, item)
 		if wasDelivered {

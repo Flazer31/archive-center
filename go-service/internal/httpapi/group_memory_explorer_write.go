@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -102,6 +103,27 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err.Error())
 		return
 	}
+	updatedMemory := mem
+	if patch.SummaryJSON != nil {
+		updatedMemory.SummaryJSON = *patch.SummaryJSON
+	}
+	if patch.Importance != nil {
+		updatedMemory.Importance = *patch.Importance
+	}
+	if patch.PlaceWing != nil {
+		updatedMemory.PlaceWing = *patch.PlaceWing
+	}
+	if patch.PlaceRoom != nil {
+		updatedMemory.PlaceRoom = *patch.PlaceRoom
+	}
+	vectorSync := map[string]any{
+		"attempted": false,
+		"ok":        true,
+		"reason":    "search_text_unchanged",
+	}
+	if patch.SummaryJSON != nil && updatedMemory.SummaryJSON != mem.SummaryJSON {
+		vectorSync = s.enqueueEditedMemoryVector(r.Context(), sid, updatedMemory, changedAt)
+	}
 	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
 		ChatSessionID: sid,
 		EventType:     "manual_edit",
@@ -118,13 +140,18 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 				"archive_room": mem.PlaceRoom,
 				"created_at":   mem.CreatedAt,
 			},
-			"changed_at": changedAt,
+			"changed_at":  changedAt,
+			"vector_sync": vectorSync,
 		}),
 		Source:    "explorer_manual_edit",
 		CreatedAt: changedAt,
 	})
+	status := "ok"
+	if synced, _ := vectorSync["ok"].(bool); !synced {
+		status = "partial_error"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           "ok",
+		"status":           status,
 		"source":           s.storeWriteSource(),
 		"mutation_enabled": true,
 		"chat_session_id":  sid,
@@ -133,7 +160,116 @@ func (s *Server) handlePatchMemory(w http.ResponseWriter, r *http.Request) {
 		"updated_fields":   updatedFields,
 		"changed_at":       changedAt,
 		"audit_written":    true,
+		"vector_sync":      vectorSync,
 	})
+}
+
+func (s *Server) enqueueEditedMemoryVector(ctx context.Context, sid string, mem store.Memory, changedAt time.Time) map[string]any {
+	documentID := memoryVectorDocumentID(sid, mem)
+	result := map[string]any{
+		"attempted":   false,
+		"ok":          false,
+		"document_id": documentID,
+	}
+	if documentID == "" {
+		result["reason"] = "missing_vector_document_id"
+		return result
+	}
+	lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
+	outbox, outboxOK := s.Store.(store.MemoryVectorOutboxStore)
+	if !listOK || !outboxOK {
+		result["reason"] = "durable_vector_sync_unavailable"
+		return result
+	}
+	sources, err := lister.ListActiveSourceRevisions(ctx, sid, mem.TurnIndex, mem.TurnIndex)
+	if err != nil {
+		result["reason"] = "active_source_revision_read_failed"
+		result["error"] = err.Error()
+		return result
+	}
+	if len(sources) != 1 {
+		result["reason"] = "active_source_revision_not_unique"
+		result["source_revision_count"] = len(sources)
+		return result
+	}
+	source := sources[0]
+	if source.LifecycleState != "active" || source.DerivedAdmissionState != "committed" {
+		result["reason"] = "active_source_revision_not_committed"
+		return result
+	}
+	searchBuild := memorySearchTextFromMemory(mem)
+	documentText := strings.TrimSpace(searchBuild.Text)
+	operation := "upsert"
+	status := "needs_embedding"
+	embeddingReady := false
+	documentJSON := ""
+	if documentText == "" {
+		operation = "delete"
+		status = "pending"
+		embeddingReady = true
+	} else {
+		languageMeta := memoryVectorLanguageMetadata(mem)
+		fingerprint := fmt.Sprintf("%x", sha256.Sum256([]byte(documentText)))
+		document := vector.VectorDocument{
+			ID:                    documentID,
+			Tier:                  "memory",
+			ChatSessionID:         sid,
+			SourceTable:           "memories",
+			SourceRowID:           strconv.FormatInt(mem.ID, 10),
+			SchemaVersion:         "memory.v2",
+			DocumentText:          documentText,
+			SearchTextPolicy:      extractionFirstNonEmpty(languageMeta["search_text_policy"], languageMemorySearchPolicy),
+			RawLanguage:           languageMeta["raw_language"],
+			SummaryLanguage:       languageMeta["summary_language"],
+			SessionOutputLanguage: languageMeta["session_output_language"],
+			AliasCount:            searchBuild.AliasCount,
+			Metadata: map[string]any{
+				"source_revision":                 source.SourceRevision,
+				"source_contract":                 store.MemorySourceRevisionContract,
+				"index_identity":                  store.MemoryPublicProjectionIndex,
+				"content_fingerprint":             fingerprint,
+				"contextualized_embedding_inputs": []string{documentText},
+				"contextualized_embedding_index":  0,
+			},
+		}
+		encoded, err := json.Marshal(document)
+		if err != nil {
+			result["reason"] = "vector_document_encode_failed"
+			result["error"] = err.Error()
+			return result
+		}
+		documentJSON = string(encoded)
+	}
+	operationKey := fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join([]string{
+		"explorer_manual_edit", operation, sid, source.SourceRevision, documentID,
+		changedAt.UTC().Format(time.RFC3339Nano),
+	}, "\n"))))
+	result["attempted"] = true
+	inserted, err := outbox.EnqueueMemoryVectorOperation(ctx, &store.MemoryVectorOutboxItem{
+		ContractVersion:     store.MemoryVectorOutboxContract,
+		OperationKey:        operationKey,
+		Operation:           operation,
+		ChatSessionID:       sid,
+		SourceRevision:      source.SourceRevision,
+		DocumentID:          documentID,
+		DocumentJSON:        documentJSON,
+		EmbeddingReady:      embeddingReady,
+		RequiredSourceState: "active",
+		Status:              status,
+		CreatedAt:           changedAt,
+		UpdatedAt:           changedAt,
+	})
+	if err != nil {
+		result["reason"] = "vector_sync_enqueue_failed"
+		result["error"] = err.Error()
+		return result
+	}
+	result["ok"] = true
+	result["queued"] = inserted
+	result["operation"] = operation
+	result["source_revision"] = source.SourceRevision
+	delete(result, "reason")
+	return result
 }
 
 func (s *Server) handlePatchKGTriple(w http.ResponseWriter, r *http.Request) {

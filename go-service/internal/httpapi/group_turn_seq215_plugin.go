@@ -48,7 +48,8 @@ func buildSeq215P778JSInjectionBudgetOwner() map[string]any {
 }
 
 // buildSeq215P779JSInputContextSlottingOwner preserves the legacy response key
-// while reporting the current Go-owned input-context decision.
+// while reporting that recent chat remains internal context rather than a
+// second main-model payload block.
 func buildSeq215P779JSInputContextSlottingOwner() map[string]any {
 	return map[string]any{
 		"version":           "s215-p779.v1",
@@ -56,11 +57,11 @@ func buildSeq215P779JSInputContextSlottingOwner() map[string]any {
 		"truth_authority":   false,
 		"sub_step":          "21.5-js-ownership-boundary",
 		"owner":             "go_backend",
-		"responsibility":    "input_context_text_decision",
-		"js_responsibility": "insert_exact_text_before_latest_user",
-		"note":              "Go owns input-context selection and text; JS performs only the RisuAI payload insertion.",
+		"responsibility":    "input_context_internal_only",
+		"js_responsibility": "do_not_reinject_host_recent_chat",
+		"note":              "RisuAI already supplies recent chat to the main model; Archive Center keeps it only for internal turn analysis.",
 		"policy_version":    "payload_application_plan.v1",
-		"mode":              "go_input_context_owner",
+		"mode":              "host_recent_chat_not_reinjected",
 	}
 }
 
@@ -110,40 +111,6 @@ func buildSeq215P782JSOfflineFailOpenOwner() map[string]any {
 		"note":            "JS remains owner of offline/fail-open fallback; backend does not implement client-side offline behavior.",
 		"policy_version":  "s215-sc.v1",
 		"mode":            "seq215_js_offline_fail_open_owner_definition",
-	}
-}
-
-// buildSeq215P783BuildInputContextPreserved exposes the evidence that
-// buildInputContext was not removed in Step 21.5 for SEQ-21.5-P783.
-func buildSeq215P783BuildInputContextPreserved() map[string]any {
-	return map[string]any{
-		"version":         "s215-p783.v1",
-		"role":            "seq215_build_input_context_preserved",
-		"truth_authority": false,
-		"sub_step":        "21.5-js-function-preservation",
-		"function_name":   "buildInputContext",
-		"preserved":       true,
-		"location":        "Archive Center.js",
-		"note":            "buildInputContext(...) was not removed in Step 21.5; remains active in JS runtime.",
-		"policy_version":  "s215-sc.v1",
-		"mode":            "seq215_build_input_context_preserved_definition",
-	}
-}
-
-// buildSeq215P784AssembleInjectionWithBudgetPreserved exposes the evidence that
-// assembleInjectionWithBudget was not removed in Step 21.5 for SEQ-21.5-P784.
-func buildSeq215P784AssembleInjectionWithBudgetPreserved() map[string]any {
-	return map[string]any{
-		"version":         "s215-p784.v1",
-		"role":            "seq215_assemble_injection_with_budget_preserved",
-		"truth_authority": false,
-		"sub_step":        "21.5-js-function-preservation",
-		"function_name":   "assembleInjectionWithBudget",
-		"preserved":       true,
-		"location":        "Archive Center.js",
-		"note":            "assembleInjectionWithBudget(...) was not removed in Step 21.5; remains active in JS runtime.",
-		"policy_version":  "s215-sc.v1",
-		"mode":            "seq215_assemble_injection_with_budget_preserved_definition",
 	}
 }
 

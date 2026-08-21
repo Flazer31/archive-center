@@ -61,8 +61,8 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
-	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "3.9.11"`) {
-		t.Fatal("3.9.11 plugin build identity is not visible in the HUD")
+	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) || !strings.Contains(src, `const BUILD_ID = "Pre-4.0.0"`) {
+		t.Fatal("Pre-4.0.0 plugin build identity is not visible in the HUD")
 	}
 	for _, expected := range []string{
 		`critic_input_budget_observation: {`,
@@ -228,9 +228,12 @@ const _activeChatBackfillInFlight = new Set();
 let completeTurnCalls = 0;
 let builtOptions = null;
 let postedBody = null;
+let routingResult = {status:"resolved",turnIndex:2,localTurnIndex:2,baseline:null};
 async function requestBackendSessionRoutingTurnResolution(){
-  return {status:"resolved",turnIndex:2,localTurnIndex:2,baseline:null};
+  return routingResult;
 }
+function extractActiveChatMessageList(){ return []; }
+function buildRisuWorldlineObservationFromMessages(){ return null; }
 async function fetchCanonicalChatLogsForTurn(){
   return [
     {role:"user",content:"old user"},
@@ -279,6 +282,16 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
     hash:"pair-hash",
     source:"risu_active_chat_complete_turn_backfill",
   };
+  routingResult = {status:"worldline_ownership_unresolved",turnIndex:0,localTurnIndex:1,baseline:null};
+  const unresolved = await backfillOneActiveChatCompletedTurn("session-1",pair,{
+    reason:"before_request",
+    routingContext:"automatic_active_chat_full_sweep",
+  });
+  if (unresolved.status !== "skipped" || unresolved.reason !== "worldline_ownership_unresolved") {
+    throw new Error("unresolved worldline reached backfill: "+JSON.stringify(unresolved));
+  }
+  if (completeTurnCalls !== 0) throw new Error("unresolved worldline reached complete-turn");
+  routingResult = {status:"resolved",turnIndex:2,localTurnIndex:2,baseline:null};
   const ordinary = await backfillOneActiveChatCompletedTurn("session-1",pair,{reason:"timeline_refresh"});
   if (ordinary.status !== "exists" || ordinary.reason !== "raw_turn_content_conflict_existing") {
     throw new Error("ordinary historical conflict was allowed: "+JSON.stringify(ordinary));
@@ -302,10 +315,12 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
   }
 
   const flags = [];
+  const routingContexts = [];
   const observedHashes = [];
   const original = backfillOneActiveChatCompletedTurn;
   backfillOneActiveChatCompletedTurn = async function(sid,observedPair,options){
     flags.push(options.hostObservedActiveTailReplacement === true);
+    routingContexts.push(String(options.routingContext||""));
     observedHashes.push(observedPair.hash);
     return {status:"exists",turnIndex:flags.length};
   };
@@ -316,7 +331,9 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
   if (JSON.stringify(flags) !== JSON.stringify([false,false,true])) {
     throw new Error("only the actual latest visible pair must be replacement-eligible: "+JSON.stringify(flags));
   }
+  if (routingContexts.some(Boolean)) throw new Error("ordinary chat unexpectedly received worldline routing context");
   flags.length = 0;
+  routingContexts.length = 0;
   observedHashes.length = 0;
   ledgerEntries = {
     "session-1:1":{hash:"unsaved-oldest"},
@@ -333,6 +350,85 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("active-tail edit fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestActiveChatWorldlinePreflightSeparatesInheritedPrefixBeforeBackfill(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for active-chat worldline preflight fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	builder := extractJSFunctionBlockForTest(t, src, "function buildRisuWorldlineObservationFromMessages(messages, observedAtMs, hostSignalSource)")
+	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
+	script := `
+const SESSION_FALLBACK = "default";
+const settings = {enabled:true,dbEnabled:true};
+const _activeChatBackfillInFlight = new Set();
+let routeState = "confirmed";
+let rawChat = {id:"child-chat",message:[
+  {role:"user",chatId:"user-anchor",data:"u"},
+  {role:"char",chatId:"fork-source",data:"a"},
+  {role:"comment",disabled:true,data:"{{specialcomment::branchedfrom::parent-chat::Parent::fork-source::}}"},
+  {role:"user",chatId:"child-user",data:"u2"},
+  {role:"char",chatId:"child-answer",data:"a2"},
+]};
+let order = [];
+let routed = [];
+let backfilled = [];
+async function resolveCurrentActiveChatObject(){ return {chat:rawChat}; }
+function extractActiveChatMessageList(chat){ return chat && Array.isArray(chat.message) ? chat.message : []; }
+function extractActiveChatComparableMessages(){ return []; }
+function buildCompletedTurnPairsFromActiveChatMessages(){
+  return [
+    {hash:"pair-a",risuUserMessageIndex:0,observedPairOrdinal:1},
+    {hash:"pair-b",risuUserMessageIndex:2,observedPairOrdinal:2},
+  ];
+}
+async function requestBackendSessionRoutingTurnResolution(sid,mode,facts){
+  order.push("route");
+  routed.push({sid,mode,facts});
+  return {status:"normal",worldline:{state:routeState,reason:routeState}};
+}
+async function loadActiveChatBackfillLedger(){ return {entries:{}}; }
+async function backfillOneActiveChatCompletedTurn(sid,pair,options){
+  order.push("backfill");
+  backfilled.push({sid,pair,options});
+  return {status:"skipped",turnIndex:0};
+}
+function updateRuntimeState(){}
+` + builder + "\n" + ensure + `
+const assert = (condition,message) => { if (!condition) throw new Error(message); };
+(async()=>{
+  const confirmed = await ensureActiveChatCompletedTurnsBackfilled("child-session",{reason:"plugin_init"});
+  assert(confirmed.status === "skipped", "fixture backfills should report skipped");
+  assert(order[0] === "route" && order.slice(1).every(item=>item === "backfill"), "worldline preflight did not run first: "+JSON.stringify(order));
+  assert(routed.length === 1 && routed[0].mode === "identity", "preflight must use the existing identity route");
+  const observation = routed[0].facts.worldlineObservation;
+  assert(observation.contract_version === "risu_worldline_observation.v2", "preflight contract mismatch");
+  assert(observation.host_signal_source === "active_chat_pre_backfill", "preflight was falsely labeled as output");
+  assert(backfilled.length === 2 && backfilled.every(item=>item.options.routingContext === "automatic_active_chat_full_sweep"), "confirmed branch pairs lack Go routing context");
+
+  routeState = "unresolved";
+  order = []; routed = []; backfilled = [];
+  const unresolved = await ensureActiveChatCompletedTurnsBackfilled("child-session",{reason:"before_request"});
+  assert(unresolved.reason === "worldline_ownership_unresolved", "unresolved marker did not fail closed");
+  assert(routed.length === 1 && backfilled.length === 0, "unresolved marker reached pair backfill");
+
+  rawChat = {id:"ordinary-chat",message:[{role:"user",chatId:"ordinary-user",data:"u"},{role:"char",chatId:"ordinary-answer",data:"a"}]};
+  order = []; routed = []; backfilled = [];
+  await ensureActiveChatCompletedTurnsBackfilled("ordinary-session",{reason:"plugin_init"});
+  assert(routed.length === 0, "ordinary chat created a worldline preflight");
+  assert(backfilled.length === 2 && backfilled.every(item=>!item.options.routingContext), "ordinary backfill behavior changed");
+})().catch(err=>{ console.error(err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("active-chat worldline preflight fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -909,10 +1005,7 @@ func TestFeedbackOneNormalAndPostOutputRoutesStayConnected(t *testing.T) {
 	if strings.Contains(onAfter, "after_request_final_not_accepted") {
 		t.Fatal("afterRequest correlation rejection still blocks normal persistence")
 	}
-	for _, forbidden := range []string{
-		"addRisuChatListener",
-		"onPostprocessedRisuOutput",
-	} {
+	for _, forbidden := range []string{"onPostprocessedRisuOutput"} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("feedback-one route retained forbidden output hook %q", forbidden)
 		}

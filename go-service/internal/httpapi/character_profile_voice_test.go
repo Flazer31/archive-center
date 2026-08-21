@@ -71,6 +71,53 @@ func Test39CDCharacterProfileAndVoiceCompileSeparateConditionalEvidence(t *testi
 	}
 }
 
+func Test39DVoiceProjectionMergesStructuralVariantsWithoutDomainOnlyCollapse(t *testing.T) {
+	fake := newCharacterProjectionRecordingStore(nil)
+	srv := &Server{Store: fake}
+	units := []*store.PreciseMemoryUnit{
+		voiceProjectionTestUnit("session-voice-variants", "revision-1", 1, "voice-primary", 901, "entity-mira", "Mira", "directness", "brief_imperatives", "utterance", `"Enough."`, "", "", "", "", "", "", "", `Mira says, "Enough."`, "owner_private"),
+		voiceProjectionTestUnit("session-voice-variants", "revision-1", 1, "voice-same-occurrence", 901, "entity-mira", "Mira", "directness", "concise_commands", "utterance", `"Enough."`, "", "", "", "", "", "", "", `Mira says, "Enough."`, "owner_private"),
+		voiceProjectionTestUnit("session-voice-variants", "revision-2", 2, "voice-same-principle", 902, "entity-mira", "Mira", "brevity", "brief_imperatives", "utterance", `"Stop."`, "", "", "", "", "", "", "", `Mira says, "Stop."`, "owner_private"),
+		voiceProjectionTestUnit("session-voice-variants", "revision-3", 3, "voice-distinct", 903, "entity-mira", "Mira", "directness", "avoids_metaphors", "utterance", `"State the facts."`, "", "", "", "", "", "", "", `Mira says, "State the facts."`, "owner_private"),
+		voiceProjectionTestUnit("session-voice-variants", "revision-4", 4, "voice-reuses-variant", 904, "entity-mira", "Mira", "command_density", "concise_commands", "utterance", `"Move."`, "", "", "", "", "", "", "", `Mira says, "Move."`, "owner_private"),
+	}
+	result := artifactSaveResult{}
+	srv.saveCharacterProfileAndVoiceProjectionsFromPreciseMemoryUnits(context.Background(), "session-voice-variants", units, time.Unix(901, 0), &result)
+	if result.Errors != 0 || result.VoiceBehaviorProjections != 1 {
+		t.Fatalf("voice variant projection result=%+v", result)
+	}
+	state := fake.mustState(t, "session-voice-variants", "Mira")
+	voice := characterProjectionJSONMap(t, state.SpeechStyleJSON)
+	principles := sliceFromAny(voice["principles"])
+	if len(principles) != 2 {
+		t.Fatalf("voice variants were over- or under-merged: %s", state.SpeechStyleJSON)
+	}
+	var merged, distinct map[string]any
+	for _, raw := range principles {
+		principle := mapFromAny(raw)
+		switch extractionStringFromAny(principle["principle_key"]) {
+		case "brief_imperatives":
+			merged = principle
+		case "avoids_metaphors":
+			distinct = principle
+		}
+	}
+	if len(merged) == 0 || len(distinct) == 0 {
+		t.Fatalf("voice principle representatives are missing: %s", state.SpeechStyleJSON)
+	}
+	if len(sliceFromAny(merged["support_refs"])) != 4 ||
+		!stringSliceContains(stringsFromAny(merged["principle_key_variants"]), "brief_imperatives") ||
+		!stringSliceContains(stringsFromAny(merged["principle_key_variants"]), "concise_commands") ||
+		!stringSliceContains(stringsFromAny(merged["trait_domain_variants"]), "directness") ||
+		!stringSliceContains(stringsFromAny(merged["trait_domain_variants"]), "brevity") ||
+		!stringSliceContains(stringsFromAny(merged["trait_domain_variants"]), "command_density") {
+		t.Fatalf("merged voice variants or source refs were lost: %s", state.SpeechStyleJSON)
+	}
+	if len(sliceFromAny(distinct["support_refs"])) != 1 {
+		t.Fatalf("different occurrence with only a shared domain was merged: %s", state.SpeechStyleJSON)
+	}
+}
+
 func Test39TypedVoiceManualPatchPreservesCompiledPrinciples(t *testing.T) {
 	current := mustCompactJSON(map[string]any{
 		"contract_version":  voiceBehaviorProjectionContractVersion,
@@ -137,7 +184,7 @@ func Test39CProfileAccumulatesDurableEvidenceAndReplacesOnlyCurrentSlot(t *testi
 	}
 }
 
-func Test39DArchivesExampleDialoguePrincipleForReviewWithoutProjection(t *testing.T) {
+func Test39DArchivesExampleDialoguePrincipleWithoutExactWordingGate(t *testing.T) {
 	evidence := `Mira says, "Enough."`
 	raw := map[string]any{
 		"entities": map[string]any{"characters": []any{map[string]any{"name": "Mira"}}},
@@ -154,17 +201,17 @@ func Test39DArchivesExampleDialoguePrincipleForReviewWithoutProjection(t *testin
 	if len(items) != 2 {
 		t.Fatalf("voice candidates were not archived broadly: admitted=%#v trace=%#v", admitted, trace)
 	}
-	if extractionStringFromAny(mapFromAny(items[0])["admission_state"]) != "review_required" ||
+	if extractionStringFromAny(mapFromAny(items[0])["admission_state"]) != "committed" ||
 		extractionStringFromAny(mapFromAny(items[1])["admission_state"]) != "committed" {
-		t.Fatalf("voice candidates did not separate archive review from current projection: %#v", items)
+		t.Fatalf("voice candidates were rejected by wording identity: %#v", items)
 	}
 
 	fake := newCharacterProjectionRecordingStore(nil)
 	unit := voiceProjectionTestUnit("session-voice-replay", "revision-1", 1, "voice-replay", 908, "entity-mira", "Mira", "directness", "enough", "utterance", `"Enough."`, "", "", "", "", "", "", "", evidence, "owner_private")
 	result := artifactSaveResult{}
 	(&Server{Store: fake}).saveCharacterProfileAndVoiceProjectionsFromPreciseMemoryUnits(context.Background(), "session-voice-replay", []*store.PreciseMemoryUnit{unit}, time.Unix(908, 0), &result)
-	if result.VoiceBehaviorProjections != 0 || len(fake.saved) != 0 {
-		t.Fatalf("prebuilt precise unit replayed dialogue into durable voice projection: %+v", result)
+	if result.VoiceBehaviorProjections != 1 || len(fake.saved) != 1 {
+		t.Fatalf("understandable voice principle was erased because it matched the utterance: %+v", result)
 	}
 }
 
@@ -246,7 +293,7 @@ func Test39CDAdmissionKeepsSourceBoundProfileAndVoiceWithoutRedundantAttribution
 	if !seen["character_profile"] || !seen["voice_behavior"] {
 		t.Fatalf("typed precise candidates missing support-only authority: %#v", candidates)
 	}
-	if !memoryAdmissionHasPerspectiveScopedContent(admitted) || !memoryAdmissionHasHolderScopedPerspectiveContent(admitted) {
+	if !memoryAdmissionHasHolderScopedPerspectiveContent(admitted) {
 		t.Fatalf("C/D private evidence escaped perspective scope: %#v", admitted)
 	}
 }
@@ -333,11 +380,12 @@ func Test39CDCriticAndProviderContractsExposeTypedLanes(t *testing.T) {
 			t.Fatalf("critic prompt missing 3.9-C/D guard %q", needle)
 		}
 	}
-	if err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "character_profile_observations": []any{}, "voice_observations": []any{}}); err != nil {
+	if _, _, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "character_profile_observations": []any{}, "voice_observations": []any{}}); err != nil {
 		t.Fatalf("typed C/D lanes rejected by critic schema: %v", err)
 	}
-	if err := validateCriticExtractionSchema(map[string]any{"turn_summary": "bad", "voice_observations": map[string]any{}}); err == nil {
-		t.Fatal("non-array voice lane passed critic schema")
+	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "kept", "voice_observations": map[string]any{}})
+	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_field_count"], 0) != 1 {
+		t.Fatalf("non-array voice lane was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
 	}
 	properties := mapFromAny(proxyCriticTopLevelJSONSchema()["properties"])
 	for _, key := range []string{"character_profile_observations", "voice_observations"} {

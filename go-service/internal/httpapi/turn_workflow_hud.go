@@ -246,12 +246,19 @@ type turnWorkflowHUDViewModel struct {
 	PresentationTone string                          `json:"presentation_tone,omitempty"`
 }
 
+type turnWorkflowHUDRecoveryTarget struct {
+	ChatSessionID  string
+	LogicalTurn    int
+	SourceRevision string
+}
+
 type turnWorkflowHUDEntry struct {
-	view       turnWorkflowHUDViewModel
-	history    []turnWorkflowHUDViewModel
-	changed    chan struct{}
-	attemptKey string
-	sequence   uint64
+	view           turnWorkflowHUDViewModel
+	history        []turnWorkflowHUDViewModel
+	changed        chan struct{}
+	attemptKey     string
+	sequence       uint64
+	recoveryTarget turnWorkflowHUDRecoveryTarget
 }
 
 type turnWorkflowHUDNoticeObservation struct {
@@ -739,6 +746,52 @@ func turnWorkflowHUDDetailMatches(details []turnWorkflowHUDDetail, key, value st
 		}
 	}
 	return false
+}
+
+func (l *turnWorkflowHUDLedger) bindRecoveryTarget(
+	requestID, chatSessionID string,
+	logicalTurn int,
+	sourceRevision string,
+) bool {
+	if l == nil {
+		return false
+	}
+	requestID = strings.TrimSpace(requestID)
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceRevision = strings.TrimSpace(sourceRevision)
+	if requestID == "" || chatSessionID == "" || logicalTurn <= 0 || sourceRevision == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[requestID]
+	if entry == nil {
+		return false
+	}
+	entry.recoveryTarget = turnWorkflowHUDRecoveryTarget{
+		ChatSessionID:  chatSessionID,
+		LogicalTurn:    logicalTurn,
+		SourceRevision: sourceRevision,
+	}
+	return true
+}
+
+func (l *turnWorkflowHUDLedger) recoveryTarget(requestID string) (turnWorkflowHUDRecoveryTarget, bool) {
+	if l == nil {
+		return turnWorkflowHUDRecoveryTarget{}, false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil {
+		return turnWorkflowHUDRecoveryTarget{}, false
+	}
+	target := entry.recoveryTarget
+	if strings.TrimSpace(target.ChatSessionID) == "" || target.LogicalTurn <= 0 ||
+		strings.TrimSpace(target.SourceRevision) == "" {
+		return turnWorkflowHUDRecoveryTarget{}, false
+	}
+	return target, true
 }
 
 func (l *turnWorkflowHUDLedger) setRecoveryActionStatus(
@@ -1557,14 +1610,19 @@ func buildTurnWorkflowHUDNarrativeGuidanceFact(status, reasonCode string) turnWo
 		fact.Disposition = "delivered"
 		fact.ReasonCode = "supervisor_source_backed_guidance_delivered"
 		fact.Severity = turnWorkflowHUDSeverityNormal
+	case "applied_partial":
+		fact.Disposition = "delivered"
+		fact.ReasonCode = "publisher_plan_partial"
+		fact.Severity = turnWorkflowHUDSeverityNotice
 	case "valid_empty":
 		fact.Disposition = "selected"
-		fact.ReasonCode = "supervisor_valid_empty"
+		fact.ReasonCode = "publisher_valid_empty"
 		fact.Severity = turnWorkflowHUDSeverityNormal
-	case "unsupported_rejected":
+	case "publisher_plan_no_valid_items":
 		fact.Disposition = "dropped"
-		fact.ReasonCode = "supervisor_unsupported_proposal_rejected"
-	case "malformed_failed_open", "failed_open":
+		fact.ReasonCode = "publisher_plan_no_valid_items"
+		fact.Severity = turnWorkflowHUDSeverityWarning
+	case "publisher_response_container_invalid", "publisher_llm_empty_content", "publisher_json_malformed", "publisher_json_truncated", "publisher_schema_invalid", "failed_open":
 		fact.Disposition = "dropped"
 		fact.Severity = turnWorkflowHUDSeverityWarning
 	case "disabled":
@@ -1684,40 +1742,29 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusConflict, "critic_config_missing", "critic configuration is unavailable")
 		return
 	}
-	lister, listOK := s.Store.(store.ActiveSourceRevisionLister)
 	sources, sourceOK := s.Store.(store.SourceRevisionStore)
 	jobs, jobsOK := s.Store.(store.MemoryReprocessingJobStore)
 	reopener, reopenOK := s.Store.(store.MemoryReprocessingJobReopener)
-	if !listOK || !sourceOK || !jobsOK || !reopenOK {
+	if !sourceOK || !jobsOK || !reopenOK {
 		writeError(w, http.StatusConflict, "recovery_capability_unavailable", "scoped derived-memory recovery is unavailable")
 		return
 	}
-	candidates, err := lister.ListActiveSourceRevisions(
-		r.Context(),
-		view.ChatSessionID,
-		view.LogicalTurn,
-		view.LogicalTurn,
-	)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "recovery_source_lookup_failed", err.Error())
+	target, targetOK := s.TurnWorkflows.recoveryTarget(req.RequestID)
+	if !targetOK {
+		writeError(w, http.StatusConflict, "recovery_target_unavailable", "the failed workflow is not bound to a durable source revision")
 		return
 	}
-	exact := make([]store.MemorySourceRevision, 0, len(candidates))
-	for _, candidate := range candidates {
-		if candidate.ChatSessionID == view.ChatSessionID && candidate.TurnIndex == view.LogicalTurn {
-			exact = append(exact, candidate)
-		}
-	}
-	if len(exact) != 1 {
-		writeError(w, http.StatusConflict, "recovery_source_not_unique", "exactly one active source revision is required for this turn")
-		return
-	}
-	source, err := sources.GetSourceRevision(r.Context(), view.ChatSessionID, exact[0].SourceRevision)
+	source, err := sources.GetSourceRevision(r.Context(), target.ChatSessionID, target.SourceRevision)
 	if err != nil || source == nil {
 		if err == nil {
 			err = store.ErrNotFound
 		}
 		writeError(w, http.StatusConflict, "recovery_source_unavailable", err.Error())
+		return
+	}
+	if source.ChatSessionID != target.ChatSessionID || source.TurnIndex != target.LogicalTurn ||
+		source.SourceRevision != target.SourceRevision || source.LifecycleState != "active" {
+		writeError(w, http.StatusConflict, "recovery_target_stale", "the bound source revision is no longer the active recovery target")
 		return
 	}
 	projectionComplete, err := s.adminRescanSourceProjectionComplete(r.Context(), source)
@@ -1736,8 +1783,8 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 			"status":            "ok",
 			"recovery_state":    "completed",
 			"request_id":        req.RequestID,
-			"chat_session_id":   view.ChatSessionID,
-			"turn_index":        view.LogicalTurn,
+			"chat_session_id":   target.ChatSessionID,
+			"turn_index":        target.LogicalTurn,
 			"turn_workflow_hud": updated,
 		})
 		return
@@ -1800,10 +1847,10 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 		return
 	}
 	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
-		ChatSessionID: view.ChatSessionID,
+		ChatSessionID: target.ChatSessionID,
 		EventType:     "turn_workflow_recovery_requested",
 		TargetType:    "turn",
-		TargetID:      int64(view.LogicalTurn),
+		TargetID:      int64(target.LogicalTurn),
 		Summary:       "Requested scoped Critic-derived memory recovery",
 		DetailsJSON: mustCompactJSON(map[string]any{
 			"request_id":      req.RequestID,
@@ -1819,8 +1866,8 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 		"status":            "accepted",
 		"recovery_state":    recoveryState,
 		"request_id":        req.RequestID,
-		"chat_session_id":   view.ChatSessionID,
-		"turn_index":        view.LogicalTurn,
+		"chat_session_id":   target.ChatSessionID,
+		"turn_index":        target.LogicalTurn,
 		"turn_workflow_hud": updated,
 	})
 }

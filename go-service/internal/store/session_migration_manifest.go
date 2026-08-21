@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	SessionMigrationManifestVersion = "session-migration.manifest.v1"
+	SessionMigrationManifestVersion = "session-migration.manifest.v3"
 
 	SessionMigrationPolicyCopy                = "copy"
 	SessionMigrationPolicyRetainAudit         = "retain_audit"
@@ -282,7 +282,7 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 		"saga_digests":                         "id,chat_session_id,from_turn,to_turn,era_label,saga_summary,persistent_facts_json,never_drop_candidates_json,resume_pack_text,embedding_vector,embedding_model,created_at",
 		"consequence_records":                  "id,chat_session_id,source_turn_start,source_turn_end,decision,immediate_result,delayed_effect,affected_relations,affected_world,status,importance,confidence,foreground_eligible,quiet_turns,last_seen_turn,paid_turn,expires_after_quiet_turns,source_hash,evidence_json,created_at,updated_at",
 		"psychology_branches":                  "id,chat_session_id,character_name,branch_type,axis_name,summary,status,confidence,confidence_label,source_kind,source_turn_start,source_turn_end,source_hash,evidence_json,quiet_turns,last_seen_turn,dormant_after_quiet_turns,created_at,updated_at",
-		"session_fork_lineage":                 "id,chat_session_id,scope_id,parent_scope_id,copied_from_scope_id,copied_from_session_id,imported_at,divergence_marker,provenance_source,inheritance_mode,inherited_items_json,created_at,updated_at",
+		"session_fork_lineage":                 "id,contract_version,lineage_state,chat_session_id,scope_id,parent_scope_id,copied_from_scope_id,copied_from_session_id,fork_turn,fork_source_message_id,fork_source_role,idempotency_key,imported_at,divergence_marker,provenance_source,inheritance_mode,inherited_items_json,created_at,updated_at",
 		"theme_offscreen_carries":              "id,chat_session_id,surface_type,label,summary,status,confidence,confidence_label,source_kind,source_turn_start,source_turn_end,source_hash,evidence_json,quiet_turns,last_seen_turn,dormant_after_quiet_turns,foreground_eligible,foreground_reason_json,created_at,updated_at",
 		"capture_verification_records":         "id,chat_session_id,turn_index,stage_name,verification_state,degraded_reason,compact_metadata_json,content_hash,evidence_json,previous_record_id,repaired_by_record_id,repair_attempt_count,repair_evidence_json,repaired_at,user_input_preserved,payload_rewrite,created_at,updated_at",
 		"status_schema_proposals":              "id,chat_session_id,input_channel,proposal_state,schema_name,ruleset_label,schema_json,provenance_json,review_note,reviewer,reviewed_at,created_at,updated_at",
@@ -506,9 +506,13 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 	setPlan("precise_memory_units", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "precise_memory", IDColumn: "unit_id",
-			TextColumns:        []string{"evidence_excerpt"},
+			TextColumns: []string{
+				"memory_kind", "memory_subtype", "payload_json", "evidence_excerpt",
+				"lifecycle_state", "admission_state", "review_state",
+				"visibility", "epistemic_mode", "knowledge_holder_entity_id",
+			},
 			ContextTurnColumns: []string{"source_turn_end"},
-			TextFormat:         "plain", Eligibility: "active_precise_memory", SchemaVersion: "precise_memory_unit.v1",
+			TextFormat:         "precise_memory", Eligibility: "active_precise_memory", SchemaVersion: "precise_memory_unit.v1",
 		}
 	})
 	return plans

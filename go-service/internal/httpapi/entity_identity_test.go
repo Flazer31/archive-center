@@ -628,7 +628,7 @@ func Test36BUngroundedSpeakerAttributionIsRejected(t *testing.T) {
 	t.Fatalf("missing grounded-attribution skip reason: %#v", result.SkipReasons)
 }
 
-func Test36BUngroundedCharacterStateBindingNeedsReview(t *testing.T) {
+func Test36BStructurallyNamedCharacterStateStoresWithoutExactEvidenceText(t *testing.T) {
 	fake := newIdentityRecordingStore()
 	srv := NewServer(config.Default())
 	srv.Store = fake
@@ -644,16 +644,15 @@ func Test36BUngroundedCharacterStateBindingNeedsReview(t *testing.T) {
 			},
 		},
 	}, "Someone stayed calm.", completeTurnEmbeddingConfig{}, time.Unix(1100, 0))
-	if len(fake.savedCharacterStates) != 0 || len(fake.bindings) != 0 {
-		t.Fatalf("ungrounded character state must not persist or bind: states=%#v bindings=%#v", fake.savedCharacterStates, fake.bindings)
+	if len(fake.savedCharacterStates) != 1 || len(fake.bindings) != 1 {
+		t.Fatalf("structurally named character state did not persist and bind: states=%#v bindings=%#v", fake.savedCharacterStates, fake.bindings)
 	}
 	for _, reason := range result.SkipReasons {
 		if stringFromMap(reason, "surface") == "character_deltas" &&
 			stringFromMap(reason, "reason") == "current_projection_source_binding_missing" {
-			return
+			t.Fatalf("exact-evidence gate still rejected character state: %#v", result.SkipReasons)
 		}
 	}
-	t.Fatalf("missing exact-evidence skip reason: %#v", result.SkipReasons)
 }
 
 func Test36BRepeatedSpeakerExcerptUsesDistinctSourceOccurrences(t *testing.T) {

@@ -16,7 +16,7 @@
 
 - [`Archive Center 3.6~4.1`](3.6-4.1-precision-long-term-memory-roadmap.md)은 정밀 장기 기억의
   lifecycle·복구·라이브 release gate를 그대로 소유한다.
-- [`Archive Center 4.6~5.0`](4.6-5.0-model-adaptive-rp-publishing-roadmap.md)는 4.1 기억과 원작 자료를
+- [`Archive Center 4.6~5.0`](4.6-5.0-model-adaptive-rp-publishing-roadmap.md)는 4.0·4.3 기억과 원작 자료를
   읽는 관계 graph·인물·세계·고급 출판·출력 충실도 계층을 그대로 소유한다.
 - DLC 분리는 4.6~5.0의 목적을 취소·축소·흡수하지 않는다. 각 DLC는 고급 RP 지원 없이도
   독립 작동하고, Archive Center와 결합하면 4.1 기억과 선택적으로 활성화된 4.6~5.0 기능에

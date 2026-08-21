@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -40,10 +41,14 @@ func (f *memoryVectorProcessorStore) ClaimMemoryVectorOperations(_ context.Conte
 	item := f.items[0]
 	f.items = f.items[1:]
 	items := []*store.MemoryVectorOutboxItem{item}
-	if item.Operation == "upsert" && !item.EmbeddingReady {
+	if item.Operation == "delete" || (item.Operation == "upsert" && !item.EmbeddingReady) {
 		remaining := f.items[:0]
 		for _, candidate := range f.items {
-			if candidate.Operation == "upsert" && !candidate.EmbeddingReady && candidate.SourceRevision == item.SourceRevision {
+			deferredSibling := item.Operation == "upsert" && candidate.Operation == "upsert" &&
+				!candidate.EmbeddingReady && candidate.SourceRevision == item.SourceRevision
+			deleteSibling := item.Operation == "delete" && candidate.Operation == "delete" &&
+				candidate.ChatSessionID == item.ChatSessionID
+			if deferredSibling || deleteSibling {
 				items = append(items, candidate)
 				continue
 			}
@@ -89,6 +94,7 @@ type memoryVectorProcessorVector struct {
 	deleteErr           error
 	upserts             [][]vector.VectorDocument
 	deletes             [][]string
+	readbacks           [][]string
 	documents           map[string]vector.VectorDocument
 	readbackOverride    []vector.VectorDocument
 	readbackOverrideSet bool
@@ -143,6 +149,7 @@ func (f *memoryVectorProcessorVector) DeleteDocuments(_ context.Context, ids []s
 }
 
 func (f *memoryVectorProcessorVector) GetDocuments(_ context.Context, ids []string) ([]vector.VectorDocument, error) {
+	f.readbacks = append(f.readbacks, append([]string(nil), ids...))
 	if f.readbackErr != nil {
 		return nil, f.readbackErr
 	}
@@ -513,13 +520,14 @@ func TestMemoryVectorProcessorBoundsBlockingVectorCallByLease(t *testing.T) {
 	}
 }
 
-func TestMemoryVectorProcessorDeleteReplayIsIdempotent(t *testing.T) {
+func TestMemoryVectorProcessorDeletesSameSessionGroupWithOneCallAndReadback(t *testing.T) {
 	now := time.Date(2026, 7, 28, 4, 30, 0, 0, time.UTC)
 	st := &memoryVectorProcessorStore{
 		Store: store.NewNoopStore(),
 		items: []*store.MemoryVectorOutboxItem{
 			{ID: 2, Operation: "delete", ChatSessionID: "session", SourceRevision: "sar_old", DocumentID: "memory:session:7", EmbeddingReady: true, RequiredSourceState: "inactive"},
-			{ID: 3, Operation: "delete", ChatSessionID: "session", SourceRevision: "sar_old", DocumentID: "memory:session:7", EmbeddingReady: true, RequiredSourceState: "inactive"},
+			{ID: 3, Operation: "delete", ChatSessionID: "session", SourceRevision: "sar_descendant", DocumentID: "memory:session:8", EmbeddingReady: true, RequiredSourceState: "inactive"},
+			{ID: 4, Operation: "delete", ChatSessionID: "session", SourceRevision: "sar_old", DocumentID: "memory:session:7", EmbeddingReady: true, RequiredSourceState: "inactive"},
 		},
 	}
 	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
@@ -529,14 +537,15 @@ func TestMemoryVectorProcessorDeleteReplayIsIdempotent(t *testing.T) {
 			Synced: true, FailedQueueMaxAttempts: 4,
 		},
 	}
-	for range 2 {
-		result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
-		if err != nil || result.CanonicalState != "completed" {
-			t.Fatalf("result=%+v err=%v", result, err)
-		}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil || result.CanonicalState != "completed" {
+		t.Fatalf("result=%+v err=%v", result, err)
 	}
-	if len(vec.deletes) != 2 || len(st.completed) != 2 || len(st.failed) != 0 {
-		t.Fatalf("deletes=%v completed=%v failed=%v", vec.deletes, st.completed, st.failed)
+	wantIDs := []string{"memory:session:7", "memory:session:8"}
+	if len(vec.deletes) != 1 || !slices.Equal(vec.deletes[0], wantIDs) ||
+		len(vec.readbacks) != 1 || !slices.Equal(vec.readbacks[0], wantIDs) ||
+		!slices.Equal(st.completed, []int64{2, 3, 4}) || len(st.failed) != 0 {
+		t.Fatalf("deletes=%v readbacks=%v completed=%v failed=%v", vec.deletes, vec.readbacks, st.completed, st.failed)
 	}
 }
 
@@ -586,19 +595,28 @@ func TestMemoryVectorProcessorDoesNotCompleteMismatchedUpsertReadback(t *testing
 func TestMemoryVectorProcessorDoesNotCompleteDeleteWhileDocumentStillExists(t *testing.T) {
 	now := time.Date(2026, 7, 31, 1, 30, 0, 0, time.UTC)
 	documentID := "memory:session:9"
+	secondDocumentID := "memory:session:10"
 	st := &memoryVectorProcessorStore{
 		Store: store.NewNoopStore(),
-		items: []*store.MemoryVectorOutboxItem{{
-			ID: 11, Operation: "delete", ChatSessionID: "session",
-			SourceRevision: "sar_old", DocumentID: documentID,
-			RequiredSourceState: "inactive", Status: "pending",
-		}},
+		items: []*store.MemoryVectorOutboxItem{
+			{
+				ID: 11, Operation: "delete", ChatSessionID: "session",
+				SourceRevision: "sar_old", DocumentID: documentID,
+				RequiredSourceState: "inactive", Status: "pending",
+			},
+			{
+				ID: 12, Operation: "delete", ChatSessionID: "session",
+				SourceRevision: "sar_descendant", DocumentID: secondDocumentID,
+				RequiredSourceState: "inactive", Status: "pending",
+			},
+		},
 	}
 	vec := &memoryVectorProcessorVector{
 		VectorStore:   vector.NewFakeVectorStore(),
 		retainDeletes: true,
 		documents: map[string]vector.VectorDocument{
-			documentID: {ID: documentID, ChatSessionID: "session"},
+			documentID:       {ID: documentID, ChatSessionID: "session"},
+			secondDocumentID: {ID: secondDocumentID, ChatSessionID: "session"},
 		},
 	}
 	server := &Server{
@@ -610,9 +628,10 @@ func TestMemoryVectorProcessorDoesNotCompleteDeleteWhileDocumentStillExists(t *t
 		t.Fatal(err)
 	}
 	if result.CanonicalState != "retryable" || result.VectorApplied ||
-		len(st.completed) != 0 || len(st.failed) != 1 ||
+		len(st.completed) != 0 || !slices.Equal(st.failed, []int64{11, 12}) ||
+		len(vec.deletes) != 1 || len(vec.readbacks) != 1 ||
 		!strings.Contains(result.Failure, "still contains document") {
-		t.Fatalf("result=%+v completed=%v failed=%v", result, st.completed, st.failed)
+		t.Fatalf("result=%+v completed=%v failed=%v deletes=%v readbacks=%v", result, st.completed, st.failed, vec.deletes, vec.readbacks)
 	}
 }
 

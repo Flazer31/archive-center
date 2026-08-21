@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -612,6 +613,51 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusOK, resp)
 		return
 	}
+	memoryCandidates := false
+	for _, candidate := range candidates {
+		if candidate.Tier == "memory" && candidate.SourceTable == "memories" {
+			memoryCandidates = true
+			break
+		}
+	}
+	if memoryCandidates {
+		memories, err := s.Store.ListMemories(r.Context(), targetSessionID, 0, 0)
+		if err != nil {
+			writeInternalError(w, err.Error())
+			return
+		}
+		memoryByID := make(map[int64]store.Memory, len(memories))
+		for _, memory := range memories {
+			memoryByID[memory.ID] = memory
+		}
+		for index := range candidates {
+			candidate := &candidates[index]
+			if candidate.Tier != "memory" || candidate.SourceTable != "memories" {
+				continue
+			}
+			memoryID, err := strconv.ParseInt(strings.TrimSpace(candidate.SourceRowID), 10, 64)
+			memory, found := memoryByID[memoryID]
+			if err != nil || memoryID <= 0 || !found || strings.TrimSpace(memory.ChatSessionID) != targetSessionID {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "vector_candidate_expected_id_mismatch")
+				resp.VerificationStatus = "candidate_parity_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			projection := buildPublicMemoryProjection(parseJSONMap(memory.SummaryJSON), memory.Evidence)
+			if !projection.Eligible || strings.TrimSpace(projection.SearchText.Text) == "" {
+				resp.Blocked = true
+				resp.BlockedReasons = append(resp.BlockedReasons, "vector_candidate_expected_id_mismatch")
+				resp.VerificationStatus = "candidate_parity_failed"
+				writeJSON(w, http.StatusOK, resp)
+				return
+			}
+			candidate.DocumentText = projection.SearchText.Text
+			// The copied canonical embedding may predate the public projection.
+			// Re-embed the exact projected text instead of reusing that vector.
+			candidate.EmbeddingJSON = ""
+		}
+	}
 	embeddingConfig := s.completeTurnExtractionConfig(map[string]any{}).Embedder
 	needsEmbedding := usesVoyageContextualizedEmbedding(embeddingConfig)
 	for _, candidate := range candidates {
@@ -629,11 +675,6 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 	}
 	contextualizedEmbeddings := map[string][]float32{}
 	if usesVoyageContextualizedEmbedding(embeddingConfig) && len(candidates) > 0 {
-		logs, err := s.Store.ListChatLogs(r.Context(), targetSessionID, 0, 0)
-		if err != nil {
-			writeInternalError(w, err.Error())
-			return
-		}
 		turnItems := make([]contextualizedEmbeddingItem, 0, len(candidates))
 		standalone := make([]store.SessionMigrationVectorDocument, 0, len(candidates))
 		for _, candidate := range candidates {
@@ -648,7 +689,7 @@ func (s *Server) handleSessionMigrateReindex(w http.ResponseWriter, r *http.Requ
 		}
 		if len(turnItems) > 0 {
 			resp.EmbeddingCallAttempted = true
-			grouped, _, err := callContextualizedEmbeddingItems(r.Context(), embeddingConfig, logs, turnItems)
+			grouped, _, err := callContextualizedEmbeddingItems(r.Context(), embeddingConfig, nil, turnItems)
 			if err != nil {
 				resp.Blocked = true
 				resp.BlockedReasons = append(resp.BlockedReasons, "embedding_failed")

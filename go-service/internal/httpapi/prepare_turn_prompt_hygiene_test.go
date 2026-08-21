@@ -1,6 +1,8 @@
 package httpapi
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -197,7 +199,8 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 		Content:   `{"location":"서운관 공작소","present_entities":["강한얼","장영실"],"items":["연삭기","플라이휠"],"status":"기계 점검 완료"}`,
 	}}
 	vectorShadow := map[string]any{
-		"search_result": "ok",
+		"memory_search_result": "ok",
+		"search_result":        "ok",
 		"search_results": []map[string]any{
 			{"source_table": "memories", "source_row_id": "5", "similarity": 0.99},
 			{"source_table": "memories", "source_row_id": "4", "similarity": 0.98},
@@ -417,9 +420,12 @@ func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *
 		nil, nil, nil, private,
 		5, 9000, rawInput, "default", nil, nil, nil, perspective,
 	)
-	if assembly.CharacterRelationshipText != "" || assembly.CanonRelationshipText != "" || assembly.KGText != "" {
-		t.Fatalf("stale relationship lane survived: character=%q canonical=%q kg=%q",
-			assembly.CharacterRelationshipText, assembly.CanonRelationshipText, assembly.KGText)
+	if assembly.CharacterRelationshipText != "" || assembly.CanonRelationshipText != "" {
+		t.Fatalf("stale current-state relationship lane survived: character=%q canonical=%q",
+			assembly.CharacterRelationshipText, assembly.CanonRelationshipText)
+	}
+	if !strings.Contains(assembly.KGText, "Han-eol --demonstrated_to--> Bae") {
+		t.Fatalf("historical semantic KG memory was deleted because only one endpoint was current: %q", assembly.KGText)
 	}
 	if strings.Contains(assembly.CanonWorldText, "old workshop") || strings.Contains(assembly.CanonWorldText, "old bellows") {
 		t.Fatalf("stale volatile world state survived: %q", assembly.CanonWorldText)
@@ -429,35 +435,344 @@ func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *
 	}
 }
 
-func TestPrepareTurnVectorSuccessDoesNotFillEventBudgetWithLexicalHistory(t *testing.T) {
+func TestPrepareTurnVectorExactAndLexicalCandidatesCoexistWithoutRecentFill(t *testing.T) {
 	memories := []store.Memory{
-		{ID: 1, TurnIndex: 38, SummaryJSON: `{"turn_summary":"Han-eol repaired the grinder with whale oil.","items":["grinder","whale oil"]}`},
-		{ID: 2, TurnIndex: 7, SummaryJSON: `{"turn_summary":"Han-eol showed an escapement at the old workshop.","items":["machine"]}`},
-		{ID: 3, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Han-eol demonstrated old bellows machinery.","items":["machine"]}`},
+		{ID: 1, TurnIndex: 38, SummaryJSON: `{"turn_summary":"Mira studies signal repairs around harbor before tonight."}`},
+		{ID: 2, TurnIndex: 7, SummaryJSON: `{"turn_summary":"The harbor signal failed at dawn."}`},
+		{ID: 3, TurnIndex: 3, SummaryJSON: `{"turn_summary":"Tonight Mira checks gate machinery near harbor."}`},
+		{ID: 4, TurnIndex: 99, SummaryJSON: `{"turn_summary":"Rowan waters roses while rain crosses the distant garden."}`},
 	}
 	vectorShadow := map[string]any{
-		"search_attempted": true,
-		"search_result":    "ok",
+		"memory_search_attempted": true,
+		"memory_search_result":    "ok",
+		"search_attempted":        true,
+		"search_result":           "ok",
+		"search_result_count":     1,
 		"search_results": []map[string]any{
 			{"source_table": "memories", "source_row_id": "1", "similarity": 0.8},
 		},
 	}
 	selection := selectPrepareTurnMemoryLanesWithVector(
 		memories,
-		"Han-eol looks beyond the grinder and considers roads and maritime transport.",
+		"Mira opens harbor signal gate tonight.",
 		5,
 		vectorShadow,
-		[]string{"Han-eol"},
+		[]string{"Mira"},
 		nil,
 	)
 	if len(selection.VectorRelevant) != 1 || selection.VectorRelevant[0].ID != 1 {
 		t.Fatalf("vector result was not retained: %#v", selection.VectorRelevant)
 	}
-	if len(selection.Relevant) != 0 {
-		t.Fatalf("successful vector recall was padded with lexical history: %#v", selection.Relevant)
+	if len(selection.Relevant) != 2 || selection.Relevant[0].ID != 2 || selection.Relevant[1].ID != 3 {
+		t.Fatalf("exact and distinct lexical results did not coexist with vector recall: %#v", selection.Relevant)
 	}
-	if !boolFromAny(selection.Trace["general_lexical_refill_skipped_after_vector_success"]) {
-		t.Fatalf("vector-success no-fill decision missing: %#v", selection.Trace)
+	if boolFromAny(selection.Trace["general_lexical_refill_skipped_after_vector_success"]) ||
+		!boolFromAny(selection.Trace["general_lexical_evaluated_with_vector_success"]) {
+		t.Fatalf("lexical evaluation was still skipped after vector success: %#v", selection.Trace)
+	}
+	if got := intFromAny(selection.Trace["exact_phrase_candidate_count"], 0); got != 1 {
+		t.Fatalf("exact phrase candidate count=%d, want 1: %#v", got, selection.Trace)
+	}
+	if got := intFromAny(selection.Trace["exact_phrase_selected_count"], 0); got != 1 {
+		t.Fatalf("exact phrase selected count=%d, want 1: %#v", got, selection.Trace)
+	}
+	if got := intFromAny(selection.Trace["lexical_candidate_count"], 0); got != 2 {
+		t.Fatalf("lexical candidate count=%d, want 2: %#v", got, selection.Trace)
+	}
+	if got := intFromAny(selection.Trace["lexical_selected_count"], 0); got != 1 {
+		t.Fatalf("lexical selected count=%d, want 1 after vector dedupe: %#v", got, selection.Trace)
+	}
+	selectedIDs := map[int64]int{}
+	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
+		for _, item := range lane {
+			selectedIDs[item.ID]++
+		}
+	}
+	if selectedIDs[1] != 1 {
+		t.Fatalf("vector/lexical duplicate was repeated: counts=%#v selection=%#v", selectedIDs, selection)
+	}
+	if selectedIDs[4] != 0 || len(selection.Recent) != 0 {
+		t.Fatalf("unrelated recent memory filled a query-time slot: counts=%#v recent=%#v", selectedIDs, selection.Recent)
+	}
+}
+
+type prepareTurnRetrievalFailureStore struct {
+	*narrativeFakeStore
+	memoryErr  error
+	kgErr      error
+	pendingErr error
+}
+
+func (s *prepareTurnRetrievalFailureStore) ListMemories(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]store.Memory, error) {
+	if s.memoryErr != nil {
+		return nil, s.memoryErr
+	}
+	return s.narrativeFakeStore.ListMemories(ctx, chatSessionID, fromTurn, toTurn)
+}
+
+func (s *prepareTurnRetrievalFailureStore) ListKGTriples(ctx context.Context, chatSessionID string) ([]store.KGTriple, error) {
+	if s.kgErr != nil {
+		return nil, s.kgErr
+	}
+	return s.narrativeFakeStore.ListKGTriples(ctx, chatSessionID)
+}
+
+func (s *prepareTurnRetrievalFailureStore) ListPendingThreads(ctx context.Context, chatSessionID, status string) ([]store.PendingThread, error) {
+	if s.pendingErr != nil {
+		return nil, s.pendingErr
+	}
+	return s.narrativeFakeStore.ListPendingThreads(ctx, chatSessionID, status)
+}
+
+func TestPrepareTurnProductionCountsReportRetrievalFailuresSeparately(t *testing.T) {
+	base := &narrativeFakeStore{
+		characterStates: []store.CharacterState{
+			{CharacterName: "Mira", TurnIndex: 8, RelationshipsJSON: `{"Rowan":{"summary":"Mira maintains harbor trust with Rowan"}}`},
+			{CharacterName: "Rowan", TurnIndex: 8},
+		},
+		activeStates: []store.ActiveState{{
+			StateType: "scene", TurnIndex: 8,
+			Content: `{"location":"harbor","present_entities":["Mira","Rowan"]}`,
+		}},
+		canonicalStateLayers: []store.CanonicalStateLayer{{
+			LayerType: "relationship_state", TurnIndex: 8,
+			Content:    `{"pair":["Mira","Rowan"],"bond_and_distance":"harbor trust"}`,
+			Confidence: 0.9,
+		}},
+	}
+	srv := setupTestServer()
+	srv.Store = &prepareTurnRetrievalFailureStore{
+		narrativeFakeStore: base,
+		memoryErr:          errors.New("memory read unavailable"),
+		kgErr:              errors.New("kg read unavailable"),
+		pendingErr:         errors.New("pending thread read unavailable"),
+	}
+	srv.Vector = &fakeVectorStore{healthErr: errors.New("vector health unavailable")}
+
+	_, response := prepareTurnPerfRequest(t, srv, `{
+		"chat_session_id":"retrieval-method-status",
+		"turn_index":9,
+		"raw_user_input":"Mira asks Rowan whether their harbor trust remains intact.",
+		"response_projection":"prepare_turn.production_compact.v1",
+		"settings":{"guide_strength":"none","injection_enabled":true,"input_context_enabled":false,"max_injection_chars":9000,"top_k":3}
+	}`)
+	pack := mapFromAny(response["injection_pack"])
+	counts := mapFromAny(pack["counts"])
+	methods := mapFromAny(counts["retrieval_methods"])
+	if len(methods) != 5 {
+		t.Fatalf("compact production retrieval method status missing: %#v", pack)
+	}
+	for _, name := range []string{"exact_phrase", "lexical"} {
+		status := mapFromAny(methods[name])
+		if status["status"] != "failed" || status["reason_code"] != "source_read_failed" {
+			t.Fatalf("%s memory-read failure not separated: %#v", name, status)
+		}
+	}
+	if status := mapFromAny(methods["vector"]); status["status"] != "failed" || status["reason_code"] != "readiness_or_embedding_failed" {
+		t.Fatalf("vector failure not separated: %#v", status)
+	}
+	relationship := mapFromAny(methods["relationship"])
+	if relationship["status"] != "partial" || !stringSliceContains(stringsFromAny(relationship["failed_sources"]), "kg") {
+		t.Fatalf("relationship source failure not separated from retained results: %#v", relationship)
+	}
+	if intFromAny(relationship["selected_count"], 0) == 0 {
+		t.Fatalf("successful relationship sources were erased by KG failure: %#v", relationship)
+	}
+	if status := mapFromAny(methods["unresolved_thread"]); status["status"] != "failed" || status["reason_code"] != "source_read_failed" {
+		t.Fatalf("unresolved-thread failure not separated: %#v", status)
+	}
+	finalText := extractionStringFromAny(mapFromAny(pack["memory_delivery_plan"])["final_text"])
+	if !strings.Contains(finalText, "harbor trust") {
+		t.Fatalf("relationship delivery was erased by another retrieval failure: %q", finalText)
+	}
+}
+
+func TestPrepareTurnProductionCountsRemainObservableWithoutAssembly(t *testing.T) {
+	t.Run("store unavailable", func(t *testing.T) {
+		srv := setupTestServer()
+		srv.Store = nil
+		srv.Vector = &fakeVectorStore{healthErr: errors.New("vector health unavailable")}
+
+		_, response := prepareTurnPerfRequest(t, srv, `{
+			"chat_session_id":"retrieval-method-store-unavailable",
+			"turn_index":1,
+			"raw_user_input":"Mira checks the harbor signal.",
+			"response_projection":"prepare_turn.production_compact.v1",
+			"settings":{"guide_strength":"none","injection_enabled":true,"input_context_enabled":false,"max_injection_chars":9000,"top_k":3}
+		}`)
+		methods := mapFromAny(mapFromAny(mapFromAny(response["injection_pack"])["counts"])["retrieval_methods"])
+		if len(methods) != 5 {
+			t.Fatalf("store-unavailable retrieval status missing: %#v", response["injection_pack"])
+		}
+		for _, name := range []string{"exact_phrase", "lexical", "relationship", "unresolved_thread"} {
+			status := mapFromAny(methods[name])
+			if status["status"] != "unavailable" || status["reason_code"] != "store_unavailable" {
+				t.Fatalf("%s store-unavailable status=%#v", name, status)
+			}
+		}
+		if status := mapFromAny(methods["vector"]); status["status"] != "failed" || status["reason_code"] != "readiness_or_embedding_failed" {
+			t.Fatalf("vector failure disappeared without assembly: %#v", status)
+		}
+	})
+
+	t.Run("injection disabled", func(t *testing.T) {
+		srv := setupTestServer()
+		_, response := prepareTurnPerfRequest(t, srv, `{
+			"chat_session_id":"retrieval-method-injection-disabled",
+			"turn_index":1,
+			"raw_user_input":"Mira checks the harbor signal.",
+			"response_projection":"prepare_turn.production_compact.v1",
+			"settings":{"guide_strength":"none","injection_enabled":false,"input_context_enabled":false,"max_injection_chars":9000,"top_k":3}
+		}`)
+		methods := mapFromAny(mapFromAny(mapFromAny(response["injection_pack"])["counts"])["retrieval_methods"])
+		for _, name := range []string{"exact_phrase", "lexical", "relationship", "unresolved_thread"} {
+			status := mapFromAny(methods[name])
+			if status["status"] != "skipped" || status["reason_code"] != "injection_disabled" {
+				t.Fatalf("%s injection-disabled status=%#v", name, status)
+			}
+		}
+	})
+}
+
+func TestPrepareTurnVectorRetrievalStatusReportsSourceRevisionCheckFailure(t *testing.T) {
+	shadow := map[string]any{
+		"memory_search_result":       "ok",
+		"memory_search_result_count": 2,
+		"memory_source_revision_filter": map[string]any{
+			"dropped_check_error": 1,
+		},
+	}
+	partial := prepareTurnVectorRetrievalMethodStatus(shadow, 1)
+	if partial["status"] != "partial" || partial["reason_code"] != "source_revision_check_failed" {
+		t.Fatalf("retained hit hid source-revision check failure: %#v", partial)
+	}
+	failed := prepareTurnVectorRetrievalMethodStatus(shadow, 0)
+	if failed["status"] != "failed" || failed["reason_code"] != "source_revision_check_failed" {
+		t.Fatalf("dropped hits were reported as an empty search: %#v", failed)
+	}
+}
+
+func TestPrepareTurnAggregateMemoryVectorUsesMemorySearchOwner(t *testing.T) {
+	memories := []store.Memory{{
+		ID:          41,
+		TurnIndex:   4,
+		SummaryJSON: `{"turn_summary":"aggregate event marker"}`,
+	}}
+	memoryHits := []map[string]any{{
+		"id":                "memory:session:41",
+		"source_table":      "memories",
+		"source_row_id":     "41",
+		"similarity":        prepareTurnMinCosineSimilarity + 0.1,
+		"similarity_source": "cosine_from_query_and_stored_embedding",
+	}}
+
+	t.Run("memory success is not erased by broad failure", func(t *testing.T) {
+		shadow := map[string]any{
+			"search_attempted":           true,
+			"search_result":              "error",
+			"search_error":               "broad search failed",
+			"search_results":             []map[string]any{},
+			"memory_search_attempted":    true,
+			"memory_search_result":       "ok",
+			"memory_search_result_count": len(memoryHits),
+			"memory_search_results":      memoryHits,
+		}
+		hydrated := prepareTurnHydrateVectorMemoryHits(memories, shadow, 1)
+		if len(hydrated.Items) != 1 || hydrated.Items[0].ID != memories[0].ID {
+			t.Fatalf("memory-owned hit was erased by broad status: %#v", hydrated)
+		}
+		if !prepareTurnVectorSearchAttempted(shadow) {
+			t.Fatalf("memory search attempt was not reported: %#v", shadow)
+		}
+		method := prepareTurnVectorRetrievalMethodStatus(shadow, len(hydrated.Items))
+		if method["status"] != "ready" || intFromAny(method["candidate_count"], 0) != len(memoryHits) {
+			t.Fatalf("memory-owned retrieval status mismatch: %#v", method)
+		}
+	})
+
+	t.Run("memory failure is not hidden by broad success", func(t *testing.T) {
+		shadow := map[string]any{
+			"search_attempted":           true,
+			"search_result":              "ok",
+			"search_result_count":        1,
+			"search_results":             memoryHits,
+			"memory_search_attempted":    true,
+			"memory_search_result":       "error",
+			"memory_search_error":        "memory search failed",
+			"memory_search_result_count": 0,
+			"memory_search_results":      []map[string]any{},
+		}
+		hydrated := prepareTurnHydrateVectorMemoryHits(memories, shadow, 1)
+		if len(hydrated.Items) != 0 || hydrated.Trace["status"] != "skipped" || hydrated.Trace["reason"] != "error" {
+			t.Fatalf("broad status hid memory search failure: %#v", hydrated)
+		}
+		method := prepareTurnVectorRetrievalMethodStatus(shadow, 0)
+		if method["status"] != "failed" || method["reason_code"] != "search_failed" || intFromAny(method["candidate_count"], -1) != 0 {
+			t.Fatalf("memory failure was reported from broad status: %#v", method)
+		}
+	})
+}
+
+func TestPrepareTurnSemanticVectorMemoriesReachEventDeliveryWithoutLexicalProof(t *testing.T) {
+	sessionID := "session-" + strings.ToLower(t.Name())
+	markers := []string{
+		"amber_cascade_" + strings.ToLower(t.Name()),
+		"silver_orbit_" + strings.ToLower(t.Name()),
+	}
+	wrongEntityMarker := "explicit_wrong_entity_" + strings.ToLower(t.Name())
+	unrelatedRecentMarker := "unrelated_recent_" + strings.ToLower(t.Name())
+	memories := []store.Memory{
+		{ID: 51, ChatSessionID: sessionID, TurnIndex: 2, SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": markers[0]})},
+		{ID: 52, ChatSessionID: sessionID, TurnIndex: 3, SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": markers[1]})},
+		{ID: 53, ChatSessionID: sessionID, TurnIndex: 4, SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": wrongEntityMarker, "characters": []any{"Entity Beta"}})},
+		{ID: 54, ChatSessionID: sessionID, TurnIndex: 5, SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": unrelatedRecentMarker})},
+	}
+	semanticHitScore := prepareTurnMinCosineSimilarity + (1-prepareTurnMinCosineSimilarity)/2
+	hits := []map[string]any{
+		{"id": "memory:" + sessionID + ":51", "source_table": "memories", "source_row_id": "51", "similarity": semanticHitScore, "similarity_source": "cosine_from_query_and_stored_embedding"},
+		{"id": "memory:" + sessionID + ":52", "source_table": "memories", "source_row_id": "52", "similarity": semanticHitScore, "similarity_source": "cosine_from_query_and_stored_embedding"},
+		{"id": "memory:" + sessionID + ":53", "source_table": "memories", "source_row_id": "53", "similarity": semanticHitScore, "similarity_source": "cosine_from_query_and_stored_embedding"},
+	}
+	vectorShadow := map[string]any{
+		"memory_search_attempted":    true,
+		"memory_search_result":       "ok",
+		"memory_search_result_count": len(hits),
+		"memory_search_results":      hits,
+	}
+	rawInput := "Entity Alpha asks about the violet horizon."
+	assembly := buildPrepareTurnInjectionAssembly(
+		memories, nil, nil, nil, nil, nil,
+		[]store.CharacterState{{ChatSessionID: sessionID, CharacterName: "Entity Alpha", TurnIndex: 3}},
+		nil, nil, nil, nil, nil, nil,
+		len(hits), 9000, rawInput, "default", nil, vectorShadow, nil,
+	)
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	for _, marker := range markers {
+		if !strings.Contains(assembly.ActualMemoryText, marker) || !strings.Contains(finalText, marker) {
+			t.Fatalf("semantic vector memory did not reach Event delivery: marker=%q actual=%q final=%q trace=%#v", marker, assembly.ActualMemoryText, finalText, assembly.Counts)
+		}
+	}
+	if strings.Contains(finalText, wrongEntityMarker) {
+		t.Fatalf("explicit wrong-entity memory crossed the retained entity boundary: %q", finalText)
+	}
+	if strings.Contains(finalText, unrelatedRecentMarker) {
+		t.Fatalf("unrelated recent memory filled an unused query-time slot: %q", finalText)
+	}
+
+	payloadPlan := buildPrepareTurnPayloadApplicationPlan(
+		rawInput, "", finalText, "", true, false,
+		9000, 0, 0, nil, "skipped",
+	)
+	longTermMemory := map[string]any(nil)
+	for _, rawLane := range outputFidelityLineageSlice(payloadPlan["lanes"]) {
+		lane := mapFromAny(rawLane)
+		if extractionStringFromAny(lane["key"]) == "long_term_memory" {
+			longTermMemory = lane
+			break
+		}
+	}
+	if !boolFromAny(longTermMemory["applied"]) || extractionStringFromAny(longTermMemory["text"]) != finalText {
+		t.Fatalf("Event delivery did not reach the exact payload lane: lane=%#v final=%q", longTermMemory, finalText)
 	}
 }
 
@@ -515,6 +830,160 @@ func TestPrepareTurnRelevantOpenGoalIsDeliveredOnceOutsideWorldState(t *testing.
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if strings.Count(finalText, goal) != 1 {
 		t.Fatalf("goal should be delivered once, got %d copies: %q", strings.Count(finalText, goal), finalText)
+	}
+}
+
+func TestPrepareTurnSeparatesObservedWorldStateAgeAndCollapsesOnlyExactSelectedRuleCopies(t *testing.T) {
+	const sessionID = "sess-world-state-age"
+	const exactRuleValue = "The dusk bells remain silent."
+	const changedRuleValue = "The dusk bells once rang."
+	const otherSessionValue = "The archive seal remains blue."
+	const differentKeyValue = "Moon Hall closes at midnight."
+	worldRules := []store.WorldRule{
+		{
+			ChatSessionID: sessionID,
+			Scope:         "root",
+			Category:      "custom",
+			Key:           "dusk_bells",
+			ValueJSON:     mustCompactJSON(exactRuleValue),
+			Pinned:        true,
+		},
+		{
+			ChatSessionID: sessionID,
+			Scope:         "root",
+			Category:      "custom",
+			Key:           "archive_seal",
+			ValueJSON:     mustCompactJSON(otherSessionValue),
+			Pinned:        true,
+		},
+		{
+			ChatSessionID: sessionID,
+			Scope:         "root",
+			Category:      "custom",
+			Key:           "Moon_Hall_Hours",
+			ValueJSON:     mustCompactJSON(differentKeyValue),
+			Pinned:        true,
+		},
+	}
+	canonical := []store.CanonicalStateLayer{
+		{
+			ChatSessionID: sessionID,
+			LayerType:     "world_state",
+			TurnIndex:     4,
+			SourceTurn:    4,
+			Content: mustCompactJSON(map[string]any{
+				"current_location": "Moon Hall observatory chamber",
+				"rules": []any{
+					map[string]any{
+						"scope": "root", "category": "custom", "key": "dusk_bells", "value": exactRuleValue,
+					},
+					map[string]any{
+						"scope": "root", "category": "custom", "key": "moon_hall_hours", "value": differentKeyValue,
+					},
+				},
+			}),
+			Confidence: 0.9,
+		},
+		{
+			ChatSessionID: sessionID,
+			LayerType:     "world_state",
+			TurnIndex:     3,
+			SourceTurn:    3,
+			Content: mustCompactJSON(map[string]any{
+				"current_location": "Old Library",
+				"rules": []any{map[string]any{
+					"scope": "root", "category": "custom", "key": "dusk_bells", "value": changedRuleValue,
+				}},
+			}),
+			Confidence: 0.9,
+		},
+		{
+			ChatSessionID: "other-session",
+			LayerType:     "world_state",
+			TurnIndex:     2,
+			SourceTurn:    2,
+			Content: mustCompactJSON(map[string]any{
+				"observation": "Unbound archive seal observation",
+				"rules": []any{map[string]any{
+					"scope": "root", "category": "custom", "key": "archive_seal", "value": otherSessionValue,
+				}},
+			}),
+			Confidence: 0.9,
+		},
+		{
+			ChatSessionID: sessionID, LayerType: "scene_state", TurnIndex: 4, SourceTurn: 4,
+			Content: `{"location":"Moon Hall observatory chamber","present_entities":["Mira"]}`, Confidence: 0.9,
+		},
+		{
+			ChatSessionID: sessionID, LayerType: "scene_state", TurnIndex: 3, SourceTurn: 3,
+			Content: `{"location":"Old Library","present_entities":["Mira"]}`, Confidence: 0.9,
+		},
+		{
+			ChatSessionID: sessionID, LayerType: "entity_state", TurnIndex: 4, SourceTurn: 4,
+			Content: `{"characters":[{"name":"Mira","location":"Moon Hall observatory chamber"}]}`, Confidence: 0.9,
+		},
+		{
+			ChatSessionID: sessionID, LayerType: "entity_state", TurnIndex: 3, SourceTurn: 3,
+			Content: `{"characters":[{"name":"Mira","location":"Old Library"}]}`, Confidence: 0.9,
+		},
+	}
+	originalRuleValues := make([]string, len(worldRules))
+	for index := range worldRules {
+		originalRuleValues[index] = worldRules[index].ValueJSON
+	}
+	originalCanonicalContent := make([]string, len(canonical))
+	for index := range canonical {
+		originalCanonicalContent[index] = canonical[index].Content
+	}
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", TurnIndex: 4, Content: `{"location":"Moon Hall observatory chamber","present_entities":["Mira"]}`,
+	}})
+
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil,
+		[]store.ChatLog{{ChatSessionID: sessionID, TurnIndex: 4, Role: "assistant", Content: "Mira entered the Moon Hall observatory chamber after leaving the Old Library."}},
+		nil, worldRules, nil, nil, canonical,
+		nil, nil, nil, nil,
+		5, 12000,
+		"Mira compares the Moon Hall observatory chamber with the Old Library, the dusk bells, and the archive seal observation.",
+		"default", nil, nil, nil, perspective,
+	)
+
+	if !strings.Contains(assembly.CanonWorldText, "world_state [latest_observed turn=4]") ||
+		!strings.Contains(assembly.CanonWorldText, "world_state [historical turn=3]") ||
+		!strings.Contains(assembly.CanonWorldText, "Moon Hall") ||
+		!strings.Contains(assembly.CanonWorldText, "Old Library") {
+		t.Fatalf("latest and historical world states were not both labeled and retained: %q", assembly.CanonWorldText)
+	}
+	if !strings.Contains(assembly.CanonWorldText, "scene_state [latest_observed turn=4]") ||
+		strings.Contains(assembly.CanonWorldText, "scene_state [historical turn=3]") {
+		t.Fatalf("existing scene-state currentness changed unexpectedly: %q", assembly.CanonWorldText)
+	}
+	if !strings.Contains(assembly.CanonCharacterText, "Moon Hall") || strings.Contains(assembly.CanonCharacterText, "Old Library") {
+		t.Fatalf("existing entity-state currentness changed unexpectedly: %q", assembly.CanonCharacterText)
+	}
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if got := strings.Count(finalText, exactRuleValue); got != 1 {
+		t.Fatalf("exact selected world-rule copy count=%d, want 1: %q", got, finalText)
+	}
+	if got := strings.Count(finalText, changedRuleValue); got != 1 {
+		t.Fatalf("same-key different-value historical rule count=%d, want 1: %q", got, finalText)
+	}
+	if got := strings.Count(finalText, otherSessionValue); got != 2 {
+		t.Fatalf("different-session rule copy count=%d, want 2 distinct sources retained: %q", got, finalText)
+	}
+	if got := strings.Count(finalText, differentKeyValue); got != 2 {
+		t.Fatalf("different-key rule copy count=%d, want 2 distinct keys retained: %q", got, finalText)
+	}
+	for index := range worldRules {
+		if worldRules[index].ValueJSON != originalRuleValues[index] {
+			t.Fatalf("world-rule input mutated at %d: got %q want %q", index, worldRules[index].ValueJSON, originalRuleValues[index])
+		}
+	}
+	for index := range canonical {
+		if canonical[index].Content != originalCanonicalContent[index] {
+			t.Fatalf("canonical input mutated at %d: got %q want %q", index, canonical[index].Content, originalCanonicalContent[index])
+		}
 	}
 }
 

@@ -751,12 +751,18 @@ CREATE TABLE IF NOT EXISTS psychology_branches (
 -- 23-3. session_fork_lineage
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS session_fork_lineage (
-    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    id                     BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    contract_version       VARCHAR(80)     NOT NULL DEFAULT 'session_fork_lineage.v1',
+    lineage_state          VARCHAR(32)     NOT NULL DEFAULT 'manual',
     chat_session_id       VARCHAR(255)    NOT NULL,
     scope_id              VARCHAR(255)    NULL,
     parent_scope_id       VARCHAR(255)    NULL,
     copied_from_scope_id  VARCHAR(255)    NULL,
     copied_from_session_id VARCHAR(255)   NULL,
+    fork_turn              INT             NULL,
+    fork_source_message_id VARCHAR(255)    NULL,
+    fork_source_role       VARCHAR(16)     NULL,
+    idempotency_key        VARCHAR(160)    NULL,
     imported_at           DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
     divergence_marker     JSON,
     provenance_source     VARCHAR(100)    NOT NULL DEFAULT 'manual',
@@ -768,7 +774,8 @@ CREATE TABLE IF NOT EXISTS session_fork_lineage (
     INDEX idx_scope (scope_id),
     INDEX idx_parent_scope (parent_scope_id),
     INDEX idx_copied_from_scope (copied_from_scope_id),
-    INDEX idx_provenance (provenance_source, imported_at)
+    INDEX idx_provenance (provenance_source, imported_at),
+    UNIQUE INDEX uq_session_fork_lineage_idempotency (chat_session_id, idempotency_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   COMMENT='Support-only: copied/forked session lineage and provenance. Inherited items are review-safe support surfaces, not canonical truth writers.';
 

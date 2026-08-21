@@ -501,10 +501,10 @@ func invalidateMemorySourcesTx(
 	if err := rows.Close(); err != nil {
 		return err
 	}
+	if err := enqueueKnownVectorDeletesTx(ctx, tx, chatSessionID, revisions, fromTurn, exactTurn, now); err != nil {
+		return err
+	}
 	for _, revision := range revisions {
-		if err := enqueueKnownVectorDeletesTx(ctx, tx, chatSessionID, revision, fromTurn, exactTurn, now); err != nil {
-			return err
-		}
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE memory_derivation_dependencies
 			SET lifecycle_state = 'invalidated', invalidated_at = ?, updated_at = ?
@@ -580,7 +580,10 @@ func invalidateMemorySourcesTx(
 	return nil
 }
 
-func enqueueKnownVectorDeletesTx(ctx context.Context, tx *sql.Tx, sid, revision string, fromTurn int, exactTurn bool, now time.Time) error {
+func enqueueKnownVectorDeletesTx(ctx context.Context, tx *sql.Tx, sid string, revisions []string, fromTurn int, exactTurn bool, now time.Time) error {
+	if len(revisions) == 0 {
+		return nil
+	}
 	comparison := ">= ?"
 	if exactTurn {
 		comparison = "= ?"
@@ -615,46 +618,59 @@ func enqueueKnownVectorDeletesTx(ctx context.Context, tx *sql.Tx, sid, revision 
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, `
-		SELECT DISTINCT document_id
-		FROM memory_vector_outbox
-		WHERE chat_session_id = ? AND source_revision = ? AND operation = 'upsert'
-		  AND document_id <> ''
-	`, sid, revision)
-	if err != nil {
-		return err
+	type vectorDelete struct {
+		documentID     string
+		sourceRevision string
 	}
-	var documentIDs []string
-	for rows.Next() {
-		var documentID string
-		if err := rows.Scan(&documentID); err != nil {
-			_ = rows.Close()
+	var deletes []vectorDelete
+	deleteIndexes := map[string]int{}
+	addDelete := func(documentID, sourceRevision string) {
+		documentID = strings.TrimSpace(documentID)
+		if documentID == "" {
+			return
+		}
+		if index, exists := deleteIndexes[documentID]; exists {
+			deletes[index].sourceRevision = sourceRevision
+			return
+		}
+		deleteIndexes[documentID] = len(deletes)
+		deletes = append(deletes, vectorDelete{documentID: documentID, sourceRevision: sourceRevision})
+	}
+	for _, revision := range revisions {
+		rows, err := tx.QueryContext(ctx, `
+			SELECT DISTINCT document_id
+			FROM memory_vector_outbox
+			WHERE chat_session_id = ? AND source_revision = ? AND operation = 'upsert'
+			  AND document_id <> ''
+			ORDER BY document_id
+		`, sid, revision)
+		if err != nil {
 			return err
 		}
-		documentIDs = append(documentIDs, documentID)
-	}
-	if err := rows.Close(); err != nil {
-		return err
+		for rows.Next() {
+			var documentID string
+			if err := rows.Scan(&documentID); err != nil {
+				_ = rows.Close()
+				return err
+			}
+			addDelete(documentID, revision)
+		}
+		if err := rows.Close(); err != nil {
+			return err
+		}
 	}
 	for _, row := range vectors {
-		documentIDs = append(documentIDs,
-			fmt.Sprintf("%s:%s:%d", row.tier, sid, row.id),
-			fmt.Sprintf("%s:%d", row.tier, row.id))
+		addDelete(fmt.Sprintf("%s:%s:%d", row.tier, sid, row.id), revisions[len(revisions)-1])
+		addDelete(fmt.Sprintf("%s:%d", row.tier, row.id), revisions[len(revisions)-1])
 	}
-	seen := map[string]bool{}
-	for _, documentID := range documentIDs {
-		documentID = strings.TrimSpace(documentID)
-		if documentID == "" || seen[documentID] {
-			continue
-		}
-		seen[documentID] = true
+	for _, delete := range deletes {
 		item := &MemoryVectorOutboxItem{
 			ContractVersion:     MemoryVectorOutboxContract,
-			OperationKey:        memoryVectorOperationKey("delete", sid, revision, documentID),
+			OperationKey:        memoryVectorOperationKey("delete", sid, delete.sourceRevision, delete.documentID),
 			Operation:           "delete",
 			ChatSessionID:       sid,
-			SourceRevision:      revision,
-			DocumentID:          documentID,
+			SourceRevision:      delete.sourceRevision,
+			DocumentID:          delete.documentID,
 			EmbeddingReady:      true,
 			RequiredSourceState: "inactive",
 			Status:              "pending",
@@ -1131,7 +1147,7 @@ func (m *mariadbStore) ClaimMemoryVectorOperations(ctx context.Context, leaseOwn
 		return nil, err
 	}
 	items := []*MemoryVectorOutboxItem{item}
-	if item.Operation == "upsert" && !item.EmbeddingReady {
+	if item.Operation == "delete" || (item.Operation == "upsert" && !item.EmbeddingReady) {
 		siblings, err := selectMemoryVectorOperationSiblingsForLease(ctx, tx, item, now)
 		if err != nil {
 			return nil, err
@@ -1208,15 +1224,7 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 }
 
 func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx, seed *MemoryVectorOutboxItem, now time.Time) ([]*MemoryVectorOutboxItem, error) {
-	rows, err := tx.QueryContext(ctx, `
-		SELECT o.id, o.contract_version, o.operation_key, o.operation,
-		       o.chat_session_id, o.source_revision, o.document_id,
-		       o.document_json, o.embedding_ready, o.required_source_state,
-		       o.status, o.attempts, o.retry_after, o.lease_owner,
-		       o.lease_until, o.last_error, o.created_at, o.updated_at
-		FROM memory_vector_outbox o
-		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
-		WHERE o.source_revision = ?
+	where := `o.source_revision = ?
 		  AND o.chat_session_id = ?
 		  AND o.id <> ?
 		  AND o.operation = 'upsert'
@@ -1229,7 +1237,33 @@ func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx
 		    OR (o.status = 'leased' AND o.lease_until < ?)
 		  )
 		  AND o.required_source_state = 'active'
-		  AND s.lifecycle_state = 'active'
+		  AND s.lifecycle_state = 'active'`
+	args := []any{seed.SourceRevision, seed.ChatSessionID, seed.ID, now, now}
+	if seed.Operation == "delete" {
+		where = `o.chat_session_id = ?
+		  AND o.id <> ?
+		  AND o.operation = 'delete'
+		  AND o.embedding_ready = TRUE
+		  AND (
+		    (
+		      o.status IN ('pending', 'retryable')
+		      AND (o.retry_after IS NULL OR o.retry_after < ?)
+		    )
+		    OR (o.status = 'leased' AND o.lease_until < ?)
+		  )
+		  AND o.required_source_state = 'inactive'
+		  AND s.lifecycle_state <> 'active'`
+		args = []any{seed.ChatSessionID, seed.ID, now, now}
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT o.id, o.contract_version, o.operation_key, o.operation,
+		       o.chat_session_id, o.source_revision, o.document_id,
+		       o.document_json, o.embedding_ready, o.required_source_state,
+		       o.status, o.attempts, o.retry_after, o.lease_owner,
+		       o.lease_until, o.last_error, o.created_at, o.updated_at
+		FROM memory_vector_outbox o
+		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
+		WHERE `+where+`
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM memory_vector_outbox prior
@@ -1239,7 +1273,7 @@ func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx
 		  )
 		ORDER BY o.created_at, o.id
 		FOR UPDATE
-	`, seed.SourceRevision, seed.ChatSessionID, seed.ID, now, now)
+	`, args...)
 	if err != nil {
 		return nil, err
 	}

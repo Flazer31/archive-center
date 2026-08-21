@@ -2,6 +2,9 @@ package store
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
 	"time"
 )
 
@@ -10,9 +13,9 @@ const (
 	PreciseMemoryUnitContract = "precise_memory_unit.v1"
 )
 
-// PreciseMemoryUnit is an additive, exact-source memory projection. It does
+// PreciseMemoryUnit is an additive semantic memory projection. It does
 // not replace the legacy aggregate Memory row. Each unit preserves one
-// semantic claim or occurrence and the accepted source span that admitted it.
+// semantic claim or occurrence and its accepted source-turn provenance.
 type PreciseMemoryUnit struct {
 	ID                      int64     `json:"id"`
 	UnitID                  string    `json:"unit_id"`
@@ -66,6 +69,63 @@ type PreciseMemoryUnit struct {
 	VectorContextChunkIndex int       `json:"-"`
 }
 
+// PreciseMemorySemanticText is the shared searchable projection for precise
+// memory. Semantic fields lead; an available source excerpt remains supporting
+// context and is never required to make an otherwise understandable unit
+// searchable.
+func PreciseMemorySemanticText(item *PreciseMemoryUnit) string {
+	if item == nil {
+		return ""
+	}
+	payload := map[string]any{}
+	_ = json.Unmarshal([]byte(item.PayloadJSON), &payload)
+	keys := []string{
+		"subject", "subject_entity", "source_entity", "actor", "actor_name", "speaker_name", "speaker", "character",
+		"target_entity", "counterpart", "affected_entity", "target",
+		"summary", "event", "action", "observation", "claim",
+		"state_slot", "relation_dimension", "domain", "trait_domain",
+		"behavior_key", "behavior_expression", "trait_key", "supported_expression",
+		"principle_key", "utterance_expression", "profile_key", "value",
+		"decision", "action_scope", "context_key", "relationship_key",
+	}
+	parts := []string{}
+	seen := map[string]bool{}
+	appendPart := func(label string, value any) {
+		text := ""
+		switch typed := value.(type) {
+		case string:
+			text = strings.TrimSpace(typed)
+		case []any, []string:
+			encoded, err := json.Marshal(typed)
+			if err == nil {
+				text = string(encoded)
+			}
+		case nil:
+			return
+		default:
+			text = strings.TrimSpace(fmt.Sprint(typed))
+		}
+		if text == "" {
+			return
+		}
+		key := strings.ToLower(strings.Join(strings.Fields(label+"\x00"+text), " "))
+		if seen[key] {
+			return
+		}
+		seen[key] = true
+		parts = append(parts, label+": "+text)
+	}
+	appendPart("kind", item.Kind)
+	appendPart("subtype", item.Subtype)
+	for _, key := range keys {
+		appendPart(key, payload[key])
+	}
+	if excerpt := strings.TrimSpace(item.EvidenceExcerpt); excerpt != "" {
+		appendPart("source", excerpt)
+	}
+	return strings.Join(parts, "\n")
+}
+
 // PreciseMemoryWriter is optional so legacy, fixture, noop, and read-only
 // stores remain compatible without claiming that atomic writes succeeded.
 type PreciseMemoryWriter interface {
@@ -79,12 +139,19 @@ type CharacterPerspectiveMemoryReader interface {
 	ListCharacterPerspectiveMemoryUnits(context.Context, string, string) ([]PreciseMemoryUnit, error)
 }
 
-// ActiveInteractionMemoryReader exposes only source-active, committed atomic
-// relationship observations and interaction boundaries. The caller projects
-// the latest source-backed observation for the current request; this interface
-// deliberately does not introduce a relationship current/history table.
+// ActiveInteractionMemoryReader exposes source-active atomic relationship
+// observations and interaction boundaries. Review metadata does not erase the
+// semantic occurrence; the caller still applies visibility and current-turn
+// selection for the current request.
 type ActiveInteractionMemoryReader interface {
 	ListActiveInteractionMemoryUnits(context.Context, string) ([]PreciseMemoryUnit, error)
+}
+
+// GeneralVectorPreciseMemoryReader lists only source-active precise units that
+// are eligible for the general vector index. It is an optional administrative
+// inventory boundary; perspective-scoped units remain on their typed lanes.
+type GeneralVectorPreciseMemoryReader interface {
+	ListGeneralVectorPreciseMemoryUnits(context.Context, string) ([]PreciseMemoryUnit, error)
 }
 
 // PreciseMemoryWriteAvailability lets composite stores report whether at least

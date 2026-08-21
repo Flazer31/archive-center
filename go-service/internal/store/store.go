@@ -596,7 +596,8 @@ type PrepareTurnRangeStore interface {
 	ListMemoriesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]Memory, error)
 	ListEvidenceRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int, includeIDs []int64) ([]DirectEvidence, error)
 	ListKGTriplesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]KGTriple, error)
-	ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error)
+	// beforeTurn is exclusive; non-positive values request the latest snapshot across the full session.
+	ListCharacterStatesCurrentBefore(ctx context.Context, chatSessionID string, beforeTurn int) ([]CharacterState, error)
 	ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error)
 	ListCanonicalStateLayersRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]CanonicalStateLayer, error)
 }
@@ -938,16 +939,27 @@ type PsychologyBranchStore interface {
 	UpdatePsychologyBranchStatus(ctx context.Context, id int64, status string, quietTurns int) error
 }
 
+const (
+	ForkLineageContractVersion              = "session_fork_lineage.v1"
+	RisuWorldlineForkLineageContractVersion = "session_fork_lineage.v2"
+)
+
 // ForkLineageRecord is a support-only provenance entry for copied/forked sessions.
 // It records where a session came from, what was inherited, and how it may diverge,
 // without becoming a canonical truth writer in either session.
 type ForkLineageRecord struct {
 	ID                  int64     `json:"id"`
+	ContractVersion     string    `json:"contract_version"`
+	LineageState        string    `json:"lineage_state"`
 	ChatSessionID       string    `json:"chat_session_id"`
 	ScopeID             string    `json:"scope_id,omitempty"`
 	ParentScopeID       string    `json:"parent_scope_id,omitempty"`
 	CopiedFromScopeID   string    `json:"copied_from_scope_id,omitempty"`
 	CopiedFromSessionID string    `json:"copied_from_session_id,omitempty"`
+	ForkTurn            int       `json:"fork_turn,omitempty"`
+	ForkSourceMessageID string    `json:"fork_source_message_id,omitempty"`
+	ForkSourceRole      string    `json:"fork_source_role,omitempty"`
+	IdempotencyKey      string    `json:"idempotency_key,omitempty"`
 	ImportedAt          time.Time `json:"imported_at"`
 	DivergenceMarker    string    `json:"divergence_marker,omitempty"`
 	ProvenanceSource    string    `json:"provenance_source"`
@@ -962,6 +974,34 @@ type ForkLineageRecord struct {
 type ForkLineageStore interface {
 	ListForkLineageRecords(ctx context.Context, chatSessionID, scopeID string, limit int) ([]ForkLineageRecord, error)
 	SaveForkLineageRecord(ctx context.Context, record ForkLineageRecord) (ForkLineageRecord, error)
+}
+
+// WorldlineCompletedTurn identifies one actual positive chat-log turn with
+// both non-empty user and assistant rows. It is storage evidence only; the
+// HTTP owner decides which session visibly owns a copied/forked turn.
+type WorldlineCompletedTurn struct {
+	ChatSessionID string
+	TurnIndex     int
+}
+
+// WorldlineTopologySnapshot is the bounded read model needed to derive one
+// stable-character session family. Route bindings supply membership, fork
+// lineage remains raw until the HTTP owner canonicalizes authoritative tuples,
+// and completed turns prevent the ViewModel from synthesizing 1..max ranges.
+type WorldlineTopologySnapshot struct {
+	StableCharacterID string
+	AnchorSessionID   string
+	SessionIDs        []string
+	LineageRecords    []ForkLineageRecord
+	CompletedTurns    []WorldlineCompletedTurn
+	Truncated         bool
+	TurnsTruncated    bool
+}
+
+// WorldlineTopologySnapshotStore is an optional read-only session-routing
+// extension. It does not add topology semantics to the canonical Store.
+type WorldlineTopologySnapshotStore interface {
+	GetWorldlineTopologySnapshot(ctx context.Context, anchorSessionID string, limit int) (WorldlineTopologySnapshot, error)
 }
 
 // PersonaMemoryCapsule groups portable protagonist/player recollections.

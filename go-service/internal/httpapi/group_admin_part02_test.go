@@ -848,23 +848,27 @@ func TestSeq123P79PlanningOnlyBridgeMarkers(t *testing.T) {
 	}
 }
 
-func TestAdminReindexUpsertsExistingMemoryEmbeddings(t *testing.T) {
+func TestAdminReindexQueuesCanonicalMemoryAdmissionWithoutDirectChromaUpsert(t *testing.T) {
+	const sid = "sess-reindex-live"
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-embedding","data":[{"embedding":[0.1,0.2,0.3]}]}`)
+	}))
+	defer embeddingServer.Close()
+	fake := newAdminCanonicalReplayTestStore(sid, 7, map[string]any{
+		"turn_summary":      "Blue lantern oath persists.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Blue lantern oath persists."},
+	})
+	fake.memories = []store.Memory{{
+		ID: 42, ChatSessionID: sid, TurnIndex: 7,
+		SummaryJSON: `{"turn_summary":"Blue lantern oath persists."}`,
+		Embedding:   `[0.1,0.2,0.3]`, EmbeddingModel: "old-model",
+	}}
 	cfg := config.Default()
-	cfg.StoreMode = config.StoreModeMariaDBShadow
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
 	srv := NewServer(cfg)
-	fake := &memoryFakeStore{
-		memories: []store.Memory{
-			{
-				ID:             42,
-				ChatSessionID:  "sess-reindex-live",
-				TurnIndex:      7,
-				SummaryJSON:    `{"summary":"Blue lantern oath persists."}`,
-				Embedding:      `[0.1,0.2,0.3]`,
-				EmbeddingModel: "test-embedding",
-			},
-		},
-	}
 	vec := &turnRecordingVectorStore{}
 	srv.Store = fake
 	srv.StoreOpenError = nil
@@ -872,64 +876,51 @@ func TestAdminReindexUpsertsExistingMemoryEmbeddings(t *testing.T) {
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-
-	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(`{"chat_session_id":"sess-reindex-live","dry_run":false}`))
+	req := httptest.NewRequest(http.MethodPost, "/admin/reindex", strings.NewReader(fmt.Sprintf(`{
+		"chat_session_id":%q,"force":true,"client_meta":{"embedding":{
+			"provider":"openai","api_key":"key","endpoint":%q,
+			"model":"test-embedding","timeout_ms":5000
+		}}
+	}`, sid, embeddingServer.URL)))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
-
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
+		t.Fatal(err)
 	}
-	if resp["reindex_executed"] != true {
-		t.Fatalf("reindex_executed = %v, want true", resp["reindex_executed"])
+	if resp["reindex_executed"] != true || resp["canonical_replays_completed"] != float64(1) ||
+		resp["vector_replays_queued"] != float64(1) || resp["upserted"] != float64(0) ||
+		resp["vector_delivery_pending"] != true {
+		t.Fatalf("response does not distinguish queued from delivered: %#v", resp)
 	}
-	if resp["upserted"] != float64(1) {
-		t.Fatalf("upserted = %v, want 1", resp["upserted"])
+	if vec.upsertCalls != 0 || len(vec.docs) != 0 {
+		t.Fatalf("admin crossed direct Chroma boundary: calls=%d docs=%d", vec.upsertCalls, len(vec.docs))
 	}
 	qv, ok := resp["quality_verification"].(map[string]any)
-	if !ok {
-		t.Fatalf("quality_verification missing: %#v", resp["quality_verification"])
+	if !ok || qv["status"] != "pending_outbox_readback" {
+		t.Fatalf("quality_verification=%#v", resp["quality_verification"])
 	}
-	if qv["status"] != "requires_before_after_report" || qv["before_after_required"] != true {
-		t.Fatalf("quality_verification = %#v, want before/after report required", qv)
+	var reindexAudit *store.AuditLog
+	for _, item := range fake.auditLogs {
+		if item != nil && item.EventType == "admin_reindex" {
+			reindexAudit = item
+			break
+		}
 	}
-	if len(vec.docs) != 1 {
-		t.Fatalf("vector docs = %d, want 1", len(vec.docs))
-	}
-	doc := vec.docs[0]
-	if doc.ID != "memory:sess-reindex-live:42" {
-		t.Fatalf("doc ID = %q", doc.ID)
-	}
-	if doc.ChatSessionID != "sess-reindex-live" || doc.SourceTable != "memories" || doc.SourceRowID != "42" {
-		t.Fatalf("doc provenance mismatch: %#v", doc)
-	}
-	if !strings.Contains(doc.DocumentText, "Blue lantern oath persists.") || !strings.Contains(doc.DocumentText, "[Canonical Summary]") {
-		t.Fatalf("doc text = %q", doc.DocumentText)
-	}
-	if len(fake.auditLogs) != 1 || fake.auditLogs[0].EventType != "admin_reindex" {
-		t.Fatalf("expected admin_reindex audit log, got %#v", fake.auditLogs)
+	if reindexAudit == nil {
+		t.Fatalf("admin_reindex audit missing: %#v", fake.auditLogs)
 	}
 	var details map[string]any
-	if err := json.Unmarshal([]byte(fake.auditLogs[0].DetailsJSON), &details); err != nil {
-		t.Fatalf("decode audit details: %v", err)
+	if err := json.Unmarshal([]byte(reindexAudit.DetailsJSON), &details); err != nil {
+		t.Fatal(err)
 	}
-	if details["upserted"] != float64(1) {
-		t.Fatalf("audit upserted = %v, want 1", details["upserted"])
-	}
-	integrity, ok := resp["integrity_report"].(map[string]any)
-	if !ok {
-		t.Fatalf("integrity_report missing: %#v", resp["integrity_report"])
-	}
-	if integrity["vector_count_matches_canonical"] != true {
-		t.Fatalf("vector_count_matches_canonical = %v, want true; integrity=%#v", integrity["vector_count_matches_canonical"], integrity)
-	}
-	if integrity["missing_vector_count_estimate"] != float64(0) {
-		t.Fatalf("missing_vector_count_estimate = %v, want 0", integrity["missing_vector_count_estimate"])
+	if details["canonical_replays_completed"] != float64(1) ||
+		details["vector_replays_queued"] != float64(1) || details["upserted"] != float64(0) {
+		t.Fatalf("audit counters=%#v", details)
 	}
 }
 

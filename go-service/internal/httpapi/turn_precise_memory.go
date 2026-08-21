@@ -890,10 +890,14 @@ func preciseMemoryExactSpan(payload map[string]any, excerpt, content string) (in
 }
 
 func preciseMemoryExactEvidenceIDs(evidence []store.DirectEvidence, sid string, turnIndex int, excerpt string) []int64 {
+	excerpt = strings.TrimSpace(excerpt)
+	if excerpt == "" {
+		return []int64{}
+	}
 	ids := []int64{}
 	for _, item := range evidence {
 		if item.ID <= 0 || item.ChatSessionID != sid ||
-			strings.TrimSpace(item.EvidenceText) != strings.TrimSpace(excerpt) ||
+			strings.TrimSpace(item.EvidenceText) != excerpt ||
 			item.RepairNeeded || item.Tombstoned || item.SupersededByID > 0 ||
 			item.ArchiveState != "verified_direct" ||
 			item.CaptureStage != "critic_extract" ||

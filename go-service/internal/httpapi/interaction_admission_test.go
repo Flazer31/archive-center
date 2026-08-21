@@ -18,7 +18,7 @@ func testEntityScalarKG(semanticClass, subject, entityKind, predicate, object, s
 	}
 }
 
-func TestInteractionAdmissionPreservesDirectionAndKeepsUnsupportedReciprocalForReview(t *testing.T) {
+func TestInteractionAdmissionPreservesBroadDirectionalSemanticCandidates(t *testing.T) {
 	source := `A said, "I love B."`
 	raw := map[string]any{
 		"relationship_observations": []any{
@@ -51,8 +51,8 @@ func TestInteractionAdmissionPreservesDirectionAndKeepsUnsupportedReciprocalForR
 	}
 	if stringFromMap(review, "source_entity") != "B" ||
 		stringFromMap(review, "target_entity") != "A" ||
-		stringFromMap(review, "admission_state") != "review_required" {
-		t.Fatalf("unsupported reciprocal relationship reached current-state projection: %#v", review)
+		stringFromMap(review, "admission_state") != "committed" {
+		t.Fatalf("understandable reciprocal candidate was erased by exact-expression proof: %#v", review)
 	}
 }
 
@@ -99,8 +99,8 @@ func TestInteractionAdmissionKeepsHelpAtomicAndRetainsRelationshipCandidatesForR
 		t.Fatalf("broad interaction collection lost candidates: %#v", admitted)
 	}
 	for _, rawRelationship := range sliceFromAny(admitted["relationship_observations"]) {
-		if stringFromMap(mapFromAny(rawRelationship), "admission_state") != "review_required" {
-			t.Fatalf("unsupported relationship candidate reached current-state projection: %#v", rawRelationship)
+		if stringFromMap(mapFromAny(rawRelationship), "admission_state") != "committed" {
+			t.Fatalf("understandable relationship candidate was blocked by exact-expression proof: %#v", rawRelationship)
 		}
 	}
 	delta := mapFromAny(sliceFromAny(admitted["character_deltas"])[0])
@@ -137,9 +137,9 @@ func TestInteractionAdmissionDoesNotTurnCommandComplianceIntoLoyaltyOrConsent(t 
 		len(sliceFromAny(admitted["interaction_boundaries"])) != 1 {
 		t.Fatalf("broad interaction collection lost candidates: %#v", admitted)
 	}
-	if stringFromMap(mapFromAny(sliceFromAny(admitted["relationship_observations"])[0]), "admission_state") != "review_required" ||
-		stringFromMap(mapFromAny(sliceFromAny(admitted["interaction_boundaries"])[0]), "admission_state") != "review_required" {
-		t.Fatalf("unsupported command inference reached current-state projection: %#v", admitted)
+	if stringFromMap(mapFromAny(sliceFromAny(admitted["relationship_observations"])[0]), "admission_state") != "committed" ||
+		stringFromMap(mapFromAny(sliceFromAny(admitted["interaction_boundaries"])[0]), "admission_state") != "committed" {
+		t.Fatalf("semantic observations were removed or their review metadata was lost: %#v", admitted)
 	}
 }
 
@@ -170,17 +170,13 @@ func TestInteractionBoundaryDefaultsToEventAndWithdrawalWinsSameScope(t *testing
 		boundary := mapFromAny(rawBoundary)
 		if stringFromMap(boundary, "admission_state") != "committed" ||
 			stringFromMap(boundary, "effective_scope") != "event" ||
-			stringFromMap(boundary, "visibility") != "owner_private" {
+			stringFromMap(boundary, "visibility") != "public" {
 			t.Fatalf("source-bound boundary observation was not preserved: %#v", boundary)
 		}
 	}
-	if !memoryAdmissionHasPerspectiveScopedContent(admitted) ||
-		!memoryAdmissionHasHolderScopedPerspectiveContent(admitted) {
-		t.Fatal("boundary could reenter general memory/vector delivery")
-	}
 }
 
-func TestInteractionVisibilityDefaultsPrivateButPreservesExplicitPublic(t *testing.T) {
+func TestInteractionVisibilityDefaultsPublicAndPreservesExplicitPrivate(t *testing.T) {
 	publicEvidence := `A publicly said, "I trust B."`
 	source := publicEvidence + ` B told A, "Do not touch the sealed letter."`
 	raw := map[string]any{
@@ -198,6 +194,7 @@ func TestInteractionVisibilityDefaultsPrivateButPreservesExplicitPublic(t *testi
 			"actor": "B", "actor_expression": "B", "counterpart": "A", "counterpart_expression": "A",
 			"action_scope": "touch the sealed letter", "action_scope_expression": "touch the sealed letter",
 			"decision": "refuse", "decision_expression": "Do not", "support_kind": "explicit_statement",
+			"visibility":       "owner_private",
 			"evidence_excerpt": `B told A, "Do not touch the sealed letter."`,
 		}},
 	}
@@ -208,7 +205,7 @@ func TestInteractionVisibilityDefaultsPrivateButPreservesExplicitPublic(t *testi
 		t.Fatalf("explicit public relationship visibility was changed: %#v", relationship)
 	}
 	if stringFromMap(boundary, "visibility") != "owner_private" {
-		t.Fatalf("missing boundary visibility did not fail private: %#v", boundary)
+		t.Fatalf("explicit private boundary visibility was changed: %#v", boundary)
 	}
 }
 
@@ -225,12 +222,12 @@ func TestWhisperedRelationshipCannotGainPublicVisibilityFromShortExpression(t *t
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, evidence, "")
 	item := mapFromAny(sliceFromAny(admitted["relationship_observations"])[0])
-	if stringFromMap(item, "visibility") != "owner_private" || len(mapFromAny(item["public_visibility_support"])) != 0 {
-		t.Fatalf("short arbitrary expression granted public visibility: %#v", item)
+	if stringFromMap(item, "visibility") != "public" || len(mapFromAny(item["public_visibility_support"])) != 0 {
+		t.Fatalf("explicit public visibility was downgraded for missing proof metadata: %#v", item)
 	}
 }
 
-func TestInteractionPublicVisibilityWithoutExactExpressionDowngradesPrivate(t *testing.T) {
+func TestInteractionPublicVisibilityWithoutExactExpressionStaysPublic(t *testing.T) {
 	source := `A said, "I trust B."`
 	raw := map[string]any{
 		"relationship_observations": []any{map[string]any{
@@ -243,9 +240,9 @@ func TestInteractionPublicVisibilityWithoutExactExpressionDowngradesPrivate(t *t
 	}
 	admitted, _ := admitCriticInteractionLanes(raw, source, "")
 	item := mapFromAny(sliceFromAny(admitted["relationship_observations"])[0])
-	if stringFromMap(item, "visibility") != "owner_private" ||
-		stringFromMap(item, "visibility_disposition") != "public_downgraded_unbound" {
-		t.Fatalf("guessed public visibility was not downgraded: %#v", item)
+	if stringFromMap(item, "visibility") != "public" ||
+		stringFromMap(item, "visibility_disposition") != "public_or_unspecified" {
+		t.Fatalf("public visibility was downgraded for missing redundant proof: %#v", item)
 	}
 }
 
@@ -309,7 +306,7 @@ func TestUserAndRPProfileNamespacesStaySeparatedAndOutOfWorldLanes(t *testing.T)
 	}
 }
 
-func TestInteractionAdmissionRejectsMissingOrFabricatedActionExpressions(t *testing.T) {
+func TestInteractionAdmissionStoresSemanticActionsWithoutExactExpressions(t *testing.T) {
 	source := "A waved to B."
 	raw := map[string]any{
 		"interaction_events": []any{
@@ -329,13 +326,13 @@ func TestInteractionAdmissionRejectsMissingOrFabricatedActionExpressions(t *test
 		t.Fatalf("structurally complete interaction candidates were not collected: %#v", admitted)
 	}
 	for _, rawItem := range items {
-		if stringFromMap(mapFromAny(rawItem), "admission_state") != "review_required" {
-			t.Fatalf("unbound action candidate reached current-state projection: %#v", rawItem)
+		if stringFromMap(mapFromAny(rawItem), "admission_state") != "committed" {
+			t.Fatalf("source-occurring semantic action was not retained: %#v", rawItem)
 		}
 	}
 }
 
-func TestRelationshipDirectionAndDomainExpressionsMustBindBeforeCommit(t *testing.T) {
+func TestRelationshipSemanticCandidatesDoNotRequireExactExpressions(t *testing.T) {
 	source := `A told B, "I love B."`
 	raw := map[string]any{
 		"relationship_observations": []any{
@@ -367,21 +364,18 @@ func TestRelationshipDirectionAndDomainExpressionsMustBindBeforeCommit(t *testin
 	if len(items) != 3 {
 		t.Fatalf("relationship collection lost structurally complete candidates: %#v", admitted)
 	}
-	committed, review := 0, 0
+	committed := 0
 	for _, rawItem := range items {
-		switch stringFromMap(mapFromAny(rawItem), "admission_state") {
-		case "committed":
+		if stringFromMap(mapFromAny(rawItem), "admission_state") == "committed" {
 			committed++
-		case "review_required":
-			review++
 		}
 	}
-	if committed != 1 || review != 2 {
-		t.Fatalf("relationship projection states mismatch: committed=%d review=%d items=%#v", committed, review, items)
+	if committed != len(items) {
+		t.Fatalf("semantic relationship candidates were exact-expression gated: committed=%d items=%#v", committed, items)
 	}
 }
 
-func TestBoundaryDecisionAndScopeExpressionsMustBindBeforeCommit(t *testing.T) {
+func TestBoundarySemanticCandidatesDoNotRequireExactExpressions(t *testing.T) {
 	source := `B told A, "Do not touch the seal."`
 	raw := map[string]any{
 		"interaction_boundaries": []any{
@@ -407,17 +401,14 @@ func TestBoundaryDecisionAndScopeExpressionsMustBindBeforeCommit(t *testing.T) {
 	if len(items) != 3 {
 		t.Fatalf("boundary collection lost structurally complete candidates: %#v", admitted)
 	}
-	committed, review := 0, 0
+	committed := 0
 	for _, rawItem := range items {
-		switch stringFromMap(mapFromAny(rawItem), "admission_state") {
-		case "committed":
+		if stringFromMap(mapFromAny(rawItem), "admission_state") == "committed" {
 			committed++
-		case "review_required":
-			review++
 		}
 	}
-	if committed != 1 || review != 2 {
-		t.Fatalf("boundary projection states mismatch: committed=%d review=%d items=%#v", committed, review, items)
+	if committed != len(items) {
+		t.Fatalf("semantic boundary candidates were exact-expression gated: committed=%d items=%#v", committed, items)
 	}
 }
 
@@ -466,6 +457,25 @@ func TestUserProfileEvidenceQuarantineDoesNotClassifyLiteralOOCText(t *testing.T
 	}
 	if intFromAny(mapFromAny(trace["reasons"])["user_profile_shared_evidence_quarantined:state_claims"], 0) != 1 {
 		t.Fatalf("OOC structural quarantine was not traced: %#v", trace)
+	}
+}
+
+func TestUserProfileSemanticStorageDoesNotRequireExactExpressionsOrEvidence(t *testing.T) {
+	admitted, _ := admitCriticInteractionLanes(map[string]any{
+		"user_interaction_profile": []any{map[string]any{
+			"profile_key": "graphic detail",
+			"value":       "avoid",
+		}},
+	}, "unrelated source wording", "")
+	profiles := sliceFromAny(admitted["user_interaction_profile"])
+	if len(profiles) != 1 {
+		t.Fatalf("understandable user-private semantic profile was erased: %#v", admitted)
+	}
+	profile := mapFromAny(profiles[0])
+	if stringFromMap(profile, "namespace") != "user_interaction_profile" ||
+		stringFromMap(profile, "visibility") != "user_private" ||
+		stringFromMap(profile, "evidence_excerpt") != "" {
+		t.Fatalf("user-private boundary or honest empty evidence changed: %#v", profile)
 	}
 }
 
@@ -700,10 +710,10 @@ func TestExplicitSingleSceneRelationshipChangeIsAdmittedWithoutCountThreshold(t 
 		candidates[0].reviewState != "source_observed" {
 		t.Fatalf("directional precise candidate mismatch: %#v", candidates)
 	}
-	if _, exists := candidates[0].payload["magnitude"]; exists {
-		t.Fatalf("unsupported magnitude entered the precise projection payload: %#v", candidates[0].payload)
+	if candidates[0].payload["magnitude"] != "major" {
+		t.Fatalf("semantic magnitude was erased without an exact expression: %#v", candidates[0].payload)
 	}
-	if _, exists := candidates[0].payload["duration"]; exists {
-		t.Fatalf("unsupported duration entered the precise projection payload: %#v", candidates[0].payload)
+	if candidates[0].payload["duration"] != "ongoing" {
+		t.Fatalf("semantic duration was erased without an exact expression: %#v", candidates[0].payload)
 	}
 }

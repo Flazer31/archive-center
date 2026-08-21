@@ -140,18 +140,17 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 	extraction = appendPreciseMemoryEvidenceExcerpts(ctx, extraction)
 	extraction = appendNarrativeStateEvidenceExcerpts(extraction)
-	memorySearchText := completeTurnMemorySearchText(summary, extraction, content)
+	publicProjection := buildPublicMemoryProjection(extraction, "")
+	memorySearchText := publicProjection.SearchText
 	searchText := strings.TrimSpace(memorySearchText.Text)
-	if searchText == "" {
-		searchText = summary
-	}
 	embedding := "[]"
-	embeddingModel := "not_configured"
+	embeddingModel := ""
 	var embeddingVector []float32
-	perspectiveScopedSearch := memoryAdmissionHasPerspectiveScopedContent(extraction)
-	if perspectiveScopedSearch {
-		embeddingModel = "perspective_scoped_typed_delivery"
-		result.EmbeddingStatus = "skipped_perspective_scoped"
+	if !publicProjection.Eligible {
+		result.EmbeddingStatus = "skipped_no_public_projection"
+		result.addSkipReason("memory_vector", "no_public_general_projection", map[string]any{
+			"turn_index": turnIndex,
+		})
 	} else if embCfg.hasConfig() && searchText != "" && !usesVoyageContextualizedEmbedding(embCfg) {
 		embeddingStartedAt := time.Now()
 		emb, model, err := callEmbedding(ctx, embCfg, searchText)
@@ -165,7 +164,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			result.EmbeddingStatus = "ok"
 			embeddingVector = parseFloat32JSONList(emb)
 		}
-	} else if summary != "" {
+	} else if searchText != "" {
 		result.EmbeddingStatus = "missing_config"
 	}
 
@@ -225,6 +224,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			}
 		}
 
+		privateEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
 		for excerptIndex, text := range stringsFromAny(extraction["evidence_excerpts"]) {
 			originalText := text
 			text = sanitizeEvidenceExcerptForTurn(text, content)
@@ -236,9 +236,14 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 				result.addSkipReason("direct_evidence", "duplicate_source_turn_excerpt", map[string]any{"turn_index": turnIndex, "text": text})
 				continue
 			}
+			normalizedEvidence := normalizeArtifactDedupeText(text)
+			evidenceKind := "turn_excerpt"
+			if privateEvidenceKeys[normalizedEvidence] {
+				evidenceKind = "perspective_scoped_turn_excerpt"
+			}
 			ev := &store.DirectEvidence{
 				ChatSessionID:        sid,
-				EvidenceKind:         "turn_excerpt",
+				EvidenceKind:         evidenceKind,
 				EvidenceText:         text,
 				SourceTurnStart:      turnIndex,
 				SourceTurnEnd:        turnIndex,
@@ -259,7 +264,9 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			}, &result, func() {
 				result.Evidence++
 				existingEvidence = append(existingEvidence, *ev)
-				s.upsertDerivedArtifactVector(ctx, sid, turnIndex, "evidence", "direct_evidence_records", ev.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(*ev), embCfg, &result)
+				if ev.EvidenceKind != "perspective_scoped_turn_excerpt" {
+					s.upsertDerivedArtifactVector(ctx, sid, turnIndex, "evidence", "direct_evidence_records", ev.ID, "direct_evidence.v1", directEvidenceVectorDocumentText(*ev), embCfg, &result)
+				}
 			})
 		}
 
@@ -340,10 +347,16 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 }
 
 func (s *Server) memoryForTurnAlreadyExists(ctx context.Context, sid string, turnIndex int, result *artifactSaveResult) (int64, string) {
-	if s == nil || s.Store == nil || turnIndex < 0 {
+	if s == nil || s.Store == nil {
 		return 0, ""
 	}
-	memories, err := s.Store.ListMemories(ctx, sid, turnIndex, turnIndex)
+	fromTurn, toTurn := turnIndex, turnIndex
+	if turnIndex < 0 {
+		// Store range filters use positive dialogue turns. Read the bounded
+		// session inventory and retain only the exact external-import turn below.
+		fromTurn, toTurn = 0, 0
+	}
+	memories, err := s.Store.ListMemories(ctx, sid, fromTurn, toTurn)
 	if err != nil {
 		if result != nil {
 			result.Warnings = append(result.Warnings, "memory_duplicate_turn_check_failed")
@@ -465,16 +478,6 @@ func kgTripleAlreadyExistsForTurn(existing []store.KGTriple, sid string, turnInd
 		if item.SourceTurn == turnIndex {
 			return true
 		}
-		if item.ValidTo == 0 && validTo == 0 {
-			return true
-		}
-		if validFrom > 0 && item.ValidFrom > 0 && item.ValidFrom != validFrom {
-			continue
-		}
-		if validTo > 0 && item.ValidTo > 0 && item.ValidTo != validTo {
-			continue
-		}
-		return true
 	}
 	return false
 }

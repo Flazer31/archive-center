@@ -69,43 +69,24 @@ func TestParseJSONFromLLMContentRepairsMalformedCriticJSON(t *testing.T) {
 	}
 }
 
-func TestParseJSONFromLLMContentRepairsTruncatedCriticJSON(t *testing.T) {
+func TestParseJSONFromLLMContentRejectsTruncatedCriticJSON(t *testing.T) {
 	raw := `{"turn_summary":"Mina found the brass key","evidence_excerpts":["Mina found the brass key.",`
-	got, err := parseJSONFromLLMContent(raw)
-	if err != nil {
-		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
-	}
-	if got["turn_summary"] != "Mina found the brass key" {
-		t.Fatalf("turn_summary = %#v", got["turn_summary"])
-	}
-	items, ok := got["evidence_excerpts"].([]any)
-	if !ok || len(items) != 1 || items[0] != "Mina found the brass key." {
-		t.Fatalf("evidence_excerpts = %#v", got["evidence_excerpts"])
+	if got, err := parseJSONFromLLMContent(raw); err == nil {
+		t.Fatalf("parseJSONFromLLMContent synthesized truncated JSON: %#v", got)
 	}
 }
 
-func TestParseJSONFromLLMContentRepairsTruncatedStringValue(t *testing.T) {
+func TestParseJSONFromLLMContentRejectsTruncatedStringValue(t *testing.T) {
 	raw := `{"turn_summary":"Mina found`
-	got, err := parseJSONFromLLMContent(raw)
-	if err != nil {
-		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
-	}
-	if got["turn_summary"] != "Mina found" {
-		t.Fatalf("turn_summary = %#v", got["turn_summary"])
+	if got, err := parseJSONFromLLMContent(raw); err == nil {
+		t.Fatalf("parseJSONFromLLMContent synthesized a truncated string: %#v", got)
 	}
 }
 
-func TestParseJSONFromLLMContentRepairsMissingObjectValue(t *testing.T) {
+func TestParseJSONFromLLMContentRejectsMissingObjectValue(t *testing.T) {
 	raw := `{"turn_summary":"Mina found the key","archive_hint":},"importance_score":7}`
-	got, err := parseJSONFromLLMContent(raw)
-	if err != nil {
-		t.Fatalf("parseJSONFromLLMContent failed: %v", err)
-	}
-	if got["turn_summary"] != "Mina found the key" {
-		t.Fatalf("turn_summary = %#v", got["turn_summary"])
-	}
-	if got["archive_hint"] != nil {
-		t.Fatalf("archive_hint = %#v, want nil for repaired missing value", got["archive_hint"])
+	if got, err := parseJSONFromLLMContent(raw); err == nil {
+		t.Fatalf("parseJSONFromLLMContent invented a missing value: %#v", got)
 	}
 }
 

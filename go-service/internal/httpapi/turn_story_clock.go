@@ -663,19 +663,14 @@ func (s *Server) saveStoryClockFromExtraction(ctx context.Context, sid string, t
 		return
 	}
 	proposal["evidence_excerpt"] = sanitizeEvidenceExcerptForTurn(extractionStringFromAny(proposal["evidence_excerpt"]), content)
-	if strings.TrimSpace(extractionStringFromAny(proposal["evidence_excerpt"])) == "" {
-		result.addSkipReason("story_clock", "evidence_excerpt_not_grounded", nil)
-		return
-	}
 	source, accepted := storyClockSourceMetadata(ctx, sid, turnIndex, content)
 	if !accepted {
 		result.addSkipReason("story_clock", "accepted_source_required", nil)
 		return
 	}
-	evidenceIDs := storyClockMatchingEvidenceIDs(evidence, sid, turnIndex, extractionStringFromAny(proposal["evidence_excerpt"]))
-	if len(evidenceIDs) == 0 {
-		result.addSkipReason("story_clock", "direct_evidence_required", nil)
-		return
+	evidenceIDs := []int64{}
+	if excerpt := strings.TrimSpace(extractionStringFromAny(proposal["evidence_excerpt"])); excerpt != "" {
+		evidenceIDs = storyClockMatchingEvidenceIDs(evidence, sid, turnIndex, excerpt)
 	}
 	currentStore, currentOK := s.Store.(store.StatusCurrentValueStore)
 	atomicStore, atomicOK := s.Store.(store.ReversibleStatusTransitionStore)

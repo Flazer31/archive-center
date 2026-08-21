@@ -294,6 +294,182 @@ func TestSessionMigrationCleanupHashesOnlyMigrationOwnedTargetRows(t *testing.T)
 	}
 }
 
+func TestSessionMigrationMemoryProjectionUsesCompletedCurrentUpsert(t *testing.T) {
+	const sourceID = "source"
+	rows := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"id": "41", "contract_version": MemoryVectorOutboxContract,
+		"operation": "upsert", "document_id": "memory:source:101", "source_revision": "rev-current",
+		"status":        "completed",
+		"document_json": `{"ID":"memory:source:101","Tier":"memory","ChatSessionID":"source","SourceTable":"memories","SourceRowID":"101","SchemaVersion":"memory.v2","DocumentText":"[Canonical Summary]\nThe public gate opened.","Metadata":{"index_identity":"memory_public_projection.v1"}}`,
+	})}
+	revisions := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"source_revision": "rev-current", "turn_index": "3", "lifecycle_state": "active",
+		"derived_admission_state": "committed", "derived_index_version": "memory_public_projection.v1",
+	})}
+
+	got, err := sessionMigrationMemoryProjectionOperations(rows, revisions, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, ok := got["memory:source:101"]
+	if !ok || op.Operation != "upsert" || op.SourceTurn != 3 || !strings.Contains(op.DocumentText, "public gate") {
+		t.Fatalf("current public projection = %#v", got)
+	}
+}
+
+func TestSessionMigrationMemoryProjectionLatestCurrentDeleteExcludesPrivateOnlyMemory(t *testing.T) {
+	const sourceID = "source"
+	rows := []sessionMigrationRow{
+		sessionMigrationTestRow(map[string]string{
+			"id": "41", "contract_version": MemoryVectorOutboxContract,
+			"operation": "upsert", "document_id": "memory:source:101", "source_revision": "rev-current",
+			"document_json": `{"ID":"memory:source:101","Tier":"memory","ChatSessionID":"source","SourceTable":"memories","SourceRowID":"101","SchemaVersion":"memory.v2","DocumentText":"old public projection","Metadata":{"index_identity":"memory_public_projection.v1"}}`,
+		}),
+		sessionMigrationTestRow(map[string]string{
+			"id": "42", "contract_version": MemoryVectorOutboxContract,
+			"operation": "delete", "document_id": "memory:source:101", "source_revision": "rev-current",
+			"status": "completed",
+		}),
+	}
+	revisions := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"source_revision": "rev-current", "turn_index": "3", "lifecycle_state": "active",
+		"derived_admission_state": "committed", "derived_index_version": "memory_public_projection.v1",
+	})}
+
+	got, err := sessionMigrationMemoryProjectionOperations(rows, revisions, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, ok := got["memory:source:101"]
+	if !ok || op.Operation != "delete" || op.DocumentText != "" || op.SourceTurn != 3 {
+		t.Fatalf("latest private-only projection = %#v", got)
+	}
+}
+
+func TestSessionMigrationMemoryProjectionIgnoresLegacyAuthority(t *testing.T) {
+	rows := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"id": "41", "contract_version": MemoryVectorOutboxContract,
+		"operation": "upsert", "document_id": "memory:source:101", "source_revision": "rev-legacy",
+		"document_json": `{"ID":"memory:source:101","Tier":"memory","ChatSessionID":"source","SourceTable":"memories","SourceRowID":"101","SchemaVersion":"memory.v2","DocumentText":"canonical private summary","Metadata":{"index_identity":"legacy"}}`,
+	})}
+	revisions := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"source_revision": "rev-legacy", "turn_index": "3", "lifecycle_state": "active",
+		"derived_admission_state": "committed", "derived_index_version": "legacy",
+	})}
+
+	got, err := sessionMigrationMemoryProjectionOperations(rows, revisions, "source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("legacy projection became migration authority: %#v", got)
+	}
+}
+
+func TestSessionMigrationMemoryProjectionRejectsLatestStaleUpsert(t *testing.T) {
+	rows := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"id": "41", "contract_version": MemoryVectorOutboxContract,
+		"operation": "upsert", "document_id": "memory:source:101", "source_revision": "rev-current",
+		"status":        "stale_rejected",
+		"document_json": `{"ID":"memory:source:101","Tier":"memory","ChatSessionID":"source","SourceTable":"memories","SourceRowID":"101","SchemaVersion":"memory.v2","DocumentText":"stale public projection","Metadata":{"index_identity":"memory_public_projection.v1"}}`,
+	})}
+	revisions := []sessionMigrationRow{sessionMigrationTestRow(map[string]string{
+		"source_revision": "rev-current", "turn_index": "3", "lifecycle_state": "active",
+		"derived_admission_state": "committed", "derived_index_version": "memory_public_projection.v1",
+	})}
+
+	if _, err := sessionMigrationMemoryProjectionOperations(rows, revisions, "source"); err == nil ||
+		!strings.Contains(err.Error(), "run canonical force reindex") {
+		t.Fatalf("stale upsert did not produce actionable migration block: %v", err)
+	}
+}
+
+func TestSessionMigrationRemapsCommittedAdmissionHashWithSourceRevision(t *testing.T) {
+	const (
+		sourceRevision = "11111111-1111-5111-8111-111111111111"
+		targetRevision = "22222222-2222-5222-8222-222222222222"
+		resultJSON     = `{"evidence_excerpts":["The gate opened."],"turn_summary":"The gate opened."}`
+	)
+	sourceAdmission := &MemoryAdmission{
+		SourceRevision: sourceRevision, DerivationVersion: MemoryAdmissionContract,
+		ExtractorVersion: "complete_turn.configured_critic_extract", IndexVersion: MemoryPublicProjectionIndex,
+		ResultJSON: resultJSON,
+	}
+	source := sessionMigrationTestRow(map[string]string{
+		"id": "1", "chat_session_id": "source", "source_revision": sourceRevision,
+		"derived_admission_state": "committed", "derived_admission_version": sourceAdmission.DerivationVersion,
+		"derived_extractor_version": sourceAdmission.ExtractorVersion, "derived_index_version": sourceAdmission.IndexVersion,
+		"derived_result_hash": memoryAdmissionExpectedResultHash(sourceAdmission), "derived_result_json": resultJSON,
+	})
+	target := sessionMigrationTestRow(map[string]string{
+		"id": "2", "chat_session_id": "target", "source_revision": targetRevision,
+		"derived_admission_state": "committed", "derived_admission_version": sourceAdmission.DerivationVersion,
+		"derived_extractor_version": sourceAdmission.ExtractorVersion, "derived_index_version": sourceAdmission.IndexVersion,
+		"derived_result_hash": source.Values["derived_result_hash"].Text, "derived_result_json": resultJSON,
+	})
+	targetHash, _, err := sessionMigrationRemappedAdmissionResult(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if targetHash == source.Values["derived_result_hash"].Text {
+		t.Fatal("target revision retained the source admission hash")
+	}
+	target.Values["derived_result_hash"] = sessionMigrationCell{Valid: true, Text: targetHash}
+
+	entry, _ := sessionMigrationManifestEntryByTable("memory_source_revisions")
+	plan, _ := SessionMigrationExecutionPlanFor(entry.Table)
+	maps := newSessionMigrationKeyMaps()
+	if err := maps.put(entry.Table, "id", "1", "2"); err != nil {
+		t.Fatal(err)
+	}
+	if err := maps.put(entry.Table, "source_revision", sourceRevision, targetRevision); err != nil {
+		t.Fatal(err)
+	}
+	sourceHash := sessionMigrationCanonicalRowsHash(entry, plan, []sessionMigrationRow{source}, "source", false, maps)
+	targetContentHash := sessionMigrationCanonicalRowsHash(entry, plan, []sessionMigrationRow{target}, "target", true, maps)
+	if sourceHash != targetContentHash {
+		t.Fatalf("remapped committed admission broke relational parity: source=%s target=%s", sourceHash, targetContentHash)
+	}
+	tampered := sessionMigrationRow{Values: make(map[string]sessionMigrationCell, len(target.Values))}
+	for key, cell := range target.Values {
+		tampered.Values[key] = cell
+	}
+	tampered.Values["derived_result_hash"] = sessionMigrationCell{Valid: true, Text: "tampered"}
+	if err := sessionMigrationValidateAdmissionResult(tampered); err == nil {
+		t.Fatal("tampered target admission hash passed validation")
+	}
+	tamperedHash := sessionMigrationCanonicalRowsHash(entry, plan, []sessionMigrationRow{tampered}, "target", true, maps)
+	if sourceHash == tamperedHash {
+		t.Fatal("canonical parity concealed a tampered target admission hash")
+	}
+}
+
+func TestSessionMigrationCommittedAdmissionRequiresCompleteContract(t *testing.T) {
+	cases := []struct {
+		name string
+		row  map[string]string
+	}{
+		{name: "missing hash", row: map[string]string{"derived_admission_state": "committed"}},
+		{name: "missing result json", row: map[string]string{"derived_admission_state": "committed", "derived_result_hash": "hash"}},
+		{name: "missing versions", row: map[string]string{
+			"derived_admission_state": "committed", "derived_result_hash": "hash",
+			"source_revision": "revision", "derived_result_json": `{}`,
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := sessionMigrationValidateAdmissionResult(sessionMigrationTestRow(tc.row)); err == nil {
+				t.Fatal("incomplete committed admission contract was accepted")
+			}
+		})
+	}
+	if err := sessionMigrationValidateAdmissionResult(sessionMigrationTestRow(map[string]string{
+		"derived_admission_state": "pending",
+	})); err != nil {
+		t.Fatalf("noncommitted empty result changed behavior: %v", err)
+	}
+}
+
 func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *testing.T) {
 	tests := []struct {
 		table      string
@@ -359,10 +535,13 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 		{
 			table: "precise_memory_units",
 			target: map[string]string{
-				"id": "109", "unit_id": "target-unit", "evidence_excerpt": "Exact accepted evidence.", "lifecycle_state": "active", "source_turn_end": "8",
+				"id": "109", "unit_id": "target-unit", "memory_kind": "event", "memory_subtype": "arrival",
+				"payload_json": `{"actor":"Mina","summary":"Mina reached the gate."}`, "evidence_excerpt": "Exact accepted evidence.",
+				"lifecycle_state": "active", "admission_state": "committed", "review_state": "source_observed",
+				"visibility": "public", "epistemic_mode": "objective", "source_turn_end": "8",
 			},
 			wantID:     "precise_memory:target:target-unit",
-			wantText:   "Exact accepted evidence.",
+			wantText:   "kind: event\nsubtype: arrival\nactor: Mina\nsummary: Mina reached the gate.\nsource: Exact accepted evidence.",
 			wantSchema: "precise_memory_unit.v1",
 			wantTurn:   8,
 			turnKnown:  true,
@@ -375,8 +554,11 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 				t.Fatalf("%s vector plan missing", tc.table)
 			}
 			target := sessionMigrationTestRow(tc.target)
+			source := sessionMigrationTestRow(map[string]string{
+				plan.Vector.IDColumn: target.Values[plan.Vector.IDColumn].Text,
+			})
 			doc, ok := sessionMigrationExpectedVectorDocument(
-				7, tc.table, plan, sessionMigrationTestRow(map[string]string{}), target, "source", "target",
+				7, tc.table, plan, source, target, "source", "target",
 			)
 			if !ok {
 				t.Fatal("expected vector document was skipped")
@@ -394,6 +576,68 @@ func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *
 	}
 }
 
+func TestSessionMigrationExpectedVectorLedgerKeepsSourceKeyWhenTargetKeyChanges(t *testing.T) {
+	plan, ok := SessionMigrationExecutionPlanFor("memories")
+	if !ok || plan.Vector == nil {
+		t.Fatal("memories vector plan missing")
+	}
+	source := sessionMigrationTestRow(map[string]string{"id": "101"})
+	target := sessionMigrationTestRow(map[string]string{
+		"id": "501", "summary_json": `{"turn_summary":"Mina found the gate."}`, "evidence": `{}`,
+	})
+	doc, ok := sessionMigrationExpectedVectorDocument(7, "memories", plan, source, target, "source", "target")
+	if !ok {
+		t.Fatal("expected vector document was skipped")
+	}
+	if doc.ID != "memory:target:501" || doc.SourceRowID != "101" {
+		t.Fatalf("document ID/source ledger key = %q/%q, want target document and source row key", doc.ID, doc.SourceRowID)
+	}
+}
+
+func TestSessionMigrationPreciseVectorRequiresActiveSourceRevision(t *testing.T) {
+	active := sessionMigrationActiveSourceRevisions([]sessionMigrationRow{
+		sessionMigrationTestRow(map[string]string{"source_revision": "rev-active", "lifecycle_state": "active"}),
+		sessionMigrationTestRow(map[string]string{"source_revision": "rev-inactive", "lifecycle_state": "superseded"}),
+	})
+	if !sessionMigrationPreciseVectorSourceActive(
+		sessionMigrationTestRow(map[string]string{"source_revision": "rev-active"}), active,
+	) {
+		t.Fatal("active source revision was omitted")
+	}
+	if sessionMigrationPreciseVectorSourceActive(
+		sessionMigrationTestRow(map[string]string{"source_revision": "rev-inactive"}), active,
+	) {
+		t.Fatal("inactive source revision remained eligible for precise-memory migration indexing")
+	}
+}
+
+func TestSessionMigrationVectorEligibilityExcludesPerspectiveScopedArtifacts(t *testing.T) {
+	evidencePlan, _ := SessionMigrationExecutionPlanFor("direct_evidence_records")
+	privateEvidence := sessionMigrationTestRow(map[string]string{
+		"id": "102", "evidence_kind": "perspective_scoped_turn_excerpt",
+		"evidence_text": "Only Mira knows the key.", "repair_needed": "0", "tombstoned": "0",
+	})
+	if _, ok := sessionMigrationExpectedVectorDocument(
+		7, "direct_evidence_records", evidencePlan,
+		sessionMigrationTestRow(map[string]string{}), privateEvidence, "source", "target",
+	); ok {
+		t.Fatal("perspective-scoped direct evidence entered the migration vector ledger")
+	}
+
+	precisePlan, _ := SessionMigrationExecutionPlanFor("precise_memory_units")
+	privatePrecise := sessionMigrationTestRow(map[string]string{
+		"id": "109", "unit_id": "private-unit", "evidence_excerpt": "Only Mira knows the key.",
+		"lifecycle_state": "active", "admission_state": "committed", "review_state": "source_observed",
+		"visibility": "owner_private", "epistemic_mode": "known", "knowledge_holder_entity_id": "mira-id",
+	})
+	if _, ok := sessionMigrationExpectedVectorDocument(
+		7, "precise_memory_units", precisePlan,
+		sessionMigrationTestRow(map[string]string{}), privatePrecise, "source", "target",
+	); ok {
+		t.Fatal("perspective-scoped precise memory entered the migration vector ledger")
+	}
+}
+
 func TestSessionMigrationListVectorDocumentsReadsTransientTurnContext(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -404,21 +648,55 @@ func TestSessionMigrationListVectorDocumentsReadsTransientTurnContext(t *testing
 	if !ok || plan.Vector == nil {
 		t.Fatal("memories vector plan missing")
 	}
-	mock.ExpectQuery("(?s)SELECT ve.document_id.*t\\.`turn_index`.*FROM session_migration_vector_expected_ids").
+	mock.ExpectQuery("(?s)SELECT ve.document_id.*t\\.`turn_index`.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`id` AS CHAR\\) = arm.target_key").
 		WithArgs("id", int64(7), "memories").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"document_id", "source_session_id", "target_session_id", "target_key", "embedding",
 			"summary_json", "evidence", "place_wing", "place_room", "turn_index",
 		}).AddRow(
-			"memory:target:101", "source", "target", "101", "[0.1]",
+			"memory:target:501", "source", "target", "501", "[0.1]",
 			`{"turn_summary":"Mina found the gate."}`, `{}`, "", "", "4",
 		))
 	docs, err := sessionMigrationListVectorDocumentsForPlan(context.Background(), db, 7, "memories", plan)
 	if err != nil {
 		t.Fatalf("list vector documents: %v", err)
 	}
-	if len(docs) != 1 || !docs[0].ContextTurnKnown || docs[0].ContextTurnIndex != 4 {
+	if len(docs) != 1 || docs[0].SourceRowID != "501" || !docs[0].ContextTurnKnown || docs[0].ContextTurnIndex != 4 {
 		t.Fatalf("vector documents missing transient turn context: %#v", docs)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionMigrationListVectorDocumentsUsesVectorIDAlternateKey(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	plan, ok := SessionMigrationExecutionPlanFor("precise_memory_units")
+	if !ok || plan.Vector == nil || plan.PrimaryKey[0] == plan.Vector.IDColumn {
+		t.Fatal("precise memory vector alternate-key plan missing")
+	}
+	mock.ExpectQuery("(?s)arm.key_column_name = \\?.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`unit_id` AS CHAR\\) = arm.target_key").
+		WithArgs("unit_id", int64(7), "precise_memory_units").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"document_id", "source_session_id", "target_session_id", "target_key", "embedding",
+			"memory_kind", "memory_subtype", "payload_json", "evidence_excerpt", "lifecycle_state", "admission_state", "review_state", "visibility", "epistemic_mode", "knowledge_holder_entity_id",
+			"source_turn_end",
+		}).AddRow(
+			"precise_memory:target:target-unit", "source", "target", "target-unit", "",
+			"event", "arrival", `{"actor":"Mina","summary":"Mina reached the gate."}`, "Exact accepted evidence.", "active", "review_required", "needs_review", "public", "direct", nil,
+			"8",
+		))
+	docs, err := sessionMigrationListVectorDocumentsForPlan(context.Background(), db, 7, "precise_memory_units", plan)
+	if err != nil {
+		t.Fatalf("list vector documents: %v", err)
+	}
+	if len(docs) != 1 || docs[0].SourceRowID != "target-unit" ||
+		!strings.Contains(docs[0].DocumentText, "summary: Mina reached the gate.") {
+		t.Fatalf("alternate-key vector document mismatch: %#v", docs)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

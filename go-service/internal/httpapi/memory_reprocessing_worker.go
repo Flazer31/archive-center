@@ -36,6 +36,11 @@ type acceptedSourceDerivationResult struct {
 	AuditCriticFailure bool
 }
 
+type acceptedSourceDerivationOptions struct {
+	CreateCriticInputSnapshot bool
+	CommittedReplayOnly       bool
+}
+
 // StartMemoryWorkers starts the authority-owned reprocessing and vector-outbox
 // loop. It never starts for shadow/read-only stores and it persists no provider
 // credentials in either queue.
@@ -261,6 +266,22 @@ func (s *Server) processAcceptedSourceRevision(
 	extractionCfg completeTurnExtractionConfig,
 	createCriticInputSnapshot bool,
 ) acceptedSourceDerivationResult {
+	return s.processAcceptedSourceRevisionWithOptions(
+		ctx,
+		source,
+		extractionCfg,
+		acceptedSourceDerivationOptions{
+			CreateCriticInputSnapshot: createCriticInputSnapshot,
+		},
+	)
+}
+
+func (s *Server) processAcceptedSourceRevisionWithOptions(
+	ctx context.Context,
+	source *store.MemorySourceRevision,
+	extractionCfg completeTurnExtractionConfig,
+	options acceptedSourceDerivationOptions,
+) acceptedSourceDerivationResult {
 	var result acceptedSourceDerivationResult
 	if s == nil || s.Store == nil || source == nil {
 		result.State = "terminal"
@@ -291,35 +312,25 @@ func (s *Server) processAcceptedSourceRevision(
 	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
 	defer releaseSourceWorker()
 
-	extraction := map[string]any(nil)
-	if (source.DerivedAdmissionState == "committed" ||
-		source.DerivedAdmissionState == "staged") &&
-		source.DerivedAdmissionVersion == store.MemoryAdmissionContract &&
-		source.DerivedExtractorVersion == completeTurnCriticPipelineVersion &&
-		source.DerivedIndexVersion == memoryAdmissionIndexVersion &&
-		strings.TrimSpace(source.DerivedResultHash) != "" &&
-		strings.TrimSpace(source.DerivedResultJSON) != "" {
-		if err := json.Unmarshal([]byte(source.DerivedResultJSON), &extraction); err != nil || extraction == nil {
+	extraction, committedResult, committedFailure := storedMemoryAdmissionExtraction(source)
+	if committedResult {
+		if committedFailure != "" {
 			result.State = "retryable"
-			result.Failure = "committed_derived_result_invalid"
-			return result
-		}
-		if memoryAdmissionResultHash(
-			source.SourceRevision,
-			extraction,
-			store.MemoryAdmissionContract,
-			completeTurnCriticPipelineVersion,
-			memoryAdmissionIndexVersion,
-		) != source.DerivedResultHash {
-			result.State = "retryable"
-			result.Failure = "committed_derived_result_hash_mismatch"
+			result.Failure = committedFailure
 			return result
 		}
 		result.CriticTrace = map[string]any{
 			"stage":           source.DerivedAdmissionState + "_result_replay",
 			"source_revision": source.SourceRevision,
+			"stored_index":    source.DerivedIndexVersion,
+			"target_index":    memoryAdmissionIndexVersion,
 		}
 	} else {
+		if options.CommittedReplayOnly {
+			result.State = "terminal"
+			result.Failure = "committed_derived_result_missing"
+			return result
+		}
 		if !extractionCfg.Critic.hasConfig() {
 			result.State = "retryable"
 			result.Failure = "critic_config_missing"
@@ -340,7 +351,7 @@ func (s *Server) processAcceptedSourceRevision(
 				SourceRevision: source.SourceRevision,
 				SnapshotJSON:   source.CriticInputSnapshotJSON,
 				SnapshotHash:   source.CriticInputSnapshotHash,
-				Required:       !createCriticInputSnapshot,
+				Required:       !options.CreateCriticInputSnapshot,
 			},
 		)
 		result.CriticTrace = criticTrace
@@ -426,6 +437,45 @@ func (s *Server) processAcceptedSourceRevision(
 	}
 	result.State = "completed"
 	return result
+}
+
+// storedMemoryAdmissionExtraction validates the durable Critic result with
+// the exact versions that originally produced its hash. An index-version
+// change is therefore a projection replay, not permission to sample Critic
+// again. A committed or pending snapshot with corrupt material is a
+// present-but-invalid result and must never fall through to Critic.
+func storedMemoryAdmissionExtraction(source *store.MemorySourceRevision) (map[string]any, bool, string) {
+	if source == nil {
+		return nil, false, ""
+	}
+	state := strings.TrimSpace(source.DerivedAdmissionState)
+	if state != "committed" &&
+		!(state == "pending" && strings.TrimSpace(source.DerivedResultJSON) != "") {
+		return nil, false, ""
+	}
+	if source.DerivedAdmissionVersion != store.MemoryAdmissionContract ||
+		source.DerivedExtractorVersion != completeTurnCriticPipelineVersion {
+		return nil, false, ""
+	}
+	if strings.TrimSpace(source.DerivedIndexVersion) == "" ||
+		strings.TrimSpace(source.DerivedResultHash) == "" ||
+		strings.TrimSpace(source.DerivedResultJSON) == "" {
+		return nil, true, "committed_derived_result_incomplete"
+	}
+	var extraction map[string]any
+	if err := json.Unmarshal([]byte(source.DerivedResultJSON), &extraction); err != nil || extraction == nil {
+		return nil, true, "committed_derived_result_invalid"
+	}
+	if memoryAdmissionResultHash(
+		source.SourceRevision,
+		extraction,
+		source.DerivedAdmissionVersion,
+		source.DerivedExtractorVersion,
+		source.DerivedIndexVersion,
+	) != source.DerivedResultHash {
+		return nil, true, "committed_derived_result_hash_mismatch"
+	}
+	return extraction, true, ""
 }
 
 func (s *Server) recordMemoryReprocessingCriticFailure(

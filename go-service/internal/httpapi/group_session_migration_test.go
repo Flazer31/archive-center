@@ -891,6 +891,35 @@ func TestSessionMigrateReindexVoyageSeparatesLogicalTurnsAndHierarchyDocuments(t
 			{ID: 3, ChatSessionID: targetID, TurnIndex: 2, Role: "user", Content: "turn two user input"},
 			{ID: 4, ChatSessionID: targetID, TurnIndex: 2, Role: "assistant", Content: "turn two assistant output"},
 		},
+		memories: []store.Memory{
+			{
+				ID: 11, ChatSessionID: targetID, TurnIndex: 1,
+				SummaryJSON: mustCompactJSON(map[string]any{
+					"turn_summary":      "The public bell rang while Rowan learned the vault secret.",
+					"evidence_excerpts": []any{"The public bell rang.", "Mira privately said the vault was open."},
+					"belief_updates": []any{map[string]any{
+						"perspective_owner": "Rowan", "subject": "vault", "state_slot": "access", "value": "open",
+						"evidence_excerpt": "Mira privately said the vault was open.",
+					}},
+					"state_claims": []any{map[string]any{
+						"subject": "bell", "state_slot": "ringing", "value": true,
+						"evidence_excerpt": "The public bell rang.",
+					}},
+				}),
+				Evidence: mustCompactJSON(map[string]any{
+					"evidence_excerpts": []any{"The public bell rang.", "Mira privately said the vault was open."},
+				}),
+			},
+			{
+				ID: 12, ChatSessionID: targetID, TurnIndex: 2,
+				SummaryJSON: mustCompactJSON(map[string]any{
+					"turn_summary": "The public gate opened.",
+					"state_claims": []any{map[string]any{
+						"subject": "gate", "state_slot": "open", "value": true,
+					}},
+				}),
+			},
+		},
 		vectorDocs: candidates,
 		parityContext: &store.SessionMigrationVectorParityContext{
 			MigrationID: 72, TargetSessionID: targetID, ExpectedIDs: expectedIDs,
@@ -927,8 +956,8 @@ func TestSessionMigrateReindexVoyageSeparatesLogicalTurnsAndHierarchyDocuments(t
 		t.Fatalf("Voyage calls = %d, want two logical turns plus one hierarchy document: %#v", len(documents), documents)
 	}
 	wants := [][]string{
-		{"turn one user input", "turn one assistant output", "turn one memory", "turn one evidence"},
-		{"turn two user input", "turn two assistant output", "turn two memory"},
+		{"The public bell rang.", "turn one evidence"},
+		{"The public gate opened."},
 		{"hierarchy episode summary"},
 	}
 	for i, chunks := range documents {
@@ -946,6 +975,15 @@ func TestSessionMigrateReindexVoyageSeparatesLogicalTurnsAndHierarchyDocuments(t
 				if strings.Contains(joined, forbidden) {
 					t.Fatalf("document %d contains content from group %d: %#v", i, other, chunks)
 				}
+			}
+		}
+		for _, forbidden := range []string{
+			"turn one user input", "turn one assistant output",
+			"turn two user input", "turn two assistant output",
+			"vault", "Mira privately", "Rowan",
+		} {
+			if strings.Contains(joined, forbidden) {
+				t.Fatalf("document %d contains raw chat or private canonical content %q: %#v", i, forbidden, chunks)
 			}
 		}
 	}

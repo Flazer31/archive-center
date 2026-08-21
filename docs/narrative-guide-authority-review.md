@@ -9,20 +9,28 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 
 구조 정리: 2026-07-31
 
-버전 배정 정정: 2026-08-09
+버전 배정 정정: 2026-08-10
 
 - 3.9는 현재 bounded Publisher의 provider-neutral 오류 안정화에서 끝낸다.
 - 1.0의 단일 호출 `book_author + director` 역할과 coherent narrative-plan block은 4.0으로 이관한다.
 - 4.0은 `none/weak/medium/strong/extreme/maximum` 서사 강도와
   `compact/standard/explicit` 모델 입력 표현을 독립된 축으로 정의한다.
+- 기존 4.1 lifecycle·복구 범위는 4.0-H~N으로 합친다. 새 4.1은 기억 Locator·계층 탐색 후보다.
+- 4.3은 Archive 기억과 RisuAI 로어북·캐릭터·페르소나를 역할별 문맥으로 만들고,
+  감독관·나레이터에는 전체 배경 이야기와 공개 기억을, 연기자에는 배경 이야기와 해당
+  인물의 주관 기억을 제공한다.
+- 현재 Recomposer로 부르는 이름·역할명·packet 이름은 확정하지 않는다. 4.4~4.5는 단독형
+  별도 플러그인의 Archive Center 연동 전처리, 연동 요청의 Archive Publisher 자동 OFF,
+  메인 모델 1차 출력 이후 감독관·나레이터·연기자 협업과 후처리 최종문 lifecycle을 소유한다.
 - 4.9는 4.0 계약을 교체하지 않고 `directed/reviewed/deep` 다단계 검토와 검증된 capability 기반
   format 자동 선택만 확장한다.
-- 본문의 과거 3.9/4.9 배정 제안이 이 결정과 충돌하면 4.0 정본 로드맵과 이 정정을 우선한다.
+- 기존 4.3 이후 작업은 새 4.3 삽입에 따라 한 칸씩 이동해 5.0에서 끝난다. 본문의 과거 번호가 이 결정과 충돌하면
+  통합 로드맵과 각 정본 문서를 우선한다.
 
 범위: Archive Center 1.0(fix), 역사적 3.6 조사 기준선, 현재 3.8,
-3.9~4.1 기억·기본 출판사 packet, 4.6~5.0 모델 적응형 RP 출판·시뮬레이션,
-독립형 원작 DB·Recomposer의 버전 미배정 연동 경계, RisuAI 로어북 항목의 4.0 참조 검색
-색인 후보 적합성
+3.9~4.3 기억·기본 출판사 packet, 4.6~5.0 모델 적응형 RP 출판·시뮬레이션,
+독립형 원작 DB, 이름 미확정 별도 플러그인의 4.3~4.5 연동 경계, RisuAI 로어북 항목의 4.0 참조 검색
+계약
 
 비범위: 런타임 구현, 배포 패키지, 실제 RisuAI 품질 검증, 독립형 원작 DB 구현 및 특정 출시 버전 배정, RisuAI 로어북 대체·발동 엔진 재구현
 
@@ -54,23 +62,29 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 | 3.7 기준선 | 3.6 이월 항목의 재검증, 기억 품질·관찰성·오류 분류 안정화 | 4장, 10장의 3.7 packet |
 | 3.8 | 시간·현재/과거 상태·주관 지식과 인물별 관점 | 7장, 8.6의 시간·인식 계약, 10장의 3.8 packet |
 | 3.9 | 관계·습관·프로필과 bounded Publisher 오류 안정화 | 5장, 8.6, 10장의 3.9 packet |
-| 4.0 | 3.7-F 핵심 기억 K를 소비하는 복합 회상·최종 전달 증명, `book_author + director` 출판사 복구, 로어북 참조 검색 색인 후보 | 5~6장, 8.6의 회상 계약, 10장, 12장 |
-| 4.1 | 수정·삭제·리롤·분기·재색인·복구·실환경 lifecycle gate | 8.6, 10장, 13~14장 |
+| 4.0 | 3.7-F 핵심 기억 K를 소비하는 복합 회상·최종 전달 증명, `book_author + director` 출판사 복구, 선택형 로어북 참조 검색 | 5~6장, 8.6의 회상 계약, 10장, 12장 |
+| 4.1 | 기억 Locator·계층 탐색 후보 | 통합 로드맵과 4.1 정본 문서 |
+| 4.3 | 역할별 배경 이야기·공개 기억과 인물별 주관 기억 | 통합 로드맵과 4.3 정본 문서 |
+| 4.4~4.5 | 이름 미확정 별도 플러그인의 연동 전처리·Publisher 자동 OFF·역할 AI 후처리·최종문 lifecycle | 통합 로드맵과 4.3 정본 문서의 인계 계약 |
 | 4.6 | 실행 지원 기반 계약과 source-linked 관계·개체 graph·UI | 8.6, 10장 |
 | 4.7 | 인물·관계 실행 카드, 말투·지식·agency 투영 | 8장, 10장 |
 | 4.8 | 세계·세력·thread 시뮬레이션과 비강제 진행 지원 | 5장, 8장, 10장 |
 | 4.9 | 모델 능력 적응과 Recall Auditor→Director→Reviewer 고급 출판사 | 5장, 8장, 9장, 10장 |
 | 5.0 | output fidelity 사후 진단, 실사용 검증과 release closure | 8장, 10장 |
-| 버전 미배정 후속 | 독립형 원작 DB와 Recomposer 선택 연동 | 11장, 16장 |
+| 버전 미배정 후속 | 독립형 원작 DB | 11장 |
 
 버전 번호는 기능의 소유권과 선행 조건을 뜻한다. 뒤 버전의 아이디어를 앞 버전의
 핵심 범위에 끼워 넣거나, 앞 버전의 release gate를 뒤 버전이 대신 통과한 것으로
 해석하지 않는다.
 
 과거 단일 범위 초안에 임시로 붙어 있던 4.2~4.7 단계 번호는 더 이상 버전 배정이 아니다.
-그 주된 기능은 4.6~5.0에 위 표대로 재배치했다. 이 문서는 4.2~4.5를 새 기능으로
-소급 확정하지 않는다. 새 통합 인덱스의 Locator·정리·Recomposer 2단계안은 별도
-승인이 필요한 배정 후보이며, 승인 전까지 4.2~4.5는 미배정 구간이다.
+그 주된 기능은 4.6~5.0에 위 표대로 재배치했다. 새 통합 인덱스의 4.1 Locator와 4.2 정리는
+배정 후보이며, 4.3~4.5의 역할별 기억·별도 플러그인 전후처리 방향은 확정 계획이다.
+
+이 문서 아래의 과거 Recomposer 공동 사용안 가운데 Archive Center Publisher plan을
+별도 플러그인 전처리에 다시 전달하거나 같은 요청에서 둘을 fallback으로 교대시키는 설명은
+현재 4.3~4.5 방향에 의해 대체된다. 연동 전처리가 요청을 소유하면 Archive Center
+Publisher는 자동 OFF이고, 연동하지 않은 요청에서만 Archive Center Publisher가 동작한다.
 
 ## 1. 결론
 
@@ -106,14 +120,13 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 >
 > 핵심 연관 기억 K와 보조 기억·상태·주관 기억은 서로 다른 전달 레인으로 분리한다.
 
-Archive Center 출판사는 Recomposer 설치 여부와 관계없이 독립적으로 완성한다. 두 기능을
-함께 사용하는 턴에도 Archive Center Go는 기억·근거·서사 지침을 선별하고 검증된
-publisher plan을 확정하는 owner를 유지한다. Recomposer가 같은 턴의 위임을 수락한
-경우에는 publisher plan의 직접 주입을 중복하지 않는다. Recomposer Input Planner의
-통합 제안까지 Archive Center Go가 검증해 하나의 `effective_turn_contract`를 확정하고,
-Recomposer는 이를 그대로 materialize한 뒤 최종 prose를 검증해 반환한다. 이 위임은
-truth·canon·memory·relationship·thread·guidance 또는 prompt-assembly 권한의 이전이
-아니며, 한 턴에 서로 다른 두 계획을 적용하는 두 번째 출판 경로를 만들지 않는다.
+Archive Center 출판사는 별도 플러그인을 사용하지 않는 요청을 위해 독립적으로 완성한다.
+그러나 이름 미확정 별도 플러그인의 Archive 연동 전처리가 현재 요청을 소유하면 Archive
+Center Publisher 호출·plan·direct guidance는 자동으로 0이 된다. 플러그인은 Archive
+기억과 RisuAI 로어북·캐릭터·페르소나를 역할별 문맥으로 전처리하고, 메인 모델 1차 출력
+뒤에는 감독관·나레이터·연기자 AI 협업으로 최종문 하나를 만든다. 이때도 Archive Center는
+canonical truth·memory·relationship·thread·privacy와 최종 displayed-output admission
+권한을 유지하며, 같은 요청에 두 전처리 계획을 적용하지 않는다.
 
 3.9~5.0은 1.0의 감독을 그대로 복제하는 계획이 아니다. 3.9 Basic Publisher에서 먼저
 1.0의 체감 가능한 응답 구성 지원을 복구하고, 4.6~4.8의 정밀한 인물·관계·세계·인과
@@ -1911,8 +1924,8 @@ Publisher call 0은 이미 3.9 계약이며, 4.6 simulation support가 활성화
    세계 규칙 위반 검출
 5. 사후 결과가 memory·relation·thread를 직접 수정하지 못하도록 admission 재검증
 6. 공식 Host 보호 span과 draft 교체가 증명되기 전 자동 repair 활성화 금지
-7. Recomposer 연동은 선택 사항이며 Archive Center Publisher를 강제로 끄거나 5.0 완료
-   조건으로 만들지 않음
+7. 이름 미확정 별도 플러그인은 5.0 필수 의존성이 아니지만, 연동 전처리를 소유한 요청의
+   Archive Center Publisher는 자동 OFF하고 미사용 요청의 Publisher는 그대로 유지
 8. 서로 다른 capability profile의 OFF/ON 맹검, 첫 출력 채택·리롤·latency·cost·품질 측정
 9. OS·package·upgrade·fault·장기 session과 실제 RisuAI release evidence closure
 10. proactive stance는 별도 명시적 opt-in과 source-backed envelope가 있는 경우만 평가하며
@@ -2027,23 +2040,22 @@ Director는 본문에 직접 들어가는 짧은 핵심 기억 K만 보는 것�
 8. 연결 상태에서는 원작 DB의 직접 주입이 0이고 동일 원작 항목의 중복 주입도 0이다.
 9. 늦거나 stale인 원작 DB 응답과 본문에 함께 전달할 수 없는 감독 근거의 사용이 0이다.
 
-## 12. 4.0 recall·delivery 후보 packet — RisuAI 로어북 참조 검색 색인
+## 12. 4.0-G 계획 packet — RisuAI 로어북 참조 검색 색인
 
-이 절은 **현재 정본 로드맵에 승인된 구현 packet이 아니라, 로드맵 변경 승인이 필요한
-4.0 후보**다. 정밀 장기 기억 로드맵이 폐기한 전체 lorebook reader·DB/Chroma mirror를
-이 문서 하나로 되살리지 않는다. 구현을 승인한다면 먼저 정본 로드맵에 좁은 read-only
-reference lane, 소유권, 4.1 lifecycle gate와 중단 조건을 함께 반영해야 한다.
+상태: `source_implemented_regression_verified_live_gate_pending`
 
-승인할 경우 권장 위치는 3.8이나 3.9의 주기능이 아니라 **4.0 recall·delivery packet**이다.
+이 절은 정본 4.0 로드맵의 `4.0-G`가 채택되기 전 작성된 후보 검토를 현재 계약과 구현 경계에
+맞게 정정한다. 2026-08-12 현재 G-1~G-6 source 구현과 자동 회귀는 통과했고 G-7의 실제
+loaded RisuAI/PocketRisu·MariaDB·패키지 검증은 남아 있다. 과거의 전체 lorebook reader나 RisuAI
+발동 엔진 복제안을 되살리지 않고, 좁은 read-only reference lane만 허용한다.
+
+배치 위치는 3.8이나 3.9의 주기능이 아니라 **4.0 recall·delivery packet**이다.
 3.8의 시간·상태·주관 지식과 3.9의 관계·습관·profile을 밀어내지 않는다. 3.9까지 확정된
 stable entity와 session scope를 소비하고, 4.0에서 검색·선별·중복 제거·최종 전달을 구현한
-뒤 4.1의 수정·삭제·분기·재색인·실환경 lifecycle gate로 닫는 순서가 맞다.
+뒤 같은 4.0 안에서 수정·삭제·모듈 전환·부분 관찰·재색인·실환경 lifecycle gate로 닫는다.
+기능을 끈 사용자의 4.0 core 완료를 막지는 않는다.
 
-이 절의 “허용·구현·필수” 표현은 모두 **정본 로드맵 변경이 승인되고 해당 기능을
-활성화한 뒤에만** 적용한다. 승인 전에는 구현 packet·공통 release gate·현재 기능으로
-해석하지 않는다.
-
-승인 시 허용할 기능은 다음 한 문장으로 제한한다.
+현재 계획에서 허용할 기능은 다음 한 문장으로 제한한다.
 
 > RisuAI 로어북은 계속 원본 작성·활성화·native 주입을 소유한다. Archive Center는 사용자
 > 동의하에 항목별 읽기 전용 사본과 검색 색인을 유지하고, 현재 scope에서 관련된 항목을
@@ -2051,8 +2063,9 @@ stable entity와 session scope를 소비하고, 4.0에서 검색·선별·중복
 
 ### 공식 RisuAI 기준과 현재 관찰 한계
 
-검토 기준은 2026-07-31의 공식 RisuAI `main`
-`da9c514017dc254795bf5c306da5225a65791da4`다.
+검토 기준은 2026-08-12의 공식 RisuAI `main`
+`72ce721878d65b09baf4339638dfd221d1788261`과 PocketRisu
+`85a65f3137b45c8de4a8d21a9887be213b1ac3fc`다.
 
 - `plugins.md`의 API v3는 사용자 DB 접근 동의 후 `characters`, `modules`,
   `enabledModules`, `moduleIntergration`(공식 필드 철자)을 선택적으로 읽을 수 있다.
@@ -2065,8 +2078,15 @@ stable entity와 session scope를 소비하고, 4.0에서 검색·선별·중복
 - 공식 `beforeRequest` payload는 최종 system text는 보여도 그 span의 정확한 lorebook
   entry ID·scope·revision·activation을 일반적으로 제공하지 않는다. 현재 Archive Center의
   `prepare_turn_host_context.go`도 이 값들을 `not_exposed`로 유지한다.
-- 현재 `Archive Center.js`의 DB 선택 읽기는 persona 범위만 사용한다. 로어북 catalog
-  수집·동기화·검색은 아직 구현되지 않았다.
+- 현재 `Archive Center.js`는 공식 현재 로어북 snapshot과 character/chat/module 관찰값만
+  backend에 전달한다. 별도 MariaDB snapshot 수명주기, exact/key/lexical 검색, 최종 표시
+  중복 억제와 별도 참조 lane은 Go가 소유한다. 선택적 semantic 검색과 실환경 gate는 아직
+  활성화·검증되지 않았다.
+- `getCurrentLorebookEntries()`는 character global, current-chat local, enabled-module 원본을
+  합친 snapshot이며 native activation과 token budget 적용 결과가 아니다. 합쳐진 결과에서
+  항목별 출처를 확정할 수 없으면 내용을 보고 scope를 추측하지 않는다.
+- 양쪽 공통 API에는 lorebook edit/delete, character/chat 전환, enabled-module 변경 event가
+  없다. RisuAI `output` listener는 모델 출력 완료 신호일 뿐 로어북 변경 신호가 아니다.
 
 따라서 “DB에서 항목을 읽을 수 있다”와 “RisuAI가 이번 요청에서 그 항목을 발동했다”를
 같은 사실로 취급하지 않는다. activation이 노출되지 않으면 추측하지 않고
@@ -2075,7 +2095,7 @@ stable entity와 session scope를 소비하고, 4.0에서 검색·선별·중복
 ### 기존 폐기 경로와의 구분
 
 정밀 장기 기억 로드맵이 폐기한 것은 전체 로어북 reader·DB/Chroma mirror와 RisuAI activation
-재구현이다. 이 금지는 그대로 유지한다. 로드맵 변경 승인 시 허용할 수 있는 것은 다음의
+재구현이다. 이 금지는 그대로 유지한다. 현재 4.0-G에서 허용하는 것은 다음의
 더 좁은 경로다.
 
 | 허용 | 계속 금지 |
@@ -2097,7 +2117,9 @@ store로 아래 lifecycle을 표현할 수 없는지 먼저 감사한 뒤 결정
 항목별 최소 필드는 다음과 같다.
 
 - host/save identity와 관찰 contract version;
-- `scope_kind`: `character_global`, `chat_local`, `enabled_module`;
+- `scope_kind`: `character_global`, `chat_local`, `enabled_module`; 합쳐진 공식 snapshot에서
+  항목별 출처를 확정할 수 없으면 `current_host_aggregate`이며 내용을 보고 세 범위 중 하나로
+  추측하지 않음;
 - character ID, chat ID, module ID와 host entry ID. 노출되지 않은 ID는 생성해 사실처럼
   사용하지 않음;
 - 원본 key·second key·comment·content·mode·regex/selective/always-active와 보존할
@@ -2120,7 +2142,7 @@ store로 아래 lifecycle을 표현할 수 없는지 먼저 감사한 뒤 결정
 
 1. declared key·entry ID·정확 문구;
 2. comment·key·content의 lexical/full-text 검색;
-3. 필요성과 품질 이득이 증명된 경우에만 embedding semantic 후보;
+3. exact·lexical 결과가 현재 요구를 충분히 지원하지 못할 때 선택적 embedding semantic 후보;
 4. Go hydration 뒤 현재 revision·scope·lifecycle·privacy·중복 검증;
 5. `search_candidate`와 실제 전달 `selected/delivered`를 분리해 trace.
 
@@ -2130,6 +2152,8 @@ relationship 또는 Director 권한을 올리지 않는다. 기존 vector abstra
 있어도 메인 memory·원작 Canon과는 별도 논리 lane과 필수 metadata filter를 가진다. 물리
 collection을 공유할지 분리할지는 누락 filter를 제거·반전하면 실패하는 시험과 실제 query
 plan·latency를 본 뒤 결정하며, unfiltered cross-lane query는 금지한다.
+고정 개수나 고정 문자량을 채우기 위한 semantic filler는 만들지 않고, 하나의 고정 유사도
+값으로 모든 후보를 일괄 제거하지 않는다. semantic 장애 시 exact·lexical 결과는 보존한다.
 
 ### 검색 상태와 전달 모드
 
@@ -2137,7 +2161,7 @@ plan·latency를 본 뒤 결정하며, unfiltered cross-lane query는 금지한�
 |---|---|---|
 | `catalog_current` | 현재 consented snapshot에서 항목을 읽음 | scope 안에서 검색 후보가 될 수 있음 |
 | `search_candidate` | 현재 질의와 관련성이 있음 | Explorer·trace 또는 Go 선별 입력; 아직 주입 아님 |
-| `native_present_observed` | actual payload에 동일 span/hash가 관찰됨 | 같은 텍스트의 중복 전달 억제; 모호하면 특정 entry ID로 귀속하지 않음 |
+| `native_present_observed` | actual payload에 정규화 후 동일한 전체 본문이 관찰됨 | Archive 로어북 참조의 반복 표시만 억제; 모호하면 특정 entry ID로 귀속하지 않음 |
 | `activation_unknown` | Host가 발동 여부를 노출하지 않음 | native active라고 표시하거나 발동 복제하지 않음 |
 | `stale/deleted` | 현재 revision에서 무효가 검증됨 | current 검색·전달 제외, 감사 이력만 유지 |
 
@@ -2158,7 +2182,30 @@ cutover 단계다.
   Director 지휘 근거가 아니다.
 - RisuAI가 이미 actual payload에 넣은 동일 항목은 Archive Center가 다시 주입하지 않는다.
 - index·DB·embedding 장애, 접근 거부와 계약 불일치는 RisuAI native lorebook과 메인 기억
-  요청을 그대로 보존하고 해당 reference lane만 fail-open한다.
+  요청을 그대로 보존하고 해당 reference lane만 중단한다. 장애를 후보 확대나 다른 scope
+  stale 자료 사용으로 보완하지 않는다.
+
+### 기억·native 로어북과의 최종 전달 경계
+
+로어북 참조와 Archive 기억은 저장·검색·후보 단계에서 서로 제거하지 않는다. 핵심 기억과
+기타 기억의 최종 전달 계획을 먼저 확정한 뒤에만 Archive 로어북 참조의 반복 표시를 줄인다.
+
+- CRLF/LF, 본문 앞뒤 공백과 연속 공백만 정규화한 전체 본문이 같거나, 같은 Host entry의 같은
+  revision임이 확인되거나, 로어북 전체 본문이 actual payload에 그대로 있을 때만 확정
+  중복으로 인정한다.
+- Vector 유사도, 이름·key 일치, 일부 문장 겹침과 비슷한 요약만으로 제거하지 않는다.
+- actual payload에 동일 본문이 있으면 Archive 로어북 참조만 생략한다.
+- 실제 delivered 기억과 확실히 같으면 기억을 남기고 Archive 로어북 참조만 생략한다.
+- current state·현재 관계·위치·소유 상태와 로어북 기본값의 충돌은 중복이 아니다. 최신
+  accepted 기억을 남기며, 주관 기억도 객관 설정과 비슷하다는 이유로 생략하지 않는다.
+- 판단이 모호하면 둘 다 유지한다. 하나를 생략하기 전에 다른 하나의 실제 payload 전달을
+  확정하며, 둘 다 없어지는 결과를 금지한다.
+- 중복 억제는 현재 요청의 표시만 줄이고 원본 snapshot, memory, evidence, relation, entity와
+  subjective-memory 행을 수정·삭제하지 않는다.
+
+핵심 기억을 먼저 확정하고 로어북 참조는 남은 전체 보조 입력 문자 예산을 사용하는 별도
+lane에 둔다. 핵심 기억 K를 소비하거나 밀어내지 않고, 별도 lane도 전체 모델 입력 상한에서는
+면제하지 않는다. 고정 개수·고정 chars를 채우지 않는다.
 
 ### Host/backend 소유권
 
@@ -2169,9 +2216,11 @@ activation 판정, ranking, stale/delete 판정, 예산, 중복 제거와 prompt
 
 Go는 snapshot 검증, hash/revision, MariaDB lifecycle, 검색·색인, scope hard filter,
 candidate/selected/delivered 상태, native overlap, 예산과 최종 delivery plan을 소유한다.
-RisuAI API가 항목 수정 event나 완전 snapshot을 제공하지 않으면 첫 구현은 수동 동기화와
-명시적 character/chat/module 전환 관찰로 제한하고, 관찰되지 않은 삭제를 polling 추측으로
-보완하지 않는다.
+공통 공식 변경 event가 없으므로 snapshot 갱신은 첫 활성화·현재 범위 snapshot 부재·사용자
+수동 새로고침·관찰된 character/chat index 변경·동의를 받아 읽은 enabledModules 집합 변경·
+명시적 복구/재색인으로 제한한다. 같은 범위 안의 edit/delete는 수동 새로고침으로 갱신한다.
+일반 턴은 MariaDB만 검색하고 Host 전체 로어북을 다시 읽지 않는다. 관찰되지 않은 삭제를
+polling, DOM 감시나 `output` listener로 추측하지 않는다.
 
 ### 버전 배치와 수용 판단
 
@@ -2179,14 +2228,14 @@ RisuAI API가 항목 수정 event나 완전 snapshot을 제공하지 않으면 �
 |---|---|
 | 3.8 | 새 로어북 기능을 넣지 않음. time·state·perspective의 기존 source/authority gate 보존 |
 | 3.9 | stable entity와 character/chat/module scope를 검색 filter가 소비할 수 있게 함. lore를 profile·relation evidence로 자동 승격하지 않음 |
-| 4.0 | 항목 snapshot admission·hash/revision, exact/lexical search, optional semantic index, Explorer, 별도 reference delivery와 native dedupe |
-| 4.1 | entry edit·delete·module disable/전환·reroll·branch·copy·restart·reindex, 접근 거부·부분 관찰·실제 RisuAI/MariaDB/Chroma 장애의 live parity |
+| 4.0 | 항목 snapshot admission·revision, exact/lexical search, optional semantic index, Explorer, 별도 reference delivery, native/기억 중복 경계, entry edit·delete·module 전환·부분 관찰·restart·reindex와 실제 RisuAI/PocketRisu lifecycle gate |
+| 4.1 | 4.0 로어북 기능을 확장하지 않음. 4.0의 검증된 read-only 결과를 다른 4.1 기능이 필요할 때만 소비 |
 
-따라서 승인한다면 이 기능은 3.8~4.0 사이에 분산해 각각의 핵심 작업을 흐리는 기능이
-아니라, 3.8·3.9의 identity/scope 결과를 소비하는 **4.0의 독립 recall packet**으로 두는
-것이 적절하다. 승인 전 상태는 `candidate_requires_roadmap_amendment`다. 승인 후에도
-문서·schema·검색 fixture만으로 완료하지 않고 4.1 lifecycle·loaded-artifact 검증 전에는
-`implemented_unverified`를 넘지 않는다.
+따라서 이 기능은 3.8~4.0 사이에 분산하지 않고, 3.8·3.9의 identity/scope 결과를 소비하는
+**4.0의 독립 recall packet**으로 둔다. 현재 상태는
+`source_implemented_regression_verified_live_gate_pending`이다. source·schema·검색 fixture와
+자동 회귀만으로 완료하지 않고 loaded RisuAI/PocketRisu·실제 MariaDB·패키지 lifecycle 검증
+전에는 완료로 표시하지 않는다.
 
 ## 13. 공통 필수 회귀·품질 시험
 
@@ -2211,7 +2260,7 @@ RisuAI API가 항목 수정 event나 완전 snapshot을 제공하지 않으면 �
 - degraded에서 raw chat·전체 node·무관련 child·stale cache filler 0
 - selected·delivered·co-fired·response-similar 변화만으로 canonical row·importance·lifecycle 변화 0
 
-### [조건부: 정본 로드맵 승인·기능 활성화] 로어북 참조 검색
+### [기능 활성화 시] 4.0-G 로어북 참조 검색
 
 - character global, chat local, enabled module의 동일 key·동일 content가 서로 다른 scope와
   provenance로 보존되고 현재 scope 밖 항목 전달 0
@@ -2224,13 +2273,20 @@ RisuAI API가 항목 수정 event나 완전 snapshot을 제공하지 않으면 �
 - semantic 검색은 lexical miss의 관련 후보를 보완하지만 native activation·truth·priority·
   knowledge·relationship 권한을 올리지 않음
 - actual payload에 이미 존재하는 lore span과 Archive Center reference의 중복 본문 전달 0
+- 실제 delivered 기억과 확정 중복인 Archive reference의 반복 표시는 0이지만 memory 원본과
+  delivered 기억은 그대로 유지
+- 부분 문장·이름·Vector 유사도만으로 기억이나 reference를 제거하는 경우 0
+- 중복 억제 뒤 기억과 로어북 참조가 모두 payload에서 사라지는 경우 0
+- accepted current state·현재 관계·주관 기억을 로어북 기본값과 비슷하다는 이유로 제거 0
 - `activation_unknown` 항목을 native active로 표시하거나 RisuAI scan/decorator/probability
   결과를 재계산하는 경우 0
 - `search_only`에서 prompt·Supervisor·Director로 전달되는 lorebook text 0
-- `reference_assist`에서 selected/delivered ref와 실제 payload span/hash가 일치하고
+- `reference_assist`에서 selected/delivered ref와 실제 payload의 정규화한 전체 본문·source ref가 일치하고
   미전달 candidate를 Director가 사용하는 경우 0
 - lorebook index·DB·embedding 장애가 핵심 기억 K, current input, RisuAI native lorebook과
   본문 응답을 차단하거나 delivered 집합을 확대하는 경우 0
+- 일반 턴마다 Host 전체 로어북을 다시 읽거나 `output` listener·DOM·polling을 변경 신호로
+  사용하는 경우 0
 
 ### 연속성·시간·계층 선택
 
@@ -2562,18 +2618,14 @@ GPT 하위 에이전트 4개가 다음 역할로 독립 검토했다.
   response/scene 범위 focus lease만 둔다. `explicit_redirection`은 같은 요청에서 이전
   focus와 의존 plan을 해제하며, 한 thread의 해결은 global closure로 전파하지 않는다.
 
-### 이견 D — Recomposer와 출판사를 함께 사용할 때 무엇을 위임할 것인가
+### 이견 D — 별도 플러그인과 출판사의 전처리 소유권
 
-- 한쪽: 충돌을 피하려면 Recomposer가 인식된 턴의 Archive Center 출판사를 전부 꺼야 한다.
-- 다른 쪽: 그러면 Recomposer를 쓰지 않는 사용자에게 필요한 독립 출판사 강화뿐 아니라
-  공동 사용 시 Recall Auditor·Director·Reviewer의 기억 누락·방향 검토 기여도 사라진다.
-- 또 다른 위험은 두 시스템이 각자 plan을 직접 주입해 두 계약·중복 지시·불명확한
-  fallback을 만드는 것이다.
-- 합의: Archive Center는 publisher execution과 사실·기억·지침 권한을 유지한다.
-  Recomposer가 같은 요청의 plan을 검증해 단일 `effective_turn_contract`를 실제
-  materialize한 턴에만 guidance 직접 적용권과 proof 이후 final prose 반환권을
-  Recomposer에 위임한다. 실패는 부분 결과를 버리고 동일 plan의 Archive fallback 또는
-  그 plan을 실제로 받은 `draft_zero`로 원자적으로 복귀한다.
+- 별도 플러그인이 전처리를 소유한 요청에서 Archive Center Publisher까지 실행하면 두 계획과
+  중복 지시가 생긴다.
+- 플러그인을 사용하지 않는 요청에는 Archive Center의 독립 출판사가 필요하다.
+- 현재 합의: 연동 전처리가 요청을 소유하면 Archive Center Publisher를 자동 OFF한다.
+  연동하지 않은 요청에서만 Archive Center Publisher를 사용한다. Archive 기억 검색과
+  privacy·authority는 Publisher와 별개이므로 연동 요청에서도 유지한다.
 
 전체 합의:
 
@@ -2678,8 +2730,8 @@ GPT 하위 에이전트 4개가 다음 역할로 독립 검토했다.
 - 3.8은 story-time·상태·관점 좌표, 4.0은 질문별 temporal anchor와 복합 recall,
   4.1은 mutation·rollback·rebuild·live gate, 4.6은 관계 graph·UI를 소유하도록
   중복 귀속을 제거했다.
-- 로어북 참조 색인은 정본 로드맵을 자동 변경하는 확정 4.0 기능이 아니라,
-  명시적 로드맵 변경 승인이 필요한 좁은 read-only 후보로 낮췄다.
+- 초기 검토에서 좁은 read-only 후보로 제한했던 로어북 참조 색인은 이후 정본 로드맵의
+  선택형 `4.0-G` 계획 packet으로 채택했다. 구현·실사용 검증 전에는 완료로 표시하지 않는다.
 - 다층 감독의 성공 조건은 호출 수가 아니라 role별 독립 기여다. ablation에서 누락 감소,
   무근거 지시 차단 또는 의도 충돌 검출이 증명되지 않으면 `deep`을 기본화하지 않는다.
 
@@ -2707,12 +2759,17 @@ GPT 하위 에이전트 4개가 권한 구조, 실패·보안 시험, source-vs-
 
 최종 합의:
 
-> 둘을 같이 쓰는 것이 최고 품질 목표이지만, “함께 사용”은 호출 결과를 겹쳐 넣는다는
-> 뜻이 아니다. Archive Center의 장기 기억·권한 기반 publisher plan을 Recomposer의
-> 전처리 계약과 후처리 재작성에 한 번만 연결하고, 실패하면 사용자가 실제로 받은
-> guided draft 또는 Archive direct plan으로 돌아가는 단일 소유권 체인을 뜻한다.
+> 함께 사용한다는 것은 Archive Center 기억과 RisuAI Host 문맥을 별도 플러그인의 역할별
+> 전처리에 연결한다는 뜻이다. 이 요청에서는 Archive Center Publisher를 자동 OFF하고,
+> 메인 모델의 1차 출력 뒤 감독관·나레이터·연기자 AI가 최종문 하나를 만든다.
 
-## 16. 버전 미배정 후속 B — Standalone Recomposer와 Archive Center 출판사 공동 사용 계약
+## 16. 폐기된 과거안 — Standalone Recomposer와 Archive Center 출판사 공동 사용 계약
+
+> 이 절은 과거 비교 근거를 남기기 위한 기록이다. Archive Center publisher plan을 별도
+> 플러그인에 넘기거나 두 전처리를 fallback으로 교대하는 아래 설계는 현재 4.3~4.5 계획이
+> 아니다. 현재 정본은 이 문서 12~24행과
+> [`3.9-5.0-integrated-roadmap.md`](3.9-5.0-integrated-roadmap.md),
+> [`4.3-character-subjective-memory-story-context-roadmap.md`](4.3-character-subjective-memory-story-context-roadmap.md)다.
 
 ### 목표
 

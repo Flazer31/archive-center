@@ -545,7 +545,7 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"model":"gpt-test","choices":[{"message":{"content":"ok"}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"gpt-5-test","choices":[{"message":{"content":"ok"}}]}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -554,7 +554,7 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 	req := dto.ProxyPluginMainRequest{
 		APIKey:              strPtr("sk-test"),
 		Endpoint:            strPtr("https://api.example.com/v1"),
-		Model:               strPtr("gpt-test"),
+		Model:               strPtr("gpt-5-test"),
 		Provider:            strPtr("openai"),
 		Messages:            []any{map[string]any{"role": "user", "content": "ping"}},
 		MaxTokens:           int64Ptr(5),
@@ -565,7 +565,7 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 	if err != nil {
 		t.Fatalf("performProxyPluginMain error: %v", err)
 	}
-	if status != http.StatusOK || resp["model"] != "gpt-test" {
+	if status != http.StatusOK || resp["model"] != "gpt-5-test" {
 		t.Fatalf("unexpected response status=%d resp=%+v", status, resp)
 	}
 	if calls != 2 {
@@ -600,7 +600,7 @@ func TestProxyOpenAILikeReasoningFallbackRespectsZeroRetryBudget(t *testing.T) {
 	req := dto.ProxyPluginMainRequest{
 		APIKey:              strPtr("sk-test"),
 		Endpoint:            strPtr("https://api.example.com/v1"),
-		Model:               strPtr("gpt-test"),
+		Model:               strPtr("gpt-5-test"),
 		Provider:            strPtr("openai"),
 		Messages:            []any{map[string]any{"role": "user", "content": "ping"}},
 		MaxTokens:           int64Ptr(5),
@@ -998,6 +998,7 @@ func TestProxyClaudePromptCacheModesAndUsageTrace(t *testing.T) {
 					Body: io.NopCloser(strings.NewReader(`{
 						"model":"claude-test",
 						"content":[{"type":"text","text":"ok"}],
+						"stop_reason":"max_tokens",
 						"usage":{
 							"input_tokens":21,
 							"output_tokens":3,
@@ -1026,6 +1027,10 @@ func TestProxyClaudePromptCacheModesAndUsageTrace(t *testing.T) {
 				usage["cache_read_input_tokens"] != float64(8) ||
 				usage["service_tier"] != "standard" {
 				t.Fatalf("normalized Claude usage missing raw fields: %+v", usage)
+			}
+			metadata := mapFromAny(resp[proxyResponseMetadataKey])
+			if metadata["termination_kind"] != "length" || intFromAny(metadata["input_tokens"], 0) != 21 || intFromAny(metadata["output_tokens"], 0) != 3 {
+				t.Fatalf("normalized Claude response metadata=%+v", metadata)
 			}
 			trace := mapFromAny(resp["_proxy_request_overrides"])
 			if trace["provider"] != "claude" ||
@@ -1246,7 +1251,7 @@ func TestProxyClaudePromptCacheWrongVertexProviderFailsBeforeOAuthExchange(t *te
 	}
 }
 
-func TestProxyGLM52SendsReasoningEffortWithThinkingEnabled(t *testing.T) {
+func TestProxyGLM52UsesDocumentedThinkingToggleWithoutReasoningEffort(t *testing.T) {
 	oldClient := proxyHTTPClient
 	var upstreamBody map[string]any
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1282,8 +1287,8 @@ func TestProxyGLM52SendsReasoningEffortWithThinkingEnabled(t *testing.T) {
 	if thinking["type"] != "enabled" {
 		t.Fatalf("GLM-5.2 thinking = %+v, want enabled", upstreamBody["thinking"])
 	}
-	if upstreamBody["reasoning_effort"] != "max" {
-		t.Fatalf("GLM-5.2 reasoning_effort = %v, want max; body=%+v", upstreamBody["reasoning_effort"], upstreamBody)
+	if _, ok := upstreamBody["reasoning_effort"]; ok {
+		t.Fatalf("GLM-5.2 request should not send undocumented reasoning_effort: %+v", upstreamBody)
 	}
 }
 
@@ -1328,6 +1333,537 @@ func TestProxyGLM52ReasoningNoneDisablesThinking(t *testing.T) {
 	}
 }
 
+func TestProxyOllamaDeepSeekV4ReasoningRequestUsesModelContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		effort     string
+		wantEffort string
+		wantTokens float64
+	}{
+		{name: "high", effort: "high", wantEffort: "high", wantTokens: 11873},
+		{name: "max", effort: "max", wantEffort: "max", wantTokens: 11873},
+		{name: "none", effort: "none", wantEffort: "none", wantTokens: 4096},
+		{name: "stored medium", effort: "medium", wantEffort: "high", wantTokens: 11873},
+		{name: "stored xhigh", effort: "xhigh", wantEffort: "max", wantTokens: 11873},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			upstreamCalls := 0
+			var upstreamBody map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				if r.URL.Path != "/v1/chat/completions" {
+					t.Fatalf("Ollama request path=%q want /v1/chat/completions", r.URL.Path)
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &upstreamBody); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"deepseek-v4-flash:0731-cloud","choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			preset := "auto"
+			budget := int64(7777)
+			req := dto.ProxyPluginMainRequest{
+				APIKey:                strPtr("ollama-test"),
+				Endpoint:              strPtr("http://127.0.0.1:11434"),
+				Model:                 strPtr("deepseek-v4-flash:0731-cloud"),
+				Provider:              strPtr("ollama"),
+				Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+				MaxTokens:             int64Ptr(5),
+				MaxCompletionTokens:   int64Ptr(4096),
+				ReasoningPreset:       &preset,
+				ReasoningEffort:       &tt.effort,
+				ReasoningBudgetTokens: &budget,
+				BudgetTokens:          &budget,
+			}
+			if _, status, err := performProxyPluginMain(context.Background(), req); err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			if upstreamCalls != 1 {
+				t.Fatalf("upstreamCalls = %d, want exactly 1", upstreamCalls)
+			}
+			if upstreamBody["model"] != "deepseek-v4-flash:0731-cloud" {
+				t.Fatalf("model = %v, want exact entered model name", upstreamBody["model"])
+			}
+			if _, ok := upstreamBody["thinking"]; ok {
+				t.Fatalf("Ollama OpenAI-compatible request should not receive DeepSeek-native thinking: %+v", upstreamBody)
+			}
+			if upstreamBody["reasoning_effort"] != tt.wantEffort {
+				t.Fatalf("reasoning_effort = %v, want %q; body=%+v", upstreamBody["reasoning_effort"], tt.wantEffort, upstreamBody)
+			}
+			if upstreamBody["max_tokens"] != tt.wantTokens {
+				t.Fatalf("max_tokens = %v, want %v; body=%+v", upstreamBody["max_tokens"], tt.wantTokens, upstreamBody)
+			}
+			for _, forbidden := range []string{"max_completion_tokens", "reasoning_budget_tokens", "budget_tokens"} {
+				if _, ok := upstreamBody[forbidden]; ok {
+					t.Fatalf("DeepSeek V4 request unexpectedly included %q: %+v", forbidden, upstreamBody)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyReasoningFamilyUsesModelBeforeProviderDefault(t *testing.T) {
+	tests := []struct {
+		model string
+		want  string
+	}{
+		{model: "deepseek-v4-flash:0731-cloud", want: "deepseek_v4"},
+		{model: "gemini-3-pro", want: "gemini"},
+		{model: "glm-5.2", want: "glm"},
+		{model: "anthropic/claude-4.1-opus", want: "claude"},
+		{model: "gpt-5-mini", want: "gpt"},
+		{model: "gpt-5.2", want: "gpt"},
+		{model: "gpt-5.6-sol", want: "gpt"},
+		{model: "qwen3:480b-cloud", want: "ollama_thinking"},
+	}
+	for _, tt := range tests {
+		if got := proxyReasoningFamily("ollama", "auto", tt.model, "http://127.0.0.1:11434"); got != tt.want {
+			t.Fatalf("model %q family = %q, want %q", tt.model, got, tt.want)
+		}
+	}
+	if got := proxyReasoningFamily("ollama", "auto", "gpt-oss:20b", "http://127.0.0.1:11434"); got != "ollama_thinking" {
+		t.Fatalf("Ollama thinking model family = %q, want ollama_thinking", got)
+	}
+	if got := proxyReasoningFamily("custom", "auto", "unverified-model", "https://example.invalid/v1"); got != "none" {
+		t.Fatalf("unknown custom model family = %q, want none", got)
+	}
+}
+
+func TestProxyOllamaReasoningUsesOpenAICompatibleTransportForDetectedModels(t *testing.T) {
+	tests := []struct {
+		name            string
+		model           string
+		effort          string
+		glmThinkingType string
+		wantEffort      string
+		wantMaxTokens   float64
+	}{
+		{name: "GLM enabled", model: "glm-5.2", effort: "enable", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GLM disabled", model: "glm-5.2", effort: "disable", wantEffort: "none", wantMaxTokens: 4096},
+		{name: "GLM explicit disabled", model: "glm-5.2", effort: "enable", glmThinkingType: "disabled", wantEffort: "none", wantMaxTokens: 4096},
+		{name: "Gemini", model: "gemini-3-pro", effort: "medium", wantEffort: "medium", wantMaxTokens: 4096},
+		{name: "Claude", model: "claude-sonnet-4-6", effort: "high", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GPT 5.6", model: "gpt-5.6-sol", effort: "max", wantEffort: "max", wantMaxTokens: 4096},
+		{name: "GPT 5 baseline minimal unsupported by Ollama wire", model: "gpt-5", effort: "minimal", wantMaxTokens: 5},
+		{name: "GPT 5.5 xhigh unsupported by Ollama wire", model: "gpt-5.5", effort: "xhigh", wantMaxTokens: 5},
+		{name: "unknown future Gemini", model: "gemini-4-pro", effort: "high", wantMaxTokens: 5},
+		{name: "unknown Claude", model: "claude-unversioned", effort: "high", wantMaxTokens: 5},
+		{name: "unknown GPT generation", model: "gpt-5.9", effort: "high", wantMaxTokens: 5},
+		{name: "unknown model", model: "unverified-model", effort: "high", wantMaxTokens: 5},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			upstreamCalls := 0
+			var body map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				if r.URL.Path != "/v1/chat/completions" {
+					t.Fatalf("Ollama request path=%q want /v1/chat/completions", r.URL.Path)
+				}
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			req := dto.ProxyPluginMainRequest{
+				Endpoint: strPtr("http://127.0.0.1:11434"), Model: &tt.model, Provider: strPtr("ollama"),
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096),
+				ReasoningEffort: &tt.effort,
+			}
+			if tt.glmThinkingType != "" {
+				req.GlmThinkingType = &tt.glmThinkingType
+			}
+			if _, status, err := performProxyPluginMain(context.Background(), req); err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if upstreamCalls != 1 {
+				t.Fatalf("upstreamCalls=%d want 1", upstreamCalls)
+			}
+			if tt.wantEffort == "" {
+				if _, ok := body["reasoning_effort"]; ok {
+					t.Fatalf("unsupported reasoning value was sent: %+v", body)
+				}
+			} else if body["reasoning_effort"] != tt.wantEffort {
+				t.Fatalf("reasoning_effort=%v want %q body=%+v", body["reasoning_effort"], tt.wantEffort, body)
+			}
+			if body["max_tokens"] != tt.wantMaxTokens {
+				t.Fatalf("max_tokens=%v want %v body=%+v", body["max_tokens"], tt.wantMaxTokens, body)
+			}
+			for _, forbidden := range []string{"thinking", "thinkingConfig", "output_config", "max_completion_tokens", "reasoning_budget_tokens", "budget_tokens"} {
+				if _, ok := body[forbidden]; ok {
+					t.Fatalf("Ollama body included native/unsupported %q: %+v", forbidden, body)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyOpenAIReasoningEffortUsesModelGenerationContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		effort     string
+		wantEffort string
+	}{
+		{name: "GPT 5 baseline minimal", model: "gpt-5", effort: "minimal", wantEffort: "minimal"},
+		{name: "GPT 5 baseline rejects none", model: "gpt-5", effort: "none"},
+		{name: "GPT 5.2 xhigh", model: "gpt-5.2", effort: "xhigh", wantEffort: "xhigh"},
+		{name: "GPT 5.5 xhigh", model: "gpt-5.5", effort: "xhigh", wantEffort: "xhigh"},
+		{name: "GPT 5.6 max", model: "gpt-5.6-sol", effort: "max", wantEffort: "max"},
+		{name: "GPT 5.5 rejects max", model: "gpt-5.5", effort: "max"},
+		{name: "unknown GPT generation sends no reasoning", model: "gpt-5.9", effort: "high"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			var body map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			if _, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("openai-test"), Endpoint: strPtr("https://api.openai.com/v1"), Model: &tt.model, Provider: strPtr("openai"),
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096), ReasoningEffort: &tt.effort,
+			}); err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if tt.wantEffort == "" {
+				if _, ok := body["reasoning_effort"]; ok {
+					t.Fatalf("unsupported effort was sent: %+v", body)
+				}
+				if body["max_tokens"] != float64(5) {
+					t.Fatalf("unsupported effort changed token envelope: %+v", body)
+				}
+			} else {
+				if body["reasoning_effort"] != tt.wantEffort || body["max_completion_tokens"] != float64(4096) {
+					t.Fatalf("generation reasoning contract mismatch: %+v", body)
+				}
+				if _, ok := body["max_tokens"]; ok {
+					t.Fatalf("reasoning request kept max_tokens: %+v", body)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyOllamaUnsupportedReasoningDoesNotRetryWithoutIt(t *testing.T) {
+	for _, model := range []string{"deepseek-v4-flash:0731-cloud", "glm-5.2", "gemini-3-pro", "claude-sonnet-4-6"} {
+		t.Run(model, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			upstreamCalls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				upstreamCalls++
+				return &http.Response{
+					StatusCode: http.StatusBadRequest,
+					Status:     "400 Bad Request",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported parameter: reasoning_effort"}}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			effort := "high"
+			req := dto.ProxyPluginMainRequest{
+				Endpoint:        strPtr("http://127.0.0.1:11434"),
+				Model:           &model,
+				Provider:        strPtr("ollama"),
+				Messages:        []any{map[string]any{"role": "user", "content": "ping"}},
+				ReasoningEffort: &effort,
+			}
+			_, status, err := performProxyPluginMainWithRetryBudget(context.Background(), req, newLLMRetryBudget(2))
+			if err == nil || status != http.StatusBadRequest {
+				t.Fatalf("status=%d err=%v, want provider rejection", status, err)
+			}
+			if upstreamCalls != 1 {
+				t.Fatalf("upstreamCalls = %d, want 1 without a reasoning-stripping retry", upstreamCalls)
+			}
+		})
+	}
+}
+
+func TestProxyReasoningContractIsSharedByPublisherAndCritic(t *testing.T) {
+	oldClient := proxyHTTPClient
+	var bodies []map[string]any
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		bodies = append(bodies, body)
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"deepseek-v4-flash:0731-cloud","choices":[{"message":{"content":"{}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	effort := "high"
+	budget := int64(7777)
+	req := dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("ollama-test"),
+		Endpoint:              strPtr("http://127.0.0.1:11434"),
+		Model:                 strPtr("deepseek-v4-flash:0731-cloud"),
+		Provider:              strPtr("ollama"),
+		Messages:              []any{map[string]any{"role": "user", "content": "return JSON"}},
+		MaxTokens:             int64Ptr(5),
+		MaxCompletionTokens:   int64Ptr(4096),
+		ReasoningEffort:       &effort,
+		ReasoningBudgetTokens: &budget,
+		BudgetTokens:          &budget,
+	}
+	for _, purpose := range []string{"publisher", "complete_turn_critic"} {
+		if _, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(context.Background(), req, nil, proxyRequestPolicy{JSONResponse: true, Purpose: purpose}); err != nil || status != http.StatusOK {
+			t.Fatalf("purpose=%s status=%d err=%v", purpose, status, err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("upstream calls = %d, want one Publisher and one Critic request", len(bodies))
+	}
+	for i, body := range bodies {
+		if _, ok := body["thinking"]; ok {
+			t.Fatalf("request %d sent DeepSeek-native thinking through Ollama: %+v", i, body)
+		}
+		if body["reasoning_effort"] != "high" {
+			t.Fatalf("request %d reasoning contract = %+v", i, body)
+		}
+		if body["max_tokens"] != float64(11873) {
+			t.Fatalf("request %d max_tokens = %v, want 11873", i, body["max_tokens"])
+		}
+		for _, forbidden := range []string{"reasoning_budget_tokens", "budget_tokens", "max_completion_tokens"} {
+			if _, ok := body[forbidden]; ok {
+				t.Fatalf("request %d included unsupported %s: %+v", i, forbidden, body)
+			}
+		}
+	}
+}
+
+func TestProxyClaudeThinkingUsesModelGenerationContract(t *testing.T) {
+	tests := []struct {
+		name       string
+		model      string
+		wantMode   string
+		wantEffort string
+	}{
+		{name: "manual budget through 4.5", model: "claude-sonnet-4-5", wantMode: "manual_budget"},
+		{name: "dated Claude 4 uses manual budget", model: "claude-opus-4-20250514", wantMode: "manual_budget"},
+		{name: "dated Claude 4.5 uses manual budget", model: "claude-sonnet-4-5-20250929", wantMode: "manual_budget"},
+		{name: "adaptive from 4.6", model: "claude-sonnet-4-6", wantMode: "adaptive", wantEffort: "high"},
+		{name: "unknown model sends no thinking fields", model: "claude-unversioned", wantMode: "none"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			var body map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}`))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			effort := "high"
+			budget := int64(2048)
+			_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("claude-test"), Endpoint: strPtr("https://api.anthropic.com"), Model: &tt.model, Provider: strPtr("claude"),
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096),
+				ReasoningEffort: &effort, ReasoningBudgetTokens: &budget, BudgetTokens: &budget,
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if got := proxyClaudeThinkingMode(tt.model); got != tt.wantMode {
+				t.Fatalf("mode=%q want=%q", got, tt.wantMode)
+			}
+			switch tt.wantMode {
+			case "manual_budget":
+				thinking := mapFromAny(body["thinking"])
+				if thinking["type"] != "enabled" || thinking["budget_tokens"] != float64(2048) {
+					t.Fatalf("manual thinking = %+v", thinking)
+				}
+			case "adaptive":
+				if mapFromAny(body["thinking"])["type"] != "adaptive" || mapFromAny(body["output_config"])["effort"] != tt.wantEffort {
+					t.Fatalf("adaptive body = %+v", body)
+				}
+			default:
+				if _, ok := body["thinking"]; ok {
+					t.Fatalf("unknown model received thinking: %+v", body)
+				}
+				if _, ok := body["output_config"]; ok {
+					t.Fatalf("unknown model received output_config: %+v", body)
+				}
+			}
+			if tt.wantMode != "none" {
+				if _, ok := body["temperature"]; ok {
+					t.Fatalf("thinking request kept temperature: %+v", body)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyClaudeAdaptiveThinkingKeepsJSONFormatForPublisherAndCritic(t *testing.T) {
+	oldClient := proxyHTTPClient
+	var bodies []map[string]any
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		bodies = append(bodies, body)
+		return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"{}"}],"stop_reason":"end_turn"}`))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	effort := "high"
+	req := dto.ProxyPluginMainRequest{
+		APIKey: strPtr("claude-test"), Endpoint: strPtr("https://api.anthropic.com"), Model: strPtr("claude-sonnet-4-6"), Provider: strPtr("claude"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096), ReasoningEffort: &effort,
+	}
+	for _, purpose := range []string{"publisher", "complete_turn_critic"} {
+		if _, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(context.Background(), req, nil, proxyRequestPolicy{JSONResponse: true, Purpose: purpose}); err != nil || status != http.StatusOK {
+			t.Fatalf("purpose=%s status=%d err=%v", purpose, status, err)
+		}
+	}
+	if len(bodies) != 2 {
+		t.Fatalf("upstream calls = %d, want 2", len(bodies))
+	}
+	for i, body := range bodies {
+		outputConfig := mapFromAny(body["output_config"])
+		format := mapFromAny(outputConfig["format"])
+		if outputConfig["effort"] != "high" || format["type"] != "json_schema" || len(mapFromAny(format["schema"])) == 0 {
+			t.Fatalf("request %d output_config = %+v", i, outputConfig)
+		}
+		if mapFromAny(body["thinking"])["type"] != "adaptive" {
+			t.Fatalf("request %d thinking = %+v", i, body["thinking"])
+		}
+	}
+}
+
+func TestProxyGeminiThinkingUsesModelGenerationContract(t *testing.T) {
+	tests := []struct {
+		model        string
+		wantBudget   bool
+		wantLevel    bool
+		wantThinking bool
+	}{
+		{model: "gemini-2.5-flash", wantBudget: true, wantThinking: true},
+		{model: "gemini-3-pro", wantLevel: true, wantThinking: true},
+		{model: "gemini-unversioned"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			var body map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, _ := io.ReadAll(r.Body)
+				if err := json.Unmarshal(raw, &body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]}}]}`))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			effort := "high"
+			budget := int64(2048)
+			_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("gemini-test"), Endpoint: strPtr("https://generativelanguage.googleapis.com/v1beta"), Model: &tt.model, Provider: strPtr("gemini"),
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096),
+				ReasoningEffort: &effort, ReasoningBudgetTokens: &budget, BudgetTokens: &budget,
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			thinking := mapFromAny(mapFromAny(body["generationConfig"])["thinkingConfig"])
+			if tt.wantThinking != (len(thinking) > 0) {
+				t.Fatalf("thinkingConfig = %+v, want present=%v", thinking, tt.wantThinking)
+			}
+			if tt.wantBudget && thinking["thinkingBudget"] != float64(2048) {
+				t.Fatalf("thinkingBudget = %+v", thinking)
+			}
+			if tt.wantLevel && thinking["thinkingLevel"] != "high" {
+				t.Fatalf("thinkingLevel = %+v", thinking)
+			}
+			if tt.wantLevel {
+				if _, ok := thinking["thinkingBudget"]; ok {
+					t.Fatalf("Gemini 3 received stale thinkingBudget: %+v", thinking)
+				}
+			}
+		})
+	}
+	if got := proxyGeminiThinkingLevel("gemini-3-pro-preview", "minimal"); got != "" {
+		t.Fatalf("Gemini 3 Pro accepted unsupported minimal thinking level: %q", got)
+	}
+	if got := proxyGeminiThinkingLevel("gemini-3.6-flash", "minimal"); got != "minimal" {
+		t.Fatalf("Gemini 3.6 Flash minimal thinking level = %q", got)
+	}
+}
+
+func TestProxyResponseMetadataNormalizesWireTerminationAndTokenUsage(t *testing.T) {
+	tests := []struct {
+		name       string
+		adapter    string
+		reason     string
+		usage      map[string]any
+		wantKind   string
+		wantInput  int
+		wantOutput int
+		wantReason int
+	}{
+		{
+			name: "openai compatible length", adapter: "openai_compatible", reason: "length", wantKind: "length",
+			usage:     map[string]any{"prompt_tokens": 100, "completion_tokens": 20, "total_tokens": 120, "completion_tokens_details": map[string]any{"reasoning_tokens": 7}},
+			wantInput: 100, wantOutput: 20, wantReason: 7,
+		},
+		{
+			name: "anthropic max tokens", adapter: "anthropic_messages", reason: "max_tokens", wantKind: "length",
+			usage: map[string]any{"input_tokens": 90, "output_tokens": 18}, wantInput: 90, wantOutput: 18,
+		},
+		{
+			name: "google max tokens", adapter: "google_generate_content", reason: "MAX_TOKENS", wantKind: "length",
+			usage:     map[string]any{"promptTokenCount": 80, "candidatesTokenCount": 16, "thoughtsTokenCount": 5, "totalTokenCount": 101},
+			wantInput: 80, wantOutput: 16, wantReason: 5,
+		},
+		{
+			name: "unknown adapter reason remains observable", adapter: "openai_compatible", reason: "future_reason", wantKind: "unknown",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			meta := buildProxyResponseMetadata(tt.adapter, tt.reason, tt.usage)
+			if meta["termination_kind"] != tt.wantKind || meta["native_finish_reason"] != tt.reason {
+				t.Fatalf("termination metadata=%#v", meta)
+			}
+			if intFromAny(meta["input_tokens"], 0) != tt.wantInput || intFromAny(meta["output_tokens"], 0) != tt.wantOutput || intFromAny(meta["reasoning_tokens"], 0) != tt.wantReason {
+				t.Fatalf("token metadata=%#v", meta)
+			}
+		})
+	}
+}
+
 func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1350,11 +1886,12 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 			Status:     "200 OK",
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{
-				"candidates":[{"content":{"parts":[{"text":"gemini ok"}]}}],
+				"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"text":"gemini ok"}]}}],
 				"usageMetadata":{
 					"promptTokenCount":4200,
 					"candidatesTokenCount":12,
-					"totalTokenCount":4212,
+					"thoughtsTokenCount":6,
+					"totalTokenCount":4218,
 					"cachedContentTokenCount":4096
 				}
 			}`)),
@@ -1380,8 +1917,12 @@ func TestProxyGeminiNormalizesNativeResponse(t *testing.T) {
 		t.Fatalf("content = %q, want gemini ok", got)
 	}
 	usage := mapFromAny(resp["usageMetadata"])
-	if usage["cachedContentTokenCount"] != float64(4096) || usage["totalTokenCount"] != float64(4212) {
+	if usage["cachedContentTokenCount"] != float64(4096) || usage["totalTokenCount"] != float64(4218) {
 		t.Fatalf("Gemini cache usage was not preserved: %+v", usage)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["termination_kind"] != "length" || intFromAny(metadata["reasoning_tokens"], 0) != 6 || intFromAny(metadata["total_tokens"], 0) != 4218 {
+		t.Fatalf("normalized Gemini response metadata=%+v", metadata)
 	}
 	trace := mapFromAny(resp["_proxy_request_overrides"])
 	usageTrace := mapFromAny(trace["gemini_usage"])
@@ -1630,6 +2171,158 @@ func TestProxyJSONPolicySkipsUnverifiedOpenAILikeProviderWithoutExplicitOverride
 				trace["json_response_applied"] != false ||
 				trace["json_response_skip_reason"] != "provider_native_contract_not_verified" {
 				t.Fatalf("unexpected capability skip trace: %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyPublisherJSONPolicyUsesJSONObjectForOpenAICompatibleAdapters(t *testing.T) {
+	for _, test := range []struct {
+		provider    string
+		wantFormat  string
+		wantApplied bool
+	}{
+		{provider: "ollama", wantFormat: "json_object", wantApplied: true},
+		{provider: "custom", wantFormat: "json_object", wantApplied: true},
+	} {
+		t.Run(test.provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			calls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				format := mapFromAny(body["response_format"])
+				if test.wantFormat == "" {
+					if len(format) != 0 {
+						t.Fatalf("unverified provider received native JSON format: %+v", body)
+					}
+				} else if format["type"] != test.wantFormat {
+					t.Fatalf("response_format = %+v, want %s", format, test.wantFormat)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"test","choices":[{"message":{"content":"{}"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			apiKey := "sk-test"
+			if test.provider == "ollama" {
+				apiKey = ""
+			}
+			resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey:   &apiKey,
+				Endpoint: strPtr("https://api.example.com/v1"),
+				Model:    strPtr("provider/model"),
+				Provider: strPtr(test.provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return publisher JSON"}},
+			}, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if calls != 1 {
+				t.Fatalf("provider calls = %d, want exactly 1", calls)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["json_response_applied"] != test.wantApplied || trace["json_response_purpose"] != "publisher" {
+				t.Fatalf("unexpected publisher JSON trace: %+v", trace)
+			}
+		})
+	}
+	for _, provider := range []string{"copilot"} {
+		body := map[string]any{}
+		trace := map[string]any{}
+		if err := proxyApplyOpenAIJSONResponsePolicy(body, trace, provider, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"}); err != nil {
+			t.Fatalf("%s publisher JSON policy: %v", provider, err)
+		}
+		if mapFromAny(body["response_format"])["type"] != "json_object" || trace["json_response_applied"] != true {
+			t.Fatalf("%s publisher JSON mode was not applied: body=%+v trace=%+v", provider, body, trace)
+		}
+	}
+}
+
+func TestProxyPublisherJSONPolicyUsesPublisherSchemaWithoutCriticFields(t *testing.T) {
+	for _, provider := range []string{"openai", "openrouter", "llmgateway", "vercel"} {
+		t.Run(provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				format := mapFromAny(body["response_format"])
+				schemaBlock := mapFromAny(format["json_schema"])
+				schema := mapFromAny(schemaBlock["schema"])
+				serialized, _ := json.Marshal(schema)
+				if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_plan_v2" || schemaBlock["strict"] != true ||
+					!strings.Contains(string(serialized), "publisher_plan") || !strings.Contains(string(serialized), "book_author") ||
+					strings.Contains(string(serialized), "turn_summary") || strings.Contains(string(serialized), "evidence_excerpts") {
+					t.Fatalf("publisher received wrong schema: %+v", format)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"model":"test","choices":[{"message":{"content":"{}"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+			resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("sk-test"), Endpoint: strPtr("https://api.example.com/v1"), Model: strPtr("provider/model"), Provider: strPtr(provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return publisher JSON"}},
+			}, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			trace := mapFromAny(resp["_proxy_request_overrides"])
+			if trace["json_response_schema_contract"] != "publisher_plan.v2" {
+				t.Fatalf("publisher schema trace = %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyPublisherJSONPolicyUsesPublisherSchemaForClaudeAndGemini(t *testing.T) {
+	for _, provider := range []string{"claude", "gemini"} {
+		t.Run(provider, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				var schema map[string]any
+				if provider == "claude" {
+					schema = mapFromAny(mapFromAny(mapFromAny(body["output_config"])["format"])["schema"])
+				} else {
+					schema = mapFromAny(mapFromAny(body["generationConfig"])["responseJsonSchema"])
+				}
+				serialized, _ := json.Marshal(schema)
+				if !strings.Contains(string(serialized), "publisher_plan") || !strings.Contains(string(serialized), "director") ||
+					strings.Contains(string(serialized), "turn_summary") {
+					t.Fatalf("%s publisher schema is wrong: %+v", provider, schema)
+				}
+				response := `{"content":[{"type":"text","text":"{}"}]}`
+				if provider == "gemini" {
+					response = `{"candidates":[{"content":{"parts":[{"text":"{}"}]}}]}`
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+			resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("sk-test"), Endpoint: strPtr("https://api.example.com/v1"), Model: strPtr("provider/model"), Provider: strPtr(provider),
+				Messages: []any{map[string]any{"role": "user", "content": "return publisher JSON"}},
+			}, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if trace := mapFromAny(resp["_proxy_request_overrides"]); trace["json_response_schema_contract"] != "publisher_plan.v2" {
+				t.Fatalf("publisher schema trace = %+v", trace)
 			}
 		})
 	}
@@ -2564,14 +3257,26 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		userMsg, _ := messages[1].(map[string]any)
 		systemPrompt := extractionStringFromAny(systemMsg["content"])
 		userPrompt := extractionStringFromAny(userMsg["content"])
+		format := mapFromAny(upstreamReq["response_format"])
+		schemaBlock := mapFromAny(format["json_schema"])
+		schemaJSON, _ := json.Marshal(mapFromAny(schemaBlock["schema"]))
+		if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_plan_v2" ||
+			!strings.Contains(string(schemaJSON), "publisher_plan") || strings.Contains(string(schemaJSON), "turn_summary") {
+			t.Fatalf("supervisor request missing publisher-native schema or leaked critic schema: %+v", format)
+		}
 		if !strings.Contains(userPrompt, "response_execution_contract") ||
 			!strings.Contains(userPrompt, "supervisor_support_packet") ||
-			!strings.Contains(userPrompt, "guide_focus") {
+			!strings.Contains(userPrompt, "guide_focus") ||
+			!strings.Contains(userPrompt, "publisher_plan.v2") ||
+			!strings.Contains(userPrompt, "publisher_strength_profile.v1") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
+		}
+		if strings.Contains(userPrompt, "supervisor_proposal_coverage") {
+			t.Fatalf("supervisor request body still exposes the legacy proposal vocabulary: %s", userPrompt)
 		}
 		if !strings.Contains(systemPrompt, "Archive Center's Publisher LLM") ||
 			!strings.Contains(systemPrompt, "The current user input is the only command") ||
-			!strings.Contains(systemPrompt, "Accepted recent context has continuity authority only") {
+			!strings.Contains(systemPrompt, "Use accepted recent context") {
 			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
 		}
 		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger"} {
@@ -2579,17 +3284,17 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 				t.Fatalf("supervisor prompt contains story-control field %q: system=%s user=%s", forbidden, systemPrompt, userPrompt)
 			}
 		}
-		if !strings.Contains(systemPrompt, "may_advance") ||
-			!strings.Contains(systemPrompt, "never authorize") {
-			t.Fatalf("supervisor prompt missing bounded optional advance semantics: %s", systemPrompt)
+		if !strings.Contains(systemPrompt, "publisher_plan.v2") ||
+			!strings.Contains(systemPrompt, "cannot decide user or protagonist action") ||
+			!strings.Contains(systemPrompt, "quiet supported scene") ||
+			!strings.Contains(systemPrompt, "Do not add filler or meet a") {
+			t.Fatalf("supervisor prompt missing bounded publisher contract: %s", systemPrompt)
 		}
+		response := publisherV2OpenAIResponse("input:test", "preserve the current request boundary")
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`{
-				"model":"supervisor-model",
-				"choices":[{"message":{"content":"{\"supervisor_scene_proposal\":{\"fidelity_warnings\":[],\"expression_hints\":[{\"kind\":\"portrayal\",\"text\":\"preserve the current request boundary\",\"source_refs\":[\"input:test\"]}]}}"}}]
-			}`)),
+			Body:       io.NopCloser(strings.NewReader(response)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -2669,11 +3374,11 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		proposal["would_write"] != false {
 		t.Fatalf("supervisor proposal authority = %+v, want proposal_only/non-truth", proposal)
 	}
-	warnings, _ := proposal["fidelity_warnings"].([]any)
-	expressions, _ := proposal["expression_hints"].([]any)
-	if len(warnings) != 0 || len(expressions) != 1 ||
-		mapFromAny(expressions[0])["kind"] != "portrayal" {
-		t.Fatalf("supervisor proposal lanes = fidelity:%+v expression:%+v", warnings, expressions)
+	plan := mapFromAny(proposal["publisher_plan"])
+	accepted := anySliceFromAny(plan["accepted_items"])
+	if plan["contract_version"] != "publisher_plan.v2" || len(accepted) != 1 ||
+		mapFromAny(accepted[0])["field"] != "current_arc" {
+		t.Fatalf("supervisor publisher plan = %+v", plan)
 	}
 	traceSummary, ok := resp["trace_summary"].(map[string]any)
 	if !ok {

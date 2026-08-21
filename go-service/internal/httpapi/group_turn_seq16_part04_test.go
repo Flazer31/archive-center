@@ -192,23 +192,17 @@ func TestSeq16P222FocusedValidationAggregateEquivalent(t *testing.T) {
 	}
 	passed++
 	tierIndexes := seq16DocumentTierIndexes(docs)
-	memoryIndex, hasMemory := tierIndexes["memory"]
-	evidenceIndex, hasEvidence := tierIndexes["evidence"]
-	chatLogIndex, hasChatLog := tierIndexes["chat_log"]
+	_, hasMemory := tierIndexes["memory"]
+	_, hasEvidence := tierIndexes["evidence"]
+	_, hasChatLog := tierIndexes["chat_log"]
 	if !hasMemory {
 		fail("documents missing memory support tier")
 	}
 	if !hasEvidence {
 		fail("documents missing evidence tier")
 	}
-	if !hasChatLog {
-		fail("documents missing chat_log fallback tier")
-	}
-	if memoryIndex > chatLogIndex {
-		fail(fmt.Sprintf("memory tier index=%d should precede chat_log fallback index=%d", memoryIndex, chatLogIndex))
-	}
-	if evidenceIndex > chatLogIndex {
-		fail(fmt.Sprintf("evidence tier index=%d should precede chat_log fallback index=%d", evidenceIndex, chatLogIndex))
+	if hasChatLog {
+		fail("raw chat log reentered the public retrieval documents")
 	}
 	passed++
 

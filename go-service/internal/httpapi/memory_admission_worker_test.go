@@ -40,6 +40,42 @@ type memoryAdmissionWorkerStore struct {
 	nextEvidenceID  int64
 }
 
+type adminCanonicalReplayTestStore struct {
+	*memoryAdmissionWorkerStore
+	evidence   []store.DirectEvidence
+	worldRules []store.WorldRule
+}
+
+func (f *adminCanonicalReplayTestStore) ListEvidence(context.Context, string) ([]store.DirectEvidence, error) {
+	return append([]store.DirectEvidence(nil), f.evidence...), nil
+}
+
+func (f *adminCanonicalReplayTestStore) ListWorldRules(context.Context, string) ([]store.WorldRule, error) {
+	return append([]store.WorldRule(nil), f.worldRules...), nil
+}
+
+func newAdminCanonicalReplayTestStore(sid string, turnIndex int, extraction map[string]any) *adminCanonicalReplayTestStore {
+	source := &store.MemorySourceRevision{
+		SourceRevision:          fmt.Sprintf("%s:revision:%d", sid, turnIndex),
+		ChatSessionID:           sid,
+		LogicalTurnID:           fmt.Sprintf("turn:%d", turnIndex),
+		TurnIndex:               turnIndex,
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "committed",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     store.MemoryVectorOutboxContract,
+		DerivedResultJSON:       mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+	}
+	source.DerivedResultHash = memoryAdmissionResultHash(
+		source.SourceRevision, extraction, source.DerivedAdmissionVersion,
+		source.DerivedExtractorVersion, source.DerivedIndexVersion,
+	)
+	return &adminCanonicalReplayTestStore{memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+		Store: store.NewNoopStore(), source: source, nextEvidenceID: 100,
+	}}
+}
+
 func attachCriticInputSnapshotForTest(source *store.MemorySourceRevision) {
 	if source == nil {
 		return
@@ -349,8 +385,8 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 
 	fake := &memoryAdmissionWorkerStore{source: &store.MemorySourceRevision{
 		SourceRevision:   "revision-context-group",
-		UserContent:      "A bell rang.",
-		AssistantContent: "The gate opened.",
+		UserContent:      "RAW PRIVATE USER SOURCE",
+		AssistantContent: "RAW PRIVATE ASSISTANT SOURCE",
 	}}
 	srv := &Server{Store: fake}
 	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
@@ -387,20 +423,23 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 	if calls != 1 {
 		t.Fatalf("embedding calls=%d, want one", calls)
 	}
-	if len(capturedChunks) < 2 || strings.TrimSpace(fmt.Sprint(capturedChunks[0])) != fake.source.UserContent || strings.TrimSpace(fmt.Sprint(capturedChunks[1])) != fake.source.AssistantContent {
-		t.Fatalf("first contextual chunks = %#v, want canonical current-turn user/assistant raw pair", capturedChunks)
+	for _, chunk := range capturedChunks {
+		text := strings.TrimSpace(fmt.Sprint(chunk))
+		if text == fake.source.UserContent || text == fake.source.AssistantContent {
+			t.Fatalf("raw canonical source entered Voyage contextual chunks: %#v", capturedChunks)
+		}
 	}
 	admission := fake.admissions[0]
 	if len(capturedChunks) < 4 || len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
 		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
 	}
 	for i, item := range admission.Vectors {
-		if len(item.Embedding) == 0 || item.ContextChunkIndex != i+2 || len(item.ContextChunks) != len(capturedChunks) {
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
 			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
 		}
 	}
 	precise := admission.PreciseUnits[0]
-	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors)+2 || len(precise.VectorContextChunks) != len(capturedChunks) {
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
 		t.Fatalf("precise vector not materialized in source group: %+v", precise)
 	}
 	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
@@ -741,21 +780,95 @@ func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *t
 	}
 }
 
-func TestAcceptedSourceReplaysStagedExtractionWithoutCriticConfiguration(t *testing.T) {
+func TestAcceptedSourceReplaysValidOldIndexExtractionIntoPublicProjectionWithoutCritic(t *testing.T) {
+	const oldIndex = store.MemoryVectorOutboxContract
+	extraction := map[string]any{
+		"turn_summary":      "Mina kept the public brass key.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Mina kept the public brass key."},
+	}
+	source := &store.MemorySourceRevision{
+		SourceRevision:          "old-index-revision",
+		ChatSessionID:           "session",
+		LogicalTurnID:           "turn:4",
+		TurnIndex:               4,
+		UserContent:             "Mina looked under the desk.",
+		AssistantContent:        "Mina kept the public brass key.",
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "committed",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     oldIndex,
+		DerivedResultJSON:       mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+	}
+	source.DerivedResultHash = memoryAdmissionResultHash(
+		source.SourceRevision, extraction, store.MemoryAdmissionContract,
+		completeTurnCriticPipelineVersion, oldIndex,
+	)
+	st := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), source: source, nextEvidenceID: 100}
+	cfg := config.Default()
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := &Server{Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore()}
+
+	result := srv.processAcceptedSourceRevisionWithOptions(
+		context.Background(), source, completeTurnExtractionConfig{},
+		acceptedSourceDerivationOptions{CommittedReplayOnly: true},
+	)
+	if result.State != "completed" || result.Failure != "" || len(st.admissions) != 1 {
+		t.Fatalf("result=%+v admissions=%d", result, len(st.admissions))
+	}
+	admission := st.admissions[0]
+	if admission.IndexVersion != memoryAdmissionIndexVersion ||
+		admission.ResultHash == source.DerivedResultHash || len(admission.Vectors) == 0 {
+		t.Fatalf("old index was not deterministically reprojected: %+v", admission)
+	}
+	if result.CriticTrace["stored_index"] != oldIndex ||
+		result.CriticTrace["target_index"] != memoryAdmissionIndexVersion {
+		t.Fatalf("critic-free replay trace=%#v", result.CriticTrace)
+	}
+}
+
+func TestCommittedReplayOnlyRejectsInvalidStoredResultWithoutCriticGuess(t *testing.T) {
+	source := &store.MemorySourceRevision{
+		SourceRevision:          "invalid-old-index-revision",
+		ChatSessionID:           "session",
+		LogicalTurnID:           "turn:5",
+		TurnIndex:               5,
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "committed",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     store.MemoryVectorOutboxContract,
+		DerivedResultHash:       strings.Repeat("f", 64),
+		DerivedResultJSON:       `{"turn_summary":"stored but hash-invalid"}`,
+	}
+	st := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), source: source}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+	result := srv.processAcceptedSourceRevisionWithOptions(
+		context.Background(), source, completeTurnExtractionConfig{},
+		acceptedSourceDerivationOptions{CommittedReplayOnly: true},
+	)
+	if result.State != "retryable" || result.Failure != "committed_derived_result_hash_mismatch" ||
+		len(st.admissions) != 0 || result.CriticTrace != nil {
+		t.Fatalf("invalid stored result was not rejected fail-closed: result=%+v admissions=%d", result, len(st.admissions))
+	}
+}
+
+func TestAcceptedSourceReplaysPendingExtractionWithoutCriticConfiguration(t *testing.T) {
 	extraction := map[string]any{
 		"turn_summary":      "Mina found the brass key.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Mina found the brass key."},
 	}
 	source := &store.MemorySourceRevision{
-		SourceRevision:          "staged-revision",
+		SourceRevision:          "pending-revision",
 		ChatSessionID:           "session",
 		LogicalTurnID:           "turn:3",
 		TurnIndex:               3,
 		UserContent:             "Mina looked under the desk.",
 		AssistantContent:        "Mina found the brass key.",
 		LifecycleState:          "active",
-		DerivedAdmissionState:   "staged",
+		DerivedAdmissionState:   "pending",
 		DerivedAdmissionVersion: store.MemoryAdmissionContract,
 		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
 		DerivedIndexVersion:     memoryAdmissionIndexVersion,
@@ -784,7 +897,7 @@ func TestAcceptedSourceReplaysStagedExtractionWithoutCriticConfiguration(t *test
 	if result.State != "completed" || result.Failure != "" || len(st.admissions) != 1 {
 		t.Fatalf("result=%+v admissions=%d", result, len(st.admissions))
 	}
-	if result.CriticTrace["stage"] != "staged_result_replay" {
+	if result.CriticTrace["stage"] != "pending_result_replay" {
 		t.Fatalf("critic trace=%#v", result.CriticTrace)
 	}
 	if st.admissions[0].ResultJSON != source.DerivedResultJSON {
@@ -856,7 +969,7 @@ func TestExplorerRegenerationHandsAcceptedSourceToDurableWorker(t *testing.T) {
 	}
 }
 
-func TestHypaImportCannotBypassAcceptedSourceAdmission(t *testing.T) {
+func TestHypaImportLifecycleDoesNotDisableExternalImport(t *testing.T) {
 	st := &memoryAdmissionWorkerStore{Store: store.NewNoopStore()}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -872,14 +985,32 @@ func TestHypaImportCannotBypassAcceptedSourceAdmission(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if rec.Code != http.StatusConflict ||
-		response["code"] != "external_import_source_admission_required" ||
+	if rec.Code != http.StatusOK ||
+		response["code"] != "critic_config_missing" ||
 		len(st.admissions) != 0 ||
 		st.legacyMemories != 0 ||
 		st.legacyEvidence != 0 {
 		t.Fatalf("status=%d response=%+v admissions=%d legacy=%d/%d",
 			rec.Code, response, len(st.admissions),
 			st.legacyMemories, st.legacyEvidence)
+	}
+}
+
+func TestPositiveDialogueTurnStillRequiresAcceptedSourceAdmission(t *testing.T) {
+	st := &memoryAdmissionWorkerStore{Store: store.NewNoopStore()}
+	srv := &Server{Store: st, Vector: vector.NewFakeVectorStore()}
+	result := srv.saveCriticExtractionArtifacts(
+		context.Background(),
+		"session-positive-source-fence",
+		1,
+		map[string]any{"turn_summary": "A normal dialogue memory.", "importance_score": 5},
+		"A normal dialogue memory.",
+		completeTurnEmbeddingConfig{},
+		time.Unix(1, 0).UTC(),
+	)
+	if result.Errors == 0 || len(st.admissions) != 0 || st.legacyMemories != 0 || st.legacyEvidence != 0 {
+		t.Fatalf("positive turn bypassed source admission: result=%+v admissions=%d legacy=%d/%d",
+			result, len(st.admissions), st.legacyMemories, st.legacyEvidence)
 	}
 }
 
@@ -1378,7 +1509,7 @@ func TestMemoryReprocessingWorkerUsesSameAdmissionWriterAndCompletes(t *testing.
 	}
 }
 
-func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing.T) {
+func TestMemoryReprocessingWorkerPreservesSingleCallFailurePreview(t *testing.T) {
 	now := time.Now().UTC()
 	st := newMemoryReprocessingWorkerStore(now)
 	st.source.AssistantContent = "The intimate scene involved penetration."
@@ -1387,15 +1518,11 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	callCount := 0
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		callCount++
-		marker := "first failure marker"
-		if callCount == 2 {
-			marker = "second failure marker"
-		}
 		return &http.Response{
 			StatusCode: http.StatusTooManyRequests,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"error":{"message":"` + marker + `"}}`,
+				`{"error":{"message":"provider failure marker"}}`,
 			)),
 		}, nil
 	})}
@@ -1415,7 +1542,7 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.State != "retryable" || callCount != 2 || len(st.auditLogs) != 1 {
+	if result.State != "retryable" || callCount != 1 || len(st.auditLogs) != 1 {
 		t.Fatalf("result=%+v calls=%d audits=%d", result, callCount, len(st.auditLogs))
 	}
 	var details map[string]any
@@ -1424,8 +1551,11 @@ func TestMemoryReprocessingWorkerPreservesRedactedRetryFailurePreview(t *testing
 	}
 	trace := mapFromAny(details["trace"])
 	preview := stringFromMap(trace, "raw_preview")
-	if !strings.Contains(preview, "second failure marker") {
-		t.Fatalf("redacted retry failure preview was lost: %+v", details)
+	if !strings.Contains(preview, "provider failure marker") {
+		t.Fatalf("single-call failure preview was lost: %+v", details)
+	}
+	if _, exists := trace["provider_retry"]; exists {
+		t.Fatalf("hidden retry trace should not exist: %+v", trace)
 	}
 }
 
@@ -1440,7 +1570,7 @@ func TestMemoryReprocessingWorkerStopsRepeatedSchemaInvalidAfterOneCall(t *testi
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
 			Body: io.NopCloser(strings.NewReader(
-				`{"model":"critic-test","choices":[{"message":{"content":"{\"turn_summary\":\"broken schema\",\"importance_score\":5,\"evidence_excerpts\":[{\"quote\":\"not a string\"}]}"}}]}`,
+				`{"model":"critic-test","choices":[{"message":{"content":"{\"unrecognized\":\"value\"}"}}]}`,
 			)),
 		}, nil
 	})}

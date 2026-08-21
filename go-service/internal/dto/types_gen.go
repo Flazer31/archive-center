@@ -989,6 +989,9 @@ type PrepareTurnSettings struct {
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
 	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.
 	MemoryDeliveryBudgets map[string]int `json:"memory_delivery_budgets,omitempty"`
+	// LorebookReferenceMode controls the separate read-only Host lorebook reference lane.
+	// Missing values default to reference_assist; the lorebook remains bounded support, not primary memory authority.
+	LorebookReferenceMode *string `json:"lorebook_reference_mode,omitempty"`
 	// PRESENCE: Optional non-null scalar int controlling only the final objective-event memory item ceiling.
 	// DEFAULT: No default: absent callers preserve the legacy character-budget-only delivery behavior.
 	CoreObjectiveMemoryMaxItems *int `json:"core_objective_memory_max_items,omitempty"`
@@ -1050,6 +1053,10 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 	if dto.MaxInjectionChars == nil {
 		v := 3000
 		dto.MaxInjectionChars = &v
+	}
+	if dto.LorebookReferenceMode == nil {
+		v := "reference_assist"
+		dto.LorebookReferenceMode = &v
 	}
 	if dto.MaxInputContextChars == nil {
 		v := 800

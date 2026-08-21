@@ -166,4 +166,17 @@ func TestDecodeWithDefaults_PrepareTurnContractKeepsAbsentObservationsNil(t *tes
 	if request.SourceObservation != nil || request.CapabilityObservation != nil {
 		t.Fatalf("absent observations must remain nil: source=%+v capabilities=%+v", request.SourceObservation, request.CapabilityObservation)
 	}
+	if request.PublisherGuidanceFormat == nil || *request.PublisherGuidanceFormat != "standard" {
+		t.Fatalf("absent publisher guidance format did not preserve standard output: %#v", request.PublisherGuidanceFormat)
+	}
+}
+
+func TestDecodeWithDefaults_PrepareTurnContractPreservesPublisherGuidanceFormat(t *testing.T) {
+	var request PrepareTurnContractRequest
+	if err := DecodeWithDefaults(strings.NewReader(`{"chat_session_id":"session-a","publisher_guidance_format":"explicit"}`), &request); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if request.PublisherGuidanceFormat == nil || *request.PublisherGuidanceFormat != "explicit" {
+		t.Fatalf("publisher guidance format = %#v, want explicit", request.PublisherGuidanceFormat)
+	}
 }

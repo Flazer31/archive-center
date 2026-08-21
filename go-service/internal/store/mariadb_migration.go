@@ -541,6 +541,13 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 	}
 	deferred := []sessionMigrationDeferredFK{}
 	vectorExpected := map[string]SessionMigrationVectorDocument{}
+	memoryProjectionOps, err := sessionMigrationMemoryProjectionOperations(
+		sourceRows["memory_vector_outbox"], sourceRows["memory_source_revisions"], req.SourceSessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	activeSourceRevisions := sessionMigrationActiveSourceRevisions(sourceRows["memory_source_revisions"])
 	rowMapCount := 0
 	for _, entry := range manifest {
 		if entry.Policy != SessionMigrationPolicyCopy {
@@ -559,7 +566,27 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 			}
 			deferred = append(deferred, rowDeferred...)
 			rowMapCount++
-			if expected, ok := sessionMigrationExpectedVectorDocument(migrationID, entry.Table, plan, sourceRow, targetRow, req.SourceSessionID, req.TargetSessionID); ok {
+			expected, ok := sessionMigrationExpectedVectorDocument(migrationID, entry.Table, plan, sourceRow, targetRow, req.SourceSessionID, req.TargetSessionID)
+			if ok && entry.Table == "precise_memory_units" {
+				ok = sessionMigrationPreciseVectorSourceActive(sourceRow, activeSourceRevisions)
+			}
+			if ok && entry.Table == "memories" {
+				sourceMemoryID := strings.TrimSpace(sourceRow.Values[plan.PrimaryKey[0]].Text)
+				sourceDocumentID := "memory:" + req.SourceSessionID + ":" + sourceMemoryID
+				projection, found := memoryProjectionOps[sourceDocumentID]
+				if !found {
+					return nil, fmt.Errorf("session migration memory public projection authority is missing for %s; run canonical force reindex before retrying migration", sourceDocumentID)
+				}
+				if projection.SourceTurn != sessionMigrationCellInt(sourceRow.Values["turn_index"]) {
+					return nil, fmt.Errorf("session migration memory public projection turn mismatch for %s; run canonical force reindex before retrying migration", sourceDocumentID)
+				}
+				if projection.Operation == "delete" {
+					ok = false
+				} else {
+					expected.DocumentText = projection.DocumentText
+				}
+			}
+			if ok {
 				if previous, duplicate := vectorExpected[expected.ID]; duplicate && previous.SourceTable != expected.SourceTable {
 					return nil, fmt.Errorf("session migration vector expected ID collision %q", expected.ID)
 				}
@@ -635,6 +662,126 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 		VectorExpectedCount:   len(expectedIDs),
 		TargetStarterReplaced: targetStarter,
 	}, nil
+}
+
+type sessionMigrationMemoryProjectionOperation struct {
+	OutboxID     int64
+	Operation    string
+	DocumentText string
+	SourceTurn   int
+}
+
+func sessionMigrationActiveSourceRevisions(rows []sessionMigrationRow) map[string]struct{} {
+	active := map[string]struct{}{}
+	for _, row := range rows {
+		if !strings.EqualFold(strings.TrimSpace(row.Values["lifecycle_state"].Text), "active") {
+			continue
+		}
+		revision := strings.TrimSpace(row.Values["source_revision"].Text)
+		if revision != "" {
+			active[revision] = struct{}{}
+		}
+	}
+	return active
+}
+
+func sessionMigrationPreciseVectorSourceActive(row sessionMigrationRow, activeRevisions map[string]struct{}) bool {
+	_, ok := activeRevisions[strings.TrimSpace(row.Values["source_revision"].Text)]
+	return ok
+}
+
+// sessionMigrationMemoryProjectionOperations consumes the durable output of
+// the existing public-memory projection contract. It does not infer public
+// visibility from canonical summaries: the latest causal outbox operation is
+// either an exact public upsert or an explicit delete.
+func sessionMigrationMemoryProjectionOperations(rows, sourceRevisions []sessionMigrationRow, sourceSessionID string) (map[string]sessionMigrationMemoryProjectionOperation, error) {
+	sourceSessionID = strings.TrimSpace(sourceSessionID)
+	activeRevisions := map[string]int{}
+	for _, row := range sourceRevisions {
+		if strings.ToLower(strings.TrimSpace(row.Values["lifecycle_state"].Text)) != "active" ||
+			strings.ToLower(strings.TrimSpace(row.Values["derived_admission_state"].Text)) != "committed" ||
+			strings.TrimSpace(row.Values["derived_index_version"].Text) != MemoryPublicProjectionIndex {
+			continue
+		}
+		revision := strings.TrimSpace(row.Values["source_revision"].Text)
+		if revision != "" {
+			activeRevisions[revision] = sessionMigrationCellInt(row.Values["turn_index"])
+		}
+	}
+	latest := map[string]sessionMigrationRow{}
+	latestID := map[string]int64{}
+	prefix := "memory:" + sourceSessionID + ":"
+	for _, row := range rows {
+		documentID := strings.TrimSpace(row.Values["document_id"].Text)
+		if !strings.HasPrefix(documentID, prefix) {
+			continue
+		}
+		if _, ok := activeRevisions[strings.TrimSpace(row.Values["source_revision"].Text)]; !ok {
+			continue
+		}
+		outboxID, err := strconv.ParseInt(strings.TrimSpace(row.Values["id"].Text), 10, 64)
+		if err != nil || outboxID <= 0 {
+			return nil, fmt.Errorf("session migration memory public projection has invalid outbox id for %s", documentID)
+		}
+		if current, ok := latestID[documentID]; ok && current >= outboxID {
+			continue
+		}
+		latestID[documentID] = outboxID
+		latest[documentID] = row
+	}
+
+	out := make(map[string]sessionMigrationMemoryProjectionOperation, len(latest))
+	for documentID, row := range latest {
+		if strings.TrimSpace(row.Values["contract_version"].Text) != MemoryVectorOutboxContract {
+			return nil, fmt.Errorf("session migration memory public projection contract mismatch for %s", documentID)
+		}
+		if strings.EqualFold(strings.TrimSpace(row.Values["status"].Text), "stale_rejected") {
+			return nil, fmt.Errorf("session migration memory public projection is stale for %s; run canonical force reindex before retrying migration", documentID)
+		}
+		operation := strings.ToLower(strings.TrimSpace(row.Values["operation"].Text))
+		projection := sessionMigrationMemoryProjectionOperation{
+			OutboxID:   latestID[documentID],
+			Operation:  operation,
+			SourceTurn: activeRevisions[strings.TrimSpace(row.Values["source_revision"].Text)],
+		}
+		switch operation {
+		case "delete":
+			out[documentID] = projection
+			continue
+		case "upsert":
+		default:
+			return nil, fmt.Errorf("session migration memory public projection operation %q is unsupported for %s", operation, documentID)
+		}
+
+		var document struct {
+			ID            string         `json:"ID"`
+			Tier          string         `json:"Tier"`
+			ChatSessionID string         `json:"ChatSessionID"`
+			SourceTable   string         `json:"SourceTable"`
+			SourceRowID   string         `json:"SourceRowID"`
+			SchemaVersion string         `json:"SchemaVersion"`
+			DocumentText  string         `json:"DocumentText"`
+			Metadata      map[string]any `json:"Metadata"`
+		}
+		if err := json.Unmarshal([]byte(strings.TrimSpace(row.Values["document_json"].Text)), &document); err != nil {
+			return nil, fmt.Errorf("session migration memory public projection document is invalid for %s: %w", documentID, err)
+		}
+		sourceRowID := strings.TrimPrefix(documentID, prefix)
+		indexIdentity, _ := document.Metadata["index_identity"].(string)
+		if strings.TrimSpace(document.ID) != documentID ||
+			strings.TrimSpace(document.Tier) != "memory" ||
+			strings.TrimSpace(document.ChatSessionID) != sourceSessionID ||
+			strings.TrimSpace(document.SourceTable) != "memories" ||
+			strings.TrimSpace(document.SourceRowID) != sourceRowID ||
+			strings.TrimSpace(document.SchemaVersion) != "memory.v2" ||
+			strings.TrimSpace(indexIdentity) != MemoryPublicProjectionIndex ||
+			strings.TrimSpace(document.DocumentText) == "" {
+			return nil, fmt.Errorf("session migration memory public projection document contract mismatch for %s", documentID)
+		}
+		projection.DocumentText = strings.TrimSpace(document.DocumentText)
+		out[documentID] = projection
+	}
+	return out, nil
 }
 
 func sessionMigrationValidateSchemaTx(ctx context.Context, tx *sql.Tx, plan SessionMigrationExecutionPlan) error {
@@ -1010,6 +1157,18 @@ func sessionMigrationInsertManifestRow(
 	if err := sessionMigrationRemapSemanticReferences(plan, source, &target, maps); err != nil {
 		return sessionMigrationRow{}, "", nil, err
 	}
+	if entry.Table == "memory_source_revisions" {
+		if err := sessionMigrationValidateAdmissionResult(source); err != nil {
+			return sessionMigrationRow{}, "", nil, err
+		}
+		resultHash, _, err := sessionMigrationRemappedAdmissionResult(target)
+		if err != nil {
+			return sessionMigrationRow{}, "", nil, err
+		}
+		if resultHash != "" {
+			target.Values["derived_result_hash"] = sessionMigrationCell{Valid: true, Text: resultHash}
+		}
+	}
 	insertColumns := make([]string, 0, len(plan.Columns))
 	args := make([]any, 0, len(plan.Columns))
 	for _, column := range plan.Columns {
@@ -1085,6 +1244,46 @@ func sessionMigrationInsertManifestRow(
 	return target, targetKey, deferred, nil
 }
 
+func sessionMigrationRemappedAdmissionResult(row sessionMigrationRow) (string, string, error) {
+	committed := strings.EqualFold(strings.TrimSpace(row.Values["derived_admission_state"].Text), "committed")
+	if strings.TrimSpace(row.Values["derived_result_hash"].Text) == "" {
+		if committed {
+			return "", "", errors.New("session migration committed derived result contract is incomplete")
+		}
+		return "", "", nil
+	}
+	resultJSON := strings.TrimSpace(row.Values["derived_result_json"].Text)
+	var result any
+	if resultJSON == "" || json.Unmarshal([]byte(resultJSON), &result) != nil || result == nil {
+		return "", "", errors.New("session migration committed derived result is invalid")
+	}
+	admission := &MemoryAdmission{
+		SourceRevision:    row.Values["source_revision"].Text,
+		DerivationVersion: row.Values["derived_admission_version"].Text,
+		ExtractorVersion:  row.Values["derived_extractor_version"].Text,
+		IndexVersion:      row.Values["derived_index_version"].Text,
+		ResultJSON:        resultJSON,
+	}
+	if strings.TrimSpace(admission.SourceRevision) == "" ||
+		strings.TrimSpace(admission.DerivationVersion) == "" ||
+		strings.TrimSpace(admission.ExtractorVersion) == "" ||
+		strings.TrimSpace(admission.IndexVersion) == "" {
+		return "", "", errors.New("session migration committed derived result contract is incomplete")
+	}
+	return memoryAdmissionExpectedResultHash(admission), admission.ResultJSON, nil
+}
+
+func sessionMigrationValidateAdmissionResult(row sessionMigrationRow) error {
+	expectedHash, _, err := sessionMigrationRemappedAdmissionResult(row)
+	if err != nil {
+		return err
+	}
+	if expectedHash != "" && !strings.EqualFold(strings.TrimSpace(row.Values["derived_result_hash"].Text), expectedHash) {
+		return errors.New("session migration committed derived result hash does not match its source revision")
+	}
+	return nil
+}
+
 func sessionMigrationInsertArtifactKeyMapTx(ctx context.Context, tx *sql.Tx, migrationID int64, table, column, source, target, rowStatus string) error {
 	if rowStatus != "copied" && rowStatus != "alternate_key" {
 		return fmt.Errorf("unsupported session migration row-map status %q", rowStatus)
@@ -1125,6 +1324,10 @@ func sessionMigrationExpectedVectorDocument(
 	if !vectorKey.Valid || strings.TrimSpace(vectorKey.Text) == "" {
 		return SessionMigrationVectorDocument{}, false
 	}
+	sourceVectorKey := sourceRow.Values[plan.Vector.IDColumn]
+	if !sourceVectorKey.Valid || strings.TrimSpace(sourceVectorKey.Text) == "" {
+		return SessionMigrationVectorDocument{}, false
+	}
 	contextTurnIndex, contextTurnKnown := sessionMigrationVectorContextTurn(plan.Vector, targetRow)
 	return SessionMigrationVectorDocument{
 		ID:                    plan.Vector.Tier + ":" + targetSessionID + ":" + vectorKey.Text,
@@ -1134,7 +1337,7 @@ func sessionMigrationExpectedVectorDocument(
 		ContextTurnIndex:      contextTurnIndex,
 		ContextTurnKnown:      contextTurnKnown,
 		SourceTable:           table,
-		SourceRowID:           vectorKey.Text,
+		SourceRowID:           sourceVectorKey.Text,
 		SchemaVersion:         plan.Vector.SchemaVersion,
 		DocumentText:          documentText,
 		EmbeddingJSON:         embeddingJSON,
@@ -1173,12 +1376,20 @@ func sessionMigrationVectorRowEligible(plan *SessionMigrationVectorPlan, row ses
 		return !sessionMigrationCellBool(row.Values["tombstoned"]) &&
 			!sessionMigrationCellBool(row.Values["repair_needed"]) &&
 			sessionMigrationCellNonPositive(row.Values["superseded_by_id"]) &&
+			!strings.EqualFold(strings.TrimSpace(row.Values["evidence_kind"].Text), "perspective_scoped_turn_excerpt") &&
 			strings.TrimSpace(row.Values["evidence_text"].Text) != ""
 	case "active_world_rule":
 		return !sessionMigrationCellBool(row.Values["suppressed"]) &&
 			sessionMigrationVectorDocumentText(plan, row) != ""
 	case "active_precise_memory":
-		return strings.EqualFold(strings.TrimSpace(row.Values["lifecycle_state"].Text), "active")
+		return strings.EqualFold(strings.TrimSpace(row.Values["lifecycle_state"].Text), "active") &&
+			PreciseMemoryGeneralVectorEligible(&PreciseMemoryUnit{
+				AdmissionState:          row.Values["admission_state"].Text,
+				ReviewState:             row.Values["review_state"].Text,
+				Visibility:              row.Values["visibility"].Text,
+				EpistemicMode:           row.Values["epistemic_mode"].Text,
+				KnowledgeHolderEntityID: row.Values["knowledge_holder_entity_id"].Text,
+			})
 	default:
 		return false
 	}
@@ -1216,6 +1427,13 @@ func sessionMigrationVectorDocumentText(plan *SessionMigrationVectorPlan, row se
 			}
 		}
 		return strings.TrimSpace(strings.Join(parts, "\n"))
+	case "precise_memory":
+		return PreciseMemorySemanticText(&PreciseMemoryUnit{
+			Kind:            value("memory_kind"),
+			Subtype:         value("memory_subtype"),
+			PayloadJSON:     value("payload_json"),
+			EvidenceExcerpt: value("evidence_excerpt"),
+		})
 	case "memory":
 		return sessionMigrationMemoryDocumentText(
 			value("summary_json"),
@@ -1372,6 +1590,25 @@ func sessionMigrationCanonicalRowsHash(
 			textValue := value.Text
 			if entry.Direct && column == entry.SessionColumn {
 				textValue = "<session>"
+			} else if entry.Table == "memory_source_revisions" && column == "derived_result_hash" && strings.TrimSpace(textValue) != "" {
+				ownHash, _, ownErr := sessionMigrationRemappedAdmissionResult(row)
+				if ownErr == nil && ownHash != "" && strings.EqualFold(strings.TrimSpace(textValue), ownHash) {
+					canonicalRow := row
+					if target {
+						canonicalRow.Values = make(map[string]sessionMigrationCell, len(row.Values))
+						for key, cell := range row.Values {
+							canonicalRow.Values[key] = cell
+						}
+						if revision := row.Values["source_revision"]; revision.Valid {
+							if sourceRevision, ok := keyMaps.source(entry.Table, "source_revision", revision.Text); ok {
+								canonicalRow.Values["source_revision"] = sessionMigrationCell{Valid: true, Text: sourceRevision}
+							}
+						}
+					}
+					if canonicalHash, _, err := sessionMigrationRemappedAdmissionResult(canonicalRow); err == nil && canonicalHash != "" {
+						textValue = canonicalHash
+					}
+				}
 			} else if !target {
 				textValue = sessionMigrationCanonicalSemanticSourceValue(plan, column, textValue)
 			} else if target {
@@ -1813,10 +2050,10 @@ func sessionMigrationListVectorDocumentsForPlan(
 		 AND arm.source_key = ve.source_row_id
 		 AND arm.row_status <> 'rolled_back'
 		JOIN ` + sessionMigrationQuoteIdentifier(table) + ` t
-		  ON CAST(t.` + sessionMigrationQuoteIdentifier(plan.PrimaryKey[0]) + ` AS CHAR) = arm.target_key
+		  ON CAST(t.` + sessionMigrationQuoteIdentifier(vectorPlan.IDColumn) + ` AS CHAR) = arm.target_key
 		WHERE ve.migration_id = ? AND ve.source_table = ?
 		ORDER BY ve.document_id`
-	rows, err := db.QueryContext(ctx, query, plan.PrimaryKey[0], migrationID, table)
+	rows, err := db.QueryContext(ctx, query, vectorPlan.IDColumn, migrationID, table)
 	if err != nil {
 		return nil, err
 	}

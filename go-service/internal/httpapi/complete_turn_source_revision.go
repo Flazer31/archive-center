@@ -30,8 +30,11 @@ func completeTurnMemorySourceRevision(
 	if strings.TrimSpace(userText) == "" || strings.TrimSpace(assistantText) == "" {
 		return nil, fmt.Errorf("source_revision_raw_pair_missing")
 	}
-	messageID := ""
-	if decision.Observation.MessageIndex >= 0 {
+	messageID := strings.TrimSpace(decision.Observation.MessageChatID)
+	if decision.Observation.MessageChatIDState != "observed" || messageID == "" {
+		messageID = ""
+	}
+	if messageID == "" && decision.Observation.MessageIndex >= 0 {
 		messageID = fmt.Sprintf("%s:index:%d", decision.Observation.HostChatID, decision.Observation.MessageIndex)
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))

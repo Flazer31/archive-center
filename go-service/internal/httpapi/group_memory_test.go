@@ -419,6 +419,70 @@ func TestSearchReturnsMemoriesFromStore(t *testing.T) {
 	}
 }
 
+func TestSearchReturnsOnlyPublicMemoryProjection(t *testing.T) {
+	mixed := map[string]any{
+		"turn_summary": "The public bell rang before Rowan learned the Nightjar identity.",
+		"evidence_excerpts": []any{
+			"The public bell rang.",
+			"Mira privately told Rowan that Nightjar is Selene.",
+		},
+		"protected_secrets": []any{map[string]any{
+			"secret_kind": "private_identity", "owner": "Selene",
+			"evidence_excerpt": "Mira privately told Rowan that Nightjar is Selene.",
+			"knowledge_scope":  map[string]any{"known_by": []any{"Rowan"}},
+		}},
+		"character_identity_accuracy": []any{map[string]any{
+			"canonical_entity_name": "Selene", "surface_identity_name": "Nightjar",
+			"evidence_excerpt": "Mira privately told Rowan that Nightjar is Selene.",
+			"knowledge_scope":  map[string]any{"known_by": []any{"Rowan"}},
+		}},
+		"state_claims": []any{map[string]any{
+			"subject": "bell", "state_slot": "ringing", "value": true,
+			"evidence_excerpt": "The public bell rang.",
+		}},
+	}
+	privateOnly := map[string]any{
+		"turn_summary":      "Rowan alone knows the obsidian password.",
+		"evidence_excerpts": []any{"Mira privately told Rowan the obsidian password."},
+		"belief_updates": []any{map[string]any{
+			"perspective_owner": "Rowan", "subject": "password", "state_slot": "value", "value": "obsidian",
+			"evidence_excerpt": "Mira privately told Rowan the obsidian password.",
+		}},
+	}
+	fake := &memoryFakeStore{memories: []store.Memory{
+		{ID: 91, ChatSessionID: "sess-public-projection", TurnIndex: 9, SummaryJSON: mustCompactJSON(mixed), Evidence: mustCompactJSON(map[string]any{"evidence_excerpts": mixed["evidence_excerpts"]}), Importance: 0.8},
+		{ID: 92, ChatSessionID: "sess-public-projection", TurnIndex: 10, SummaryJSON: mustCompactJSON(privateOnly), Evidence: mustCompactJSON(map[string]any{"evidence_excerpts": privateOnly["evidence_excerpts"]}), Importance: 0.9},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/search", strings.NewReader(`{"user_input":"public bell","chat_session_id":"sess-public-projection","top_k":5}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	items := sliceFromAny(response["items"])
+	if len(items) != 1 || intFromAny(mapFromAny(items[0])["id"], 0) != 91 {
+		t.Fatalf("public search items=%#v", response["items"])
+	}
+	serialized := rec.Body.String()
+	for _, privateText := range []string{"Nightjar", "Selene", "Rowan", "obsidian", "knowledge_scope", "protected_secrets"} {
+		if strings.Contains(serialized, privateText) {
+			t.Fatalf("/search leaked private canonical SummaryJSON token %q: %s", privateText, serialized)
+		}
+	}
+	if !strings.Contains(serialized, "The public bell rang.") {
+		t.Fatalf("/search omitted public projection: %s", serialized)
+	}
+}
+
 func TestMemorySummaryPreviewUsesTurnSummaryBeforeStructuredPayload(t *testing.T) {
 	raw := `{"turn_summary":"Luka confirms the island's point exchange rule after clearing a challenge.","archive_hint":{"wing":"wing_general","room":"hall_events"},"character_deltas":[{"name":"Luka"}],"kg_triples":[{"subject":"Luka","predicate":"clears","object":"challenge"}]}`
 	got := memorySummaryPreview(raw)
@@ -817,10 +881,10 @@ func TestSearchReturnsLongMemoryStoryCards(t *testing.T) {
 	}
 }
 
-func TestSearchFallsBackToChatLogsWhenMemoryResultsAreSparse(t *testing.T) {
+func TestSearchDoesNotReenterPrivateMemoryThroughChatLogFallback(t *testing.T) {
 	fake := &memoryFakeStore{
 		memories: []store.Memory{
-			{ID: 10, ChatSessionID: "sess-fb", TurnIndex: 1, SummaryJSON: `{"summary":"garden promise"}`, Importance: 0.7},
+			{ID: 10, ChatSessionID: "sess-fb", TurnIndex: 1, SummaryJSON: `{"turn_summary":"The brass key was hidden under the library gate.","protected_secrets":[{"owner":"Mira","secret_summary":"The brass key was hidden under the library gate.","knowledge_scope":{"known_by":["Mira"]}}]}`, Importance: 0.7},
 		},
 		chatLogs: []store.ChatLog{
 			{ID: 20, ChatSessionID: "sess-fb", TurnIndex: 2, Role: "assistant", Content: "The brass key was hidden under the library gate."},
@@ -847,31 +911,24 @@ func TestSearchFallsBackToChatLogsWhenMemoryResultsAreSparse(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if resp["fallback_count"] != float64(1) {
-		t.Fatalf("fallback_count = %v, want 1", resp["fallback_count"])
+	if resp["fallback_count"] != float64(0) {
+		t.Fatalf("fallback_count = %v, want 0", resp["fallback_count"])
 	}
-	if resp["has_fallback"] != true {
-		t.Fatalf("has_fallback = %v, want true", resp["has_fallback"])
+	if resp["has_fallback"] != false {
+		t.Fatalf("has_fallback = %v, want false", resp["has_fallback"])
 	}
 	items := resp["items"].([]any)
-	foundFallback := false
+	if len(items) != 0 {
+		t.Fatalf("items = %#v, want no public memory result", items)
+	}
 	for _, raw := range items {
 		item := raw.(map[string]any)
 		if item["source"] == "chat_log" {
-			foundFallback = true
-			if item["similarity_score"].(float64) < 0.65 {
-				t.Errorf("fallback similarity_score = %v, want >= 0.65", item["similarity_score"])
-			}
-			if !strings.Contains(item["content_preview"].(string), "brass key") {
-				t.Errorf("content_preview = %q, want brass key excerpt", item["content_preview"])
-			}
+			t.Fatalf("private chat log reentered ordinary search: %#v", item)
 		}
 	}
-	if !foundFallback {
-		t.Fatal("expected chat_log fallback item")
-	}
-	if text, _ := resp["injection_text"].(string); !strings.Contains(text, "brass key") {
-		t.Errorf("injection_text = %q, want fallback excerpt", text)
+	if text, _ := resp["injection_text"].(string); strings.Contains(strings.ToLower(text), "brass key") {
+		t.Errorf("injection_text leaked private chat text: %q", text)
 	}
 }
 
@@ -899,6 +956,9 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	vectorFake := &fakeVectorStore{
 		healthSnapshot: vector.HealthSnapshot{Status: "ok", TotalCount: 2, ModelReady: true},
 		searchResults: []vector.VectorDocument{
+			{ID: "precise_memory:sess-vector-search:unit-1", Tier: "precise_memory", ChatSessionID: "sess-vector-search", SourceTable: "precise_memory_units", SourceRowID: "unit-1", DocumentText: "semantic detail", Similarity: 0.91, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
+		},
+		memoryResults: []vector.VectorDocument{
 			{ID: "memory:sess-vector-search:1", Tier: "memory", ChatSessionID: "sess-vector-search", SourceTable: "memories", SourceRowID: "1", DocumentText: "semantic old shrine", Similarity: 0.82, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding"},
 		},
 	}
@@ -929,8 +989,11 @@ func TestSearchVectorFirstHydratesMemoryWithoutLexicalTopKFill(t *testing.T) {
 	if resp["retrieval_mode"] != "vector_first" {
 		t.Fatalf("retrieval_mode = %v, want vector_first; resp=%#v", resp["retrieval_mode"], resp)
 	}
-	if vectorFake.searchCalls != 1 {
-		t.Fatalf("vector search calls = %d, want 1", vectorFake.searchCalls)
+	if vectorFake.searchCalls != 2 {
+		t.Fatalf("vector search calls = %d, want support and aggregate-memory lane searches", vectorFake.searchCalls)
+	}
+	if len(vectorFake.searchFilters) != 2 || !strings.Contains(vectorFake.searchFilters[1], `tier == "memory"`) {
+		t.Fatalf("vector search filters = %#v, want a dedicated aggregate-memory tier query", vectorFake.searchFilters)
 	}
 	items, ok := resp["items"].([]any)
 	if !ok || len(items) != 2 {
@@ -1137,5 +1200,55 @@ func TestExplorerMemoriesReturnsStoreData(t *testing.T) {
 	}
 	if resp["total"] != float64(1) {
 		t.Errorf("total = %v, want 1", resp["total"])
+	}
+}
+
+func TestExplorerMemoriesOnlyExposesModelForActualEmbedding(t *testing.T) {
+	fake := &memoryFakeStore{
+		memories: []store.Memory{
+			{ID: 1, ChatSessionID: "sess-model", TurnIndex: 1, SummaryJSON: `{"summary":"perspective sentinel without vector"}`, Embedding: "[]", EmbeddingModel: "perspective_scoped_typed_delivery"},
+			{ID: 2, ChatSessionID: "sess-model", TurnIndex: 2, SummaryJSON: `{"summary":"configuration sentinel without vector"}`, Embedding: "[]", EmbeddingModel: "not_configured"},
+			{ID: 3, ChatSessionID: "sess-model", TurnIndex: 3, SummaryJSON: `{"summary":"perspective sentinel with stale vector"}`, Embedding: "[0.1]", EmbeddingModel: "perspective_scoped_typed_delivery"},
+			{ID: 4, ChatSessionID: "sess-model", TurnIndex: 4, SummaryJSON: `{"summary":"configuration sentinel with stale vector"}`, Embedding: "[0.2]", EmbeddingModel: "not_configured"},
+			{ID: 5, ChatSessionID: "sess-model", TurnIndex: 5, SummaryJSON: `{"summary":"model without vector"}`, Embedding: "[]", EmbeddingModel: "voyage-context-4"},
+			{ID: 6, ChatSessionID: "sess-model", TurnIndex: 6, SummaryJSON: `{"summary":"actual embedded memory"}`, Embedding: "[0.3,0.4]", EmbeddingModel: "voyage-context-4"},
+			{ID: 7, ChatSessionID: "sess-model", TurnIndex: 7, SummaryJSON: `{"summary":"vector without model"}`, Embedding: "[0.5]", EmbeddingModel: "   "},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/explorer/memories?chat_session_id=sess-model", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	items, ok := resp["items"].([]any)
+	if !ok || len(items) != 7 {
+		t.Fatalf("items = %#v, want 7 rows", resp["items"])
+	}
+	modelsByID := map[float64]any{}
+	for _, raw := range items {
+		item, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("item = %T, want object", raw)
+		}
+		modelsByID[item["id"].(float64)] = item["embedding_model"]
+	}
+	for _, id := range []float64{1, 2, 3, 4, 5, 7} {
+		if modelsByID[id] != "" {
+			t.Fatalf("memory %.0f embedding_model = %q, want empty", id, modelsByID[id])
+		}
+	}
+	if modelsByID[6] != "voyage-context-4" {
+		t.Fatalf("actual vector embedding_model = %q, want voyage-context-4", modelsByID[6])
 	}
 }

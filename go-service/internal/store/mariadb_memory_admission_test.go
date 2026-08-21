@@ -94,7 +94,7 @@ func TestMariaDBMemoryAdmissionStopsAfterDeadlockRetryLimit(t *testing.T) {
 			WillReturnError(&mysql.MySQLError{Number: 1213, Message: "deadlock"})
 		mock.ExpectRollback()
 	}
-	mock.ExpectExec("UPDATE memory_source_revisions").
+	mock.ExpectExec("SET derived_admission_state = 'pending'").
 		WithArgs(admission.DerivationVersion, admission.ExtractorVersion,
 			admission.IndexVersion, admission.ResultHash, admission.ResultJSON,
 			admission.CreatedAt, admission.ChatSessionID, admission.SourceRevision,
@@ -339,6 +339,283 @@ func TestReconcileAdmissionPrivatePerspectiveDoesNotClaimGeneralVectorUpsert(t *
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestReplayPrivateAggregateCancelsPendingUpsertAndQueuesDeleteWithoutFakeModel(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 13, 1, 0, 0, 0, time.UTC)
+	admission := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision", TurnIndex: 3,
+		ResultHash: strings.Repeat("a", 64), CreatedAt: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs("no_public_memory_projection", now, "memory:session:17").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO memory_vector_outbox").
+		WillReturnResult(sqlmock.NewResult(50, 1))
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := reconcileAdmissionAggregateVectorEligibilityTx(
+		context.Background(), tx, admission, 17, nil,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 1 {
+		t.Fatalf("queued=%d, want one active-source delete", queued)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplayRetiredEvidenceCancelsPendingUpsertBeforeDelete(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 13, 1, 10, 0, 0, time.UTC)
+	admission := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision", TurnIndex: 3,
+		ResultHash: strings.Repeat("a", 64), CreatedAt: now,
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT id, evidence_text, tombstoned").
+		WithArgs("session", 3, 3).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}).
+			AddRow(22, "Previously public evidence.", false))
+	mock.ExpectExec("UPDATE direct_evidence_records").
+		WithArgs(int64(22), "session").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs("retired_evidence", now, "evidence:session:22").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO memory_vector_outbox").
+		WillReturnResult(sqlmock.NewResult(50, 1))
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byText, got, err := reconcileAdmissionEvidenceTx(context.Background(), tx, admission)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if len(byText) != 0 || got.retired != 1 || got.vectorOperations != 1 {
+		t.Fatalf("byText=%#v result=%+v", byText, got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestReplayPublicAggregateDoesNotDeleteEligibleMemory(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	admission := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision", TurnIndex: 3,
+		Vectors: []MemoryAdmissionVector{{ArtifactType: "memory"}},
+	}
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queued, err := reconcileAdmissionAggregateVectorEligibilityTx(
+		context.Background(), tx, admission, 17, nil,
+	)
+	if err != nil {
+		_ = tx.Rollback()
+		t.Fatal(err)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if queued != 0 {
+		t.Fatalf("queued=%d, want eligible public memory preserved", queued)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionVectorReplayReusesExactCompletedOperation(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 13, 2, 0, 0, 0, time.UTC)
+	item := &MemoryVectorOutboxItem{
+		OperationKey: strings.Repeat("d", 64), Operation: "upsert",
+		ChatSessionID: "session", SourceRevision: "revision",
+		DocumentID: "memory:session:17", DocumentJSON: `{"ID":"memory:session:17"}`,
+		EmbeddingReady: true, RequiredSourceState: "active", Status: "pending",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	for replay := 0; replay < 2; replay++ {
+		mock.ExpectQuery("SELECT o.id, o.operation").
+			WithArgs(item.OperationKey).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "operation", "chat_session_id", "source_revision", "document_id",
+				"required_source_state", "status", "lease_until", "lifecycle_state",
+			}).AddRow(44, item.Operation, item.ChatSessionID, item.SourceRevision,
+				item.DocumentID, item.RequiredSourceState, "completed", nil, "active"))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
+			WithArgs(item.DocumentID, int64(44)).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec("UPDATE memory_vector_outbox").
+			WithArgs(item.DocumentJSON, true, "pending", now, item.OperationKey, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		inserted, err := enqueueAdmissionVectorOperation(
+			WithMemoryAdmissionVectorReplay(context.Background(), true, false), db, item,
+		)
+		if err != nil || !inserted {
+			t.Fatalf("replay %d inserted=%v err=%v", replay, inserted, err)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionVectorReplayDoesNotStealActiveLease(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	item := &MemoryVectorOutboxItem{
+		OperationKey: strings.Repeat("e", 64), Operation: "delete",
+		ChatSessionID: "session", SourceRevision: "revision",
+		DocumentID: "memory:session:17", RequiredSourceState: "active",
+		Status: "pending", UpdatedAt: time.Now().UTC(),
+	}
+	mock.ExpectQuery("SELECT o.id, o.operation").
+		WithArgs(item.OperationKey).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation", "chat_session_id", "source_revision", "document_id",
+			"required_source_state", "status", "lease_until", "lifecycle_state",
+		}).AddRow(45, item.Operation, item.ChatSessionID, item.SourceRevision,
+			item.DocumentID, item.RequiredSourceState, "leased", time.Now().Add(time.Hour), "active"))
+	inserted, err := enqueueAdmissionVectorOperation(
+		WithMemoryAdmissionVectorReplay(context.Background(), true, false), db, item,
+	)
+	if inserted || !errors.Is(err, ErrMemoryReprocessingLeased) {
+		t.Fatalf("inserted=%v err=%v, want active lease preserved", inserted, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionVectorReplayReclaimsExpiredLease(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 13, 2, 10, 0, 0, time.UTC)
+	item := &MemoryVectorOutboxItem{
+		OperationKey: strings.Repeat("f", 64), Operation: "upsert",
+		ChatSessionID: "session", SourceRevision: "revision",
+		DocumentID: "evidence:session:21", DocumentJSON: `{"ID":"evidence:session:21"}`,
+		RequiredSourceState: "active", Status: "needs_embedding", UpdatedAt: now,
+	}
+	mock.ExpectQuery("SELECT o.id, o.operation").
+		WithArgs(item.OperationKey).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"id", "operation", "chat_session_id", "source_revision", "document_id",
+			"required_source_state", "status", "lease_until", "lifecycle_state",
+		}).AddRow(46, item.Operation, item.ChatSessionID, item.SourceRevision,
+			item.DocumentID, item.RequiredSourceState, "leased", time.Now().Add(-time.Hour), "active"))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
+		WithArgs(item.DocumentID, int64(46)).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs(item.DocumentJSON, false, "needs_embedding", now, item.OperationKey, sqlmock.AnyArg()).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	inserted, err := enqueueAdmissionVectorOperation(
+		WithMemoryAdmissionVectorReplay(context.Background(), true, false), db, item,
+	)
+	if err != nil || !inserted {
+		t.Fatalf("inserted=%v err=%v, want expired lease reclaimed", inserted, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionVectorReplayRejectsSupersededOrUnchangedOperation(t *testing.T) {
+	tests := []struct {
+		name     string
+		newer    int
+		affected int64
+	}{
+		{name: "newer operation exists", newer: 1, affected: -1},
+		{name: "guarded update affects no row", newer: 0, affected: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			now := time.Date(2026, 8, 13, 2, 20, 0, 0, time.UTC)
+			item := &MemoryVectorOutboxItem{
+				OperationKey: strings.Repeat("1", 64), Operation: "delete",
+				ChatSessionID: "session", SourceRevision: "revision",
+				DocumentID: "memory:session:17", RequiredSourceState: "active",
+				Status: "pending", UpdatedAt: now,
+			}
+			mock.ExpectQuery("SELECT o.id, o.operation").
+				WithArgs(item.OperationKey).
+				WillReturnRows(sqlmock.NewRows([]string{
+					"id", "operation", "chat_session_id", "source_revision", "document_id",
+					"required_source_state", "status", "lease_until", "lifecycle_state",
+				}).AddRow(47, item.Operation, item.ChatSessionID, item.SourceRevision,
+					item.DocumentID, item.RequiredSourceState, "completed", nil, "active"))
+			mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
+				WithArgs(item.DocumentID, int64(47)).
+				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(tt.newer))
+			if tt.affected >= 0 {
+				mock.ExpectExec("UPDATE memory_vector_outbox").
+					WithArgs(nil, false, "pending", now, item.OperationKey, sqlmock.AnyArg()).
+					WillReturnResult(sqlmock.NewResult(0, tt.affected))
+			}
+			inserted, err := enqueueAdmissionVectorOperation(
+				WithMemoryAdmissionVectorReplay(context.Background(), true, false), db, item,
+			)
+			if inserted || err == nil {
+				t.Fatalf("inserted=%v err=%v, want guarded replay failure", inserted, err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

@@ -1,10 +1,14 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 
@@ -83,11 +87,11 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 	if len(req.ResponseExecutionContract) > 0 {
 		supervisorPack["response_execution_contract"] = req.ResponseExecutionContract
 	}
-	supervisorPack["support_packet"] = buildSupervisorSupportPacket(sid, currentInput, mapFromAny(supervisorPack["response_execution_contract"]), nil, "", nil)
+	supervisorPack["support_packet"] = buildSupervisorSupportPacket(sid, currentInput, mapFromAny(supervisorPack["response_execution_contract"]), nil, "", nil, nil)
 	trace := buildPromptAssemblyTrace(s.Cfg.PromptDir)
 	trace["guide_mode"] = guideMode
 	trace["guide_strength"] = guideStrength
-	trace["supervisor_proposal_coverage"] = supervisorProposalCoverage(guideStrength)
+	trace["supervisor_proposal_coverage"] = publisherStrengthProfile(guideStrength)
 	trace["response_execution_contract_present"] = len(req.ResponseExecutionContract) > 0
 	trace["guide_focus"] = supervisorPack["guide_focus"]
 	trace["wake_up_context_present"] = wakeUpContext != ""
@@ -138,21 +142,25 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		result, llmTrace, err := s.runSupervisorLLM(r.Context(), sid, supervisorPack, llmCfg)
-		trace["would_call_llm"] = true
-		trace["llm_call"] = "executed"
 		trace["llm_trace"] = llmTrace
 		if err != nil {
 			failureCode := extractionFirstNonEmpty(extractionStringFromAny(llmTrace["failure_code"]), "publisher_llm_failed_open")
-			trace["llm_call"] = "failed"
+			providerCallAttempted := failureCode != "publisher_system_prompt_unavailable"
+			trace["would_call_llm"] = providerCallAttempted
+			if providerCallAttempted {
+				trace["llm_call"] = "failed"
+			} else {
+				trace["llm_call"] = "skipped"
+			}
 			trace["fail_open"] = true
 			trace["reason_code"] = failureCode
 			writeJSON(w, http.StatusOK, map[string]any{
 				"status":                "partial",
 				"source":                "runtime_llm_error",
-				"note":                  "POST /supervisor attempted configured LLM call and failed open",
+				"note":                  "POST /supervisor could not complete the configured LLM call and failed open",
 				"chat_session_id":       sid,
 				"supervisor_input_pack": supervisorPack,
-				"would_call_llm":        true,
+				"would_call_llm":        providerCallAttempted,
 				"would_write":           false,
 				"upstream_write":        "disabled",
 				"supervisor_result":     nil,
@@ -162,14 +170,17 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 			})
 			return
 		}
+		trace["would_call_llm"] = true
+		trace["llm_call"] = "executed"
 		responseStatus := "ok"
 		responseSource := "runtime_llm"
 		failOpen := false
 		reasonCode := ""
 		resultProposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
-		if extractionStringFromAny(resultProposal["status"]) == "malformed_failed_open" {
+		proposalStatus := extractionStringFromAny(resultProposal["status"])
+		if proposalStatus == "publisher_response_container_invalid" || proposalStatus == "publisher_llm_empty_content" || proposalStatus == "publisher_json_malformed" || proposalStatus == "publisher_json_truncated" || proposalStatus == "publisher_schema_invalid" || proposalStatus == "publisher_plan_no_valid_items" {
 			responseStatus = "partial"
-			responseSource = "runtime_llm_malformed"
+			responseSource = "runtime_llm_rejected"
 			failOpen = true
 			reasonCode = extractionStringFromAny(resultProposal["reason_code"])
 			trace["fail_open"] = true
@@ -207,18 +218,25 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPack map[string]any, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
-	systemPrompt, promptSource := readSupervisorSystemPrompt(s.Cfg.PromptDir)
+	systemPrompt, promptSource, promptErr := readSupervisorSystemPrompt(s.Cfg.PromptDir)
+	if promptErr != nil {
+		return nil, map[string]any{
+			"prompt_source":  promptSource,
+			"model":          cfg.Model,
+			"failure_code":   "publisher_system_prompt_unavailable",
+			"failure_detail": promptErr.Error(),
+		}, promptErr
+	}
 	guideMode := normalizeNarrativeGuideMode(extractionStringFromAny(supervisorPack["guide_mode"]))
 	payload := map[string]any{
-		"chat_session_id":              sid,
-		"guide_mode":                   guideMode,
-		"guide_strength":               extractionStringFromAny(supervisorPack["guide_strength"]),
-		"guide_focus":                  supervisorPack["guide_focus"],
-		"supervisor_support_packet":    supervisorPack["support_packet"],
-		"response_execution_contract":  supervisorPack["response_execution_contract"],
-		"supervisor_proposal_coverage": supervisorProposalCoverage(extractionStringFromAny(supervisorPack["guide_strength"])),
-		"required_output": "Return only JSON with supervisor_scene_proposal. Translate the current input, accepted recent context, and delivered support into the bounded response focus, continuity, expression, pacing, and scene-direction kinds allowed by supervisor_proposal_coverage. " +
-			"Copy exact refs from supervisor_support_packet and keep every item response-scoped and proposal-only without inventing facts, user actions, relationship changes, scene jumps, or event closure.",
+		"chat_session_id":             sid,
+		"guide_mode":                  guideMode,
+		"guide_strength":              extractionStringFromAny(supervisorPack["guide_strength"]),
+		"publisher_strength_profile":  publisherStrengthProfile(extractionStringFromAny(supervisorPack["guide_strength"])),
+		"guide_focus":                 supervisorPack["guide_focus"],
+		"supervisor_support_packet":   supervisorPack["support_packet"],
+		"response_execution_contract": supervisorPack["response_execution_contract"],
+		"required_output":             "Return one JSON object containing supervisor_scene_proposal.publisher_plan with contract_version publisher_plan.v2 and both book_author and director roles. Include all eight required role fields, using null or [] when no supported item exists. Every non-empty item must copy exact source_refs from text-bearing entries in supervisor_support_packet. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure.",
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
 	maxTokens := cfg.MaxTokens
@@ -255,7 +273,9 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		reqBody.GlmThinkingType = &cfg.GlmThinkingType
 	}
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
-	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudget(ctx, reqBody, cfg.RetryBudget)
+	// Publisher planning is exactly one provider request. A rejected request is
+	// reported explicitly; it is never retried with a different parameter set.
+	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
 	if err != nil {
 		failureCode := "publisher_llm_provider_error"
 		var emptyContentErr *proxyEmptyContentError
@@ -282,330 +302,573 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 			"upstream_status": upstreamStatus,
 		}, err
 	}
-	content := chatCompletionText(upstream)
-	parsed, err := parseJSONFromLLMContent(content)
 	trace := map[string]any{
 		"prompt_source": promptSource,
 		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
 		"usage":         upstream["usage"],
 	}
+	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
+	if len(providerResponse) > 0 {
+		trace["provider_response"] = providerResponse
+	}
 	if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 		trace["request_overrides"] = requestOverrides
 	}
-	if err != nil {
-		trace["parse_status"] = "malformed_failed_open"
-		parsed = nil
-	} else {
-		trace["parse_status"] = "parsed"
+	content, responseTrace, responseFailure := normalizePublisherResponseContent(upstream)
+	trace["response_normalization"] = responseTrace
+	if responseFailure != "" {
+		trace["parse_status"] = responseFailure
+		bounded, proposalTrace := buildPublisherFailureResult(supervisorPack, responseFailure)
+		trace["proposal_contract"] = proposalTrace
+		return bounded, trace, nil
 	}
+	parsed, parseErr := parsePublisherJSONObject(content)
+	if parseErr != nil {
+		parseStatus := "publisher_json_malformed"
+		if stringFromMap(providerResponse, "termination_kind") == "length" {
+			parseStatus = "publisher_json_truncated"
+		}
+		trace["parse_status"] = parseStatus
+		trace["parse_failure"] = "strict_json_rejected"
+		bounded, proposalTrace := buildPublisherFailureResult(supervisorPack, parseStatus)
+		trace["proposal_contract"] = proposalTrace
+		return bounded, trace, nil
+	}
+	trace["parse_status"] = "parsed"
 	bounded, proposalTrace := buildBoundedSupervisorResult(parsed, supervisorPack)
 	trace["proposal_contract"] = proposalTrace
 	return bounded, trace, nil
 }
 
-func supervisorProposalCoverage(strength string) map[string]any {
-	common := map[string]any{
-		"truth_authority":                        false,
-		"canonical_write":                        false,
-		"force_progress":                         false,
-		"proactive_complication_opt_in":          false,
-		"proactive_complication_requires_opt_in": true,
-		"proactive_complication_default":         "off",
-		"strong_implies_proactive":               false,
-		"strong_implies_forced_progress":         false,
-		"blocked_user_action":                    true,
-		"blocked_new_truth":                      true,
-		"blocked_relationship_change":            true,
-		"blocked_unresolved_event_closure":       true,
+func publisherStrengthProfile(strength string) map[string]any {
+	strength = normalizeNarrativeGuideStrength(strength)
+	profile := map[string]any{
+		"contract_version":            "publisher_strength_profile.v1",
+		"strength":                    strength,
+		"response_scope":              "current_response_only",
+		"truth_authority":             false,
+		"canonical_write":             false,
+		"force_progress":              false,
+		"force_user_action":           false,
+		"invent_new_facts":            false,
+		"confirm_relationship_change": false,
+		"close_unresolved_event":      false,
+		"persistent_carry":            false,
+		"pressure_independent":        true,
+		"item_policy":                 "supported_items_only_no_filler",
 	}
-	withCommon := func(coverage map[string]any) map[string]any {
-		for key, value := range common {
-			coverage[key] = value
-		}
-		return coverage
+	if strength == "none" {
+		profile["publisher_call"] = "none"
+		profile["roles"] = []string{}
+		profile["guidance_explicitness"] = "disabled"
+		return profile
 	}
-	switch normalizeNarrativeGuideStrength(strength) {
-	case "none":
-		return withCommon(map[string]any{
-			"profile":                  "disabled",
-			"supervisor_call":          "none",
-			"guidance_scope":           "none",
-			"allowed_roles":            []string{},
-			"allowed_expression_kinds": []string{},
-		})
-	case "strong":
-		return withCommon(map[string]any{
-			"profile":         "fidelity_expression_reversible",
-			"supervisor_call": "source_backed_optional",
-			"guidance_scope":  "arc_anchor_and_preferred_frontier",
-			"guidance_options": []string{
-				"arc_anchor", "preferred_frontier", "hold_allowed",
-			},
-			"allowed_roles": []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option", "ending_edge"},
-			"allowed_expression_kinds": []string{
-				"portrayal", "response_focus", "must_account", "pacing", "scene_emphasis", "callback",
-				"may_advance", "hold_allowed", "arc_anchor", "preferred_frontier", "reversible_option",
-				"character_expression", "relationship_expression", "world_guard", "must_not", "ending_edge",
-			},
-		})
+	profile["publisher_call"] = "single_source_backed"
+	profile["roles"] = []string{"book_author", "director"}
+	switch strength {
 	case "medium":
-		return withCommon(map[string]any{
-			"profile":         "fidelity_expression_contextual",
-			"supervisor_call": "source_backed_optional",
-			"guidance_scope":  "may_advance_or_hold_allowed",
-			"guidance_options": []string{
-				"may_advance", "hold_allowed",
-			},
-			"allowed_roles": []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not", "pacing", "scene_emphasis", "may_advance", "hold_allowed"},
-			"allowed_expression_kinds": []string{
-				"portrayal", "response_focus", "must_account", "callback", "character_expression", "relationship_expression", "world_guard", "must_not",
-				"pacing", "scene_emphasis", "may_advance", "hold_allowed",
-			},
-		})
+		profile["guidance_explicitness"] = "balanced"
+	case "strong":
+		profile["guidance_explicitness"] = "direct"
+	case "extreme":
+		profile["guidance_explicitness"] = "ordered"
+	case "maximum":
+		profile["guidance_explicitness"] = "execution_brief"
 	default:
-		return withCommon(map[string]any{
-			"profile":                  "fidelity_expression_low_impact",
-			"supervisor_call":          "source_backed_optional",
-			"guidance_scope":           "response_focus_and_must_account",
-			"guidance_options":         []string{"response_focus", "must_account"},
-			"allowed_roles":            []string{"fidelity_warning", "response_focus", "must_account", "portrayal", "callback", "character_expression", "relationship_expression", "world_guard", "must_not"},
-			"allowed_expression_kinds": []string{"portrayal", "response_focus", "must_account", "callback", "character_expression", "relationship_expression", "world_guard", "must_not"},
-		})
+		profile["guidance_explicitness"] = "gentle"
+	}
+	return profile
+}
+
+func normalizePublisherResponseContent(resp map[string]any) (string, map[string]any, string) {
+	trace := map[string]any{
+		"choice_index":           0,
+		"extra_choices_ignored":  0,
+		"text_parts_accepted":    0,
+		"non_text_parts_ignored": 0,
+	}
+	choices, ok := resp["choices"].([]any)
+	if !ok || len(choices) == 0 {
+		trace["container"] = "choices_missing"
+		return "", trace, "publisher_response_container_invalid"
+	}
+	trace["extra_choices_ignored"] = maxInt(0, len(choices)-1)
+	choice, ok := choices[0].(map[string]any)
+	if !ok {
+		trace["container"] = "choice_invalid"
+		return "", trace, "publisher_response_container_invalid"
+	}
+	messageValue, messagePresent := choice["message"]
+	message, messageOK := messageValue.(map[string]any)
+	contentValue, contentPresent := any(nil), false
+	if messageOK {
+		contentValue, contentPresent = message["content"]
+	} else if messagePresent && messageValue != nil {
+		trace["container"] = "message_invalid"
+		return "", trace, "publisher_response_container_invalid"
+	}
+
+	content := ""
+	if contentPresent && contentValue != nil {
+		switch value := contentValue.(type) {
+		case string:
+			trace["container"] = "message_content_string"
+			content = value
+		case []any:
+			trace["container"] = "message_content_array"
+			var builder strings.Builder
+			for _, rawPart := range value {
+				switch part := rawPart.(type) {
+				case string:
+					builder.WriteString(part)
+					trace["text_parts_accepted"] = intFromAny(trace["text_parts_accepted"], 0) + 1
+				case map[string]any:
+					if textPart, ok := part["text"].(string); ok {
+						builder.WriteString(textPart)
+						trace["text_parts_accepted"] = intFromAny(trace["text_parts_accepted"], 0) + 1
+					} else {
+						trace["non_text_parts_ignored"] = intFromAny(trace["non_text_parts_ignored"], 0) + 1
+					}
+				default:
+					trace["non_text_parts_ignored"] = intFromAny(trace["non_text_parts_ignored"], 0) + 1
+				}
+			}
+			content = builder.String()
+		default:
+			trace["container"] = "message_content_unsupported"
+			return "", trace, "publisher_response_container_invalid"
+		}
+	}
+	if strings.TrimSpace(content) == "" {
+		return "", trace, "publisher_llm_empty_content"
+	}
+	return content, trace, ""
+}
+
+func parsePublisherJSONObject(content string) (map[string]any, error) {
+	content = strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
+	if content == "" {
+		return nil, fmt.Errorf("publisher JSON is empty")
+	}
+	objects, incomplete := publisherTopLevelJSONObjectRanges(content)
+	if incomplete {
+		return nil, fmt.Errorf("publisher JSON object is incomplete")
+	}
+	if len(objects) != 1 {
+		return nil, fmt.Errorf("publisher response must contain exactly one top-level JSON object")
+	}
+	objectStart, objectEnd := objects[0][0], objects[0][1]
+	if !publisherWrapperIsHarmless(content[:objectStart]) || !publisherWrapperIsHarmless(content[objectEnd:]) {
+		return nil, fmt.Errorf("publisher response wrapper is not harmless")
+	}
+	decoder := json.NewDecoder(bytes.NewReader([]byte(content[objectStart:objectEnd])))
+	decoder.UseNumber()
+	value, err := decodePublisherJSONValue(decoder)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("publisher JSON has trailing content")
+		}
+		return nil, err
+	}
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, fmt.Errorf("publisher JSON root is not an object")
+	}
+	return object, nil
+}
+
+func publisherTopLevelJSONObjectRanges(content string) ([][2]int, bool) {
+	ranges := make([][2]int, 0, 1)
+	depth := 0
+	start := -1
+	inString := false
+	escaped := false
+	for index := 0; index < len(content); index++ {
+		ch := content[index]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			switch ch {
+			case '\\':
+				escaped = true
+			case '"':
+				inString = false
+			}
+			continue
+		}
+		if ch == '"' && depth > 0 {
+			inString = true
+			continue
+		}
+		switch ch {
+		case '{':
+			if depth == 0 {
+				start = index
+			}
+			depth++
+		case '}':
+			if depth == 0 {
+				continue
+			}
+			depth--
+			if depth == 0 && start >= 0 {
+				ranges = append(ranges, [2]int{start, index + 1})
+				start = -1
+			}
+		}
+	}
+	return ranges, depth != 0 || inString
+}
+
+func publisherWrapperIsHarmless(wrapper string) bool {
+	wrapper = strings.TrimSpace(strings.TrimPrefix(wrapper, "\ufeff"))
+	if wrapper == "" {
+		return true
+	}
+	if strings.ContainsAny(wrapper, "{}[]") {
+		return false
+	}
+	withoutFences := strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(wrapper, "```json", ""), "```", ""))
+	if withoutFences == "" {
+		return true
+	}
+	return !json.Valid([]byte(withoutFences))
+}
+
+func decodePublisherJSONValue(decoder *json.Decoder) (any, error) {
+	token, err := decoder.Token()
+	if err != nil {
+		return nil, err
+	}
+	delim, isDelim := token.(json.Delim)
+	if !isDelim {
+		return token, nil
+	}
+	switch delim {
+	case '{':
+		object := map[string]any{}
+		seen := map[string]struct{}{}
+		for decoder.More() {
+			keyToken, err := decoder.Token()
+			if err != nil {
+				return nil, err
+			}
+			key, ok := keyToken.(string)
+			if !ok {
+				return nil, fmt.Errorf("publisher JSON object key is invalid")
+			}
+			if _, duplicate := seen[key]; duplicate {
+				return nil, fmt.Errorf("publisher JSON contains duplicate key %q", key)
+			}
+			seen[key] = struct{}{}
+			value, err := decodePublisherJSONValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			object[key] = value
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim('}') {
+			return nil, fmt.Errorf("publisher JSON object is incomplete")
+		}
+		return object, nil
+	case '[':
+		values := []any{}
+		for decoder.More() {
+			value, err := decodePublisherJSONValue(decoder)
+			if err != nil {
+				return nil, err
+			}
+			values = append(values, value)
+		}
+		end, err := decoder.Token()
+		if err != nil || end != json.Delim(']') {
+			return nil, fmt.Errorf("publisher JSON array is incomplete")
+		}
+		return values, nil
+	default:
+		return nil, fmt.Errorf("publisher JSON delimiter is invalid")
+	}
+}
+
+type publisherV2FieldSpec struct {
+	role     string
+	field    string
+	isArray  bool
+	pressure bool
+}
+
+var publisherV2FieldSpecs = []publisherV2FieldSpec{
+	{role: "book_author", field: "current_arc"},
+	{role: "book_author", field: "narrative_goal"},
+	{role: "book_author", field: "next_beats", isArray: true},
+	{role: "book_author", field: "guardrails", isArray: true},
+	{role: "director", field: "scene_mandate"},
+	{role: "director", field: "required_outcomes", isArray: true},
+	{role: "director", field: "forbidden_moves", isArray: true},
+	{role: "director", field: "pressure_level", pressure: true},
+}
+
+func buildPublisherFailureResult(supervisorPack map[string]any, reason string) (map[string]any, map[string]any) {
+	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(supervisorPack["guide_strength"]))
+	contractReady, _ := supervisorExecutionContractReady(supervisorPack)
+	proposal := publisherProposalBase(strength)
+	proposal["status"] = reason
+	proposal["reason_code"] = reason
+	trace := map[string]any{
+		"contract_ready": contractReady,
+		"guide_strength": strength,
+		"reason_code":    reason,
+		"accepted_items": 0,
+		"rejected_items": 0,
+		"fail_open":      true,
+	}
+	return boundedSupervisorEnvelope(proposal), trace
+}
+
+func publisherProposalBase(strength string) map[string]any {
+	return map[string]any{
+		"contract_version": "supervisor_scene_proposal.v3",
+		"status":           "ready",
+		"authority":        "proposal_only",
+		"truth_authority":  false,
+		"would_write":      false,
+		"guide_strength":   strength,
+		"coverage":         publisherStrengthProfile(strength),
 	}
 }
 
 func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[string]any, map[string]any) {
 	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(supervisorPack["guide_strength"]))
-	coverage := supervisorProposalCoverage(strength)
-	executionContract := mapFromAny(supervisorPack["response_execution_contract"])
-
-	sourceRefs := mapFromAny(executionContract["source_refs"])
 	currentInputRefList, memoryRefList := supervisorSupportReferenceLists(supervisorPack)
 	allowedRefList := appendUniqueStringValues([]string{}, currentInputRefList...)
 	allowedRefList = appendUniqueStringValues(allowedRefList, memoryRefList...)
-	allowedRefList = appendUniqueStringValues(allowedRefList, stringSliceFromAny(sourceRefs["native_system"])...)
 	allowedRefs := make(map[string]struct{}, len(allowedRefList))
 	for _, ref := range allowedRefList {
 		if ref = strings.TrimSpace(ref); ref != "" {
 			allowedRefs[ref] = struct{}{}
 		}
 	}
-	memoryRefs := make(map[string]struct{}, len(memoryRefList))
-	for _, ref := range memoryRefList {
-		if ref = strings.TrimSpace(ref); ref != "" {
-			memoryRefs[ref] = struct{}{}
-		}
-	}
-	currentInputRefs := make(map[string]struct{}, len(currentInputRefList))
-	for _, ref := range currentInputRefList {
-		if ref = strings.TrimSpace(ref); ref != "" {
-			currentInputRefs[ref] = struct{}{}
-		}
-	}
-	expressionSupportRefs := make(map[string]struct{}, len(currentInputRefs)+len(memoryRefs))
-	for ref := range currentInputRefs {
-		expressionSupportRefs[ref] = struct{}{}
-	}
-	for ref := range memoryRefs {
-		expressionSupportRefs[ref] = struct{}{}
-	}
 	contractReady, contractReasonCode := supervisorExecutionContractReady(supervisorPack)
-
-	proposal := map[string]any{
-		"contract_version":   "supervisor_scene_proposal.v3",
-		"status":             "ready",
-		"authority":          "proposal_only",
-		"truth_authority":    false,
-		"would_write":        false,
-		"guide_strength":     strength,
-		"coverage":           coverage,
-		"verification_state": "lane_specific_source_support_required",
-		"application_rule":   "Every item is optional support. Keep the current user input authoritative and do not treat a proposal as story truth or permission to decide irreversible outcomes.",
-		"blocked_authority": []string{
-			"new_fact",
-			"new_emotion_or_knowledge",
-			"relationship_change",
-			"user_protagonist_action",
-			"unresolved_event_closure",
-			"scene_jump",
-			"canonical_write",
-		},
-		"source_refs": map[string]any{
-			"allowed":                  allowedRefList,
-			"current_input_support":    currentInputRefList,
-			"required_memory_evidence": memoryRefList,
-		},
-		"fidelity_warnings": []map[string]any{},
-		"expression_hints":  []map[string]any{},
-		"publisher_plan":    zeroPublisherPlan(strength, "zero", "no_accepted_proposal"),
-	}
+	proposal := publisherProposalBase(strength)
 	trace := map[string]any{
 		"contract_ready": contractReady,
 		"allowed_refs":   len(allowedRefs),
-		"memory_refs":    len(memoryRefs),
+		"memory_refs":    len(memoryRefList),
 		"guide_strength": strength,
-		"coverage":       coverage,
+		"coverage":       proposal["coverage"],
 	}
 	rawGuideMode := strings.TrimSpace(extractionStringFromAny(supervisorPack["guide_mode"]))
 	if strength == "none" || (rawGuideMode != "" && normalizeNarrativeGuideMode(rawGuideMode) == "off") {
 		proposal["status"] = "disabled"
 		proposal["reason_code"] = "narrative_guide_disabled"
-		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "narrative_guide_disabled")
 		trace["reason_code"] = "narrative_guide_disabled"
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 	if !contractReady {
 		proposal["status"] = "degraded_missing_execution_contract"
 		proposal["reason_code"] = contractReasonCode
-		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", contractReasonCode)
 		trace["reason_code"] = contractReasonCode
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 	if parsed == nil {
-		proposal["status"] = "malformed_failed_open"
-		proposal["reason_code"] = "supervisor_malformed_json"
-		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "supervisor_malformed_json")
-		trace["reason_code"] = "supervisor_malformed_json"
+		proposal["status"] = "publisher_json_malformed"
+		proposal["reason_code"] = "publisher_json_malformed"
+		trace["reason_code"] = "publisher_json_malformed"
 		trace["fail_open"] = true
 		trace["accepted_items"] = 0
 		trace["rejected_items"] = 0
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 
-	rawProposal := map[string]any{}
-	proposalEnvelopePresent := false
-	schemaInvalid := false
-	if rawEnvelope, exists := parsed["supervisor_scene_proposal"]; exists {
-		proposalEnvelopePresent = true
-		var ok bool
-		rawProposal, ok = rawEnvelope.(map[string]any)
-		schemaInvalid = !ok
-	} else if rawDirectiveValue, directiveExists := parsed["directive"]; directiveExists {
-		rawDirective, ok := rawDirectiveValue.(map[string]any)
-		if !ok {
-			schemaInvalid = true
-		} else if rawEnvelope, exists := rawDirective["supervisor_scene_proposal"]; exists {
-			proposalEnvelopePresent = true
-			rawProposal, ok = rawEnvelope.(map[string]any)
-			schemaInvalid = !ok
-		}
+	rawProposal, ok := parsed["supervisor_scene_proposal"].(map[string]any)
+	if !ok {
+		return buildPublisherSchemaFailure(proposal, trace)
 	}
-	for _, key := range []string{"fidelity_warnings", "expression_hints", "portrayal_notes", "may_advance"} {
-		rawItems, exists := rawProposal[key]
-		if !exists {
-			continue
-		}
-		items, ok := rawItems.([]any)
-		if !ok {
-			schemaInvalid = true
-			break
-		}
-		if key == "fidelity_warnings" || key == "expression_hints" {
-			for _, rawItem := range items {
-				item, ok := rawItem.(map[string]any)
-				if !ok || !supervisorProposalItemSchemaValid(item, key == "expression_hints") {
-					schemaInvalid = true
-					break
-				}
-			}
-		}
-		if schemaInvalid {
-			break
-		}
+	rawPlan, ok := rawProposal["publisher_plan"].(map[string]any)
+	if !ok || extractionStringFromAny(rawPlan["contract_version"]) != "publisher_plan.v2" {
+		return buildPublisherSchemaFailure(proposal, trace)
 	}
-	if schemaInvalid {
-		proposal["status"] = "malformed_failed_open"
-		proposal["reason_code"] = "supervisor_schema_invalid"
-		proposal["publisher_plan"] = zeroPublisherPlan(strength, "zero", "supervisor_schema_invalid")
-		trace["reason_code"] = "supervisor_schema_invalid"
-		trace["fail_open"] = true
-		trace["accepted_items"] = 0
-		trace["rejected_items"] = 0
-		return boundedSupervisorEnvelope(proposal), trace
-	}
-	allowedKinds := make(map[string]struct{})
-	for _, kind := range stringSliceFromAny(coverage["allowed_expression_kinds"]) {
-		allowedKinds[kind] = struct{}{}
+	bookAuthor, bookAuthorOK := rawPlan["book_author"].(map[string]any)
+	director, directorOK := rawPlan["director"].(map[string]any)
+	if !bookAuthorOK && !directorOK {
+		return buildPublisherSchemaFailure(proposal, trace)
 	}
 
-	acceptedTotal := 0
-	rejectedTotal := 0
-	fidelityItems, fidelityRejected := normalizeSupervisorProposalItems(rawProposal["fidelity_warnings"], allowedRefs, memoryRefs)
-	proposal["fidelity_warnings"] = fidelityItems
-	acceptedTotal += len(fidelityItems)
-	rejectedTotal += fidelityRejected
-	typedRequiredRefs := map[string]map[string]struct{}{}
-	executionRefs := mapFromAny(mapFromAny(supervisorPack["response_execution_contract"])["source_refs"])
-	for _, kind := range []string{"may_advance", "arc_anchor", "preferred_frontier"} {
-		refs := map[string]struct{}{}
-		for _, ref := range stringSliceFromAny(executionRefs[kind]) {
-			if ref = strings.TrimSpace(ref); ref != "" {
-				refs[ref] = struct{}{}
-			}
-		}
-		typedRequiredRefs[kind] = refs
+	accepted := []map[string]any{}
+	rejected := []map[string]any{}
+	addRejected := func(path, code string) {
+		rejected = append(rejected, map[string]any{"path": path, "code": code})
 	}
-	expressionItems, expressionRejected := normalizeSupervisorExpressionItems(rawProposal["expression_hints"], allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs, typedRequiredRefs)
-	proposal["expression_hints"] = expressionItems
-	acceptedTotal += len(expressionItems)
-	rejectedTotal += expressionRejected
-	rejectedTotal += anySliceLength(rawProposal["portrayal_notes"])
-	rejectedTotal += anySliceLength(rawProposal["may_advance"])
-	for key := range rawProposal {
-		switch key {
-		case "contract_version", "fidelity_warnings", "expression_hints", "portrayal_notes", "may_advance":
-			continue
-		default:
-			rejectedTotal++
-		}
-	}
-	if acceptedTotal == 0 {
-		switch {
-		case rejectedTotal > 0 || (!proposalEnvelopePresent && len(parsed) > 0):
-			proposal["status"] = "unsupported_rejected"
-			proposal["reason_code"] = "supervisor_unsupported_proposal_rejected"
-			trace["reason_code"] = "supervisor_unsupported_proposal_rejected"
-		default:
-			proposal["status"] = "valid_empty"
-			proposal["reason_code"] = "supervisor_valid_empty"
-			trace["reason_code"] = "supervisor_valid_empty"
-		}
+	publisherRecordUnknownFields(parsed, map[string]struct{}{"supervisor_scene_proposal": {}}, "", addRejected)
+	publisherRecordUnknownFields(rawProposal, map[string]struct{}{"publisher_plan": {}}, "supervisor_scene_proposal", addRejected)
+	publisherRecordUnknownFields(rawPlan, map[string]struct{}{"contract_version": {}, "book_author": {}, "director": {}}, "supervisor_scene_proposal.publisher_plan", addRejected)
+	roles := map[string]map[string]any{}
+	if bookAuthorOK {
+		roles["book_author"] = bookAuthor
+		publisherRecordUnknownFields(bookAuthor, map[string]struct{}{"current_arc": {}, "narrative_goal": {}, "next_beats": {}, "guardrails": {}}, "supervisor_scene_proposal.publisher_plan.book_author", addRejected)
+	} else if _, exists := rawPlan["book_author"]; exists {
+		addRejected("supervisor_scene_proposal.publisher_plan.book_author", "role_type_invalid")
 	} else {
-		proposal["publisher_plan"] = buildPublisherPlan(proposal, supervisorPack)
+		addRejected("supervisor_scene_proposal.publisher_plan.book_author", "role_missing")
 	}
-	trace["accepted_items"] = acceptedTotal
-	trace["rejected_items"] = rejectedTotal
-	trace["raw_legacy_fields_discarded"] = len(rawProposal) == 0
+	if directorOK {
+		roles["director"] = director
+		publisherRecordUnknownFields(director, map[string]struct{}{"scene_mandate": {}, "required_outcomes": {}, "forbidden_moves": {}, "pressure_level": {}}, "supervisor_scene_proposal.publisher_plan.director", addRejected)
+	} else if _, exists := rawPlan["director"]; exists {
+		addRejected("supervisor_scene_proposal.publisher_plan.director", "role_type_invalid")
+	} else {
+		addRejected("supervisor_scene_proposal.publisher_plan.director", "role_missing")
+	}
+
+	for _, spec := range publisherV2FieldSpecs {
+		role, readable := roles[spec.role]
+		if !readable {
+			continue
+		}
+		path := "supervisor_scene_proposal.publisher_plan." + spec.role + "." + spec.field
+		rawValue, exists := role[spec.field]
+		if !exists {
+			addRejected(path, "field_missing")
+			continue
+		}
+		if rawValue == nil {
+			if spec.isArray {
+				addRejected(path, "field_type_invalid")
+			}
+			continue
+		}
+		if spec.isArray {
+			values, ok := rawValue.([]any)
+			if !ok {
+				addRejected(path, "field_type_invalid")
+				continue
+			}
+			for index, rawItem := range values {
+				publisherAcceptV2Item(rawItem, spec, index, path+fmt.Sprintf("[%d]", index), allowedRefs, &accepted, addRejected)
+			}
+			continue
+		}
+		publisherAcceptV2Item(rawValue, spec, 0, path, allowedRefs, &accepted, addRejected)
+	}
+
+	status := "ready"
+	reasonCode := ""
+	switch {
+	case len(accepted) > 0 && len(rejected) > 0:
+		status = "partial"
+		reasonCode = "publisher_plan_partial"
+	case len(accepted) == 0 && len(rejected) == 0:
+		status = "valid_empty"
+		reasonCode = "publisher_valid_empty"
+	case len(accepted) == 0:
+		status = "publisher_plan_no_valid_items"
+		reasonCode = "publisher_plan_no_valid_items"
+	}
+	plan := map[string]any{
+		"contract_version": "publisher_plan.v2",
+		"status":           status,
+		"reason_code":      nilIfEmpty(reasonCode),
+		"authority":        "response_scoped_proposal_only",
+		"truth_authority":  false,
+		"would_write":      false,
+		"accepted_items":   accepted,
+		"accepted_count":   len(accepted),
+		"rejected_items":   rejected,
+		"rejected_count":   len(rejected),
+	}
+	proposal["status"] = status
+	proposal["reason_code"] = nilIfEmpty(reasonCode)
+	proposal["publisher_plan"] = plan
+	trace["accepted_items"] = len(accepted)
+	trace["rejected_items"] = len(rejected)
+	trace["reason_code"] = nilIfEmpty(reasonCode)
 	return boundedSupervisorEnvelope(proposal), trace
 }
 
-func supervisorProposalItemSchemaValid(item map[string]any, requireKind bool) bool {
-	if rawText, exists := item["text"]; exists {
-		if _, ok := rawText.(string); !ok {
-			return false
+func buildPublisherSchemaFailure(proposal, trace map[string]any) (map[string]any, map[string]any) {
+	proposal["status"] = "publisher_schema_invalid"
+	proposal["reason_code"] = "publisher_schema_invalid"
+	trace["reason_code"] = "publisher_schema_invalid"
+	trace["fail_open"] = true
+	trace["accepted_items"] = 0
+	trace["rejected_items"] = 0
+	return boundedSupervisorEnvelope(proposal), trace
+}
+
+func publisherRecordUnknownFields(object map[string]any, allowed map[string]struct{}, prefix string, reject func(string, string)) {
+	keys := make([]string, 0, len(object))
+	for key := range object {
+		if _, ok := allowed[key]; !ok {
+			keys = append(keys, key)
 		}
 	}
-	if rawRefs, exists := item["source_refs"]; exists {
-		switch refs := rawRefs.(type) {
-		case []any:
-			for _, rawRef := range refs {
-				if _, ok := rawRef.(string); !ok {
-					return false
-				}
-			}
-		case []string:
-		default:
-			return false
+	sort.Strings(keys)
+	for _, key := range keys {
+		path := key
+		if prefix != "" {
+			path = prefix + "." + key
 		}
+		reject(path, "unknown_field")
 	}
-	if requireKind {
-		if rawKind, exists := item["kind"]; exists {
-			if _, ok := rawKind.(string); !ok {
-				return false
-			}
+}
+
+func publisherAcceptV2Item(raw any, spec publisherV2FieldSpec, order int, path string, allowedRefs map[string]struct{}, accepted *[]map[string]any, reject func(string, string)) {
+	item, ok := raw.(map[string]any)
+	if !ok {
+		reject(path, "item_type_invalid")
+		return
+	}
+	allowedFields := map[string]struct{}{"text": {}, "source_refs": {}}
+	if spec.pressure {
+		allowedFields["level"] = struct{}{}
+	}
+	publisherRecordUnknownFields(item, allowedFields, path, reject)
+	text, ok := item["text"].(string)
+	if !ok || strings.TrimSpace(text) == "" {
+		reject(path+".text", "text_empty")
+		return
+	}
+	rawRefs, exists := item["source_refs"]
+	refs, ok := rawRefs.([]any)
+	if !exists || !ok || len(refs) == 0 {
+		reject(path+".source_refs", "source_refs_missing")
+		return
+	}
+	validatedRefs := make([]string, 0, len(refs))
+	for _, rawRef := range refs {
+		ref, ok := rawRef.(string)
+		if !ok {
+			reject(path+".source_refs", "source_ref_invalid")
+			return
 		}
+		if _, allowed := allowedRefs[ref]; !allowed {
+			reject(path+".source_refs", "source_ref_invalid")
+			return
+		}
+		validatedRefs = append(validatedRefs, ref)
 	}
-	return true
+	acceptedItem := map[string]any{
+		"role":        spec.role,
+		"field":       spec.field,
+		"order":       order,
+		"text":        text,
+		"source_refs": validatedRefs,
+	}
+	if spec.pressure {
+		level, ok := item["level"].(string)
+		if !ok || (level != "quiet" && level != "low" && level != "medium" && level != "high") {
+			reject(path+".level", "pressure_level_invalid")
+			return
+		}
+		acceptedItem["level"] = level
+	}
+	*accepted = append(*accepted, acceptedItem)
 }
 
 func supervisorExecutionContractReady(supervisorPack map[string]any) (bool, string) {
@@ -623,116 +886,19 @@ func supervisorExecutionContractReady(supervisorPack map[string]any) (bool, stri
 }
 
 func boundedSupervisorEnvelope(proposal map[string]any) map[string]any {
-	return map[string]any{
+	envelope := map[string]any{
 		"contract_version": "supervisor_scene_proposal.v3",
 		"authority":        "proposal_only",
 		"truth_authority":  false,
 		"would_write":      false,
-		"publisher_plan":   proposal["publisher_plan"],
 		"directive": map[string]any{
 			"supervisor_scene_proposal": proposal,
 		},
 	}
-}
-
-func normalizeSupervisorProposalItems(raw any, allowedRefs, memoryRefs map[string]struct{}) ([]map[string]any, int) {
-	values, ok := raw.([]any)
-	if !ok {
-		return []map[string]any{}, anySliceLength(raw)
+	if plan, ok := proposal["publisher_plan"].(map[string]any); ok {
+		envelope["publisher_plan"] = plan
 	}
-	accepted := make([]map[string]any, 0, len(values))
-	rejected := 0
-	seenText := map[string]struct{}{}
-	for _, value := range values {
-		item := mapFromAny(value)
-		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		refs := stringSliceFromAny(item["source_refs"])
-		if text == "" || len(refs) == 0 {
-			rejected++
-			continue
-		}
-		validRefs, valid := normalizeSupervisorItemRefs(refs, allowedRefs, memoryRefs)
-		key := strings.ToLower(text)
-		if !valid {
-			rejected++
-			continue
-		}
-		if _, duplicate := seenText[key]; duplicate {
-			rejected++
-			continue
-		}
-		seenText[key] = struct{}{}
-		accepted = append(accepted, map[string]any{
-			"text":               text,
-			"source_refs":        validRefs,
-			"verification_state": "delivered_memory_linked_proposal",
-		})
-	}
-	return accepted, rejected
-}
-
-func normalizeSupervisorExpressionItems(raw any, allowedKinds, allowedRefs, expressionSupportRefs, memoryRefs map[string]struct{}, typedRequiredRefs map[string]map[string]struct{}) ([]map[string]any, int) {
-	values, ok := raw.([]any)
-	if !ok {
-		return []map[string]any{}, anySliceLength(raw)
-	}
-	accepted := make([]map[string]any, 0, len(values))
-	rejected := 0
-	seen := map[string]struct{}{}
-	for _, value := range values {
-		item := mapFromAny(value)
-		kind := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["kind"])))
-		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		refs := stringSliceFromAny(item["source_refs"])
-		if _, allowed := allowedKinds[kind]; !allowed || text == "" || len(refs) == 0 {
-			rejected++
-			continue
-		}
-		requiredRefs := expressionSupportRefs
-		verificationState := "current_input_or_delivered_memory_linked_proposal"
-		if kind == "callback" {
-			requiredRefs = memoryRefs
-			verificationState = "delivered_memory_linked_callback"
-		}
-		if refs, typed := typedRequiredRefs[kind]; typed {
-			requiredRefs = refs
-			verificationState = "go_preapproved_typed_ref_proposal"
-		}
-		validRefs, valid := normalizeSupervisorItemRefs(refs, allowedRefs, requiredRefs)
-		if !valid {
-			rejected++
-			continue
-		}
-		key := kind + "\x1f" + strings.ToLower(text)
-		if _, duplicate := seen[key]; duplicate {
-			rejected++
-			continue
-		}
-		seen[key] = struct{}{}
-		accepted = append(accepted, map[string]any{
-			"kind":               kind,
-			"text":               text,
-			"source_refs":        validRefs,
-			"verification_state": verificationState,
-		})
-	}
-	return accepted, rejected
-}
-
-func normalizeSupervisorItemRefs(refs []string, allowedRefs, requiredSupportRefs map[string]struct{}) ([]string, bool) {
-	validRefs := make([]string, 0, len(refs))
-	hasRequiredSupport := false
-	for _, ref := range refs {
-		ref = strings.TrimSpace(ref)
-		if _, exists := allowedRefs[ref]; !exists {
-			return nil, false
-		}
-		if _, exists := requiredSupportRefs[ref]; exists {
-			hasRequiredSupport = true
-		}
-		validRefs = appendUniqueStringValues(validRefs, ref)
-	}
-	return validRefs, len(validRefs) > 0 && hasRequiredSupport
+	return envelope
 }
 
 func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, []string) {
@@ -750,6 +916,16 @@ func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, [
 		}
 	}
 	for _, ref := range stringSliceFromAny(executionRefs["continuity"]) {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedMemory[ref] = struct{}{}
+		}
+	}
+	for _, ref := range stringSliceFromAny(executionRefs["delivered_context"]) {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedMemory[ref] = struct{}{}
+		}
+	}
+	for _, ref := range stringSliceFromAny(executionRefs["lorebook_reference"]) {
 		if ref = strings.TrimSpace(ref); ref != "" {
 			allowedMemory[ref] = struct{}{}
 		}
@@ -795,321 +971,29 @@ func supervisorSupportReferenceLists(supervisorPack map[string]any) ([]string, [
 			memoryRefs = appendUniqueStringValues(memoryRefs, ref)
 		}
 	}
+	for _, raw := range outputFidelityLineageSlice(supportPacket["delivered_context"]) {
+		item := mapFromAny(raw)
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if !boolFromAny(item["delivered"]) || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		if _, allowed := allowedMemory[ref]; allowed {
+			memoryRefs = appendUniqueStringValues(memoryRefs, ref)
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(supportPacket["delivered_lorebook_reference"]) {
+		item := mapFromAny(raw)
+		refList := stringSliceFromAny(item["source_refs"])
+		if strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
+			continue
+		}
+		for _, ref := range refList {
+			if _, allowed := allowedMemory[ref]; allowed {
+				memoryRefs = appendUniqueStringValues(memoryRefs, ref)
+			}
+		}
+	}
 	return currentRefs, memoryRefs
-}
-
-func zeroPublisherPlan(strength, status, reason string) map[string]any {
-	return map[string]any{
-		"contract_version":             "publisher_plan.v1",
-		"status":                       status,
-		"reason_code":                  nilIfEmpty(reason),
-		"guide_strength":               normalizeNarrativeGuideStrength(strength),
-		"authority":                    "expression_assistance_only",
-		"truth_authority":              false,
-		"would_write":                  false,
-		"response_focus_refs":          []string{},
-		"must_account_refs":            []string{},
-		"continuity_anchor_ref":        nil,
-		"character_expression_refs":    []string{},
-		"relationship_expression_refs": []string{},
-		"world_guard_refs":             []string{},
-		"must_not_refs":                []string{},
-		"advance_mode":                 nil,
-		"preferred_frontier_ref":       nil,
-		"ending_edge":                  nil,
-		"guidance_items":               []map[string]any{},
-		"candidate_count_cap":          nil,
-		"selection_policy":             "accepted_source_bound_items_only_then_existing_output_guidance_char_budget",
-		"blocked_generation": []string{
-			"new_fact", "dialogue", "relationship_reciprocity", "user_action", "event_closure",
-		},
-	}
-}
-
-func buildPublisherPlan(proposal, supervisorPack map[string]any) map[string]any {
-	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(proposal["guide_strength"]))
-	plan := zeroPublisherPlan(strength, "zero", "no_publisher_eligible_items")
-	if extractionStringFromAny(proposal["status"]) != "ready" || strength == "none" {
-		return plan
-	}
-	support := publisherDeliveredSupportByRef(supervisorPack)
-	responseFocusRefs := []string{}
-	mustAccountRefs := []string{}
-	characterRefs := []string{}
-	relationshipRefs := []string{}
-	worldRefs := []string{}
-	mustNotRefs := []string{}
-	guidance := []map[string]any{}
-	continuityRefs := []string{}
-	preferredFrontierRefs := []string{}
-	endingEdges := []map[string]any{}
-
-	appendGuidance := func(slot string, item map[string]any) {
-		compiled, ok := compilePublisherGuidanceItem(slot, item, support)
-		if !ok {
-			return
-		}
-		guidance = append(guidance, compiled)
-		refs := stringSliceFromAny(compiled["source_refs"])
-		switch slot {
-		case "response_focus":
-			responseFocusRefs = appendUniqueStringValues(responseFocusRefs, refs...)
-		case "must_account":
-			mustAccountRefs = appendUniqueStringValues(mustAccountRefs, refs...)
-		case "continuity_anchor":
-			continuityRefs = appendUniqueStringValues(continuityRefs, refs...)
-		case "world_guard":
-			worldRefs = appendUniqueStringValues(worldRefs, refs...)
-		case "must_not":
-			mustNotRefs = appendUniqueStringValues(mustNotRefs, refs...)
-		case "preferred_frontier":
-			preferredFrontierRefs = appendUniqueStringValues(preferredFrontierRefs, refs...)
-		case "ending_edge":
-			endingEdges = append(endingEdges, compiled)
-		}
-		for _, ref := range refs {
-			meta := support[ref]
-			class := extractionStringFromAny(meta["class"])
-			kind := extractionStringFromAny(meta["kind"])
-			switch {
-			case class == "subjective_relationship" || kind == "relationship_state":
-				relationshipRefs = appendUniqueStringValues(relationshipRefs, ref)
-			case class == "character_objective" && (kind == "character_profile" || kind == "character_profile_counterevidence" || kind == "voice_behavior"):
-				characterRefs = appendUniqueStringValues(characterRefs, ref)
-			}
-		}
-	}
-
-	for _, raw := range outputFidelityLineageSlice(proposal["fidelity_warnings"]) {
-		appendGuidance("must_account", mapFromAny(raw))
-	}
-	expressions := []map[string]any{}
-	for _, raw := range outputFidelityLineageSlice(proposal["expression_hints"]) {
-		expressions = append(expressions, mapFromAny(raw))
-	}
-	for _, item := range expressions {
-		switch extractionStringFromAny(item["kind"]) {
-		case "response_focus":
-			appendGuidance("response_focus", item)
-		case "must_account":
-			appendGuidance("must_account", item)
-		case "portrayal":
-			if publisherItemHasDeliveredCharacterRef(item, support) {
-				appendGuidance("character_or_relationship_expression", item)
-			} else {
-				appendGuidance("response_focus", item)
-			}
-		case "callback", "arc_anchor":
-			if publisherItemHasDeliveredMemoryRef(item, support) {
-				appendGuidance("continuity_anchor", item)
-			}
-		case "character_expression", "relationship_expression":
-			if publisherItemHasDeliveredCharacterRef(item, support) {
-				appendGuidance("character_or_relationship_expression", item)
-			}
-		case "world_guard", "must_not", "pacing", "scene_emphasis", "reversible_option":
-			appendGuidance(extractionStringFromAny(item["kind"]), item)
-		case "preferred_frontier":
-			if publisherItemHasDeliveredMemoryRef(item, support) {
-				appendGuidance("preferred_frontier", item)
-			}
-		case "ending_edge":
-			if publisherItemHasDeliveredMemoryRef(item, support) {
-				appendGuidance("ending_edge", item)
-			}
-		}
-	}
-
-	if strength == "medium" || strength == "strong" {
-		advanceKind := ""
-		for _, item := range expressions {
-			if extractionStringFromAny(item["kind"]) == "hold_allowed" {
-				advanceKind = "hold_allowed"
-				break
-			}
-		}
-		if advanceKind == "" {
-			for _, item := range expressions {
-				if extractionStringFromAny(item["kind"]) == "may_advance" && publisherItemHasDeliveredMemoryRef(item, support) {
-					advanceKind = "may_advance"
-					break
-				}
-			}
-		}
-		if advanceKind != "" {
-			if merged, ok := mergePublisherAdvanceItems(advanceKind, expressions, support); ok {
-				plan["advance_mode"] = advanceKind
-				appendGuidance(advanceKind, merged)
-			}
-		}
-	}
-
-	plan["response_focus_refs"] = responseFocusRefs
-	plan["must_account_refs"] = mustAccountRefs
-	plan["character_expression_refs"] = characterRefs
-	plan["relationship_expression_refs"] = relationshipRefs
-	plan["world_guard_refs"] = worldRefs
-	plan["must_not_refs"] = mustNotRefs
-	if len(continuityRefs) == 1 {
-		plan["continuity_anchor_ref"] = continuityRefs[0]
-	}
-	if len(preferredFrontierRefs) == 1 {
-		plan["preferred_frontier_ref"] = preferredFrontierRefs[0]
-	}
-	if len(endingEdges) == 1 {
-		plan["ending_edge"] = map[string]any{
-			"text":        endingEdges[0]["text"],
-			"source_refs": endingEdges[0]["source_refs"],
-		}
-	}
-	plan["guidance_items"] = guidance
-	if len(guidance) > 0 {
-		plan["status"] = "ready"
-		plan["reason_code"] = nil
-	}
-	return plan
-}
-
-func mergePublisherAdvanceItems(kind string, expressions []map[string]any, support map[string]map[string]any) (map[string]any, bool) {
-	texts := []string{}
-	refs := []string{}
-	for _, item := range expressions {
-		if extractionStringFromAny(item["kind"]) != kind {
-			continue
-		}
-		if kind == "may_advance" && !publisherItemHasDeliveredMemoryRef(item, support) {
-			continue
-		}
-		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		itemRefs := stringSliceFromAny(item["source_refs"])
-		if text == "" || len(itemRefs) == 0 {
-			continue
-		}
-		texts = append(texts, text)
-		refs = appendUniqueStringValues(refs, itemRefs...)
-	}
-	if len(texts) == 0 || len(refs) == 0 || (kind == "may_advance" && len(texts) != 1) {
-		return nil, false
-	}
-	return map[string]any{
-		"kind": kind, "text": strings.Join(texts, "\n"), "source_refs": refs,
-		"verification_state": "all_accepted_items_of_selected_advance_mode_merged_without_count_cut",
-	}, true
-}
-
-func publisherDeliveredSupportByRef(supervisorPack map[string]any) map[string]map[string]any {
-	out := map[string]map[string]any{}
-	packet := mapFromAny(supervisorPack["support_packet"])
-	if current := mapFromAny(packet["current_input"]); strings.TrimSpace(extractionStringFromAny(current["raw_text"])) != "" {
-		if ref := strings.TrimSpace(extractionStringFromAny(current["source_ref"])); ref != "" {
-			out[ref] = map[string]any{"kind": "current_input", "class": "current_input", "delivered": true}
-		}
-	}
-	for _, raw := range outputFidelityLineageSlice(packet["accepted_recent_context"]) {
-		item := mapFromAny(raw)
-		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
-		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
-			continue
-		}
-		out[ref] = map[string]any{
-			"kind": "accepted_recent_context", "class": "continuity", "delivered": true,
-			"visibility_boundary": item["visibility_boundary"],
-		}
-	}
-	for _, raw := range outputFidelityLineageSlice(packet["delivered_memory"]) {
-		item := mapFromAny(raw)
-		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
-		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
-			continue
-		}
-		out[ref] = map[string]any{
-			"kind": "long_term_memory", "class": "memory", "delivered": true,
-			"protected_guard": item["protected_guard"], "visibility_boundary": item["visibility_boundary"],
-		}
-	}
-	for _, raw := range outputFidelityLineageSlice(packet["delivered_character_memory"]) {
-		item := mapFromAny(raw)
-		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
-		if ref == "" || strings.TrimSpace(extractionStringFromAny(item["final_text"])) == "" {
-			continue
-		}
-		out[ref] = map[string]any{
-			"kind": extractionStringFromAny(item["kind"]), "class": extractionStringFromAny(item["class"]), "delivered": true,
-			"privacy_guard": item["privacy_guard"], "visibility_boundary": item["visibility_boundary"],
-		}
-	}
-	return out
-}
-
-func compilePublisherGuidanceItem(slot string, item map[string]any, support map[string]map[string]any) (map[string]any, bool) {
-	text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-	refs := []string{}
-	privacyGuard := ""
-	directionalRelationship := false
-	for _, ref := range stringSliceFromAny(item["source_refs"]) {
-		meta, ok := support[ref]
-		if !ok || !boolFromAny(meta["delivered"]) {
-			return nil, false
-		}
-		refs = appendUniqueStringValues(refs, ref)
-		if guard := extractionStringFromAny(meta["privacy_guard"]); guard != "" {
-			privacyGuard = guard
-		}
-		if extractionStringFromAny(meta["kind"]) == "relationship_state" {
-			directionalRelationship = true
-		}
-	}
-	if text == "" || len(refs) == 0 {
-		return nil, false
-	}
-	renderText := text
-	switch slot {
-	case "ending_edge":
-		renderText += " Treat this only as the boundary of the current response; never close a thread, arc, session, or work."
-	case "may_advance":
-		renderText += " Keep any advance reversible; do not create a new fact, relationship change, user action, or closure."
-	case "preferred_frontier":
-		renderText += " Treat this only as a current-response preference and never as a persistent plot lock."
-	}
-	if privacyGuard != "" {
-		renderText += " Apply only as guarded subtext; do not reveal the private fact."
-	}
-	if directionalRelationship {
-		renderText += " Preserve the stated direction and do not infer reciprocity."
-	}
-	return map[string]any{
-		"slot": slot, "kind": extractionStringFromAny(item["kind"]), "text": text, "render_text": renderText,
-		"source_refs": refs, "privacy_guard": nilIfEmpty(privacyGuard),
-		"relationship_directional_only": directionalRelationship,
-		"no_reciprocity":                directionalRelationship,
-		"authority":                     "expression_assistance_only",
-	}, true
-}
-
-func publisherItemHasDeliveredMemoryRef(item map[string]any, support map[string]map[string]any) bool {
-	for _, ref := range stringSliceFromAny(item["source_refs"]) {
-		meta := support[ref]
-		if boolFromAny(meta["delivered"]) && extractionStringFromAny(meta["kind"]) != "current_input" {
-			return true
-		}
-	}
-	return false
-}
-
-func publisherItemHasDeliveredCharacterRef(item map[string]any, support map[string]map[string]any) bool {
-	for _, ref := range stringSliceFromAny(item["source_refs"]) {
-		meta := support[ref]
-		if !boolFromAny(meta["delivered"]) {
-			continue
-		}
-		class := extractionStringFromAny(meta["class"])
-		kind := extractionStringFromAny(meta["kind"])
-		if class == "character_objective" || class == "subjective_relationship" ||
-			kind == "character_profile" || kind == "character_profile_counterevidence" || kind == "voice_behavior" || kind == "relationship_state" {
-			return true
-		}
-	}
-	return false
 }
 
 func appendUniqueStringValues(base []string, values ...string) []string {
@@ -1130,13 +1014,6 @@ func appendUniqueStringValues(base []string, values ...string) []string {
 		}
 	}
 	return base
-}
-
-func anySliceLength(value any) int {
-	if values, ok := value.([]any); ok {
-		return len(values)
-	}
-	return 0
 }
 
 func formatMomentumSuffix(packet *map[string]any) string {

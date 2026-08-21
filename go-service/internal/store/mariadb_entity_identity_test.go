@@ -48,6 +48,24 @@ func TestMariaDBEntityIdentityWriteRequiresActiveAcceptedSourceRevision(t *testi
 		t.Fatalf("stale source error = %v, want ErrSourceRevisionStale", err)
 	}
 
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT lifecycle_state").
+		WithArgs("session-1", "revision-1").
+		WillReturnError(context.DeadlineExceeded)
+	mock.ExpectRollback()
+	if err := m.SaveEntityIdentityArtifactBinding(context.Background(), &EntityIdentityArtifactBinding{
+		BindingID:      "binding-1",
+		StableEntityID: item.StableEntityID,
+		ChatSessionID:  item.ChatSessionID,
+		SourceContract: item.SourceContract,
+		SourceRevision: item.SourceRevision,
+		SourceTurn:     item.SourceTurn,
+		IdempotencyKey: "binding-key",
+		CreatedAt:      now,
+	}); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("source lookup error = %v, want context deadline exceeded", err)
+	}
+
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
 	}

@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -86,7 +87,79 @@ func buildSupervisorInputPack(chatSessionID string, turnIndex int, rawUserInput,
 
 const supervisorAcceptedRecentContextSourceRef = "input-context:previous-completed-turn"
 
-func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseExecutionContract, memoryDeliveryLineage map[string]any, inputContextText string, characterMemorySupport map[string]any) map[string]any {
+func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, characterMemorySupport map[string]any) []map[string]any {
+	represented := map[string]int{}
+	addRepresented := func(text string) {
+		for _, line := range prepareTurnDeliveryItems(text) {
+			if line = strings.TrimSpace(line); line != "" {
+				represented[line]++
+			}
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(memoryDeliveryLineage["items"]) {
+		item := mapFromAny(raw)
+		if boolFromAny(item["delivered"]) {
+			addRepresented(extractionStringFromAny(item["final_text"]))
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(characterMemorySupport["delivered_items"]) {
+		item := mapFromAny(raw)
+		if boolFromAny(item["delivered"]) {
+			addRepresented(extractionStringFromAny(item["text"]))
+		}
+	}
+
+	allowedClasses := map[string]bool{}
+	for _, key := range prepareTurnMemoryDeliveryOrder {
+		allowedClasses[key] = true
+	}
+	nextOrdinal := map[string]int{}
+	items := []map[string]any{}
+	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["classes"]) {
+		class := mapFromAny(raw)
+		key := strings.TrimSpace(extractionStringFromAny(class["key"]))
+		if !allowedClasses[key] || intFromAny(class["selected_count"], 0) <= 0 {
+			continue
+		}
+		for _, line := range prepareTurnDeliveryItems(extractionStringFromAny(class["text"])) {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			ordinal := nextOrdinal[key]
+			nextOrdinal[key] = ordinal + 1
+			if represented[line] > 0 {
+				represented[line]--
+				continue
+			}
+			visibility := "delivered_projection_text_only"
+			if key == "protected_secret" {
+				visibility = "rendered_protection_guard_only"
+			}
+			items = append(items, map[string]any{
+				"source_ref":          fmt.Sprintf("delivered-context:%s:%d", key, ordinal),
+				"final_text":          line,
+				"class":               key,
+				"delivered":           true,
+				"visibility_boundary": visibility,
+				"source_scope":        "request_scoped_final_delivery_projection",
+			})
+		}
+	}
+	return items
+}
+
+func supervisorDeliveredContextSourceRefs(memoryDeliveryPlan, memoryDeliveryLineage, characterMemorySupport map[string]any) []string {
+	refs := []string{}
+	for _, item := range supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, characterMemorySupport) {
+		if ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"])); ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseExecutionContract, memoryDeliveryLineage map[string]any, inputContextText string, characterMemorySupport, memoryDeliveryPlan map[string]any) map[string]any {
 	sourceRefs := mapFromAny(responseExecutionContract["source_refs"])
 	currentInputRefs := stringSliceFromAny(sourceRefs["current_input"])
 	memoryRefList := stringSliceFromAny(sourceRefs["memory"])
@@ -100,6 +173,12 @@ func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseEx
 	for _, ref := range stringSliceFromAny(sourceRefs["character_memory"]) {
 		if ref = strings.TrimSpace(ref); ref != "" {
 			allowedCharacterRefs[ref] = true
+		}
+	}
+	allowedDeliveredContextRefs := map[string]bool{}
+	for _, ref := range stringSliceFromAny(sourceRefs["delivered_context"]) {
+		if ref = strings.TrimSpace(ref); ref != "" {
+			allowedDeliveredContextRefs[ref] = true
 		}
 	}
 
@@ -186,13 +265,21 @@ func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseEx
 			"visibility_boundary": "delivered_input_context",
 		})
 	}
+	deliveredContext := []map[string]any{}
+	for _, item := range supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, characterMemorySupport) {
+		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
+		if ref == "" || !allowedDeliveredContextRefs[ref] {
+			continue
+		}
+		deliveredContext = append(deliveredContext, item)
+	}
 
 	status := "empty"
-	if currentInput != nil || len(acceptedRecentContext) > 0 || len(deliveredMemory) > 0 || len(deliveredCharacterMemory) > 0 {
+	if currentInput != nil || len(acceptedRecentContext) > 0 || len(deliveredMemory) > 0 || len(deliveredCharacterMemory) > 0 || len(deliveredContext) > 0 {
 		status = "ready"
 	}
 	return map[string]any{
-		"contract_version":                 "supervisor_support_packet.v1",
+		"contract_version":                 "supervisor_support_packet.v2",
 		"status":                           status,
 		"current_input":                    currentInput,
 		"accepted_recent_context":          acceptedRecentContext,
@@ -201,8 +288,11 @@ func buildSupervisorSupportPacket(chatSessionID, rawUserInput string, responseEx
 		"delivered_memory_count":           len(deliveredMemory),
 		"delivered_character_memory":       deliveredCharacterMemory,
 		"delivered_character_memory_count": len(deliveredCharacterMemory),
+		"delivered_context":                deliveredContext,
+		"delivered_context_count":          len(deliveredContext),
 		"undelivered_candidates_included":  false,
 		"raw_private_memory_included":      false,
+		"all_historical_chat_included":     false,
 	}
 }
 
@@ -226,10 +316,10 @@ func buildPrepareTurnPlannerLanguageContract(languageContext map[string]any) map
 }
 
 func buildResponseExecutionSourceRules(currentInput dto.PrepareTurnCurrentInputDecisionV1, hostEvidence dto.PrepareTurnHostContextReferenceEvidenceV1) map[string]any {
-	return buildResponseExecutionSourceRulesWithMemory(currentInput, hostEvidence, "", nil, "", nil)
+	return buildResponseExecutionSourceRulesWithMemory(currentInput, hostEvidence, "", nil, "", nil, nil)
 }
 
-func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCurrentInputDecisionV1, hostEvidence dto.PrepareTurnHostContextReferenceEvidenceV1, sessionID string, memoryDeliveryLineage map[string]any, inputContextText string, characterMemorySupport map[string]any) map[string]any {
+func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCurrentInputDecisionV1, hostEvidence dto.PrepareTurnHostContextReferenceEvidenceV1, sessionID string, memoryDeliveryLineage map[string]any, inputContextText string, characterMemorySupport, memoryDeliveryPlan map[string]any) map[string]any {
 	currentInputRefs := []string{}
 	if currentInput.SelectedObservationRef != nil && strings.TrimSpace(*currentInput.SelectedObservationRef) != "" {
 		currentInputRefs = append(currentInputRefs, strings.TrimSpace(*currentInput.SelectedObservationRef))
@@ -253,6 +343,10 @@ func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCur
 		memoryRefs = appendUniqueMemorySearchText(memoryRefs, ref)
 	}
 	for _, ref := range memoryRefs {
+		allRefs = appendUniqueMemorySearchText(allRefs, ref)
+	}
+	deliveredContextRefs := supervisorDeliveredContextSourceRefs(memoryDeliveryPlan, memoryDeliveryLineage, characterMemorySupport)
+	for _, ref := range deliveredContextRefs {
 		allRefs = appendUniqueMemorySearchText(allRefs, ref)
 	}
 	continuityRefs := []string{}
@@ -279,6 +373,12 @@ func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCur
 		mustPreserve = append(mustPreserve, map[string]any{
 			"instruction": "Preserve delivered character profile, voice-behavior, and directional relationship projections as scoped support; do not convert them into objective truth or reveal guarded private facts.",
 			"source_refs": characterMemoryRefs,
+		})
+	}
+	if len(deliveredContextRefs) > 0 {
+		mustPreserve = append(mustPreserve, map[string]any{
+			"instruction": "Preserve the final state, world, evidence, hierarchy, and unresolved-thread projection text already delivered to the main model; do not infer hidden source text or undelivered candidates.",
+			"source_refs": deliveredContextRefs,
 		})
 	}
 	if len(continuityRefs) > 0 {
@@ -316,12 +416,13 @@ func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCur
 			"count": len(mustNotAssert),
 		},
 		"source_refs": map[string]any{
-			"current_input":    currentInputRefs,
-			"continuity":       continuityRefs,
-			"native_system":    hostRefs,
-			"memory":           memoryRefs,
-			"character_memory": characterMemoryRefs,
-			"all":              allRefs,
+			"current_input":     currentInputRefs,
+			"continuity":        continuityRefs,
+			"native_system":     hostRefs,
+			"memory":            memoryRefs,
+			"character_memory":  characterMemoryRefs,
+			"delivered_context": deliveredContextRefs,
+			"all":               allRefs,
 		},
 	}
 }
@@ -342,6 +443,14 @@ func buildPrepareTurnGuideEligibility(guideMode, guideStrength string, injection
 		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
 	}
 	for _, ref := range stringSliceFromAny(sourceRefs["memory"]) {
+		memoryRefs = appendUniqueMemorySearchText(memoryRefs, ref)
+		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
+	}
+	for _, ref := range stringSliceFromAny(sourceRefs["delivered_context"]) {
+		memoryRefs = appendUniqueMemorySearchText(memoryRefs, ref)
+		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
+	}
+	for _, ref := range stringSliceFromAny(sourceRefs["lorebook_reference"]) {
 		memoryRefs = appendUniqueMemorySearchText(memoryRefs, ref)
 		expressionRefs = appendUniqueMemorySearchText(expressionRefs, ref)
 	}
@@ -381,7 +490,7 @@ func buildPrepareTurnGuideEligibility(guideMode, guideStrength string, injection
 		"native_system_only_is_not_support":     true,
 		"truth_authority":                       false,
 		"would_write":                           false,
-		"coverage":                              supervisorProposalCoverage(strength),
+		"coverage":                              publisherStrengthProfile(strength),
 		"lanes": map[string]any{
 			"fidelity": map[string]any{
 				"eligible":    lanesEnabled && len(memoryRefs) > 0,
@@ -410,7 +519,7 @@ func buildResponseExecutionContractWithMemoryLineage(sessionID string, inputAnch
 	if len(inputContextTextArg) > 0 {
 		inputContextText = inputContextTextArg[0]
 	}
-	sourceRules := buildResponseExecutionSourceRulesWithMemory(currentInput, hostEvidence, sessionID, assembly.MemoryDeliveryLineage, inputContextText, assembly.CharacterMemorySupport)
+	sourceRules := buildResponseExecutionSourceRulesWithMemory(currentInput, hostEvidence, sessionID, assembly.MemoryDeliveryLineage, inputContextText, assembly.CharacterMemorySupport, assembly.MemoryDeliveryPlan)
 
 	return map[string]any{
 		"contract_version":            "response_execution_contract.v1",
@@ -518,7 +627,7 @@ func normalizeNarrativeGuideStrength(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "none":
 		return "none"
-	case "medium", "strong":
+	case "medium", "strong", "extreme", "maximum":
 		return strings.ToLower(strings.TrimSpace(value))
 	default:
 		return "weak"

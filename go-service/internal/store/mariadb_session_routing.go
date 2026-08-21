@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	SessionRouteBindingContractVersion = "session-route-binding.v1"
+	SessionRouteBindingContractVersion  = "session-route-binding.v1"
+	worldlineTopologyCompletedTurnLimit = 4096
 
 	SessionRouteBindingModeResolveOrCreate = "resolve_or_create"
+	SessionRouteBindingModeResolveExisting = "resolve_existing"
 	SessionRouteBindingModeManualAttach    = "manual_attach"
 	SessionRouteBindingModeMigrationCommit = "migration_commit"
 	SessionRouteBindingModeLegacyPromotion = "legacy_promotion"
@@ -54,6 +56,209 @@ type SessionRouteBindingStore interface {
 }
 
 var _ SessionRouteBindingStore = (*mariadbStore)(nil)
+var _ WorldlineTopologySnapshotStore = (*mariadbStore)(nil)
+
+func (m *mariadbStore) GetWorldlineTopologySnapshot(ctx context.Context, anchorSessionID string, limit int) (WorldlineTopologySnapshot, error) {
+	if err := m.ensureDB(); err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	anchorSessionID = strings.TrimSpace(anchorSessionID)
+	if anchorSessionID == "" {
+		return WorldlineTopologySnapshot{}, errors.New("anchor_session_id is required")
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	if limit > 1000 {
+		limit = 1000
+	}
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	characterRows, err := tx.QueryContext(ctx, `
+		SELECT DISTINCT stable_character_id
+		FROM session_route_bindings
+		WHERE canonical_session_id = ? AND binding_state = 'active'
+		ORDER BY stable_character_id ASC
+		LIMIT 2
+	`, anchorSessionID)
+	if err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	stableCharacterIDs := make([]string, 0, 2)
+	for characterRows.Next() {
+		var stableCharacterID string
+		if err := characterRows.Scan(&stableCharacterID); err != nil {
+			characterRows.Close()
+			return WorldlineTopologySnapshot{}, err
+		}
+		stableCharacterID = strings.TrimSpace(stableCharacterID)
+		if stableCharacterID != "" {
+			stableCharacterIDs = append(stableCharacterIDs, stableCharacterID)
+		}
+	}
+	if err := characterRows.Err(); err != nil {
+		characterRows.Close()
+		return WorldlineTopologySnapshot{}, err
+	}
+	characterRows.Close()
+	if len(stableCharacterIDs) == 0 {
+		return WorldlineTopologySnapshot{}, ErrNotFound
+	}
+	if len(stableCharacterIDs) > 1 {
+		return WorldlineTopologySnapshot{}, errors.New("anchor session is bound to multiple stable characters")
+	}
+
+	snapshot := WorldlineTopologySnapshot{
+		StableCharacterID: stableCharacterIDs[0],
+		AnchorSessionID:   anchorSessionID,
+		SessionIDs:        []string{},
+		LineageRecords:    []ForkLineageRecord{},
+		CompletedTurns:    []WorldlineCompletedTurn{},
+	}
+	familyRows, err := tx.QueryContext(ctx, `
+		SELECT canonical_session_id
+		FROM session_route_bindings
+		WHERE stable_character_id = ? AND binding_state = 'active'
+		GROUP BY canonical_session_id
+		ORDER BY CASE WHEN canonical_session_id = ? THEN 0 ELSE 1 END,
+		         canonical_session_id ASC
+		LIMIT ?
+	`, snapshot.StableCharacterID, anchorSessionID, limit+1)
+	if err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	for familyRows.Next() {
+		var sessionID string
+		if err := familyRows.Scan(&sessionID); err != nil {
+			familyRows.Close()
+			return WorldlineTopologySnapshot{}, err
+		}
+		if sessionID = strings.TrimSpace(sessionID); sessionID != "" {
+			snapshot.SessionIDs = append(snapshot.SessionIDs, sessionID)
+		}
+	}
+	if err := familyRows.Err(); err != nil {
+		familyRows.Close()
+		return WorldlineTopologySnapshot{}, err
+	}
+	familyRows.Close()
+	if len(snapshot.SessionIDs) > limit {
+		snapshot.SessionIDs = snapshot.SessionIDs[:limit]
+		snapshot.Truncated = true
+	}
+	if len(snapshot.SessionIDs) == 0 {
+		return WorldlineTopologySnapshot{}, ErrNotFound
+	}
+
+	placeholders := make([]string, len(snapshot.SessionIDs))
+	args := make([]any, len(snapshot.SessionIDs))
+	for index, sessionID := range snapshot.SessionIDs {
+		placeholders[index] = "?"
+		args[index] = sessionID
+	}
+	lineageRows, err := tx.QueryContext(ctx, `
+		SELECT id, contract_version, lineage_state, chat_session_id,
+		       scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+		       fork_turn, fork_source_message_id, fork_source_role, idempotency_key,
+		       imported_at, divergence_marker, provenance_source,
+		       inheritance_mode, inherited_items_json, created_at, updated_at
+		FROM session_fork_lineage
+		WHERE chat_session_id IN (`+strings.Join(placeholders, ",")+`)
+		ORDER BY chat_session_id ASC, imported_at DESC, id DESC
+	`, args...)
+	if err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	for lineageRows.Next() {
+		var item ForkLineageRecord
+		var scopeID, parentScopeID, copiedFromScopeID, copiedFromSessionID sql.NullString
+		var forkTurn sql.NullInt64
+		var forkSourceMessageID, forkSourceRole, idempotencyKey sql.NullString
+		var divergenceMarker, inheritedItemsJSON sql.NullString
+		if err := lineageRows.Scan(
+			&item.ID, &item.ContractVersion, &item.LineageState, &item.ChatSessionID,
+			&scopeID, &parentScopeID, &copiedFromScopeID, &copiedFromSessionID,
+			&forkTurn, &forkSourceMessageID, &forkSourceRole, &idempotencyKey,
+			&item.ImportedAt, &divergenceMarker, &item.ProvenanceSource,
+			&item.InheritanceMode, &inheritedItemsJSON, &item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return WorldlineTopologySnapshot{}, err
+		}
+		item.ScopeID = stringFromNull(scopeID)
+		item.ParentScopeID = stringFromNull(parentScopeID)
+		item.CopiedFromScopeID = stringFromNull(copiedFromScopeID)
+		item.CopiedFromSessionID = stringFromNull(copiedFromSessionID)
+		item.ForkTurn = int(forkTurn.Int64)
+		item.ForkSourceMessageID = stringFromNull(forkSourceMessageID)
+		item.ForkSourceRole = stringFromNull(forkSourceRole)
+		item.IdempotencyKey = stringFromNull(idempotencyKey)
+		item.DivergenceMarker = stringFromNull(divergenceMarker)
+		item.InheritedItemsJSON = stringFromNull(inheritedItemsJSON)
+		snapshot.LineageRecords = append(snapshot.LineageRecords, item)
+	}
+	if err := lineageRows.Err(); err != nil {
+		lineageRows.Close()
+		return WorldlineTopologySnapshot{}, err
+	}
+	lineageRows.Close()
+
+	turnArgs := append([]any(nil), args...)
+	turnArgs = append(turnArgs, worldlineTopologyCompletedTurnLimit+1)
+	turnRows, err := tx.QueryContext(ctx, `
+		SELECT chat_session_id, turn_index
+		FROM chat_logs
+		WHERE chat_session_id IN (`+strings.Join(placeholders, ",")+`)
+		  AND turn_index > 0
+		GROUP BY chat_session_id, turn_index
+		HAVING MAX(CASE
+		           WHEN LOWER(TRIM(role)) = 'user'
+		            AND CHAR_LENGTH(TRIM(content)) > 0 THEN 1 ELSE 0
+		       END) = 1
+		   AND MAX(CASE
+		           WHEN LOWER(TRIM(role)) = 'assistant'
+		            AND CHAR_LENGTH(TRIM(content)) > 0 THEN 1 ELSE 0
+		       END) = 1
+		ORDER BY turn_index ASC, chat_session_id ASC
+		LIMIT ?
+	`, turnArgs...)
+	if err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	for turnRows.Next() {
+		var item WorldlineCompletedTurn
+		if err := turnRows.Scan(&item.ChatSessionID, &item.TurnIndex); err != nil {
+			turnRows.Close()
+			return WorldlineTopologySnapshot{}, err
+		}
+		item.ChatSessionID = strings.TrimSpace(item.ChatSessionID)
+		if item.ChatSessionID != "" && item.TurnIndex > 0 {
+			snapshot.CompletedTurns = append(snapshot.CompletedTurns, item)
+		}
+	}
+	if err := turnRows.Err(); err != nil {
+		turnRows.Close()
+		return WorldlineTopologySnapshot{}, err
+	}
+	turnRows.Close()
+	if len(snapshot.CompletedTurns) > worldlineTopologyCompletedTurnLimit {
+		snapshot.CompletedTurns = snapshot.CompletedTurns[:worldlineTopologyCompletedTurnLimit]
+		snapshot.TurnsTruncated = true
+	}
+	if err := tx.Commit(); err != nil {
+		return WorldlineTopologySnapshot{}, err
+	}
+	committed = true
+	return snapshot, nil
+}
 
 func (m *mariadbStore) BindSessionRoute(ctx context.Context, req SessionRouteBindingRequest) (*SessionRouteBindingResult, error) {
 	if err := m.ensureDB(); err != nil {
@@ -87,6 +292,26 @@ func (m *mariadbStore) BindSessionRoute(ctx context.Context, req SessionRouteBin
 	existing, err := selectSessionRouteBindingTx(ctx, tx, stableCharacterID, hostChatID, true)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return nil, err
+	}
+	if mode == SessionRouteBindingModeResolveExisting {
+		if errors.Is(err, ErrNotFound) || existing == nil {
+			return nil, ErrNotFound
+		}
+		if existing.ContractVersion != SessionRouteBindingContractVersion ||
+			existing.StableCharacterID != stableCharacterID ||
+			existing.HostChatID != hostChatID ||
+			strings.TrimSpace(existing.CanonicalSessionID) == "" ||
+			existing.BindingState != "active" {
+			return nil, errors.New("session route binding readback mismatch")
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		committed = true
+		return &SessionRouteBindingResult{
+			Binding:          *existing,
+			ReadbackVerified: true,
+		}, nil
 	}
 	forceRequested := mode == SessionRouteBindingModeManualAttach || mode == SessionRouteBindingModeMigrationCommit
 	canonicalSessionID := requestedSessionID
@@ -172,6 +397,7 @@ func (m *mariadbStore) BindSessionRoute(ctx context.Context, req SessionRouteBin
 func sessionRouteBindingModeSupported(mode string) bool {
 	switch strings.TrimSpace(mode) {
 	case SessionRouteBindingModeResolveOrCreate,
+		SessionRouteBindingModeResolveExisting,
 		SessionRouteBindingModeManualAttach,
 		SessionRouteBindingModeMigrationCommit,
 		SessionRouteBindingModeLegacyPromotion:

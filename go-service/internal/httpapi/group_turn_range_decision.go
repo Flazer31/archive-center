@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -16,15 +17,20 @@ import (
 )
 
 const (
-	rollbackDecisionContractVersion = "rollback.decision.v1"
-	routingTurnContractVersion      = "session-routing.turn-resolution.v1"
-	rollbackDecisionMax             = 1024
+	rollbackDecisionContractVersion  = "rollback.decision.v1"
+	routingTurnContractVersion       = "session-routing.turn-resolution.v1"
+	risuWorldlineObservationContract = "risu_worldline_observation.v2"
+	risuBranchShapeContract          = "risu_branchedfrom.v1"
+	automaticActiveChatFullSweep     = "automatic_active_chat_full_sweep"
+	rollbackDecisionMax              = 1024
 )
 
 type routingTurnBaseline struct {
 	BackendTurnAtRoute int    `json:"backend_turn_at_route"`
 	LocalPairsAtRoute  int    `json:"local_pairs_at_route"`
 	Reason             string `json:"reason"`
+	durableSourceID    string
+	durableVerified    bool
 }
 
 type rollbackDecisionRequest struct {
@@ -321,7 +327,7 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 
 func rollbackObservationHasPendingGeneration(observation string) bool {
 	switch strings.ToLower(strings.TrimSpace(observation)) {
-	case "before_request_observed", "generation_watch_active":
+	case "generation_watch_active":
 		return true
 	default:
 		return false
@@ -329,23 +335,43 @@ func rollbackObservationHasPendingGeneration(observation string) bool {
 }
 
 type sessionRoutingTurnResolutionRequest struct {
-	ChatSessionID          string                   `json:"chat_session_id"`
-	Mode                   string                   `json:"mode"`
-	StableCharacterID      string                   `json:"stable_character_id,omitempty"`
-	StableCharacterIDState string                   `json:"stable_character_id_state,omitempty"`
-	HostChatID             string                   `json:"host_chat_id,omitempty"`
-	HostChatIDState        string                   `json:"host_chat_id_state,omitempty"`
-	BindRequestedSession   bool                     `json:"bind_requested_session,omitempty"`
-	BindingMode            string                   `json:"binding_mode,omitempty"`
-	LatestUserHash         string                   `json:"latest_user_hash,omitempty"`
-	LatestAssistantHash    string                   `json:"latest_assistant_hash,omitempty"`
-	LocalTurnIndex         int                      `json:"local_turn_index"`
-	VisibleCompletedTurns  int                      `json:"visible_completed_turns"`
-	RisuUserMessageIndex   *int                     `json:"risu_user_message_index,omitempty"`
-	ObservedPairOrdinal    int                      `json:"observed_pair_ordinal,omitempty"`
-	Observations           []routingTurnObservation `json:"observations,omitempty"`
-	Baseline               *routingTurnBaseline     `json:"baseline,omitempty"`
+	ChatSessionID          string                    `json:"chat_session_id"`
+	Mode                   string                    `json:"mode"`
+	StableCharacterID      string                    `json:"stable_character_id,omitempty"`
+	StableCharacterIDState string                    `json:"stable_character_id_state,omitempty"`
+	HostChatID             string                    `json:"host_chat_id,omitempty"`
+	HostChatIDState        string                    `json:"host_chat_id_state,omitempty"`
+	BindRequestedSession   bool                      `json:"bind_requested_session,omitempty"`
+	BindingMode            string                    `json:"binding_mode,omitempty"`
+	LatestUserHash         string                    `json:"latest_user_hash,omitempty"`
+	LatestAssistantHash    string                    `json:"latest_assistant_hash,omitempty"`
+	LocalTurnIndex         int                       `json:"local_turn_index"`
+	VisibleCompletedTurns  int                       `json:"visible_completed_turns"`
+	RisuUserMessageIndex   *int                      `json:"risu_user_message_index,omitempty"`
+	ObservedPairOrdinal    int                       `json:"observed_pair_ordinal,omitempty"`
+	Observations           []routingTurnObservation  `json:"observations,omitempty"`
+	Baseline               *routingTurnBaseline      `json:"baseline,omitempty"`
+	WorldlineObservation   *risuWorldlineObservation `json:"worldline_observation,omitempty"`
+	RoutingContext         string                    `json:"routing_context,omitempty"`
 	canonicalTailAligned   bool
+}
+
+type risuWorldlineObservation struct {
+	ContractVersion     string                            `json:"contract_version"`
+	HostSignalSource    string                            `json:"host_signal_source"`
+	BranchShapeContract string                            `json:"branch_shape_contract"`
+	ObservedAtMS        int64                             `json:"observed_at_ms"`
+	MarkerState         string                            `json:"marker_state"`
+	BranchMarker        string                            `json:"branch_marker"`
+	MarkerIndex         int                               `json:"marker_index"`
+	Messages            []risuWorldlineMessageObservation `json:"messages"`
+}
+
+type risuWorldlineMessageObservation struct {
+	MessageIndex  int    `json:"message_index"`
+	Role          string `json:"role"`
+	MessageChatID string `json:"message_chat_id"`
+	Disabled      bool   `json:"disabled"`
 }
 
 type routingTurnObservation struct {
@@ -385,6 +411,7 @@ type sessionRoutingTurnResolutionResponse struct {
 	MinFromTurn            int                              `json:"min_from_turn"`
 	BaselineApplied        bool                             `json:"baseline_applied"`
 	ResolvedObservations   []routingTurnResolvedObservation `json:"resolved_observations,omitempty"`
+	Worldline              *worldlineViewModel              `json:"worldline,omitempty"`
 }
 
 func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *http.Request) {
@@ -414,6 +441,7 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	req.canonicalTailAligned = identity.canonicalTailAligned
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
 	resp := calculateSessionRoutingTurnResolution(req)
+	resp = s.applyAutomaticWorldlineBackfillBoundary(r.Context(), req, resp)
 	resp.ChatSessionID = strings.TrimSpace(req.ChatSessionID)
 	resp.IdentityResolution = identity.resolution
 	resp.BindingContractVersion = identity.bindingContractVersion
@@ -422,7 +450,378 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	resp.BindingCreated = identity.bindingCreated
 	resp.BindingUpdated = identity.bindingUpdated
 	resp.LockedSourceRedirect = identity.lockedSourceRedirect
+	if req.WorldlineObservation != nil {
+		worldline := s.resolveRisuWorldlineObservation(r.Context(), req, identity.sessionID)
+		resp.Worldline = &worldline
+	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessionRoutingTurnResolutionRequest, childSessionID string) (vm worldlineViewModel) {
+	observation := req.WorldlineObservation
+	durable := currentWorldlineViewModel(ctx, s.Store, childSessionID)
+	if durable.State == "confirmed" && durable.ForkSourceRole != "" {
+		return durable
+	}
+	vm = worldlineViewModel{
+		ContractVersion:  worldlineViewModelContract,
+		State:            "unresolved",
+		CurrentSessionID: strings.TrimSpace(childSessionID),
+		Reason:           "worldline_observation_unresolved",
+	}
+	if observation == nil {
+		return durable
+	}
+	markerState := strings.TrimSpace(observation.MarkerState)
+	marker := strings.TrimSpace(observation.BranchMarker)
+	if markerState == "absent" && marker == "" {
+		if durable.State != "not_applicable" {
+			return durable
+		}
+		durable.Reason = "official_branch_marker_absent"
+		return durable
+	}
+	assessmentParentSessionID := ""
+	assessmentSourceMessageID := ""
+	assessmentSourceRole := ""
+	assessmentForkTurn := 0
+	assessmentCoordinates := marker
+	defer func() {
+		persisted, err := persistRisuWorldlineAssessment(
+			ctx, s.Store, vm, observation, assessmentParentSessionID,
+			assessmentSourceMessageID, assessmentSourceRole, assessmentForkTurn, assessmentCoordinates,
+		)
+		if err != nil {
+			vm.State = "unresolved"
+			vm.ParentSessionID = ""
+			vm.ForkTurn = 0
+			vm.ForkSourceMessageID = ""
+			vm.Reason = "worldline_assessment_persistence_failed"
+			return
+		}
+		vm = persisted
+	}()
+	if observation.ContractVersion != risuWorldlineObservationContract ||
+		!risuWorldlineHostSignalSupported(observation.HostSignalSource) ||
+		observation.BranchShapeContract != risuBranchShapeContract ||
+		observation.ObservedAtMS <= 0 ||
+		markerState != "observed" {
+		vm.State = "conflict"
+		vm.Reason = "worldline_observation_contract_conflict"
+		return vm
+	}
+	if strings.TrimSpace(req.HostChatIDState) != "observed" || strings.TrimSpace(req.HostChatID) == "" {
+		vm.Reason = "child_host_chat_unresolved"
+		return vm
+	}
+	parentHostChatID, _, sourceMessageID, ok := parseExactRisuBranchMarker(marker)
+	if !ok {
+		vm.State = "conflict"
+		vm.Reason = "official_branch_marker_malformed"
+		return vm
+	}
+	assessmentSourceMessageID = sourceMessageID
+	assessmentCoordinates = strings.Join([]string{parentHostChatID, sourceMessageID}, "\x1f")
+	if parentHostChatID == strings.TrimSpace(req.HostChatID) {
+		vm.State = "conflict"
+		vm.Reason = "branch_parent_matches_child_chat"
+		return vm
+	}
+
+	messageByIndex := make(map[int]risuWorldlineMessageObservation, len(observation.Messages))
+	if len(observation.Messages) < 2 || len(observation.Messages) > 3 {
+		vm.State = "conflict"
+		vm.Reason = "worldline_message_observation_not_bounded"
+		return vm
+	}
+	for _, message := range observation.Messages {
+		if message.MessageIndex < 0 {
+			continue
+		}
+		if _, exists := messageByIndex[message.MessageIndex]; exists {
+			vm.State = "conflict"
+			vm.Reason = "worldline_message_index_conflict"
+			return vm
+		}
+		messageByIndex[message.MessageIndex] = message
+	}
+	markerMessage, markerPresent := messageByIndex[observation.MarkerIndex]
+	if !markerPresent || !markerMessage.Disabled || observation.MarkerIndex <= 0 {
+		vm.State = "unresolved"
+		vm.Reason = "branch_marker_message_unresolved"
+		return vm
+	}
+	sourceMessage, sourcePresent := messageByIndex[observation.MarkerIndex-1]
+	if !sourcePresent || strings.TrimSpace(sourceMessage.MessageChatID) == "" {
+		vm.State = "unresolved"
+		vm.Reason = "fork_source_message_unresolved"
+		return vm
+	}
+	if strings.TrimSpace(sourceMessage.MessageChatID) != sourceMessageID {
+		vm.State = "conflict"
+		vm.Reason = "fork_source_message_conflict"
+		return vm
+	}
+	if sourceMessage.Disabled || (sourceMessage.Role != "user" && sourceMessage.Role != "char") {
+		vm.Reason = "fork_source_message_unresolved"
+		return vm
+	}
+	sourceRole := strings.TrimSpace(sourceMessage.Role)
+	assessmentSourceRole = sourceRole
+	userAnchorMessageID := ""
+	switch sourceRole {
+	case "user":
+		if len(observation.Messages) != 2 {
+			vm.State = "conflict"
+			vm.Reason = "worldline_message_observation_not_bounded"
+			return vm
+		}
+		userAnchorMessageID = sourceMessageID
+	case "char":
+		if len(observation.Messages) != 3 {
+			vm.Reason = "fork_user_anchor_unresolved"
+			return vm
+		}
+		var anchor *risuWorldlineMessageObservation
+		for index := range observation.Messages {
+			candidate := observation.Messages[index]
+			if candidate.MessageIndex == observation.MarkerIndex || candidate.MessageIndex == observation.MarkerIndex-1 {
+				continue
+			}
+			if anchor != nil {
+				vm.State = "conflict"
+				vm.Reason = "fork_user_anchor_conflict"
+				return vm
+			}
+			anchor = &observation.Messages[index]
+		}
+		if anchor == nil || anchor.MessageIndex < 0 || anchor.MessageIndex >= observation.MarkerIndex-1 ||
+			anchor.Role != "user" || anchor.Disabled || strings.TrimSpace(anchor.MessageChatID) == "" {
+			vm.Reason = "fork_user_anchor_unresolved"
+			return vm
+		}
+		userAnchorMessageID = strings.TrimSpace(anchor.MessageChatID)
+	}
+	bindingStore, ok := s.Store.(store.SessionRouteBindingStore)
+	if !ok {
+		vm.Reason = "parent_route_store_unavailable"
+		return vm
+	}
+	parentBinding, err := bindingStore.BindSessionRoute(ctx, store.SessionRouteBindingRequest{
+		StableCharacterID: strings.TrimSpace(req.StableCharacterID),
+		HostChatID:        parentHostChatID,
+		Mode:              store.SessionRouteBindingModeResolveExisting,
+	})
+	if err != nil || parentBinding == nil || !parentBinding.ReadbackVerified {
+		vm.Reason = "parent_route_unresolved"
+		return vm
+	}
+	parentSessionID := strings.TrimSpace(parentBinding.Binding.CanonicalSessionID)
+	if parentSessionID == "" {
+		vm.Reason = "parent_session_unresolved"
+		return vm
+	}
+	if parentSessionID == strings.TrimSpace(childSessionID) {
+		vm.State = "conflict"
+		vm.Reason = "parent_child_session_conflict"
+		return vm
+	}
+	activeSourceLister, ok := s.Store.(store.ActiveSourceRevisionLister)
+	if !ok {
+		vm.Reason = "parent_active_source_store_unavailable"
+		return vm
+	}
+	parentSources, err := activeSourceLister.ListActiveSourceRevisions(ctx, parentSessionID, 0, 0)
+	if err != nil {
+		vm.Reason = "parent_active_source_read_unavailable"
+		return vm
+	}
+	expectedUserLogicalTurnID := completeTurnLogicalTurnID(parentSessionID, completeTurnSourceObservation{
+		HostChatID:             parentHostChatID,
+		HostChatIDState:        "observed",
+		UserMessageChatID:      userAnchorMessageID,
+		UserMessageChatIDState: "observed",
+	})
+	matchingSources := make([]store.MemorySourceRevision, 0, 2)
+	for _, source := range parentSources {
+		if strings.TrimSpace(source.LogicalTurnID) == expectedUserLogicalTurnID && source.TurnIndex > 0 {
+			matchingSources = append(matchingSources, source)
+		}
+	}
+	if len(matchingSources) == 0 {
+		vm.Reason = "parent_active_fork_source_unresolved"
+		return vm
+	}
+	if len(matchingSources) > 1 {
+		vm.State = "conflict"
+		vm.Reason = "parent_active_fork_source_conflict"
+		return vm
+	}
+	forkTurn := matchingSources[0].TurnIndex
+	inheritedThroughTurn, _ := worldlineInheritedThroughTurn(forkTurn, sourceRole)
+	assessmentParentSessionID = parentSessionID
+	assessmentForkTurn = forkTurn
+	vm = worldlineViewModel{
+		ContractVersion:      worldlineViewModelContract,
+		State:                "confirmed",
+		CurrentSessionID:     strings.TrimSpace(childSessionID),
+		ParentSessionID:      parentSessionID,
+		ForkTurn:             forkTurn,
+		ForkSourceMessageID:  sourceMessageID,
+		ForkSourceRole:       sourceRole,
+		InheritedThroughTurn: inheritedThroughTurn,
+		Reason:               "official_branch_marker_validated",
+	}
+	return vm
+}
+
+func persistRisuWorldlineAssessment(
+	ctx context.Context,
+	st store.Store,
+	vm worldlineViewModel,
+	observation *risuWorldlineObservation,
+	parentSessionID, sourceMessageID, sourceRole string,
+	forkTurn int,
+	coordinates string,
+) (worldlineViewModel, error) {
+	lineageStore, ok := st.(store.ForkLineageStore)
+	if !ok || observation == nil {
+		return vm, errors.New("fork lineage store unavailable")
+	}
+	reasonJSON, err := json.Marshal(map[string]string{"reason": strings.TrimSpace(vm.Reason)})
+	if err != nil {
+		return vm, err
+	}
+	idempotencyHash := sha256.Sum256([]byte(strings.Join([]string{
+		strings.TrimSpace(coordinates),
+	}, "\x1f")))
+	record := store.ForkLineageRecord{
+		ContractVersion:     store.RisuWorldlineForkLineageContractVersion,
+		LineageState:        strings.TrimSpace(vm.State),
+		ChatSessionID:       strings.TrimSpace(vm.CurrentSessionID),
+		CopiedFromSessionID: strings.TrimSpace(parentSessionID),
+		ForkSourceMessageID: strings.TrimSpace(sourceMessageID),
+		ForkSourceRole:      strings.TrimSpace(sourceRole),
+		IdempotencyKey:      "risu-worldline:" + hex.EncodeToString(idempotencyHash[:]),
+		ImportedAt:          time.UnixMilli(observation.ObservedAtMS).UTC(),
+		DivergenceMarker:    string(reasonJSON),
+		ProvenanceSource:    "automatic_hook",
+		InheritanceMode:     "none",
+	}
+	if record.LineageState == "confirmed" {
+		record.ForkTurn = forkTurn
+	}
+	saved, err := lineageStore.SaveForkLineageRecord(ctx, record)
+	if err != nil {
+		return vm, err
+	}
+	return worldlineViewModelFromRecord(saved), nil
+}
+
+func risuWorldlineHostSignalSupported(source string) bool {
+	switch strings.TrimSpace(source) {
+	case "output", "active_chat_pre_backfill":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) applyAutomaticWorldlineBackfillBoundary(
+	ctx context.Context,
+	req sessionRoutingTurnResolutionRequest,
+	resp sessionRoutingTurnResolutionResponse,
+) sessionRoutingTurnResolutionResponse {
+	if req.Mode != "pair" && req.Mode != "batch" {
+		return resp
+	}
+	automaticSweep := strings.TrimSpace(req.RoutingContext) == automaticActiveChatFullSweep
+	worldline := currentWorldlineViewModel(ctx, s.Store, req.ChatSessionID)
+	if !automaticSweep && worldline.State == "not_applicable" {
+		return resp
+	}
+	resp.Worldline = &worldline
+	boundary, ok := worldlineInheritedThroughTurn(worldline.ForkTurn, worldline.ForkSourceRole)
+	if worldline.State != "confirmed" || !ok {
+		resp.Code = "worldline_ownership_unresolved"
+		resp.Resolution = "worldline_ownership_unresolved"
+		resp.TurnIndex = 0
+		for index := range resp.ResolvedObservations {
+			resp.ResolvedObservations[index].Resolution = "worldline_ownership_unresolved"
+			resp.ResolvedObservations[index].TurnIndex = 0
+		}
+		return resp
+	}
+	if req.Baseline != nil && req.Baseline.durableVerified &&
+		(strings.TrimSpace(req.Baseline.durableSourceID) != strings.TrimSpace(worldline.ParentSessionID) ||
+			req.Baseline.BackendTurnAtRoute != boundary) {
+		resp.Code = "worldline_ownership_unresolved"
+		resp.Resolution = "worldline_ownership_unresolved"
+		resp.TurnIndex = 0
+		for index := range resp.ResolvedObservations {
+			resp.ResolvedObservations[index].Resolution = "worldline_ownership_unresolved"
+			resp.ResolvedObservations[index].TurnIndex = 0
+		}
+		return resp
+	}
+	if req.Mode == "batch" {
+		for index := range resp.ResolvedObservations {
+			item := &resp.ResolvedObservations[index]
+			if item.ObservedPairOrdinal > 0 {
+				item.LocalTurnIndex = item.ObservedPairOrdinal
+				item.Source = "observed_pair_ordinal"
+			}
+			if item.LocalTurnIndex > 0 && item.LocalTurnIndex <= boundary {
+				item.Resolution = "skip_pre_route_visible_pair"
+				item.TurnIndex = item.LocalTurnIndex
+				continue
+			}
+			if item.LocalTurnIndex > boundary {
+				item.Resolution = "normal"
+				item.TurnIndex = item.LocalTurnIndex
+			}
+		}
+		return resp
+	}
+	if req.ObservedPairOrdinal > 0 {
+		resp.LocalTurnIndex = req.ObservedPairOrdinal
+		resp.LocalTurnSource = "observed_pair_ordinal"
+	}
+	resp.ProtectedBeforeTurn = boundary
+	resp.MinFromTurn = boundary + 1
+	if resp.LocalTurnIndex > 0 && resp.LocalTurnIndex <= boundary {
+		resp.Resolution = "skip_pre_route_visible_pair"
+		resp.TurnIndex = resp.LocalTurnIndex
+		resp.BaselineApplied = req.Baseline != nil && req.Baseline.durableVerified
+		return resp
+	}
+	if resp.LocalTurnIndex > boundary {
+		resp.Resolution = "normal"
+		resp.TurnIndex = resp.LocalTurnIndex
+		resp.BaselineApplied = req.Baseline != nil && req.Baseline.durableVerified
+	}
+	return resp
+}
+
+func parseExactRisuBranchMarker(marker string) (parentHostChatID, parentChatName, sourceMessageID string, ok bool) {
+	const prefix = "{{specialcomment::branchedfrom::"
+	const suffix = "::}}"
+	if !strings.HasPrefix(marker, prefix) || !strings.HasSuffix(marker, suffix) {
+		return "", "", "", false
+	}
+	body := strings.TrimSuffix(strings.TrimPrefix(marker, prefix), suffix)
+	firstSeparator := strings.Index(body, "::")
+	lastSeparator := strings.LastIndex(body, "::")
+	if firstSeparator < 0 || lastSeparator <= firstSeparator {
+		return "", "", "", false
+	}
+	parentHostChatID = strings.TrimSpace(body[:firstSeparator])
+	parentChatName = strings.TrimSpace(body[firstSeparator+2 : lastSeparator])
+	sourceMessageID = strings.TrimSpace(body[lastSeparator+2:])
+	if parentHostChatID == "" || sourceMessageID == "" {
+		return "", "", "", false
+	}
+	return parentHostChatID, parentChatName, sourceMessageID, true
 }
 
 type observedRisuSessionIdentityResolution struct {
@@ -610,6 +1009,8 @@ func (s *Server) resolveDurableSessionRoutingBaseline(ctx context.Context, sessi
 		BackendTurnAtRoute: durable.ImportedThroughTurn,
 		LocalPairsAtRoute:  localPairsAtRoute,
 		Reason:             reason,
+		durableSourceID:    strings.TrimSpace(durable.SourceSessionID),
+		durableVerified:    true,
 	}
 }
 

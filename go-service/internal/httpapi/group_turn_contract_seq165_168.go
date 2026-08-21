@@ -859,10 +859,10 @@ func buildStep168JSPromptAssemblyGuard(injectionAssembly prepareTurnInjectionAss
 		"role":                   "js_prompt_assembly_guard",
 		"truth_authority":        false,
 		"js_owner":               "archive_center_js",
-		"js_functions":           []string{"assembleInjectionWithBudget", "applyContextInjection"},
+		"js_functions":           []string{"applyContextInjection", "applyGoPayloadApplicationPlan"},
 		"injection_text_present": strings.TrimSpace(injectionAssembly.Text) != "",
-		"policy_version":         "s16.8-js.v1",
-		"mode":                   "archive_center_js_prompt_assembly_guard",
+		"policy_version":         "payload_application_plan.v1",
+		"mode":                   "go_plan_exact_application_guard",
 	}
 }
 

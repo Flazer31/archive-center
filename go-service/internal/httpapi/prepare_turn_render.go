@@ -18,6 +18,15 @@ type prepareTurnGuidanceItem struct {
 	ReasonCode string
 }
 
+func normalizePublisherGuidanceFormat(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "compact", "explicit":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return "standard"
+	}
+}
+
 func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryText, inputContextText string, injectionEnabled, inputContextEnabled bool, memoryBudget, referenceBudget, narrativeBudget int, guidanceItems []prepareTurnGuidanceItem, supervisorCallStatus string) map[string]any {
 	if narrativeBudget < 0 {
 		narrativeBudget = 0
@@ -94,13 +103,13 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	if !injectionEnabled {
 		auxiliaryText = ""
 	}
+	// RisuAI already carries recent chat in the completed main-model payload.
+	// Keep inputContextText available to the internal Publisher/turn analysis,
+	// but do not duplicate it in the host payload application plan.
 	inputText := ""
-	if inputContextEnabled {
-		inputText = strings.TrimSpace(inputContextText)
-	}
 	usedNarrative := len([]rune(narrativeText))
 	status := "ready"
-	if auxiliaryText == "" && inputText == "" {
+	if auxiliaryText == "" {
 		status = "empty"
 	}
 	return map[string]any{
@@ -137,6 +146,52 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 			"final_text":             narrativeText,
 			"final_hash":             prepareTurnTextHash(narrativeText),
 		},
+	}
+}
+
+func attachPrepareTurnLorebookReferenceLane(plan map[string]any, text string, budget int, enabled bool, sourceRefs []string) {
+	if plan == nil {
+		return
+	}
+	lorebookLane := prepareTurnPayloadLane(
+		"lorebook_reference",
+		"Lorebook Reference Context",
+		text,
+		budget,
+		enabled && strings.TrimSpace(text) != "",
+		sourceRefs,
+	)
+	lanes := []map[string]any{}
+	inserted := false
+	for _, raw := range outputFidelityLineageSlice(plan["lanes"]) {
+		lane := mapFromAny(raw)
+		if !inserted && extractionStringFromAny(lane["key"]) == "output_guidance" {
+			lanes = append(lanes, lorebookLane)
+			inserted = true
+		}
+		lanes = append(lanes, lane)
+	}
+	if !inserted {
+		lanes = append(lanes, lorebookLane)
+	}
+	parts := []string{}
+	for _, lane := range lanes {
+		if boolFromAny(lane["applied"]) {
+			if laneText := strings.TrimSpace(extractionStringFromAny(lane["text"])); laneText != "" {
+				parts = append(parts, laneText)
+			}
+		}
+	}
+	auxiliary := strings.Join(parts, "\n\n")
+	plan["lane_order"] = []string{"original_work", "long_term_memory", "lorebook_reference", "output_guidance"}
+	plan["lanes"] = lanes
+	plan["auxiliary_text"] = auxiliary
+	plan["auxiliary_chars"] = len([]rune(auxiliary))
+	plan["auxiliary_hash"] = prepareTurnTextHash(auxiliary)
+	if auxiliary == "" {
+		plan["status"] = "empty"
+	} else {
+		plan["status"] = "ready"
 	}
 }
 
@@ -226,7 +281,7 @@ func buildPrepareTurnRecomposerEnhancementContract(
 	status := "ready"
 	if totalAvailable == 0 {
 		status = "empty"
-	} else if supervisorCallStatus == "failed_open" || supervisorCallStatus == "malformed_failed_open" {
+	} else if supervisorCallStatus == "failed_open" || supervisorCallStatus == "publisher_response_container_invalid" || supervisorCallStatus == "publisher_llm_empty_content" || supervisorCallStatus == "publisher_json_malformed" || supervisorCallStatus == "publisher_json_truncated" || supervisorCallStatus == "publisher_schema_invalid" || supervisorCallStatus == "publisher_plan_no_valid_items" {
 		status = "partial"
 	}
 
@@ -277,29 +332,95 @@ func prepareTurnTextHash(text string) string {
 	return fmt.Sprintf("sha256:%x", sum[:])
 }
 
-func supervisorSceneProposalGuidanceItems(result map[string]any) []prepareTurnGuidanceItem {
+func supervisorSceneProposalGuidanceItems(result map[string]any, guidanceFormat string) []prepareTurnGuidanceItem {
+	guidanceFormat = normalizePublisherGuidanceFormat(guidanceFormat)
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
 	plan := mapFromAny(proposal["publisher_plan"])
-	if extractionStringFromAny(plan["contract_version"]) != "publisher_plan.v1" || extractionStringFromAny(plan["status"]) != "ready" {
+	status := extractionStringFromAny(plan["status"])
+	if extractionStringFromAny(plan["contract_version"]) != "publisher_plan.v2" || (status != "ready" && status != "partial") {
 		return nil
 	}
-	items := []prepareTurnGuidanceItem{}
-	for _, raw := range outputFidelityLineageSlice(plan["guidance_items"]) {
+	fieldLabels := map[string]string{
+		"current_arc":       "Current arc",
+		"narrative_goal":    "Narrative goal",
+		"next_beats":        "Next beat",
+		"guardrails":        "Guardrail",
+		"scene_mandate":     "Scene mandate",
+		"required_outcomes": "Required outcome",
+		"forbidden_moves":   "Forbidden move",
+		"pressure_level":    "Pressure",
+	}
+	bookAuthorLines := []string{}
+	directorLines := []string{}
+	sourceRefs := []string{}
+	for _, raw := range outputFidelityLineageSlice(plan["accepted_items"]) {
 		item := mapFromAny(raw)
-		text := strings.TrimSpace(extractionFirstNonEmpty(extractionStringFromAny(item["render_text"]), extractionStringFromAny(item["text"])))
+		role := extractionStringFromAny(item["role"])
+		field := extractionStringFromAny(item["field"])
+		label, knownField := fieldLabels[field]
+		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
 		itemRefs := stringSliceFromAny(item["source_refs"])
-		slot := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["slot"])))
-		if slot == "" || text == "" || len(itemRefs) == 0 {
+		if !knownField || text == "" || len(itemRefs) == 0 || (role != "book_author" && role != "director") {
 			continue
 		}
-		items = append(items, prepareTurnGuidanceItem{
-			Key:        "publisher_" + slot,
-			Title:      "Optional Publisher " + strings.ReplaceAll(slot, "_", " "),
-			Text:       "[Optional Publisher " + strings.ReplaceAll(slot, "_", " ") + "]\n" + text,
-			SourceRefs: itemRefs,
-		})
+		level := extractionStringFromAny(item["level"])
+		line := ""
+		switch guidanceFormat {
+		case "compact":
+			label = field
+			if field == "pressure_level" {
+				label += "(" + level + ")"
+			}
+			line = label + "=" + text
+		case "explicit":
+			label = strings.ToUpper(field)
+			if field == "pressure_level" {
+				label += "(" + level + ")"
+			}
+			line = "- " + label + "=" + text
+		default:
+			if field == "pressure_level" {
+				label += " (" + level + ")"
+			}
+			line = "- " + label + ": " + text
+		}
+		if role == "book_author" {
+			bookAuthorLines = append(bookAuthorLines, line)
+		} else {
+			directorLines = append(directorLines, line)
+		}
+		sourceRefs = appendUniqueStringValues(sourceRefs, itemRefs...)
 	}
-	return items
+	sections := []string{}
+	bookAuthorHeader := "[Book Author]"
+	directorHeader := "[Director]"
+	switch guidanceFormat {
+	case "compact":
+		sections = append(sections, "[PG|scope=current_response|user_input=authority]")
+		bookAuthorHeader = "[BA]"
+		directorHeader = "[D]"
+	case "explicit":
+		sections = append(sections, "[PUBLISHER_PLAN]\nSCOPE=CURRENT_RESPONSE; USER_INPUT=AUTHORITATIVE; AUTHORITY=PROPOSAL_ONLY")
+		bookAuthorHeader = "[BOOK_AUTHOR]"
+		directorHeader = "[DIRECTOR]"
+	default:
+		sections = append(sections, "[Publisher Guidance]", "Use this only to shape the current response. The user input and supplied continuity remain authoritative.")
+	}
+	if len(bookAuthorLines) > 0 {
+		sections = append(sections, bookAuthorHeader+"\n"+strings.Join(bookAuthorLines, "\n"))
+	}
+	if len(directorLines) > 0 {
+		sections = append(sections, directorHeader+"\n"+strings.Join(directorLines, "\n"))
+	}
+	if len(bookAuthorLines) == 0 && len(directorLines) == 0 {
+		return nil
+	}
+	return []prepareTurnGuidanceItem{{
+		Key:        "publisher_plan",
+		Title:      "Publisher Guidance",
+		Text:       strings.Join(sections, "\n\n"),
+		SourceRefs: sourceRefs,
+	}}
 }
 
 type prepareTurnInjectionBlock struct {

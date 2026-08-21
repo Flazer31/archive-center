@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"math"
@@ -13,6 +14,109 @@ import (
 )
 
 // Explorer read: Store-backed
+
+func explorerHistoryScope(ctx context.Context, st store.Store, sessionID string, fromTurn, toTurn int) prepareTurnHistoryScope {
+	scope := resolvePrepareTurnHistoryScope(ctx, st, sessionID, 0)
+	filtered := make([]prepareTurnHistorySegment, 0, len(scope.Segments))
+	for _, segment := range scope.Segments {
+		if fromTurn > 0 && segment.FromTurn < fromTurn {
+			segment.FromTurn = fromTurn
+		}
+		if toTurn > 0 && (segment.ToTurn <= 0 || segment.ToTurn > toTurn) {
+			segment.ToTurn = toTurn
+		}
+		filtered = appendPrepareTurnHistorySegment(filtered, segment)
+	}
+	scope.Segments = filtered
+	return scope
+}
+
+func explorerHistoryItem(item map[string]any, selectedSessionID, sourceSessionID string) map[string]any {
+	selectedSessionID = strings.TrimSpace(selectedSessionID)
+	sourceSessionID = strings.TrimSpace(sourceSessionID)
+	inherited := selectedSessionID != "" && sourceSessionID != "" && sourceSessionID != selectedSessionID
+	item["history_ownership"] = "current_branch"
+	if inherited {
+		item["history_ownership"] = "inherited"
+	}
+	item["inherited"] = inherited
+	item["mutation_allowed"] = !inherited
+	item["source_session_id"] = sourceSessionID
+	return item
+}
+
+func listExplorerHistoryMemories(ctx context.Context, st store.Store, segments []prepareTurnHistorySegment) ([]store.Memory, error) {
+	if reader, ok := st.(store.PrepareTurnRangeStore); ok {
+		rows, err := listPrepareTurnHistoryMemories(ctx, reader, segments, nil)
+		if err == nil || !errors.Is(err, store.ErrNotEnabled) {
+			return rows, err
+		}
+	}
+	items := []store.Memory{}
+	for _, segment := range segments {
+		rows, err := st.ListMemories(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if prepareTurnHistorySegmentContains(segment, row.TurnIndex) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, nil
+}
+
+func listExplorerHistoryEvidence(ctx context.Context, st store.Store, segments []prepareTurnHistorySegment) ([]store.DirectEvidence, error) {
+	if reader, ok := st.(store.PrepareTurnRangeStore); ok {
+		rows, err := listPrepareTurnHistoryEvidence(ctx, reader, segments, nil)
+		if err == nil || !errors.Is(err, store.ErrNotEnabled) {
+			return rows, err
+		}
+	}
+	items := []store.DirectEvidence{}
+	for _, segment := range segments {
+		rows, err := st.ListEvidence(ctx, segment.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			turn := row.TurnAnchor
+			if turn <= 0 {
+				turn = row.SourceTurnEnd
+			}
+			if turn <= 0 {
+				turn = row.SourceTurnStart
+			}
+			if prepareTurnHistorySegmentContains(segment, turn) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, nil
+}
+
+func listExplorerHistoryKGTriples(ctx context.Context, st store.Store, segments []prepareTurnHistorySegment) ([]store.KGTriple, error) {
+	if reader, ok := st.(store.PrepareTurnRangeStore); ok {
+		rows, err := listPrepareTurnHistoryKGTriples(ctx, reader, segments)
+		if err == nil || !errors.Is(err, store.ErrNotEnabled) {
+			return rows, err
+		}
+	}
+	items := []store.KGTriple{}
+	for _, segment := range segments {
+		rows, err := st.ListKGTriples(ctx, segment.SessionID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range rows {
+			if prepareTurnHistorySegmentContains(segment, row.SourceTurn) {
+				items = append(items, row)
+			}
+		}
+	}
+	return items, nil
+}
 
 func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("chat_session_id")
@@ -27,9 +131,10 @@ func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) 
 		offset = 0
 	}
 
+	historyScope := explorerHistoryScope(r.Context(), s.Store, sid, fromTurn, toTurn)
 	var logs []store.ChatLog
 	if s.Store != nil {
-		result, err := s.Store.ListChatLogs(r.Context(), sid, fromTurn, toTurn)
+		result, err := listPrepareTurnHistoryChatLogs(r.Context(), s.Store, historyScope.Segments)
 		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
 			writeInternalError(w, err.Error())
 			return
@@ -124,7 +229,7 @@ func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) 
 		default:
 			completeTurnTotal++
 		}
-		allItems = append(allItems, map[string]any{
+		allItems = append(allItems, explorerHistoryItem(map[string]any{
 			"id":                  turn.id,
 			"chat_session_id":     turn.chatSessionID,
 			"turn_index":          turn.turnIndex,
@@ -135,7 +240,7 @@ func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) 
 			"raw_row_count":       turn.rawRowCount,
 			"duplicate_row_count": turn.duplicateRows,
 			"completeness":        completeness,
-		})
+		}, sid, turn.chatSessionID))
 	}
 
 	start := offset
@@ -161,6 +266,7 @@ func (s *Server) handleExplorerChatLogs(w http.ResponseWriter, r *http.Request) 
 		"has_more":              hasMore,
 		"limit":                 limit,
 		"offset":                offset,
+		"history_scope":         prepareTurnHistoryScopeTrace(historyScope),
 	})
 }
 
@@ -185,11 +291,12 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 		offset = 0
 	}
 
+	historyScope := explorerHistoryScope(r.Context(), s.Store, sid, fromTurn, toTurn)
 	items := []any{}
 	total := 0
 
 	if s.Store != nil {
-		memories, err := s.Store.ListMemories(r.Context(), sid, fromTurn, toTurn)
+		memories, err := listExplorerHistoryMemories(r.Context(), s.Store, historyScope.Segments)
 		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
 			writeInternalError(w, err.Error())
 			return
@@ -214,7 +321,15 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 				end = len(memories)
 			}
 			for _, m := range memories[start:end] {
-				items = append(items, map[string]any{
+				embeddingModel := strings.TrimSpace(m.EmbeddingModel)
+				if len(parseFloat32JSONList(m.Embedding)) == 0 {
+					embeddingModel = ""
+				}
+				switch strings.ToLower(embeddingModel) {
+				case "perspective_scoped_typed_delivery", "not_configured":
+					embeddingModel = ""
+				}
+				items = append(items, explorerHistoryItem(map[string]any{
 					"id":                     m.ID,
 					"chat_session_id":        m.ChatSessionID,
 					"source_turn":            m.TurnIndex,
@@ -227,25 +342,27 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 					"evidence":               m.Evidence,
 					"archive_wing":           m.PlaceWing,
 					"archive_room":           m.PlaceRoom,
-					"embedding_model":        m.EmbeddingModel,
+					"embedding_model":        embeddingModel,
 					"created_at":             formatKSTTime(m.CreatedAt),
-				})
+				}, sid, m.ChatSessionID))
 			}
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"items":    items,
-		"total":    total,
-		"has_more": offset+len(items) < total,
-		"limit":    limit,
-		"offset":   offset,
+		"status":        "ok",
+		"items":         items,
+		"total":         total,
+		"has_more":      offset+len(items) < total,
+		"limit":         limit,
+		"offset":        offset,
+		"history_scope": prepareTurnHistoryScopeTrace(historyScope),
 	})
 }
 
 func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("chat_session_id")
+	historyScope := explorerHistoryScope(r.Context(), s.Store, sid, 0, 0)
 	limitStr := r.URL.Query().Get("limit")
 	offsetStr := r.URL.Query().Get("offset")
 	limit := 30
@@ -264,7 +381,7 @@ func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Req
 	auditRows := []store.AuditLog{}
 
 	if s.Store != nil {
-		evidence, err := s.Store.ListEvidence(r.Context(), sid)
+		evidence, err := listExplorerHistoryEvidence(r.Context(), s.Store, historyScope.Segments)
 		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
 			writeInternalError(w, err.Error())
 			return
@@ -279,7 +396,7 @@ func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Req
 			total = len(evidence)
 
 			if sid != "" {
-				logs, logErr := s.Store.ListChatLogs(r.Context(), sid, 0, 0)
+				logs, logErr := listPrepareTurnHistoryChatLogs(r.Context(), s.Store, historyScope.Segments)
 				if logErr == nil {
 					for _, l := range logs {
 						if l.TurnIndex > latestTurnIndex {
@@ -304,7 +421,7 @@ func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Req
 					e.RepairNeeded,
 				)
 				stateCounts[bucket]++
-				items = append(items, directEvidenceExplorerItem(e, latestTurnIndex))
+				items = append(items, explorerHistoryItem(directEvidenceExplorerItem(e, latestTurnIndex), sid, e.ChatSessionID))
 			}
 		}
 
@@ -337,6 +454,7 @@ func (s *Server) handleExplorerDirectEvidence(w http.ResponseWriter, r *http.Req
 		"state_contract":    directEvidenceStateContract(),
 		"state_counts":      stateCountsAny,
 		"cost_measurement":  directEvidenceCostMeasurement(stateCounts, auditRows),
+		"history_scope":     prepareTurnHistoryScopeTrace(historyScope),
 	})
 }
 
@@ -889,6 +1007,7 @@ func kgNormalizedPartMatchesEntity(partKey, entityKey string) bool {
 
 func (s *Server) handleExplorerKGTriples(w http.ResponseWriter, r *http.Request) {
 	sid := r.URL.Query().Get("chat_session_id")
+	historyScope := explorerHistoryScope(r.Context(), s.Store, sid, 0, 0)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
 	if limit <= 0 {
@@ -902,7 +1021,7 @@ func (s *Server) handleExplorerKGTriples(w http.ResponseWriter, r *http.Request)
 	total := 0
 
 	if s.Store != nil {
-		triples, err := s.Store.ListKGTriples(r.Context(), sid)
+		triples, err := listExplorerHistoryKGTriples(r.Context(), s.Store, historyScope.Segments)
 		if err != nil && !errors.Is(err, store.ErrNotEnabled) {
 			writeInternalError(w, err.Error())
 			return
@@ -919,18 +1038,19 @@ func (s *Server) handleExplorerKGTriples(w http.ResponseWriter, r *http.Request)
 				end = len(triples)
 			}
 			for _, t := range triples[start:end] {
-				items = append(items, kgTripleExplorerItem(t))
+				items = append(items, explorerHistoryItem(kgTripleExplorerItem(t), sid, t.ChatSessionID))
 			}
 		}
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":   "ok",
-		"items":    items,
-		"total":    total,
-		"has_more": offset+len(items) < total,
-		"limit":    limit,
-		"offset":   offset,
+		"status":        "ok",
+		"items":         items,
+		"total":         total,
+		"has_more":      offset+len(items) < total,
+		"limit":         limit,
+		"offset":        offset,
+		"history_scope": prepareTurnHistoryScopeTrace(historyScope),
 	})
 }
 

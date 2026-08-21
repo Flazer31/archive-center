@@ -304,6 +304,47 @@ func TestSessionMigrationExecutionPlanColumnsAndPrimaryKeysMatchFreshSchema(t *t
 	}
 }
 
+func TestSessionMigrationManifestV3IncludesWorldlineSourceRole(t *testing.T) {
+	if SessionMigrationManifestVersion != "session-migration.manifest.v3" {
+		t.Fatalf("manifest version=%q, want v3 after fork source role column change", SessionMigrationManifestVersion)
+	}
+	plan, ok := SessionMigrationExecutionPlanFor("session_fork_lineage")
+	if !ok {
+		t.Fatal("session_fork_lineage execution plan missing")
+	}
+	columns := map[string]bool{}
+	for _, column := range plan.Columns {
+		columns[column] = true
+	}
+	for _, column := range []string{
+		"contract_version", "lineage_state", "fork_turn", "fork_source_message_id", "fork_source_role", "idempotency_key",
+	} {
+		if !columns[column] {
+			t.Errorf("session_fork_lineage plan missing %s", column)
+		}
+	}
+	raw011, err := os.ReadFile("../../../migrations/011_session_fork_lineage_worldline.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, token := range []string{
+		"ADD COLUMN IF NOT EXISTS contract_version",
+		"ADD COLUMN IF NOT EXISTS lineage_state",
+		"ON session_fork_lineage (chat_session_id, idempotency_key)",
+	} {
+		if !strings.Contains(string(raw011), token) {
+			t.Errorf("011 migration missing %q", token)
+		}
+	}
+	raw012, err := os.ReadFile("../../../migrations/012_session_fork_lineage_source_role.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw012), "ADD COLUMN IF NOT EXISTS fork_source_role VARCHAR(16) NULL") {
+		t.Error("012 migration missing nullable fork_source_role column")
+	}
+}
+
 func TestSessionMigrationVectorPlansCoverCanonicalManagedTiers(t *testing.T) {
 	want := map[string]string{
 		"memories":                "memory",

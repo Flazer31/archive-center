@@ -226,6 +226,20 @@ func TestPrepareTurnCharacterMemoryVoiceAndDirectionalRelationshipDelivery(t *te
 	if strings.Contains(objective, "character-memory:") || strings.Contains(objective, "voice-unit") {
 		t.Fatalf("opaque backend identity leaked into model-facing character memory: %s", objective)
 	}
+	structuredRelationshipFound := false
+	for _, raw := range outputFidelityLineageSlice(support["eligible_items"]) {
+		item := mapFromAny(raw)
+		if extractionStringFromAny(item["class"]) != "subjective_relationship" {
+			continue
+		}
+		structuredRelationshipFound = true
+		if extractionStringFromAny(item["subject_entity_id"]) != "entity-mira" || extractionStringFromAny(item["counterpart_entity_id"]) != "entity-noah" {
+			t.Fatalf("typed relationship lost its directional entity coordinates: %#v", item)
+		}
+	}
+	if !structuredRelationshipFound {
+		t.Fatal("typed relationship support item missing")
+	}
 	relationshipText := strings.Join(prepareTurnCharacterMemoryLines(support, "subjective_relationship"), "\n")
 	if !strings.Contains(relationshipText, "Mira -> Noah") || !strings.Contains(relationshipText, "reciprocity=not_inferred") || strings.Contains(relationshipText, "Noah -> Mira") {
 		t.Fatalf("directional relationship was reversed or reciprocity inferred: %s", relationshipText)
@@ -322,12 +336,12 @@ func TestPrepareTurnCharacterMemoryPublisherReceivesDeliveredOnly(t *testing.T) 
 		{"key": "character_objective", "text": "[Character Objective States]\n- Mira voice principle; principle=brief_direct_requests"},
 	}}
 	support = finalizePrepareTurnCharacterMemorySupport(support, plan)
-	rules := buildResponseExecutionSourceRulesWithMemory(dto.PrepareTurnCurrentInputDecisionV1{}, dto.PrepareTurnHostContextReferenceEvidenceV1{}, "session", nil, "", support)
+	rules := buildResponseExecutionSourceRulesWithMemory(dto.PrepareTurnCurrentInputDecisionV1{}, dto.PrepareTurnHostContextReferenceEvidenceV1{}, "session", nil, "", support, nil)
 	refs := stringSliceFromAny(mapFromAny(rules["source_refs"])["character_memory"])
 	if len(refs) != 1 || refs[0] != "character-memory:delivered" {
 		t.Fatalf("response source refs included an undelivered candidate: %#v", refs)
 	}
-	packet := buildSupervisorSupportPacket("session", "", rules, nil, "", support)
+	packet := buildSupervisorSupportPacket("session", "", rules, nil, "", support, nil)
 	delivered := outputFidelityLineageSlice(packet["delivered_character_memory"])
 	if len(delivered) != 1 || extractionStringFromAny(mapFromAny(delivered[0])["source_ref"]) != "character-memory:delivered" {
 		t.Fatalf("publisher packet did not receive exactly the delivered projection: %#v", packet)
@@ -335,6 +349,28 @@ func TestPrepareTurnCharacterMemoryPublisherReceivesDeliveredOnly(t *testing.T) 
 	serialized := mustCompactJSON(packet)
 	if strings.Contains(serialized, "character-memory:deferred") || strings.Contains(serialized, "must-not-copy") {
 		t.Fatalf("publisher packet leaked deferred metadata or private originals: %s", serialized)
+	}
+}
+
+func TestPrepareTurnCharacterMemoryFinalizerConsumesDuplicateTextMultiplicity(t *testing.T) {
+	const text = "- Mira profile support; trait_key=patient"
+	support := map[string]any{
+		"contract_version": prepareTurnCharacterMemoryContractVersion,
+		"status":           "eligible",
+		"eligible_items": []map[string]any{
+			{"source_ref": "character-memory:first", "class": "character_objective", "kind": "character_profile", "text": text, "delivered": false},
+			{"source_ref": "character-memory:second", "class": "character_objective", "kind": "character_profile", "text": text, "delivered": false},
+		},
+		"eligible_count": 2, "delivered_items": []map[string]any{},
+	}
+	plan := map[string]any{"classes": []map[string]any{{"key": "character_objective", "text": "[Character Objective States]\n" + text}}}
+	support = finalizePrepareTurnCharacterMemorySupport(support, plan)
+	if intFromAny(support["delivered_count"], 0) != 1 || intFromAny(support["deferred_by_budget_count"], 0) != 1 {
+		t.Fatalf("duplicate display text multiplicity was not consumed once: %#v", support)
+	}
+	delivered := outputFidelityLineageSlice(support["delivered_items"])
+	if len(delivered) != 1 || extractionStringFromAny(mapFromAny(delivered[0])["source_ref"]) != "character-memory:first" {
+		t.Fatalf("duplicate display text delivered lineage is not one-to-one: %#v", support)
 	}
 }
 

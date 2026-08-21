@@ -517,14 +517,21 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if !foundPromise {
 		t.Fatalf("expected normalized promise storyline among broad candidates, got %#v", fake.savedStorylines)
 	}
-	if len(vec.docs) != 2 {
-		t.Fatalf("relationship-scoped memory must stay out of generic vector; expected evidence/world-rule, got %#v", vec.docs)
+	if len(vec.docs) != 3 {
+		t.Fatalf("public relationship evidence was not retained for general recall; got %#v", vec.docs)
 	}
-	if vec.docs[0].Tier != "evidence" || vec.docs[0].ChatSessionID != "sess-live" || len(vec.docs[0].Embedding) != 3 {
-		t.Fatalf("unexpected vector doc: %#v", vec.docs[0])
+	tiers := map[string]bool{}
+	for _, doc := range vec.docs {
+		tiers[doc.Tier] = true
+		if doc.ChatSessionID != "sess-live" || len(doc.Embedding) != 3 {
+			t.Fatalf("unexpected vector doc: %#v", doc)
+		}
+	}
+	if !tiers["memory"] || !tiers["evidence"] || !tiers["world_rule"] {
+		t.Fatalf("expected public memory, evidence, and world-rule vectors, got %#v", vec.docs)
 	}
 	trace := resp["trace_handoff"].(map[string]any)
-	if trace["vector_status"] != "ok" || resp["vectors_upserted"] != float64(2) || resp["vectors_evidence_upserted"] != float64(1) || resp["vectors_world_rule_upserted"] != float64(1) {
+	if trace["vector_status"] != "ok" || resp["vectors_upserted"] != float64(3) || resp["vectors_evidence_upserted"] != float64(1) || resp["vectors_world_rule_upserted"] != float64(1) {
 		t.Fatalf("vector status/count mismatch: trace=%+v resp=%+v", trace, resp)
 	}
 	if resp["maintenance_enqueued"] != false || resp["maintenance_audit_recorded"] != true {

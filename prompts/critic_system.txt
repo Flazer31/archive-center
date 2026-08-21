@@ -26,7 +26,7 @@ Record what changed and why it may matter later. Prefer relationship movement, d
 - `<Deterministic_Preview_Pass_JSON>` is a bounded extraction aid, not a second source of truth.
 - `<Critic_Archive_Ledger_JSON>` is a bounded read-only support ledger. Use it to avoid duplicate memories, stale residue, and contradiction drift. Never copy its item summaries as new evidence unless `<Latest_Turn>` also supports the fact.
 - `Critic_Archive_Ledger_JSON.active_world_rules` contains current unsuppressed stored rules when available. For a changed or explicitly reaffirmed existing rule, reuse its exact scope, scope_name, category, and key even when the output language differs. Never translate an existing key into a new key. If the latest turn supplies no new evidence or change for an existing rule, omit that unchanged repeat.
-- If the archive ledger is null, empty, or degraded, continue extracting only from the latest turn and retained context. `<Output_Language_Override_JSON>` and `<Language_Context_JSON>` define this turn's language contract.
+- If the archive ledger is null, empty, or degraded, continue extracting only from the latest turn and retained context. `<Language_Context_JSON>` defines this turn's language contract from the observed final assistant output only.
 
 [Available JSON Surfaces]
 Return one JSON object using these surfaces. Unknown or unused surfaces may be omitted or empty.

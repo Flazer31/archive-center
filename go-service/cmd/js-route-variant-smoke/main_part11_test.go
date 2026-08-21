@@ -38,6 +38,7 @@ func TestGuideNoneSkipsSupervisorCallRuntime(t *testing.T) {
 		`const guideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";`,
 		`supervisor_enabled: !guideDisabled`,
 		`guide_strength: settings.narrativeGuideStrength || "weak"`,
+		`publisher_guidance_format: settings.publisherGuidanceFormat || DEFAULT_SETTINGS.publisherGuidanceFormat`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("guide-off /prepare-turn gate marker missing %q", marker)
@@ -118,10 +119,13 @@ func TestFinalPayloadParitySeparatesActualUserFromRisuPromptTailRuntime(t *testi
 		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
 		extractArchiveCenterJSFunction(t, src, "truncPreview"),
 		extractArchiveCenterJSFunction(t, src, "isBoundaryOnlyUserInput"),
+		extractArchiveCenterJSFunction(t, src, "isRisuPromptScaffoldMessage"),
 		extractArchiveCenterJSFunction(t, src, "isMetaUserMessage"),
 		extractArchiveCenterJSFunction(t, src, "normalizeRollbackMessageRole"),
 		extractArchiveCenterJSFunction(t, src, "extractMessageContentCandidate"),
 		extractArchiveCenterJSFunction(t, src, "extractComparableMessageRoleAndContent"),
+		extractArchiveCenterJSFunction(t, src, "auxiliaryMessageContentText"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadMessageRoleAndText"),
 		extractArchiveCenterJSFunction(t, src, "isChatMessageLike"),
 		extractArchiveCenterJSFunction(t, src, "isChatMessageArray"),
 		extractArchiveCenterJSFunction(t, src, "getPayloadPathValue"),
@@ -133,21 +137,30 @@ func TestFinalPayloadParitySeparatesActualUserFromRisuPromptTailRuntime(t *testi
 	}, "\n")
 	script := functions + `
 const settings = {pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false};
+const emptyPlan = {contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly",status:"empty",auxiliary_text:"",input_context_text:""};
+const emptyObservation = {contract_version:"payload_application_observation.v1",status:"ready",payload_application_status:"empty",blocks:[]};
+const auxPlan = {contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly",status:"ready",auxiliary_text:"required auxiliary",input_context_text:"",auxiliary_observation_hash:"or1c_aux"};
+const missingObservation = {contract_version:"payload_application_observation.v1",status:"ambiguous",payload_application_status:"missing",blocks:[{key:"auxiliary_context",status:"missing",hash_match:false}]};
+const appliedObservation = {contract_version:"payload_application_observation.v1",status:"ready",payload_application_status:"applied",blocks:[{key:"auxiliary_context",status:"applied",hash_match:true,planned_content_hash:"or1c_aux"}]};
 const payload = [{role:"user",content:"system: POV instructions and host prompt"}];
 const trace = buildFinalPayloadParityTrace(payload, payload, {
   chatSessionId:"session-copy", userInputSource:"active_chat:0", effectiveUserInput:"한얼은 숯불에 손을 다쳤다.",
-  applyMode:{mode:"shadow",payloadReplaced:false},payloadMutated:false
+  applyMode:{mode:"shadow",payloadReplaced:false},payloadMutated:false,
+  injectionResult:{payloadApplicationPlan:emptyPlan,payloadApplicationObservation:emptyObservation}
 });
 if (trace.finalUserInputPreview !== "한얼은 숯불에 손을 다쳤다.") throw new Error("actual user preview was replaced by host prompt: "+JSON.stringify(trace));
-if (trace.payloadUserRoleTailKind !== "risu_host_prompt_scaffold") throw new Error("Risu payload tail was not classified separately: "+JSON.stringify(trace));
+if (trace.payloadUserRoleTailKind !== "different_user_role_message") throw new Error("different user-role tail was not observed separately: "+JSON.stringify(trace));
 if (!trace.capturedBeforeRequestReturn || !trace.outboundPayloadHash) throw new Error("pre-request fingerprint missing: "+JSON.stringify(trace));
+if (trace.status !== "mismatch" || trace.payloadContentMatch !== false) throw new Error("missing actual user was accepted: "+JSON.stringify(trace));
 const mismatch = buildFinalPayloadParityTrace(payload, payload, {
-  effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
+  effectiveInputText:"required auxiliary", effectiveUserInput:"actual user",
+  injectionResult:{payloadApplicationPlan:auxPlan,payloadApplicationObservation:missingObservation}
 });
 if (mismatch.status !== "mismatch" || mismatch.payloadContentMatch !== false) throw new Error("missing payload component was accepted: "+JSON.stringify(mismatch));
-const matchedPayload = [{role:"system",content:"host scaffold\nrequired auxiliary"}];
+const matchedPayload = [{role:"system",content:"host scaffold\nrequired auxiliary"},{role:"user",content:"actual user"}];
 const matched = buildFinalPayloadParityTrace(payload, matchedPayload, {
-  effectiveInputText:"required auxiliary", injectionResult:{mainInjectionPreview:"required auxiliary"}
+  effectiveInputText:"actual user\n\nrequired auxiliary", effectiveUserInput:"actual user",
+  injectionResult:{payloadApplicationPlan:auxPlan,payloadApplicationObservation:appliedObservation}
 });
 if (matched.status !== "ready" || matched.payloadContentMatch !== true) throw new Error("present payload component was rejected: "+JSON.stringify(matched));
 if (!matched.effectiveInputHash || !matched.outboundPayloadHash) throw new Error("non-empty verified input fingerprint missing: "+JSON.stringify(matched));
@@ -157,6 +170,237 @@ if (!matched.effectiveInputHash || !matched.outboundPayloadHash) throw new Error
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("final-payload parity JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestEffectiveInputUsesCompletePayloadPlanAndCurrentTurnRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Fatalf("node is required for effective-input production fixture; set ARCHIVE_CENTER_NODE_BINARY: %v", err)
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`payloadApplicationPlan: injectionResult.payloadApplicationPlan || null`,
+		`payloadApplicationObservation: injectionResult.payloadApplicationObservation || null`,
+		`const finalUserText = backendPreview && typeof backendPreview.final_user_text === "string"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("production transparency wiring missing %q", marker)
+		}
+	}
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
+		extractArchiveCenterJSFunction(t, src, "truncPreview"),
+		extractArchiveCenterJSFunction(t, src, "isBoundaryOnlyUserInput"),
+		extractArchiveCenterJSFunction(t, src, "isRisuPromptScaffoldMessage"),
+		extractArchiveCenterJSFunction(t, src, "isMetaUserMessage"),
+		extractArchiveCenterJSFunction(t, src, "normalizeRollbackMessageRole"),
+		extractArchiveCenterJSFunction(t, src, "extractMessageContentCandidate"),
+		extractArchiveCenterJSFunction(t, src, "extractComparableMessageRoleAndContent"),
+		extractArchiveCenterJSFunction(t, src, "auxiliaryMessageContentText"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadMessageRoleAndText"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageLike"),
+		extractArchiveCenterJSFunction(t, src, "isChatMessageArray"),
+		extractArchiveCenterJSFunction(t, src, "getPayloadPathValue"),
+		extractArchiveCenterJSFunction(t, src, "buildPayloadPathRebuilder"),
+		extractArchiveCenterJSFunction(t, src, "findPayloadMessagesPath"),
+		extractArchiveCenterJSFunction(t, src, "extractMessages"),
+		extractArchiveCenterJSFunction(t, src, "sanitizeEnumValue"),
+		extractArchiveCenterJSFunction(t, src, "normalizeAuxiliaryInjectionPlacement"),
+		extractArchiveCenterJSFunction(t, src, "normalizeAuxiliaryInjectionAnchorMarker"),
+		extractArchiveCenterJSFunction(t, src, "findFirstSystemInsertionIndex"),
+		extractArchiveCenterJSFunction(t, src, "findLatestUserInsertionIndex"),
+		extractArchiveCenterJSFunction(t, src, "findAnchorMarkerInsertionIndex"),
+		extractArchiveCenterJSFunction(t, src, "findLastCachePointInsertionIndex"),
+		extractArchiveCenterJSFunction(t, src, "resolveAuxiliaryInjectionPlacement"),
+		extractArchiveCenterJSFunction(t, src, "injectAuxiliaryBlock"),
+		extractArchiveCenterJSFunction(t, src, "observeGoPayloadApplication"),
+		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
+		extractArchiveCenterJSFunction(t, src, "isBackendEffectiveInputPreview"),
+		extractArchiveCenterJSFunction(t, src, "composeEffectiveInputFromTransparency"),
+		extractArchiveCenterJSFunction(t, src, "findLastPayloadMessage"),
+		extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace"),
+		extractArchiveCenterJSFunction(t, src, "resolveLatestTransparencyTrace"),
+		extractArchiveCenterJSFunction(t, src, "renderEffectiveInputSection"),
+		extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody"),
+	}, "\n")
+	script := functions + `
+const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto","before_latest_user","after_anchor_marker","after_last_cache_point","after_first_system","end"]);
+const DEFAULT_SETTINGS = {auxiliaryInjectionPlacement:"before_latest_user"};
+const settings = {auxiliaryInjectionPlacement:"before_latest_user",auxiliaryInjectionAnchorMarker:"",pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false,maxInputContextChars:12000};
+const RECOMPOSER_BRIDGE_CONTRACT = "archive_center_recomposer_bridge.v1";
+const AUTO_CONTINUE_USER_INPUT_MARKER = "[Continue]";
+function updateRuntimeState() {}
+function warnLog() {}
+function debugLog() {}
+function publishArchiveCenterRecomposerBridge() { return false; }
+function t(key) { return key; }
+function formatLanguageContextBlock() { return ""; }
+function renderItBlock(title,text) { return "<BLOCK title=\""+title+"\">"+text+"</BLOCK>"; }
+async function resolveRuntimeOutputLanguageOverride() { return ""; }
+async function buildLanguageContextTrace() { return {}; }
+async function buildCompleteTurnSourceAcceptanceObservation() { return {finality_source:"active_chat"}; }
+async function observeRisuPersona() { return {}; }
+function buildSourceToFinalLineageObservation() { return null; }
+function buildRisuRequestObservation() { return {}; }
+function normalizeLanguageContextTrace(value) { return value || {}; }
+function buildRisuActiveChatContextMessageObservation(value) { return value; }
+function assert(condition,message) { if(!condition) throw new Error(message); }
+let lastTurnTrace=null;
+let lastOrchResult=null;
+let _effectiveInputAwaitingNewTurn=false;
+function plan(auxiliary,input,status) {
+  return {
+    contract_version:"payload_application_plan.v1", owner:"go",
+    apply_rule:"apply_exact_text_without_reassembly", status:status,
+    auxiliary_text:auxiliary, input_context_text:input,
+    auxiliary_observation_hash:auxiliary ? computeOrchestrationDirtyHashOr1c("[Archive Center \u2014 Auxiliary Context]\n\n"+auxiliary) : null,
+    input_context_observation_hash:input ? computeOrchestrationDirtyHashOr1c("[Archive Center \u2014 Input Context]\n\n"+input) : null,
+    auxiliary_chars:auxiliary.length, input_context_chars:input.length, lanes:[]
+  };
+}
+function apply(payload,payloadPlan) {
+  return applyGoPayloadApplicationPlan(payload,{
+    _injectionPack:{payload_application_plan:payloadPlan},
+    _sourceToPayloadLineage:{lineage_id:"lineage",payload_plan_id:"plan",source_refs:[],execution_items:[]},
+    _trace:{}
+  },{});
+}
+function transparency(user,applied) {
+  return {
+    backendEffectiveInputPreview:{contract_version:"effective_input_preview.v1",final_user_text:user},
+    inputContext:applied.injectionResult.inputContext,
+    injection:Object.assign({},applied.injectionResult)
+  };
+}
+function parity(payload,applied,user,it) {
+  const effective=composeEffectiveInputFromTransparency(it);
+  return buildFinalPayloadParityTrace(payload,applied.payload,{
+    effectiveInputText:effective,effectiveUserInput:user,payloadMutated:applied.payload!==payload,
+    applyMode:{mode:"shadow",payloadReplaced:false},injectionResult:it.injection
+  });
+}
+async function complete(user,it,finalParity) {
+  return buildCompleteTurnRequestBody(0,user,"assistant",[],"session",null,{
+    orchestrationResult:{_trace:{_inputTransparency:it,finalPayloadParity:finalParity}}
+  });
+}
+(async function() {
+  const user="  FIRST TURN USER \u2728 "+("full-user-\uD55C\uAE00\uD83E\uDDED".repeat(100))+"  \n";
+  assert(user.length>1000,"fixture user must exceed the old transparency preview boundary");
+  const firstPayload=[
+    {role:"system",content:"host"},
+	{role:"user",content:[{type:"text",text:user},{type:"image_url",image_url:{url:"data:image/png;base64,AAAA"}}]},
+    {role:"user",content:"system: Risu scaffold contains raw input but is not the exact final user: "+user}
+  ];
+  const firstApplied=apply(firstPayload,plan("","","empty"));
+  const firstInput=transparency(user,firstApplied);
+  const firstEffective=composeEffectiveInputFromTransparency(firstInput);
+  assert(firstEffective===user,"first-turn user-only effective input was empty or changed");
+  const firstParity=parity(firstPayload,firstApplied,user,firstInput);
+  assert(firstParity.status==="ready" && firstParity.payloadContentMatch===true,"first-turn user-only payload was withheld");
+  const firstBody=await complete(user,firstInput,firstParity);
+  assert(firstBody.client_meta.effective_input_observation.effective_input===user,"first-turn user-only observation was not saved");
+  lastOrchResult={_trace:{_inputTransparency:firstInput,finalPayloadParity:firstParity}};
+  const firstTurnHTML=renderEffectiveInputSection();
+  assert(firstTurnHTML.includes(user) && !firstTurnHTML.includes("withheld"),"first-turn user-only input was hidden in the UI");
+
+  const secondUser="TURN_TWO_CURRENT_MARKER";
+  const secondPayload=[{role:"user",content:secondUser}];
+  const secondApplied=apply(secondPayload,plan("","","empty"));
+  const secondInput=transparency(secondUser,secondApplied);
+  const secondParity=parity(secondPayload,secondApplied,secondUser,secondInput);
+  lastTurnTrace={_inputTransparency:firstInput,finalPayloadParity:firstParity};
+  lastOrchResult={_trace:{_inputTransparency:secondInput,finalPayloadParity:secondParity}};
+  assert(resolveLatestTransparencyTrace()===lastOrchResult._trace,"stale completed trace won over current in-flight trace");
+  const firstHTML=renderEffectiveInputSection();
+  assert(firstHTML.includes(secondUser) && !firstHTML.includes("withheld"),"current in-flight actual user was hidden in the UI");
+  assert(!firstHTML.includes("FIRST TURN USER"),"stale prior turn was rendered");
+
+  const marker="_GUIDANCE_FINAL_\uB05D\uD83D\uDE80";
+  const referenceLane="REFERENCE_FULL_MARKER";
+  const memoryLane="MEMORY_START_"+("memory\uD55C\uAE00\uD83E\uDDED".repeat(180));
+  const loreLane="LOREBOOK_FULL_MARKER";
+  const guidanceLane="GUIDANCE_START_"+marker;
+  const longAux=[referenceLane,memoryLane,loreLane,guidanceLane].join("\n\n");
+  const inputContext="INPUT_CONTEXT_FULL_\uC7A5\uBA74";
+  assert(longAux.indexOf(marker)>500,"fixture marker must be beyond the old preview boundary");
+  const longPlan=plan(longAux,inputContext,"ready");
+  longPlan.lanes=[
+    {key:"original_work",title:"Original Work Context",text:referenceLane,applied:true,status:"applied"},
+    {key:"long_term_memory",title:"Long-term Memory Context",text:memoryLane,applied:true,status:"applied"},
+    {key:"lorebook_reference",title:"Lorebook Reference Context",text:loreLane,applied:true,status:"applied"},
+    {key:"output_guidance",title:"Output Guidance Context",text:guidanceLane,applied:true,status:"applied"}
+  ];
+  const longApplied=apply(firstPayload,longPlan);
+  assert(longApplied.injectionResult.payloadApplicationObservation.payload_application_status==="applied","full Go plan was not observed exactly");
+  assert(!longApplied.injectionResult.auxiliaryPreview.includes(marker),"fixture did not isolate the 500-char preview boundary");
+  const longInput=transparency(user,longApplied);
+  const longEffective=composeEffectiveInputFromTransparency(longInput);
+  assert(longEffective===user+"\n\n"+longAux,"host recent chat survived in effective input");
+  assert(longEffective.includes(loreLane) && longEffective.includes(marker),"lore or guidance was omitted from full auxiliary text");
+  const longParity=parity(firstPayload,longApplied,user,longInput);
+  assert(longParity.status==="ready" && longParity.payloadContentMatch===true,"full payload exact observation was rejected");
+  const longBody=await complete(user,longInput,longParity);
+  const saved=longBody.client_meta.effective_input_observation;
+  assert(saved && saved.effective_input===longEffective && saved.effective_input.includes(marker),">500 Unicode marker did not survive complete-turn observation");
+  longInput.injection.memoryDeliveryPlan={used_chars:memoryLane.length,delivery_cap_chars:4000,global_cap_chars:4000,classes:[{key:"event_recent",title:"Event and Recent Memories",text:"[Event and Recent Memories]\n"+memoryLane}]};
+  lastOrchResult={_trace:{_inputTransparency:longInput,finalPayloadParity:longParity}};
+  const fullLaneHTML=renderEffectiveInputSection();
+  [referenceLane,memoryLane,loreLane,guidanceLane,marker].forEach(function(value) {
+    assert(fullLaneHTML.includes(value),"full canonical plan lane was not rendered: "+value.slice(0,40));
+  });
+  assert(!fullLaneHTML.includes(inputContext),"host recent chat was rendered as delivered effective input");
+
+  assert(fullLaneHTML.includes("Event and Recent Memories") && !fullLaneHTML.includes("Long-term Memory Context"),"memory classes were not rendered as separate edit-check panes");
+
+  assert((fullLaneHTML.match(/LOREBOOK_FULL_MARKER/g)||[]).length===1,"lorebook lane was duplicated");
+
+  const loreOnlyPlan=plan(loreLane,"","ready");
+  loreOnlyPlan.lanes=[{key:"lorebook_reference",title:"Lorebook Reference Context",text:loreLane,applied:true,status:"applied"}];
+  const loreOnlyApplied=apply(firstPayload,loreOnlyPlan);
+  const loreOnlyInput=transparency(user,loreOnlyApplied);
+  const loreOnlyParity=parity(firstPayload,loreOnlyApplied,user,loreOnlyInput);
+  lastOrchResult={_trace:{_inputTransparency:loreOnlyInput,finalPayloadParity:loreOnlyParity}};
+  const loreOnlyHTML=renderEffectiveInputSection();
+  assert(loreOnlyHTML.includes(loreLane) && !loreOnlyHTML.includes(referenceLane),"lorebook-only canonical lane was omitted or contaminated");
+
+  const missingObservation=observeGoPayloadApplication(firstPayload,longPlan,{});
+  const missingInput={
+    backendEffectiveInputPreview:{contract_version:"effective_input_preview.v1",final_user_text:user},
+    injection:{payloadApplicationPlan:longPlan,payloadApplicationObservation:missingObservation}
+  };
+  const missingParity=buildFinalPayloadParityTrace(firstPayload,firstPayload,{
+    effectiveInputText:composeEffectiveInputFromTransparency(missingInput),effectiveUserInput:user,
+    injectionResult:missingInput.injection,applyMode:{mode:"shadow",payloadReplaced:false}
+  });
+  assert(missingParity.status==="mismatch" && missingParity.payloadContentMatch===false,"missing full payload blocks were accepted");
+  const missingBody=await complete(user,missingInput,missingParity);
+  assert(!missingBody.client_meta.effective_input_observation,"missing payload blocks were persisted");
+  lastOrchResult={_trace:{_inputTransparency:missingInput,finalPayloadParity:missingParity}};
+  const missingHTML=renderEffectiveInputSection();
+  assert(missingHTML.includes("will not be stored as verified effective input"),"payload mismatch warning was not rendered");
+  assert(missingHTML.includes(user) && missingHTML.includes(loreLane) && missingHTML.includes(marker) && !missingHTML.includes(inputContext),"payload mismatch rendered non-delivered host recent chat");
+
+  const mismatchPlan=Object.assign({},longPlan,{auxiliary_observation_hash:"or1c_wrong"});
+  const mismatchApplied=apply(firstPayload,mismatchPlan);
+  const mismatchInput=transparency(user,mismatchApplied);
+  const mismatchParity=parity(firstPayload,mismatchApplied,user,mismatchInput);
+  assert(mismatchApplied.injectionResult.payloadApplicationObservation.reason_code==="injected_block_hash_mismatch","hash mismatch fixture was not observed");
+  assert(mismatchParity.status==="mismatch" && mismatchParity.payloadContentMatch===false,"hash mismatch was accepted");
+  const mismatchBody=await complete(user,mismatchInput,mismatchParity);
+  assert(!mismatchBody.client_meta.effective_input_observation,"hash-mismatched effective input was persisted");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("effective-input production JS fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -290,7 +534,6 @@ func TestDashboardNoticeTierRendersBelowWarningRuntime(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "statusDotClass"),
 		extractArchiveCenterJSFunction(t, src, "runtimeStatusLabel"),
 		extractArchiveCenterJSFunction(t, src, "renderDashboardViewModel"),
-		extractArchiveCenterJSFunction(t, src, "renderDashboardViewModelHeader"),
 	}, "\n") + `
 const labels = {
   "dash.status.state.ok": "정상",
@@ -324,14 +567,6 @@ const vm = {
 const html = renderDashboardViewModel(vm, {});
 if (!html.includes("has-notice") || !html.includes("mo-dash-chip-notice") || !html.includes("mo-dot-notice")) {
   throw new Error("notice card did not render with advisory styles: " + html);
-}
-const header = renderDashboardViewModelHeader(vm, {enabled: true});
-if (!header.includes("mo-hdr-health-badge-notice") || !header.includes("알림") || header.includes("모두 정상")) {
-  throw new Error("notice summary was hidden or reported all-ok: " + header);
-}
-const legacyHeader = renderDashboardViewModelHeader({summary: {ok: 2, warn: 0, fail: 0}}, {enabled: true});
-if (!legacyHeader.includes("모두 정상")) {
-  throw new Error("legacy ViewModel without notice count lost all-ok state: " + legacyHeader);
 }
 if (statusDotClass("deferred") !== "mo-dot-notice" || statusDotClass("degraded") !== "mo-dot-warn") {
   throw new Error("notice/warning dot classification regressed");
@@ -946,6 +1181,9 @@ class FakeRemoteNode {
     if (this.tag === "button") {
       return {left:110, top:10, right:128, bottom:28, width:18, height:18};
     }
+    if (this.tag === "recovery-button") {
+      return {left:10, top:160, right:130, bottom:190, width:120, height:30};
+    }
     return {left:0, top:0, right:140, bottom:200, width:140, height:200};
   }
 }
@@ -990,15 +1228,19 @@ const R = {
 };
 const settings = {turnWorkflowHUDEnabled:true};
 const BUILD_ID = "20260802-4";
+const _lastBridgeFailureByPath = new Map();
 let recoveryConfirmCalls = 0;
+let recoveryConfirmResult = true;
 const recoveryBridgeCalls = [];
 let recoveryResponseView = null;
+let recoveryBridgeFailure = false;
 function confirm() {
   recoveryConfirmCalls++;
-  return true;
+  return recoveryConfirmResult;
 }
 async function bridgeFetch(path, options) {
   recoveryBridgeCalls.push({path, options});
+  if (recoveryBridgeFailure) return null;
   return {turn_workflow_hud: recoveryResponseView};
 }
 const translations = {
@@ -1312,9 +1554,26 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("이 턴 복구 재시도"), "recoverable HUD omitted its backend-supplied action");
   assert(surface.recoveryButton && typeof surface.recoveryButton.listeners.click === "function", "recoverable HUD action listener missing");
-  await surface.recoveryButton.listeners.click({});
+  assert(risuEventListeners.size === 2, "recoverable HUD registered duplicate global listeners");
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
+  await _turnWorkflowHUDRenderChain;
+  assert(recoveryConfirmCalls === 0, "click outside the recovery button opened its confirmation");
+  assert(recoveryBridgeCalls.length === 0, "click outside the recovery button called the backend");
+  recoveryConfirmResult = false;
+  await dispatchRisuEvent("click", {clientX:70, clientY:175});
   await _turnWorkflowHUDRenderChain;
   assert(recoveryConfirmCalls === 1, "recovery action did not confirm exactly once");
+  assert(recoveryBridgeCalls.length === 0, "declined recovery action called the backend");
+  assert(surface.innerHTML === "", "declined recovery action left its failed HUD active");
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
+  assert(recoveryConfirmCalls === 1, "declined recovery action reopened on a later click");
+
+  recoveryConfirmResult = true;
+  assert(consumeTurnWorkflowHUD(recoverableView), "recoverable failed HUD view was rejected after decline");
+  await _turnWorkflowHUDRenderChain;
+  await dispatchRisuEvent("click", {clientX:70, clientY:175});
+  await _turnWorkflowHUDRenderChain;
+  assert(recoveryConfirmCalls === 2, "accepted recovery action did not confirm exactly once");
   assert(recoveryBridgeCalls.length === 1, "recovery action did not call the backend exactly once");
   assert(recoveryBridgeCalls[0].path === "/turn-workflow/recovery", "recovery action called the wrong backend route");
   assert(recoveryBridgeCalls[0].options.body.request_id === "recoverable-turn", "recovery action lost its request identity");
@@ -1323,6 +1582,31 @@ function assert(condition, message) {
   await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "recovery status HUD close button did not dismiss HUD");
+
+  recoveryBridgeFailure = true;
+  _lastBridgeFailureByPath.set("/turn-workflow/recovery", {
+    kind:"http_error",path:"/turn-workflow/recovery",method:"POST",status:409,
+    detail:"the failed workflow is not bound to a durable source revision",
+    response_body:JSON.stringify({status:"error",code:"recovery_target_unavailable",error:"복구할 원본 기억을 확정하지 못했습니다."}),
+    at:Date.now()
+  });
+  const failedRecoveryView = {
+    ...recoverableView,
+    request_id:"recoverable-http-error",
+    revision:1
+  };
+  assert(consumeTurnWorkflowHUD(failedRecoveryView), "HTTP-error recovery HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  await dispatchRisuEvent("click", {clientX:70, clientY:175});
+  await _turnWorkflowHUDRenderChain;
+  assert(recoveryBridgeCalls.length === 2, "HTTP-error recovery did not call the backend exactly once");
+  assert(surface.innerHTML.includes("recovery_target_unavailable"), "structured backend recovery code was hidden");
+  assert(surface.innerHTML.includes("복구할 원본 기억을 확정하지 못했습니다."), "structured backend recovery message was hidden");
+  assert(!surface.innerHTML.includes("missing its HUD ViewModel"), "structured 409 was replaced by a missing-ViewModel error");
+  recoveryBridgeFailure = false;
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "HTTP-error recovery HUD close button did not dismiss HUD");
 
   assert(consumeTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"invalidated-d",revision:1,
@@ -1456,10 +1740,7 @@ func TestPrepareTurnSourceCapabilityContractRuntime(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSFunction(t, src, "adaptiveInjectionBudgetProfileLimits") + "\n" +
-		extractArchiveCenterJSFunction(t, src, "adaptiveInjectionAutomaticCap") + "\n" +
-		extractArchiveCenterJSFunction(t, src, "estimateContextGrowthInjectionBudget") + "\n" +
-		extractArchiveCenterJSFunction(t, src, "estimateAdaptiveInjectionBudgetParts") + "\n" +
+	fn := extractArchiveCenterJSFunction(t, src, "estimateAdaptiveInjectionBudgetParts") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "buildRisuRequestObservation") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "observeRisuPersona") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
@@ -1475,9 +1756,10 @@ const settings = {
   pluginMainApplyMode: "shadow", inputContextEnabled: true, maxInjectionChars: 1000, injectionBudgetExtraChars: 0,
   topK: 3, injectionEnabled: true, primaryCanonBaseMaxChars: 1000,
   maxInputContextChars: 800, episodeIntervalTurns: 10,
+  lorebookReferenceMode: "reference_assist",
   embeddingApiKey: "", embeddingEndpoint: "", embeddingModel: "", embeddingProvider: "off", embeddingTimeout: 1
 };
-const DEFAULT_SETTINGS = {maxInjectionChars: 1000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off"};
+const DEFAULT_SETTINGS = {maxInjectionChars: 1000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off", lorebookReferenceMode: "reference_assist"};
 function normalizeNarrativeGuideStrength(value) { return value === "none" ? "none" : "weak"; }
 function getPayloadMessageRoleAndText(message) { return {role: message.role || "", text: message.content || ""}; }
 function sanitizeTopKSetting(value) { return Number(value || 0); }
@@ -1486,6 +1768,16 @@ function normalizeEmbeddingProvider(value) { return value; }
 function getEmbeddingTimeoutMs() { return 1000; }
 function getRequestTimeoutSettingMs() { return 1000; }
 function debugLog() {}
+let lorebookSyncCalls = 0;
+async function syncCurrentLorebookReference(options) {
+  if (!options || options.sessionId !== "session-a") throw new Error("wrong lorebook session");
+  lorebookSyncCalls++;
+  return {status:"current"};
+}
+function currentLorebookReferencePrepareScope(sessionId) {
+  if (sessionId !== "session-a") return null;
+  return {contract_version:"lorebook_reference_scope.v1",observation_state:"observed",character_index:0,chat_index:0,enabled_module_ids:[],enabled_modules_observed:true};
+}
 const hudWatchIds = [];
 function turnWorkflowHUDRequestIdFromPrepareOptions(options) {
   return String(options && options.sourceObservation && options.sourceObservation.request_id || "");
@@ -1531,6 +1823,9 @@ async function bridgeFetch(path, options) {
       sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
     });
     if (!capturedBody) throw new Error("request body not captured");
+    if (capturedBody.settings.lorebook_reference_mode !== "reference_assist" || !capturedBody.lorebook_reference_scope) {
+      throw new Error("always-enabled lorebook scope was not forwarded");
+    }
     if (capturedBody.source_observation !== sourceObservation || capturedBody.capability_observation !== capabilityObservation) {
       throw new Error("host observations were not forwarded unchanged");
     }
@@ -1617,12 +1912,13 @@ async function bridgeFetch(path, options) {
   }
   settings.narrativeGuideMode = "auto";
   settings.narrativeGuideStrength = "weak";
+  settings.publisherGuidanceFormat = "explicit";
   settings.pluginMainApplyMode = "off";
   await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
   const guideAutoBody = capturedBodies[capturedBodies.length - 1];
-  if (guideAutoBody.settings.apply_mode !== "off" || guideAutoBody.settings.guide_mode !== "auto" || guideAutoBody.settings.guide_strength !== "weak" || guideAutoBody.settings.supervisor_enabled !== true || Object.prototype.hasOwnProperty.call(guideAutoBody.settings, "input_context_enabled")) {
+  if (guideAutoBody.settings.apply_mode !== "off" || guideAutoBody.settings.guide_mode !== "auto" || guideAutoBody.settings.guide_strength !== "weak" || guideAutoBody.publisher_guidance_format !== "explicit" || guideAutoBody.settings.supervisor_enabled !== true || Object.prototype.hasOwnProperty.call(guideAutoBody.settings, "input_context_enabled")) {
     throw new Error("optional input improvement was not independent from Go-owned guide and input context: "+JSON.stringify(guideAutoBody.settings));
   }
   settings.narrativeGuideStrength = "none";
@@ -1634,11 +1930,135 @@ async function bridgeFetch(path, options) {
     throw new Error("guide none was not transported as an explicit OFF contract: "+JSON.stringify(guideOffBody.settings));
   }
   if (!hudWatchIds.includes("request-a")) throw new Error("full prepare did not start the correlated workflow HUD");
+  if (lorebookSyncCalls !== capturedBodies.length) throw new Error("prepare-turn did not synchronize the active lorebook scope");
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("prepare-turn source/capability runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestLorebookReferenceAdapterReadsOnlyOnScopeChangeOrManualRefresh(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for lorebook reference adapter runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`lorebookReferenceMode: "reference_assist"`,
+		`merged.lorebookReferenceMode === "off" ? DEFAULT_SETTINGS.lorebookReferenceMode`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing always-enabled lorebook marker %q", marker)
+		}
+	}
+	for _, forbidden := range []string{
+		`lorebookReferenceMode: "off"`,
+		`function revokeLastLorebookReferenceScope`,
+		`consent_state: "revoked"`,
+		`<option value="off"' + ((settings.lorebookReferenceMode`,
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retained disabled lorebook path %q", forbidden)
+		}
+	}
+	functions := extractArchiveCenterJSFunction(t, src, "canonicalLorebookReferenceModuleIds") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "observeLorebookReferenceScope") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "lorebookReferenceScopeKey") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "currentLorebookReferencePrepareScope") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "postLorebookReferenceSnapshot") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "syncCurrentLorebookReference")
+	script := functions + `
+const SESSION_FALLBACK = "default";
+const settings = {lorebookReferenceMode:"search_only"};
+const _lorebookReferenceSync = {attemptedScopeKey:"", syncedScopeKey:"", inFlight:null, lastScope:null};
+let characterIndex = 2;
+let chatIndex = 3;
+let enabledModules = ["module-b", "module-a"];
+let lorebookReads = 0;
+let shouldFailRead = false;
+const snapshots = [];
+const runtimeUpdates = [];
+const R = {
+  async getCurrentCharacterIndex(){ return characterIndex; },
+  async getCurrentChatIndex(){ return chatIndex; },
+  async getDatabase(paths){
+    if (JSON.stringify(paths) !== JSON.stringify(["enabledModules"])) throw new Error("unexpected database path");
+    return {enabledModules};
+  },
+  async getCurrentLorebookEntries(){
+    lorebookReads++;
+    if (shouldFailRead) throw new Error("host read failed");
+    return [{id:"entry-1", key:"Han-eol", content:"Exam notice"}];
+  }
+};
+function getRequestTimeoutSettingMs(){ return 1000; }
+function updateRuntimeState(key, status, extra){ runtimeUpdates.push({key,status,extra}); }
+async function getCurrentChatSessionId(){ return "session-a"; }
+async function bridgeFetch(path, options){
+  if (path !== "/sessions/session-a/lorebook-reference/snapshots") throw new Error("unexpected path " + path);
+  snapshots.push(options.body);
+  return {status:"ok", snapshot:{lifecycle_action:"current_projection_replaced"}};
+}
+(async function(){
+  characterIndex = null;
+  chatIndex = "";
+  const unavailableScope = await observeLorebookReferenceScope("session-a");
+  _lorebookReferenceSync.lastScope = unavailableScope;
+  const partialPrepareScope = currentLorebookReferencePrepareScope("session-a");
+  if (unavailableScope.character_index !== null || unavailableScope.chat_index !== null ||
+      !partialPrepareScope || partialPrepareScope.observation_state !== "partial") {
+    throw new Error("null or empty Host indexes were forged as index zero: " + JSON.stringify(partialPrepareScope));
+  }
+  characterIndex = 2;
+  chatIndex = 3;
+  _lorebookReferenceSync.lastScope = null;
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  if (lorebookReads !== 1 || snapshots.length !== 1) {
+    throw new Error("ordinary turn reread the full lorebook: reads=" + lorebookReads + " snapshots=" + snapshots.length);
+  }
+  if (snapshots[0].observation_state !== "observed" || snapshots[0].complete_snapshot !== true || snapshots[0].entries.length !== 1) {
+    throw new Error("complete official snapshot was not forwarded: " + JSON.stringify(snapshots[0]));
+  }
+  if (JSON.stringify(snapshots[0].enabled_module_ids) !== JSON.stringify(["module-a","module-b"])) {
+    throw new Error("module scope was not canonicalized: " + JSON.stringify(snapshots[0]));
+  }
+  const prepareScope = currentLorebookReferencePrepareScope("session-a");
+  if (!prepareScope || prepareScope.contract_version !== "lorebook_reference_scope.v1" ||
+      prepareScope.observation_state !== "observed" || prepareScope.character_index !== 2 ||
+      prepareScope.chat_index !== 3 || JSON.stringify(prepareScope.enabled_module_ids) !== JSON.stringify(["module-a","module-b"])) {
+    throw new Error("prepare-turn did not receive the exact observed scope: " + JSON.stringify(prepareScope));
+  }
+  enabledModules = ["module-c"];
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  if (lorebookReads !== 2 || snapshots.length !== 2) throw new Error("module scope change did not refresh once");
+  await syncCurrentLorebookReference({sessionId:"session-a", force:true});
+  if (lorebookReads !== 3 || snapshots.length !== 3) throw new Error("manual refresh did not read once");
+  chatIndex = 4;
+  shouldFailRead = true;
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  if (lorebookReads !== 4 || snapshots.length !== 4) throw new Error("failed scope was retried on every ordinary turn");
+  const unavailable = snapshots[3];
+  if (unavailable.observation_state !== "unavailable" || unavailable.complete_snapshot !== false || unavailable.entries.length !== 0) {
+    throw new Error("failed Host read pretended to be a complete replacement: " + JSON.stringify(unavailable));
+  }
+  settings.lorebookReferenceMode = "reference_assist";
+  shouldFailRead = false;
+  await syncCurrentLorebookReference({sessionId:"session-a", force:true});
+  if (lorebookReads !== 5 || snapshots.length !== 5) throw new Error("reference assist did not refresh the Host lorebook");
+})().catch(function(err){ console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lorebook reference adapter runtime fixture failed: %v\n%s", err, output)
 	}
 }
 
@@ -1897,6 +2317,8 @@ func TestActualInputAndBootstrapProductionObservationRuntime(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	hashFn := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c")
+	contentFn := extractArchiveCenterJSFunction(t, src, "auxiliaryMessageContentText")
+	payloadMessageFn := extractArchiveCenterJSFunction(t, src, "getPayloadMessageRoleAndText")
 	messageFn := extractArchiveCenterJSFunction(t, src, "buildPrepareMessageObservation")
 	hostFn := extractArchiveCenterJSFunction(t, src, "buildPrepareTurnHostObservations")
 	bootstrapFn := extractArchiveCenterJSAsyncFunction(t, src, "observePrepareTurnBootstrap")
@@ -1909,10 +2331,7 @@ const R = {
   }),
 };
 async function resolveCurrentActiveChatObject() { return { chat: { fmIndex: 1, data: {} } }; }
-function getPayloadMessageRoleAndText(message) {
-  return { role: String(message && message.role || ""), text: String(message && message.content || "") };
-}
-` + hashFn + "\n" + messageFn + "\n" + hostFn + "\n" + bootstrapFn + `
+` + hashFn + "\n" + contentFn + "\n" + payloadMessageFn + "\n" + messageFn + "\n" + hostFn + "\n" + bootstrapFn + `
 (async function() {
   const actual = '{"supervisor":"return JSON only","npc":"list"}';
   const active = [
@@ -1922,7 +2341,7 @@ function getPayloadMessageRoleAndText(message) {
   ];
   const payload = [
     { role: "system", content: "preset" },
-    { role: "user", content: actual },
+	{ role: "user", content: [{type:"text",text:actual},{type:"image_url",image_url:{url:"data:image/png;base64,AAAA"}}] },
     { role: "system", content: "host suffix" },
   ];
   const host = buildPrepareTurnHostObservations(
@@ -1951,6 +2370,9 @@ function getPayloadMessageRoleAndText(message) {
   if (host.payload.length !== 3 || host.payload[2].role !== "system") {
     throw new Error("payload lifecycle observations were collapsed");
   }
+	if (host.payload[1].raw_content !== actual || host.payload[1].content_hash !== computeOrchestrationDirtyHashOr1c(actual)) {
+	  throw new Error("text-bearing prepare observation diverged from final payload parity text");
+	}
   const bootstrap = await observePrepareTurnBootstrap("session-d", "request-d", active, "chat-d");
   if (bootstrap.leading_messages.length !== 2) throw new Error("multiple starts were not preserved");
   if (bootstrap.leading_messages[0].message_index !== 0 || bootstrap.leading_messages[1].message_index !== 1) {
@@ -2749,10 +3171,13 @@ async function fetchBackendLatestTurnIndexForSession() { return fixture.backendL
 function setTurnCounterAtLeast() {}
 function peekNextTurnIndex() { return fixture.backendLatest + 1; }
 async function findActiveChatCompletedTurnPairForContent() {
+  if (fixture.staleActivePair) return {observedPairOrdinal:8,pairCount:8,userContent:fixture.user,assistantContent:"old inherited assistant",risuUserMessageIndex:14,risuAssistantMessageIndex:15,source:"stale_same_user"};
+  if (fixture.pairMissing) return null;
   return {observedPairOrdinal:fixture.ordinal || 1,pairCount:fixture.ordinal || 1,userContent:fixture.user,assistantContent:fixture.assistant,risuUserMessageIndex:fixture.userIndex || 0,risuAssistantMessageIndex:(fixture.userIndex || 0)+1,source:"active_chat_user_assistant_pair"};
 }
 
 function normalizeTurnPairCompareText(text) { return String(text || "").trim(); }
+function normalizeAssistantPersistenceCandidate(text) { return String(text || "").trim(); }
 async function findActiveChatCompletedTurnPairForUserContent() { return null; }
 async function findLatestActiveChatCompletedTurnPair() { return null; }
 async function requestBackendSessionRoutingTurnResolution(_sid, mode, observation) {
@@ -2774,6 +3199,37 @@ function debugLog() {}
     if (turn !== expected || exactTurn !== expected) {
       throw new Error("unavailable routing baseline must append after backend tail: backend="+backendLatest+" got="+turn);
     }
+  }
+  for (const status of ["skip_pre_route_visible_pair", "worldline_ownership_unresolved"]) {
+    fixture = {
+      backendLatest:9,
+      user:"inherited user "+status,
+      assistant:"inherited assistant "+status,
+      routing:{status,turnIndex:status === "skip_pre_route_visible_pair" ? 1 : 0,localTurnIndex:1,baseline:null},
+    };
+    exactTurn = 0;
+    const rejectedTurn = await reserveAfterRequestPersistenceTurnIndex("s", fixture.user, fixture.assistant);
+    if (rejectedTurn !== 0 || exactTurn !== 0) {
+      throw new Error("backend ownership rejection must not be replaced with the next turn: status="+status+" got="+rejectedTurn);
+    }
+  }
+  fixture = {
+    backendLatest:9,
+    user:"official pre-commit user",
+    assistant:"official pre-commit assistant",
+    staleActivePair:true,
+    userIndex:17,
+    ordinal:9,
+    routing:{status:"normal",turnIndex:9,localTurnIndex:9,baseline:null},
+  };
+  exactTurn = 0;
+  const preCommitTurn = await reserveAfterRequestPersistenceTurnIndex("s", fixture.user, fixture.assistant, {
+    accepted:true,
+    user_message_index:17,
+    user_observed_pair_ordinal:9,
+  });
+  if (preCommitTurn !== 9 || exactTurn !== 9) {
+    throw new Error("official afterRequest coordinate must route before active-pair commit: got="+preCommitTurn);
   }
   fixture = {
     backendLatest:3,
@@ -2797,6 +3253,80 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Risu imported baseline JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestAfterRequestStopsBeforeCompleteTurnWhenBackendRejectsTurnOwnership(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	reserve := strings.Index(src, `turnIdx = await reserveAfterRequestPersistenceTurnIndex`)
+	stop := strings.Index(src, `const routingSkipReason = "session_routing_turn_ownership_not_admitted"`)
+	complete := strings.Index(src, `() => tryCompleteTurn(turnIdx`)
+	if reserve < 0 || stop < 0 || complete < 0 || !(reserve < stop && stop < complete) {
+		t.Fatalf("backend ownership rejection must stop afterRequest before complete-turn: reserve=%d stop=%d complete=%d", reserve, stop, complete)
+	}
+}
+
+func TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for active-chat rebuild ownership fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
+	script := functionBody + `
+let allInherited = false;
+async function getCurrentChatSessionId() { return "child"; }
+async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
+function extractActiveChatComparableMessages() { return allInherited ? [{}] : []; }
+function summarizeActiveChatRawMessageShape() { return {unparsed_count:0,sample_keys:[],reference_keys:[],raw_sample_types:[],primitive_reference_count:0,active_chat_keys:[],risu_db_root_keys:[]}; }
+async function explorerFetchAllChatLogsForSession() { return {items:[],limited:false}; }
+async function explorerFetchTimelineItemsForSessionDryRun() { return {items:[]}; }
+async function fetchWorldRules() { return {items:[{}],count:1}; }
+function buildActiveChatRescanDbRawMap() { return allInherited ? new Map([[1,{}]]) : new Map(); }
+function buildSessionNormalizeCompletedTurnPairs() {
+  return {available:true,pairs:[1,8,9,10].map(turn => ({turnIndex:turn,risuUserMessageIndex:(turn-1)*2,observedPairOrdinal:turn,userContent:"u"+turn,assistantContent:"a"+turn}))};
+}
+function buildCompletedTurnPairsFromActiveChatMessages() { throw new Error("unexpected role parser fallback"); }
+async function requestBackendSessionRoutingTurnResolution() {
+  if (allInherited) {
+    return {status:"batch",resolvedObservations:[1,8,9,10].map((turn,index) => ({
+      observation_index:index,turn_index:turn,local_turn_index:turn,resolution:"skip_pre_route_visible_pair",source:"backend",
+    }))};
+  }
+  return {status:"batch",resolvedObservations:[
+    {observation_index:0,turn_index:1,local_turn_index:1,resolution:"skip_pre_route_visible_pair",source:"backend"},
+    {observation_index:1,turn_index:8,local_turn_index:8,resolution:"skip_pre_route_visible_pair",source:"backend"},
+    {observation_index:2,turn_index:9,local_turn_index:9,resolution:"normal",source:"backend"},
+    {observation_index:3,turn_index:10,local_turn_index:10,resolution:"normal",source:"backend"},
+  ]};
+}
+function buildActiveChatRescanPairsFromDbRawFallback() { throw new Error("backend-owned prefix entered raw fallback"); }
+function buildActiveChatRescanDerivedMap() { return new Map(); }
+function buildActiveChatRescanDryRunRows(pairs) { return pairs.map(pair => ({turn_index:pair.turnIndex,raw_status:"missing",derived_status:"missing_suspected"})); }
+function debugLog() {}
+(async function() {
+  const plan = await computeActiveChatRescanDryRunPlan("child");
+  const pairTurns = plan.pairs.map(pair => pair.turnIndex);
+  if (JSON.stringify(pairTurns) !== JSON.stringify([9,10])) throw new Error("inherited pairs survived rebuild plan: "+JSON.stringify(pairTurns));
+  if (JSON.stringify(plan.processableTurns) !== JSON.stringify([9,10])) throw new Error("inherited turns survived processable plan: "+JSON.stringify(plan.processableTurns));
+  if (plan.pairs.some(pair => pair.turnResolution !== "normal")) throw new Error("backend resolution was not preserved");
+  allInherited = true;
+  const inheritedPlan = await computeActiveChatRescanDryRunPlan("child");
+  if (inheritedPlan.pairs.length !== 0 || inheritedPlan.processableTurns.length !== 0) throw new Error("all-inherited plan was repopulated: "+JSON.stringify(inheritedPlan.processableTurns));
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("active-chat rebuild ownership fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -4687,7 +5217,6 @@ func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "buildPayloadPathRebuilder"),
 		extractArchiveCenterJSFunction(t, src, "findPayloadMessagesPath"),
 		extractArchiveCenterJSFunction(t, src, "extractMessages"),
-		extractArchiveCenterJSFunction(t, src, "injectInputContextBeforeUser"),
 		extractArchiveCenterJSFunction(t, src, "observeGoPayloadApplication"),
 		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
 		extractArchiveCenterJSFunction(t, src, "buildSourceToFinalLineageObservation"),
@@ -4739,8 +5268,8 @@ const applied=applyGoPayloadApplicationPlan(originalPayload,{
   _injectionPack:{payload_application_plan:applyPlan},
   _sourceToPayloadLineage:applyLineage,_trace:{}
 },{});
-if(!applied.injectionResult.applied || !applied.injectionResult.inputContext.applied) {
-  throw new Error("production Go payload plan did not report the official-array input context as applied");
+if(applied.injectionResult.applied || applied.injectionResult.inputContext.applied) {
+  throw new Error("legacy input context was still reported as applied");
 }
 if(originalPayload.length!==2 || originalPayload.some(function(message){ return message.content===exactInput; })) {
   throw new Error("production payload application mutated the original RisuAI array");
@@ -4750,15 +5279,15 @@ const exactInputMatches=returnedMessages.filter(function(message) {
   const parsed=getPayloadMessageRoleAndText(message);
   return parsed.role==="system" && parsed.text===exactInput;
 });
-if(exactInputMatches.length!==1 || returnedMessages[returnedMessages.length-1].content!=="continue") {
-  throw new Error("production payload application did not return exactly one system input block before the user");
+if(exactInputMatches.length!==0 || returnedMessages.length!==2 || returnedMessages[returnedMessages.length-1].content!=="continue") {
+  throw new Error("production payload application reinjected host recent chat");
 }
 if(!applied.injectionResult.payloadApplicationObservation ||
-  applied.injectionResult.payloadApplicationObservation.payload_application_status!=="applied") {
-  throw new Error("production payload observation did not confirm the returned official RisuAI array");
+  applied.injectionResult.payloadApplicationObservation.payload_application_status!=="empty") {
+  throw new Error("production payload observation did not keep the input-only plan empty");
 }
-if(runtimeUpdates.length!==1 || runtimeUpdates[0].key!=="lastInjectionStatus" || runtimeUpdates[0].status!=="ok") {
-  throw new Error("production payload application did not publish one successful runtime state");
+if(runtimeUpdates.length!==1 || runtimeUpdates[0].key!=="lastInjectionStatus" || runtimeUpdates[0].status!=="skipped") {
+  throw new Error("production payload application did not publish one empty runtime state");
 }
 const pending={requestId:"request-1",sourceLineageAmbiguous:true};
 const sticky=resolvePendingSourceLineageOwnership(pending,"request-1",false);

@@ -367,11 +367,14 @@ func (m *mariadbStore) withActiveEntitySourceWrite(
 		WHERE chat_session_id = ? AND source_revision = ?
 		FOR UPDATE
 	`, chatSessionID, sourceRevision).Scan(&lifecycle)
-	if err == sql.ErrNoRows || strings.TrimSpace(lifecycle) != "active" {
+	if err == sql.ErrNoRows {
 		return ErrSourceRevisionStale
 	}
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(lifecycle) != "active" {
+		return ErrSourceRevisionStale
 	}
 	if err := write(tx); err != nil {
 		return err

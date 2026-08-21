@@ -914,6 +914,133 @@ func TestExplorerChatLogsLimitOffset(t *testing.T) {
 	}
 }
 
+func TestExplorerReadsConfirmedWorldlineOwnedHistory(t *testing.T) {
+	ts, _ := time.Parse(time.RFC3339, "2026-08-20T00:00:00Z")
+	rootLogs := make([]store.ChatLog, 0, 18)
+	for turn := 1; turn <= 9; turn++ {
+		rootLogs = append(rootLogs,
+			store.ChatLog{ID: int64(turn*2 - 1), ChatSessionID: "root", TurnIndex: turn, Role: "user", Content: "root user", CreatedAt: ts},
+			store.ChatLog{ID: int64(turn * 2), ChatSessionID: "root", TurnIndex: turn, Role: "assistant", Content: "root assistant", CreatedAt: ts},
+		)
+	}
+	fake := &prepareTurnWorldlineHistoryStore{
+		turnRecordingStore: &turnRecordingStore{},
+		lineageRecords: []store.ForkLineageRecord{
+			confirmedWorldlineTopologyRecord("branch", "root", 8, "char", "root-turn-8"),
+		},
+		chatBySession: map[string][]store.ChatLog{
+			"root": rootLogs,
+			"branch": {
+				{ID: 101, ChatSessionID: "branch", TurnIndex: 1, Role: "user", Content: "copied user", CreatedAt: ts},
+				{ID: 102, ChatSessionID: "branch", TurnIndex: 1, Role: "assistant", Content: "copied assistant", CreatedAt: ts},
+				{ID: 117, ChatSessionID: "branch", TurnIndex: 9, Role: "user", Content: "branch user 9", CreatedAt: ts},
+				{ID: 118, ChatSessionID: "branch", TurnIndex: 9, Role: "assistant", Content: "branch assistant 9", CreatedAt: ts},
+				{ID: 119, ChatSessionID: "branch", TurnIndex: 10, Role: "user", Content: "branch user 10", CreatedAt: ts},
+				{ID: 120, ChatSessionID: "branch", TurnIndex: 10, Role: "assistant", Content: "branch assistant 10", CreatedAt: ts},
+			},
+		},
+		memoriesBySession: map[string][]store.Memory{
+			"root": {
+				{ID: 201, ChatSessionID: "root", TurnIndex: 2, SummaryJSON: `{"turn_summary":"root inherited"}`, CreatedAt: ts},
+				{ID: 209, ChatSessionID: "root", TurnIndex: 9, SummaryJSON: `{"turn_summary":"root post fork"}`, CreatedAt: ts},
+			},
+			"branch": {
+				{ID: 208, ChatSessionID: "branch", TurnIndex: 8, SummaryJSON: `{"turn_summary":"copied prefix"}`, CreatedAt: ts},
+				{ID: 210, ChatSessionID: "branch", TurnIndex: 10, SummaryJSON: `{"turn_summary":"branch current"}`, CreatedAt: ts},
+			},
+		},
+		evidenceBySession: map[string][]store.DirectEvidence{
+			"root": {
+				{ID: 301, ChatSessionID: "root", EvidenceText: "root inherited evidence", TurnAnchor: 4, CreatedAt: ts},
+				{ID: 309, ChatSessionID: "root", EvidenceText: "root post fork evidence", TurnAnchor: 9, CreatedAt: ts},
+			},
+			"branch": {
+				{ID: 308, ChatSessionID: "branch", EvidenceText: "copied evidence", TurnAnchor: 8, CreatedAt: ts},
+				{ID: 310, ChatSessionID: "branch", EvidenceText: "branch evidence", TurnAnchor: 10, CreatedAt: ts},
+			},
+		},
+		kgBySession: map[string][]store.KGTriple{
+			"root": {
+				{ID: 401, ChatSessionID: "root", Subject: "root", Predicate: "knows", Object: "oath", SourceTurn: 3, CreatedAt: ts},
+				{ID: 409, ChatSessionID: "root", Subject: "root", Predicate: "post", Object: "fork", SourceTurn: 9, CreatedAt: ts},
+			},
+			"branch": {
+				{ID: 408, ChatSessionID: "branch", Subject: "copied", Predicate: "prefix", Object: "row", SourceTurn: 8, CreatedAt: ts},
+				{ID: 410, ChatSessionID: "branch", Subject: "branch", Predicate: "owns", Object: "key", SourceTurn: 10, CreatedAt: ts},
+			},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	get := func(path string) map[string]any {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, path, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+		var response map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode %s: %v", path, err)
+		}
+		return response
+	}
+
+	chatResponse := get("/explorer/chat_logs?chat_session_id=branch&limit=20")
+	chatItems := chatResponse["items"].([]any)
+	if got := len(chatItems); got != 10 {
+		t.Fatalf("chat items=%d, want inherited turns 1-8 plus branch turns 9-10", got)
+	}
+	inheritedTurns := 0
+	currentTurns := 0
+	for _, raw := range chatItems {
+		item := raw.(map[string]any)
+		turn := int(item["turn_index"].(float64))
+		inherited := item["inherited"].(bool)
+		if turn <= 8 {
+			if !inherited || item["source_session_id"] != "root" || item["mutation_allowed"] != false {
+				t.Fatalf("turn %d ownership=%#v", turn, item)
+			}
+			inheritedTurns++
+		} else {
+			if inherited || item["source_session_id"] != "branch" || item["mutation_allowed"] != true {
+				t.Fatalf("turn %d ownership=%#v", turn, item)
+			}
+			currentTurns++
+		}
+	}
+	if inheritedTurns != 8 || currentTurns != 2 {
+		t.Fatalf("ownership counts inherited=%d current=%d", inheritedTurns, currentTurns)
+	}
+	historyScope := chatResponse["history_scope"].(map[string]any)
+	if historyScope["state"] != "ready" || historyScope["reason"] != "confirmed_worldline_history_composed" {
+		t.Fatalf("history scope=%#v", historyScope)
+	}
+
+	for _, path := range []string{
+		"/explorer/memories?chat_session_id=branch&limit=20",
+		"/explorer/direct-evidence?chat_session_id=branch&limit=20",
+		"/explorer/kg_triples?chat_session_id=branch&limit=20",
+	} {
+		response := get(path)
+		items := response["items"].([]any)
+		if len(items) != 2 {
+			t.Fatalf("GET %s items=%d, want one inherited and one current row: %#v", path, len(items), items)
+		}
+		ownership := map[string]int{}
+		for _, raw := range items {
+			item := raw.(map[string]any)
+			ownership[item["history_ownership"].(string)]++
+		}
+		if ownership["inherited"] != 1 || ownership["current_branch"] != 1 {
+			t.Fatalf("GET %s ownership=%#v", path, ownership)
+		}
+	}
+}
+
 // Test 16: GET /explorer/chapter_summaries returns chapter data from Store
 func TestExplorerChapterSummariesReturnsChapterData(t *testing.T) {
 	fake := &memoryFakeStore{

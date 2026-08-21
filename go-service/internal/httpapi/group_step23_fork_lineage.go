@@ -1,9 +1,12 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,25 +14,777 @@ import (
 )
 
 const (
-	step23ForkLineageContractVersion = "step23_fork_lineage.v1"
-	step23ForkLineageListRoute       = "/step23/fork-lineage/{chat_session_id}"
-	step23ForkLineageDeclareRoute    = "/step23/fork-lineage"
+	step23ForkLineageContractVersion   = "step23_fork_lineage.v1"
+	worldlineViewModelContract         = "worldline_view_model.v1"
+	worldlineTopologyViewModelContract = "worldline_topology.viewmodel.v2"
+	worldlineTopologyFamilyLimit       = 256
+	step23ForkLineageListRoute         = "/step23/fork-lineage/{chat_session_id}"
+	step23ForkLineageDeclareRoute      = "/step23/fork-lineage"
 )
 
 type step23ForkLineageRecordResponse struct {
-	ID                  int64     `json:"id"`
-	ChatSessionID       string    `json:"chat_session_id"`
-	ScopeID             string    `json:"scope_id,omitempty"`
-	ParentScopeID       string    `json:"parent_scope_id,omitempty"`
-	CopiedFromScopeID   string    `json:"copied_from_scope_id,omitempty"`
-	CopiedFromSessionID string    `json:"copied_from_session_id,omitempty"`
-	ImportedAt          time.Time `json:"imported_at"`
-	DivergenceMarker    string    `json:"divergence_marker,omitempty"`
-	ProvenanceSource    string    `json:"provenance_source"`
-	InheritanceMode     string    `json:"inheritance_mode"`
-	InheritedItemsJSON  string    `json:"inherited_items_json,omitempty"`
-	CreatedAt           time.Time `json:"created_at"`
-	UpdatedAt           time.Time `json:"updated_at"`
+	ID                   int64     `json:"id"`
+	ContractVersion      string    `json:"contract_version"`
+	LineageState         string    `json:"lineage_state"`
+	ChatSessionID        string    `json:"chat_session_id"`
+	ScopeID              string    `json:"scope_id,omitempty"`
+	ParentScopeID        string    `json:"parent_scope_id,omitempty"`
+	CopiedFromScopeID    string    `json:"copied_from_scope_id,omitempty"`
+	CopiedFromSessionID  string    `json:"copied_from_session_id,omitempty"`
+	ForkTurn             int       `json:"fork_turn,omitempty"`
+	ForkSourceMessageID  string    `json:"fork_source_message_id,omitempty"`
+	ForkSourceRole       string    `json:"fork_source_role,omitempty"`
+	InheritedThroughTurn int       `json:"inherited_through_turn"`
+	ImportedAt           time.Time `json:"imported_at"`
+	DivergenceMarker     string    `json:"divergence_marker,omitempty"`
+	ProvenanceSource     string    `json:"provenance_source"`
+	InheritanceMode      string    `json:"inheritance_mode"`
+	InheritedItemsJSON   string    `json:"inherited_items_json,omitempty"`
+	CreatedAt            time.Time `json:"created_at"`
+	UpdatedAt            time.Time `json:"updated_at"`
+}
+
+type worldlineViewModel struct {
+	ContractVersion      string `json:"contract_version"`
+	State                string `json:"state"`
+	CurrentSessionID     string `json:"current_session_id"`
+	ParentSessionID      string `json:"parent_session_id,omitempty"`
+	ForkTurn             int    `json:"fork_turn,omitempty"`
+	ForkSourceMessageID  string `json:"fork_source_message_id,omitempty"`
+	ForkSourceRole       string `json:"fork_source_role,omitempty"`
+	InheritedThroughTurn int    `json:"inherited_through_turn"`
+	Reason               string `json:"reason"`
+}
+
+type worldlineTopologyViewModel struct {
+	ContractVersion    string                         `json:"contract_version"`
+	State              string                         `json:"state"`
+	Nodes              []worldlineTopologyNode        `json:"nodes"`
+	Edges              []worldlineTopologyEdge        `json:"edges"`
+	CurrentSessionID   string                         `json:"current_session_id"`
+	SelectedSessionID  string                         `json:"selected_session_id"`
+	CurrentNodeID      string                         `json:"current_node_id"`
+	SelectedNodeID     string                         `json:"selected_node_id"`
+	ActiveAncestorPath []string                       `json:"active_ancestor_path"`
+	Bounds             worldlineTopologyLogicalBounds `json:"bounds"`
+	Truncated          bool                           `json:"truncated"`
+	Reason             string                         `json:"reason"`
+}
+
+type worldlineTopologyNode struct {
+	NodeID             string `json:"node_id"`
+	SessionID          string `json:"session_id"`
+	TurnKey            string `json:"turn_key"`
+	TurnIndex          int    `json:"turn_index"`
+	TurnText           string `json:"turn_text"`
+	X                  int    `json:"x"`
+	Y                  int    `json:"y"`
+	Current            bool   `json:"current"`
+	Selected           bool   `json:"selected"`
+	ActiveAncestorPath bool   `json:"active_ancestor_path"`
+}
+
+type worldlineTopologyEdge struct {
+	ParentNodeID       string `json:"parent_node_id"`
+	ChildNodeID        string `json:"child_node_id"`
+	Kind               string `json:"kind"`
+	ActiveAncestorPath bool   `json:"active_ancestor_path"`
+}
+
+type worldlineTopologyLogicalBounds struct {
+	MinX   int `json:"min_x"`
+	MinY   int `json:"min_y"`
+	MaxX   int `json:"max_x"`
+	MaxY   int `json:"max_y"`
+	Width  int `json:"width"`
+	Height int `json:"height"`
+}
+
+type worldlineTopologyCandidate struct {
+	ChildSessionID      string
+	ParentSessionID     string
+	ForkTurn            int
+	ForkSourceMessageID string
+	ForkSourceRole      string
+	SourceBoundaryTurn  int
+}
+
+func emptyWorldlineTopologyViewModel(currentSessionID, selectedSessionID, reason string) worldlineTopologyViewModel {
+	return worldlineTopologyViewModel{
+		ContractVersion:    worldlineTopologyViewModelContract,
+		State:              "unavailable",
+		Nodes:              []worldlineTopologyNode{},
+		Edges:              []worldlineTopologyEdge{},
+		CurrentSessionID:   strings.TrimSpace(currentSessionID),
+		SelectedSessionID:  strings.TrimSpace(selectedSessionID),
+		ActiveAncestorPath: []string{},
+		Reason:             reason,
+	}
+}
+
+func buildWorldlineTopologyViewModel(snapshot store.WorldlineTopologySnapshot, currentSessionID, selectedSessionID string) worldlineTopologyViewModel {
+	currentSessionID = strings.TrimSpace(currentSessionID)
+	selectedSessionID = strings.TrimSpace(selectedSessionID)
+	vm := emptyWorldlineTopologyViewModel(currentSessionID, selectedSessionID, "topology_ready")
+	vm.State = "ready"
+	vm.Truncated = snapshot.Truncated || snapshot.TurnsTruncated
+	partialReasons := map[string]bool{}
+	if snapshot.Truncated {
+		partialReasons["family_limit_reached"] = true
+	}
+	if snapshot.TurnsTruncated {
+		partialReasons["turn_limit_reached"] = true
+	}
+
+	sessionSet := map[string]bool{}
+	for _, rawSessionID := range snapshot.SessionIDs {
+		if sessionID := strings.TrimSpace(rawSessionID); sessionID != "" {
+			sessionSet[sessionID] = true
+		}
+	}
+	anchorSessionID := strings.TrimSpace(snapshot.AnchorSessionID)
+	if anchorSessionID != "" {
+		sessionSet[anchorSessionID] = true
+	}
+	sessionIDs := make([]string, 0, len(sessionSet))
+	for sessionID := range sessionSet {
+		sessionIDs = append(sessionIDs, sessionID)
+	}
+	sort.Strings(sessionIDs)
+	if len(sessionIDs) == 0 || anchorSessionID == "" {
+		vm.State = "unavailable"
+		vm.Reason = "session_anchor_unavailable"
+		return vm
+	}
+
+	recordsBySession := make(map[string][]store.ForkLineageRecord, len(sessionIDs))
+	for _, record := range snapshot.LineageRecords {
+		childSessionID := strings.TrimSpace(record.ChatSessionID)
+		if !sessionSet[childSessionID] {
+			continue
+		}
+		recordsBySession[childSessionID] = append(recordsBySession[childSessionID], record)
+	}
+
+	authoritativeCandidates := make(map[string]worldlineTopologyCandidate, len(sessionIDs))
+	graphCandidates := make(map[string]worldlineTopologyCandidate, len(sessionIDs))
+	unsafeOwnership := make(map[string]bool, len(sessionIDs))
+	lineageReasonBySession := make(map[string]string, len(sessionIDs))
+	for _, childSessionID := range sessionIDs {
+		candidateByTuple := map[string]worldlineTopologyCandidate{}
+		hasInvalidConfirmedV2 := false
+		hasUnresolvedV2 := false
+		hasLegacy := false
+		for _, record := range recordsBySession[childSessionID] {
+			if record.ContractVersion != store.RisuWorldlineForkLineageContractVersion {
+				hasLegacy = true
+				continue
+			}
+			if record.LineageState != "confirmed" {
+				hasUnresolvedV2 = true
+				continue
+			}
+			if strings.TrimSpace(record.IdempotencyKey) == "" {
+				hasInvalidConfirmedV2 = true
+				continue
+			}
+			parentSessionID := strings.TrimSpace(record.CopiedFromSessionID)
+			forkSourceMessageID := strings.TrimSpace(record.ForkSourceMessageID)
+			sourceBoundaryTurn, boundaryOK := worldlineInheritedThroughTurn(record.ForkTurn, record.ForkSourceRole)
+			if parentSessionID == "" || parentSessionID == childSessionID || forkSourceMessageID == "" || !boundaryOK {
+				hasInvalidConfirmedV2 = true
+				continue
+			}
+			candidate := worldlineTopologyCandidate{
+				ChildSessionID:      childSessionID,
+				ParentSessionID:     parentSessionID,
+				ForkTurn:            record.ForkTurn,
+				ForkSourceMessageID: forkSourceMessageID,
+				ForkSourceRole:      strings.TrimSpace(record.ForkSourceRole),
+				SourceBoundaryTurn:  sourceBoundaryTurn,
+			}
+			candidateByTuple[worldlineTopologyCandidateKey(candidate)] = candidate
+		}
+
+		switch {
+		case hasInvalidConfirmedV2:
+			unsafeOwnership[childSessionID] = true
+			lineageReasonBySession[childSessionID] = "confirmed_v2_tuple_invalid"
+		case len(candidateByTuple) > 1:
+			unsafeOwnership[childSessionID] = true
+			lineageReasonBySession[childSessionID] = "confirmed_v2_tuple_conflict"
+		case len(candidateByTuple) == 1:
+			var candidate worldlineTopologyCandidate
+			for _, value := range candidateByTuple {
+				candidate = value
+			}
+			authoritativeCandidates[childSessionID] = candidate
+			if sessionSet[candidate.ParentSessionID] {
+				graphCandidates[childSessionID] = candidate
+			} else {
+				lineageReasonBySession[childSessionID] = "parent_outside_current_family"
+			}
+		case hasUnresolvedV2:
+			unsafeOwnership[childSessionID] = true
+			lineageReasonBySession[childSessionID] = "unresolved_v2_lineage"
+		case hasLegacy:
+			unsafeOwnership[childSessionID] = true
+			lineageReasonBySession[childSessionID] = "legacy_lineage_non_authoritative"
+		}
+	}
+
+	cycleMembers := worldlineTopologyCycleMembers(graphCandidates, sessionIDs)
+	for sessionID := range cycleMembers {
+		unsafeOwnership[sessionID] = true
+		lineageReasonBySession[sessionID] = "confirmed_v2_cycle_cut"
+		delete(graphCandidates, sessionID)
+	}
+	for childSessionID, candidate := range graphCandidates {
+		if cycleMembers[candidate.ParentSessionID] {
+			lineageReasonBySession[childSessionID] = "confirmed_v2_cycle_cut"
+			delete(graphCandidates, childSessionID)
+		}
+	}
+
+	adjacentSessions := make(map[string][]string, len(sessionIDs))
+	for childSessionID, candidate := range graphCandidates {
+		adjacentSessions[candidate.ParentSessionID] = append(adjacentSessions[candidate.ParentSessionID], childSessionID)
+		adjacentSessions[childSessionID] = append(adjacentSessions[childSessionID], candidate.ParentSessionID)
+	}
+	componentSessions := map[string]bool{anchorSessionID: true}
+	queue := []string{anchorSessionID}
+	for len(queue) > 0 {
+		sessionID := queue[0]
+		queue = queue[1:]
+		sort.Strings(adjacentSessions[sessionID])
+		for _, adjacentSessionID := range adjacentSessions[sessionID] {
+			if componentSessions[adjacentSessionID] {
+				continue
+			}
+			componentSessions[adjacentSessionID] = true
+			queue = append(queue, adjacentSessionID)
+		}
+	}
+	for sessionID := range componentSessions {
+		if reason := lineageReasonBySession[sessionID]; reason != "" {
+			partialReasons[reason] = true
+		}
+	}
+
+	childrenByParent := make(map[string][]string, len(componentSessions))
+	for childSessionID, candidate := range graphCandidates {
+		if componentSessions[childSessionID] && componentSessions[candidate.ParentSessionID] {
+			childrenByParent[candidate.ParentSessionID] = append(childrenByParent[candidate.ParentSessionID], childSessionID)
+		}
+	}
+	for parentSessionID := range childrenByParent {
+		sort.Slice(childrenByParent[parentSessionID], func(i, j int) bool {
+			left := graphCandidates[childrenByParent[parentSessionID][i]]
+			right := graphCandidates[childrenByParent[parentSessionID][j]]
+			if left.SourceBoundaryTurn != right.SourceBoundaryTurn {
+				return left.SourceBoundaryTurn < right.SourceBoundaryTurn
+			}
+			return left.ChildSessionID < right.ChildSessionID
+		})
+	}
+
+	roots := make([]string, 0, len(componentSessions))
+	for sessionID := range componentSessions {
+		if _, hasParent := graphCandidates[sessionID]; !hasParent {
+			roots = append(roots, sessionID)
+		}
+	}
+	sort.Strings(roots)
+	if len(roots) != 1 {
+		partialReasons["component_root_conflict"] = true
+	}
+	orderedSessionIDs := make([]string, 0, len(componentSessions))
+	laneBySession := make(map[string]int, len(componentSessions))
+	usedLanes := map[int]bool{0: true}
+	claimLane := func(direction, start int) int {
+		lane := start
+		if direction < 0 {
+			if lane >= 0 {
+				lane = -1
+			}
+			for usedLanes[lane] {
+				lane--
+			}
+		} else {
+			if lane <= 0 {
+				lane = 1
+			}
+			for usedLanes[lane] {
+				lane++
+			}
+		}
+		usedLanes[lane] = true
+		return lane
+	}
+	var visit func(string)
+	visit = func(sessionID string) {
+		orderedSessionIDs = append(orderedSessionIDs, sessionID)
+		parentLane := laneBySession[sessionID]
+		for childIndex, childSessionID := range childrenByParent[sessionID] {
+			direction := 1
+			start := parentLane + 1
+			switch {
+			case parentLane < 0:
+				direction = -1
+				start = parentLane - 1
+			case parentLane == 0 && childIndex%2 == 0:
+				direction = -1
+				start = -1
+			}
+			laneBySession[childSessionID] = claimLane(direction, start)
+			visit(childSessionID)
+		}
+	}
+	for index, rootSessionID := range roots {
+		if index > 0 {
+			direction := -1
+			if index%2 == 0 {
+				direction = 1
+			}
+			laneBySession[rootSessionID] = claimLane(direction, direction)
+		}
+		visit(rootSessionID)
+	}
+
+	completedTurnSets := make(map[string]map[int]bool, len(componentSessions))
+	for _, completedTurn := range snapshot.CompletedTurns {
+		sessionID := strings.TrimSpace(completedTurn.ChatSessionID)
+		if !componentSessions[sessionID] || completedTurn.TurnIndex <= 0 || unsafeOwnership[sessionID] {
+			continue
+		}
+		if candidate, ok := authoritativeCandidates[sessionID]; ok && completedTurn.TurnIndex <= candidate.SourceBoundaryTurn {
+			continue
+		}
+		if completedTurnSets[sessionID] == nil {
+			completedTurnSets[sessionID] = map[int]bool{}
+		}
+		completedTurnSets[sessionID][completedTurn.TurnIndex] = true
+	}
+
+	ownedTurnsBySession := make(map[string][]int, len(componentSessions))
+	nodeIDBySessionTurn := make(map[string]map[int]string, len(componentSessions))
+	nodesByID := map[string]*worldlineTopologyNode{}
+	for _, sessionID := range orderedSessionIDs {
+		turns := make([]int, 0, len(completedTurnSets[sessionID]))
+		for turnIndex := range completedTurnSets[sessionID] {
+			turns = append(turns, turnIndex)
+		}
+		sort.Ints(turns)
+		ownedTurnsBySession[sessionID] = turns
+		if len(turns) > 0 {
+			expectedFirstTurn := 1
+			if candidate, ok := authoritativeCandidates[sessionID]; ok {
+				expectedFirstTurn = candidate.SourceBoundaryTurn + 1
+			}
+			if turns[0] != expectedFirstTurn {
+				partialReasons["completed_turn_gap"] = true
+			}
+		}
+		for index, turnIndex := range turns {
+			if index > 0 && turnIndex != turns[index-1]+1 {
+				partialReasons["completed_turn_gap"] = true
+			}
+			nodeID := worldlineTopologyTurnNodeID(sessionID, turnIndex)
+			if nodeIDBySessionTurn[sessionID] == nil {
+				nodeIDBySessionTurn[sessionID] = map[int]string{}
+			}
+			nodeIDBySessionTurn[sessionID][turnIndex] = nodeID
+			nodesByID[nodeID] = &worldlineTopologyNode{
+				NodeID:    nodeID,
+				SessionID: sessionID,
+				TurnKey:   fmt.Sprintf("turn:%d", turnIndex),
+				TurnIndex: turnIndex,
+				TurnText:  fmt.Sprintf("%d", turnIndex),
+				X:         turnIndex,
+				Y:         laneBySession[sessionID],
+			}
+		}
+	}
+
+	edges := make([]worldlineTopologyEdge, 0, len(nodesByID))
+	for _, sessionID := range orderedSessionIDs {
+		turns := ownedTurnsBySession[sessionID]
+		for index := 1; index < len(turns); index++ {
+			if turns[index] != turns[index-1]+1 {
+				continue
+			}
+			edges = append(edges, worldlineTopologyEdge{
+				ParentNodeID: nodeIDBySessionTurn[sessionID][turns[index-1]],
+				ChildNodeID:  nodeIDBySessionTurn[sessionID][turns[index]],
+				Kind:         "continuation",
+			})
+		}
+	}
+
+	branchSessionIDs := make([]string, 0, len(graphCandidates))
+	for childSessionID, candidate := range graphCandidates {
+		if componentSessions[childSessionID] && componentSessions[candidate.ParentSessionID] {
+			branchSessionIDs = append(branchSessionIDs, childSessionID)
+		}
+	}
+	sort.Slice(branchSessionIDs, func(i, j int) bool {
+		left := graphCandidates[branchSessionIDs[i]]
+		right := graphCandidates[branchSessionIDs[j]]
+		if left.SourceBoundaryTurn != right.SourceBoundaryTurn {
+			return left.SourceBoundaryTurn < right.SourceBoundaryTurn
+		}
+		return left.ChildSessionID < right.ChildSessionID
+	})
+	for _, childSessionID := range branchSessionIDs {
+		candidate := graphCandidates[childSessionID]
+		childTurns := ownedTurnsBySession[childSessionID]
+		if len(childTurns) == 0 {
+			continue
+		}
+		if childTurns[0] != candidate.SourceBoundaryTurn+1 {
+			continue
+		}
+		parentNodeID, ok := worldlineTopologyVisibleTurnNodeID(
+			candidate.ParentSessionID,
+			candidate.SourceBoundaryTurn,
+			nodeIDBySessionTurn,
+			graphCandidates,
+		)
+		if !ok {
+			partialReasons["fork_source_turn_missing"] = true
+			continue
+		}
+		edges = append(edges, worldlineTopologyEdge{
+			ParentNodeID: parentNodeID,
+			ChildNodeID:  nodeIDBySessionTurn[childSessionID][childTurns[0]],
+			Kind:         "fork",
+		})
+	}
+
+	vm.CurrentNodeID = worldlineTopologySessionTipNodeID(currentSessionID, ownedTurnsBySession, nodeIDBySessionTurn, graphCandidates)
+	vm.SelectedNodeID = worldlineTopologySessionTipNodeID(selectedSessionID, ownedTurnsBySession, nodeIDBySessionTurn, graphCandidates)
+	if currentNode := nodesByID[vm.CurrentNodeID]; currentNode != nil {
+		currentNode.Current = true
+	}
+	if selectedNode := nodesByID[vm.SelectedNodeID]; selectedNode != nil {
+		selectedNode.Selected = true
+	}
+
+	incomingNodeID := make(map[string]string, len(edges))
+	for _, edge := range edges {
+		incomingNodeID[edge.ChildNodeID] = edge.ParentNodeID
+	}
+	for cursor, seen := vm.CurrentNodeID, map[string]bool{}; cursor != "" && !seen[cursor]; cursor = incomingNodeID[cursor] {
+		seen[cursor] = true
+		vm.ActiveAncestorPath = append(vm.ActiveAncestorPath, cursor)
+	}
+	for left, right := 0, len(vm.ActiveAncestorPath)-1; left < right; left, right = left+1, right-1 {
+		vm.ActiveAncestorPath[left], vm.ActiveAncestorPath[right] = vm.ActiveAncestorPath[right], vm.ActiveAncestorPath[left]
+	}
+	activeNodeIDs := make(map[string]bool, len(vm.ActiveAncestorPath))
+	activeEdges := map[string]bool{}
+	for index, nodeID := range vm.ActiveAncestorPath {
+		activeNodeIDs[nodeID] = true
+		if index > 0 {
+			activeEdges[vm.ActiveAncestorPath[index-1]+"\x1f"+nodeID] = true
+		}
+	}
+	for nodeID := range activeNodeIDs {
+		if node := nodesByID[nodeID]; node != nil {
+			node.ActiveAncestorPath = true
+		}
+	}
+	for index := range edges {
+		edges[index].ActiveAncestorPath = activeEdges[edges[index].ParentNodeID+"\x1f"+edges[index].ChildNodeID]
+	}
+
+	nodeIDs := make([]string, 0, len(nodesByID))
+	for nodeID := range nodesByID {
+		nodeIDs = append(nodeIDs, nodeID)
+	}
+	sort.Slice(nodeIDs, func(i, j int) bool {
+		left := nodesByID[nodeIDs[i]]
+		right := nodesByID[nodeIDs[j]]
+		if left.X != right.X {
+			return left.X < right.X
+		}
+		if left.Y != right.Y {
+			return left.Y < right.Y
+		}
+		return left.NodeID < right.NodeID
+	})
+	vm.Nodes = make([]worldlineTopologyNode, 0, len(nodeIDs))
+	for _, nodeID := range nodeIDs {
+		vm.Nodes = append(vm.Nodes, *nodesByID[nodeID])
+	}
+	sort.Slice(edges, func(i, j int) bool {
+		if edges[i].ParentNodeID != edges[j].ParentNodeID {
+			return edges[i].ParentNodeID < edges[j].ParentNodeID
+		}
+		if edges[i].ChildNodeID != edges[j].ChildNodeID {
+			return edges[i].ChildNodeID < edges[j].ChildNodeID
+		}
+		return edges[i].Kind < edges[j].Kind
+	})
+	vm.Edges = edges
+	if len(vm.Nodes) > 0 {
+		minX, maxX := vm.Nodes[0].X, vm.Nodes[0].X
+		minY, maxY := vm.Nodes[0].Y, vm.Nodes[0].Y
+		for _, node := range vm.Nodes[1:] {
+			if node.X < minX {
+				minX = node.X
+			}
+			if node.X > maxX {
+				maxX = node.X
+			}
+			if node.Y < minY {
+				minY = node.Y
+			}
+			if node.Y > maxY {
+				maxY = node.Y
+			}
+		}
+		vm.Bounds = worldlineTopologyLogicalBounds{
+			MinX:   minX,
+			MinY:   minY,
+			MaxX:   maxX,
+			MaxY:   maxY,
+			Width:  maxX - minX + 1,
+			Height: maxY - minY + 1,
+		}
+	}
+	if len(partialReasons) > 0 {
+		vm.State = "partial"
+		vm.Reason = worldlineTopologyPartialReason(partialReasons)
+	}
+	return vm
+}
+
+func worldlineTopologyVisibleTurnNodeID(
+	parentSessionID string,
+	turnIndex int,
+	nodeIDBySessionTurn map[string]map[int]string,
+	candidates map[string]worldlineTopologyCandidate,
+) (string, bool) {
+	visited := map[string]bool{}
+	for sessionID := strings.TrimSpace(parentSessionID); sessionID != "" && !visited[sessionID]; {
+		visited[sessionID] = true
+		if nodeID := nodeIDBySessionTurn[sessionID][turnIndex]; nodeID != "" {
+			return nodeID, true
+		}
+		candidate, ok := candidates[sessionID]
+		if !ok || turnIndex > candidate.SourceBoundaryTurn {
+			return "", false
+		}
+		sessionID = candidate.ParentSessionID
+	}
+	return "", false
+}
+
+func worldlineTopologySessionTipNodeID(
+	sessionID string,
+	ownedTurnsBySession map[string][]int,
+	nodeIDBySessionTurn map[string]map[int]string,
+	candidates map[string]worldlineTopologyCandidate,
+) string {
+	sessionID = strings.TrimSpace(sessionID)
+	turns := ownedTurnsBySession[sessionID]
+	if len(turns) > 0 {
+		return nodeIDBySessionTurn[sessionID][turns[len(turns)-1]]
+	}
+	if candidate, ok := candidates[sessionID]; ok {
+		if nodeID, resolved := worldlineTopologyVisibleTurnNodeID(candidate.ParentSessionID, candidate.SourceBoundaryTurn, nodeIDBySessionTurn, candidates); resolved {
+			return nodeID
+		}
+	}
+	return ""
+}
+
+func worldlineTopologyTurnNodeID(sessionID string, turnIndex int) string {
+	return fmt.Sprintf("worldline-turn:%d:%s:turn:%d", len([]byte(sessionID)), sessionID, turnIndex)
+}
+
+func worldlineTopologyPartialReason(reasons map[string]bool) string {
+	for _, reason := range []string{
+		"family_limit_reached",
+		"turn_limit_reached",
+		"confirmed_v2_cycle_cut",
+		"confirmed_v2_tuple_invalid",
+		"confirmed_v2_tuple_conflict",
+		"unresolved_v2_lineage",
+		"legacy_lineage_non_authoritative",
+		"parent_outside_current_family",
+		"component_root_conflict",
+		"completed_turn_gap",
+		"fork_source_turn_missing",
+	} {
+		if reasons[reason] {
+			return reason
+		}
+	}
+	return "topology_partial"
+}
+
+func worldlineTopologyCandidateKey(candidate worldlineTopologyCandidate) string {
+	return strings.Join([]string{
+		candidate.ParentSessionID,
+		fmt.Sprintf("%d", candidate.ForkTurn),
+		candidate.ForkSourceMessageID,
+		candidate.ForkSourceRole,
+	}, "\x1f")
+}
+
+func worldlineTopologyCycleMembers(candidates map[string]worldlineTopologyCandidate, sessionIDs []string) map[string]bool {
+	cycleMembers := map[string]bool{}
+	settled := map[string]bool{}
+	for _, startSessionID := range sessionIDs {
+		if settled[startSessionID] {
+			continue
+		}
+		path := []string{}
+		pathIndex := map[string]int{}
+		cursor := startSessionID
+		for cursor != "" && !settled[cursor] {
+			if index, exists := pathIndex[cursor]; exists {
+				for _, sessionID := range path[index:] {
+					cycleMembers[sessionID] = true
+				}
+				break
+			}
+			pathIndex[cursor] = len(path)
+			path = append(path, cursor)
+			candidate, ok := candidates[cursor]
+			if !ok {
+				break
+			}
+			cursor = candidate.ParentSessionID
+		}
+		for _, sessionID := range path {
+			settled[sessionID] = true
+		}
+	}
+	return cycleMembers
+}
+
+func currentWorldlineViewModel(ctx context.Context, st store.Store, sessionID string) worldlineViewModel {
+	sid := strings.TrimSpace(sessionID)
+	vm := worldlineViewModel{
+		ContractVersion:  worldlineViewModelContract,
+		State:            "not_applicable",
+		CurrentSessionID: sid,
+		Reason:           "no_confirmed_fork_lineage",
+	}
+	lineageStore, ok := st.(store.ForkLineageStore)
+	if !ok || sid == "" {
+		return vm
+	}
+	records, err := lineageStore.ListForkLineageRecords(ctx, sid, "", 100)
+	if err != nil {
+		vm.State = "unresolved"
+		vm.Reason = "fork_lineage_read_unavailable"
+		return vm
+	}
+	var latestAutomatic *store.ForkLineageRecord
+	var legacyConfirmed *store.ForkLineageRecord
+	var confirmed *store.ForkLineageRecord
+	for index := range records {
+		record := records[index]
+		if strings.TrimSpace(record.IdempotencyKey) == "" ||
+			(record.ContractVersion != store.ForkLineageContractVersion &&
+				record.ContractVersion != store.RisuWorldlineForkLineageContractVersion) {
+			continue
+		}
+		if record.LineageState == "confirmed" && record.ContractVersion == store.RisuWorldlineForkLineageContractVersion {
+			if _, ok := worldlineInheritedThroughTurn(record.ForkTurn, record.ForkSourceRole); !ok ||
+				strings.TrimSpace(record.CopiedFromSessionID) == "" {
+				vm.State = "conflict"
+				vm.Reason = "confirmed_worldline_tuple_invalid"
+				return vm
+			}
+			if confirmed == nil {
+				confirmed = &records[index]
+			} else if worldlineConfirmedTupleKey(*confirmed) != worldlineConfirmedTupleKey(record) {
+				vm.State = "conflict"
+				vm.Reason = "confirmed_worldline_tuple_conflict"
+				return vm
+			}
+			continue
+		}
+		if record.LineageState == "confirmed" && legacyConfirmed == nil {
+			legacyConfirmed = &records[index]
+		}
+		if latestAutomatic == nil {
+			latestAutomatic = &records[index]
+		}
+	}
+	if confirmed != nil {
+		return worldlineViewModelFromRecord(*confirmed)
+	}
+	if legacyConfirmed != nil {
+		return worldlineViewModelFromRecord(*legacyConfirmed)
+	}
+	if latestAutomatic != nil {
+		return worldlineViewModelFromRecord(*latestAutomatic)
+	}
+	return vm
+}
+
+func worldlineViewModelFromRecord(record store.ForkLineageRecord) worldlineViewModel {
+	state := strings.TrimSpace(record.LineageState)
+	if state != "confirmed" && state != "unresolved" && state != "conflict" {
+		state = "unresolved"
+	}
+	reason := "worldline_observation_unresolved"
+	if state == "confirmed" {
+		reason = "official_branch_marker_validated"
+	} else if strings.TrimSpace(record.DivergenceMarker) != "" {
+		var detail struct {
+			Reason string `json:"reason"`
+		}
+		if json.Unmarshal([]byte(record.DivergenceMarker), &detail) == nil && strings.TrimSpace(detail.Reason) != "" {
+			reason = strings.TrimSpace(detail.Reason)
+		}
+	}
+	vm := worldlineViewModel{
+		ContractVersion:  worldlineViewModelContract,
+		State:            state,
+		CurrentSessionID: strings.TrimSpace(record.ChatSessionID),
+		Reason:           reason,
+	}
+	if state == "confirmed" {
+		vm.ParentSessionID = strings.TrimSpace(record.CopiedFromSessionID)
+		vm.ForkTurn = record.ForkTurn
+		vm.ForkSourceMessageID = strings.TrimSpace(record.ForkSourceMessageID)
+		if inheritedThroughTurn, ok := worldlineInheritedThroughTurn(record.ForkTurn, record.ForkSourceRole); ok &&
+			record.ContractVersion == store.RisuWorldlineForkLineageContractVersion {
+			vm.ForkSourceRole = strings.TrimSpace(record.ForkSourceRole)
+			vm.InheritedThroughTurn = inheritedThroughTurn
+		}
+	}
+	return vm
+}
+
+func worldlineInheritedThroughTurn(forkTurn int, sourceRole string) (int, bool) {
+	if forkTurn <= 0 {
+		return 0, false
+	}
+	switch strings.TrimSpace(sourceRole) {
+	case "char":
+		return forkTurn, true
+	case "user":
+		return maxInt(0, forkTurn-1), true
+	default:
+		return 0, false
+	}
+}
+
+func worldlineConfirmedTupleKey(record store.ForkLineageRecord) string {
+	return strings.Join([]string{
+		strings.TrimSpace(record.CopiedFromSessionID),
+		strings.TrimSpace(record.ForkSourceRole),
+		fmt.Sprintf("%d", record.ForkTurn),
+		strings.TrimSpace(record.ForkSourceMessageID),
+	}, "\x1f")
 }
 
 type step23ForkLineageTruthBoundary struct {
@@ -178,7 +933,7 @@ func step23ValidateForkLineageDeclare(req step23ForkLineageDeclareRequest) error
 		return errors.New("inherited_items_json is required, use [] when nothing was imported")
 	}
 	if step23NormalizeForkLineageProvenance(req.ProvenanceSource) == "automatic_hook" {
-		return errors.New("automatic_hook provenance is not available in this build; use manual")
+		return errors.New("automatic_hook provenance is reserved for automatic host observation")
 	}
 	return nil
 }
@@ -190,8 +945,8 @@ func step23ForkLineageTruthBoundaryValue() step23ForkLineageTruthBoundary {
 		SilentMergeBackAllowed: false,
 		HiddenOverwriteAllowed: false,
 		DefaultInheritanceMode: "conservative_import",
-		AutomaticHookAvailable: false,
-		CloseoutMode:           "manual_provenance_declaration",
+		AutomaticHookAvailable: true,
+		CloseoutMode:           "manual_or_validated_official_risu_observation",
 	}
 }
 
@@ -228,13 +983,18 @@ func step23ParseOptionalRFC3339(raw string) (time.Time, error) {
 }
 
 func step23ForkLineageFromStore(record store.ForkLineageRecord) step23ForkLineageRecordResponse {
-	return step23ForkLineageRecordResponse{
+	response := step23ForkLineageRecordResponse{
 		ID:                  record.ID,
+		ContractVersion:     record.ContractVersion,
+		LineageState:        record.LineageState,
 		ChatSessionID:       record.ChatSessionID,
 		ScopeID:             record.ScopeID,
 		ParentScopeID:       record.ParentScopeID,
 		CopiedFromScopeID:   record.CopiedFromScopeID,
 		CopiedFromSessionID: record.CopiedFromSessionID,
+		ForkTurn:            record.ForkTurn,
+		ForkSourceMessageID: record.ForkSourceMessageID,
+		ForkSourceRole:      record.ForkSourceRole,
 		ImportedAt:          record.ImportedAt,
 		DivergenceMarker:    record.DivergenceMarker,
 		ProvenanceSource:    record.ProvenanceSource,
@@ -243,4 +1003,9 @@ func step23ForkLineageFromStore(record store.ForkLineageRecord) step23ForkLineag
 		CreatedAt:           record.CreatedAt,
 		UpdatedAt:           record.UpdatedAt,
 	}
+	if inheritedThroughTurn, ok := worldlineInheritedThroughTurn(record.ForkTurn, record.ForkSourceRole); ok &&
+		record.ContractVersion == store.RisuWorldlineForkLineageContractVersion {
+		response.InheritedThroughTurn = inheritedThroughTurn
+	}
+	return response
 }

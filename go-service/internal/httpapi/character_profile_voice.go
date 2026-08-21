@@ -217,30 +217,18 @@ func characterProjectionUnitFromPreciseMemory(sid string, unit *store.PreciseMem
 		strings.TrimSpace(unit.SourceContentHash) == "" || unit.LifecycleState != "active" {
 		return characterProjectionUnit{}, true, "active_accepted_source_required"
 	}
-	if unit.AdmissionState != "committed" || unit.ReviewState != "source_observed" || unit.TruthScope != "support_only" ||
-		unit.EpistemicMode != "direct" || unit.AuthorityClass != "support_hypothesis" || strings.TrimSpace(unit.SubjectEntityID) == "" {
-		return characterProjectionUnit{}, true, "committed_support_only_character_evidence_required"
-	}
-	if extractionStringFromAny(payload["admission_state"]) != "committed" || extractionStringFromAny(payload["review_state"]) != "source_observed" {
-		return characterProjectionUnit{}, true, "payload_admission_state_mismatch"
+	if unit.TruthScope != "support_only" || unit.EpistemicMode != "direct" ||
+		unit.AuthorityClass != "support_hypothesis" || strings.TrimSpace(unit.SubjectEntityID) == "" {
+		return characterProjectionUnit{}, true, "support_only_character_evidence_required"
 	}
 	visibility := strings.ToLower(strings.TrimSpace(unit.Visibility))
-	if visibility != strings.ToLower(strings.TrimSpace(extractionStringFromAny(payload["visibility"]))) ||
-		!map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
-		return characterProjectionUnit{}, true, "source_bound_visibility_mismatch"
-	}
-	if strings.TrimSpace(unit.EvidenceExcerpt) == "" || strings.TrimSpace(unit.EvidenceHash) == "" || unit.RootEvidenceID <= 0 ||
-		len(jsonInt64Slice(unit.DirectEvidenceIDsJSON)) == 0 {
-		return characterProjectionUnit{}, true, "exact_evidence_refs_required"
+	if !map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
+		return characterProjectionUnit{}, true, "valid_visibility_required"
 	}
 	subject := strings.TrimSpace(extractionStringFromAny(payload["subject_entity"]))
 	if subject == "" {
 		return characterProjectionUnit{}, true, "subject_required"
 	}
-	if reason := validateCharacterProjectionOptionalBindings(unit, payload); reason != "" {
-		return characterProjectionUnit{}, true, reason
-	}
-
 	class := ""
 	fingerprintParts := []string{}
 	switch unit.Subtype {
@@ -281,7 +269,7 @@ func characterProjectionUnitFromPreciseMemory(sid string, unit *store.PreciseMem
 		domain := strings.TrimSpace(extractionStringFromAny(payload["trait_domain"]))
 		principleKey := strings.TrimSpace(extractionStringFromAny(payload["principle_key"]))
 		kind := strings.TrimSpace(extractionStringFromAny(payload["observation_kind"]))
-		if principleKey == "" || voicePrincipleKeyReplaysUtterance(principleKey, extractionStringFromAny(payload["utterance_expression"])) {
+		if principleKey == "" {
 			return characterProjectionUnit{}, true, "descriptive_voice_principle_required"
 		}
 		class = "voice"
@@ -291,16 +279,8 @@ func characterProjectionUnitFromPreciseMemory(sid string, unit *store.PreciseMem
 		unit:        unit,
 		payload:     payload,
 		class:       class,
-		fingerprint: characterProjectionFingerprint(unit.RootEvidenceID, class, fingerprintParts...),
+		fingerprint: characterProjectionFingerprint(unit, class, fingerprintParts...),
 	}, true, ""
-}
-
-func validateCharacterProjectionOptionalBindings(unit *store.PreciseMemoryUnit, payload map[string]any) string {
-	counterpart := strings.TrimSpace(extractionStringFromAny(payload["counterpart"]))
-	if counterpart != "" && strings.TrimSpace(unit.AffectedEntityID) == "" {
-		return "stable_source_bound_counterpart_required"
-	}
-	return ""
 }
 
 func loadCharacterProjection(raw, contractVersion, subjectEntityID string, create func() map[string]any) (map[string]any, bool) {
@@ -440,26 +420,85 @@ func newVoiceBehaviorProjection(subjectEntityID, label string) map[string]any {
 func mergeVoiceBehaviorEvidence(projection map[string]any, candidate characterProjectionUnit) {
 	domain := extractionStringFromAny(candidate.payload["trait_domain"])
 	principleKey := extractionStringFromAny(candidate.payload["principle_key"])
+	ref := voiceBehaviorEvidenceRef(candidate)
+	domainMatchKey := normalizeNarrativeStateSlot(domain)
+	principleMatchKey := normalizeNarrativeStateSlot(principleKey)
+	matchesStoredVariant := func(primary string, variants any, candidateKey string) bool {
+		if candidateKey == "" {
+			return false
+		}
+		if normalizeNarrativeStateSlot(primary) == candidateKey {
+			return true
+		}
+		for _, variant := range stringsFromAny(variants) {
+			if normalizeNarrativeStateSlot(variant) == candidateKey {
+				return true
+			}
+		}
+		return false
+	}
+	sourceOccurrenceKey := func(source map[string]any) string {
+		sessionID := strings.TrimSpace(extractionStringFromAny(source["chat_session_id"]))
+		revision := strings.TrimSpace(extractionStringFromAny(source["source_revision"]))
+		contentHash := strings.TrimSpace(extractionStringFromAny(source["content_hash"]))
+		visibility := strings.TrimSpace(extractionStringFromAny(source["visibility"]))
+		rootEvidenceID := intFromAny(source["root_evidence_id"], 0)
+		fromTurn := intFromAny(source["source_turn_start"], 0)
+		toTurn := intFromAny(source["source_turn_end"], 0)
+		if sessionID == "" || revision == "" || contentHash == "" || visibility == "" ||
+			rootEvidenceID <= 0 || fromTurn <= 0 || toTurn < fromTurn {
+			return ""
+		}
+		return strings.Join([]string{
+			sessionID, revision, contentHash, visibility,
+			fmt.Sprintf("%d", rootEvidenceID), fmt.Sprintf("%d", fromTurn), fmt.Sprintf("%d", toTurn),
+		}, "\x1f")
+	}
+	candidateOccurrenceKey := sourceOccurrenceKey(ref)
+	candidateObservationClass := extractionStringFromAny(ref["observation_class"])
 	principles := sliceFromAny(projection["principles"])
 	found := -1
 	for index, raw := range principles {
 		item := mapFromAny(raw)
-		if extractionStringFromAny(item["trait_domain"]) == domain && extractionStringFromAny(item["principle_key"]) == principleKey {
+		samePrinciple := matchesStoredVariant(
+			extractionStringFromAny(item["principle_key"]), item["principle_key_variants"], principleMatchKey,
+		)
+		sameSourceOccurrence := false
+		if candidateOccurrenceKey != "" && matchesStoredVariant(
+			extractionStringFromAny(item["trait_domain"]), item["trait_domain_variants"], domainMatchKey,
+		) {
+			for _, lane := range []string{"support_refs", "counterevidence_refs", "exception_refs"} {
+				for _, rawExistingRef := range sliceFromAny(item[lane]) {
+					existingRef := mapFromAny(rawExistingRef)
+					if extractionStringFromAny(existingRef["observation_class"]) == candidateObservationClass &&
+						sourceOccurrenceKey(existingRef) == candidateOccurrenceKey {
+						sameSourceOccurrence = true
+						break
+					}
+				}
+				if sameSourceOccurrence {
+					break
+				}
+			}
+		}
+		if samePrinciple || sameSourceOccurrence {
 			found = index
 			break
 		}
 	}
 	principle := map[string]any{
-		"trait_domain":         domain,
-		"principle_key":        principleKey,
-		"authority_class":      "support_hypothesis",
-		"promotion_state":      "not_evaluated",
-		"support_refs":         []any{},
-		"counterevidence_refs": []any{},
-		"exception_refs":       []any{},
-		"contexts":             []any{},
-		"counterparts":         []any{},
-		"state_modulations":    []any{},
+		"trait_domain":           domain,
+		"principle_key":          principleKey,
+		"trait_domain_variants":  []string{},
+		"principle_key_variants": []string{},
+		"authority_class":        "support_hypothesis",
+		"promotion_state":        "not_evaluated",
+		"support_refs":           []any{},
+		"counterevidence_refs":   []any{},
+		"exception_refs":         []any{},
+		"contexts":               []any{},
+		"counterparts":           []any{},
+		"state_modulations":      []any{},
 		"unsupported_entailment": []string{
 			"personality_from_voice", "morality_from_voice", "emotion_from_voice",
 			"relationship_state_from_voice", "consent_from_voice",
@@ -469,7 +508,10 @@ func mergeVoiceBehaviorEvidence(projection map[string]any, candidate characterPr
 	if found >= 0 {
 		principle = mapFromAny(principles[found])
 	}
-	ref := voiceBehaviorEvidenceRef(candidate)
+	domainVariants := appendUniqueMemorySearchText(stringsFromAny(principle["trait_domain_variants"]), extractionStringFromAny(principle["trait_domain"]))
+	principleVariants := appendUniqueMemorySearchText(stringsFromAny(principle["principle_key_variants"]), extractionStringFromAny(principle["principle_key"]))
+	principle["trait_domain_variants"] = appendUniqueMemorySearchText(domainVariants, domain)
+	principle["principle_key_variants"] = appendUniqueMemorySearchText(principleVariants, principleKey)
 	switch extractionStringFromAny(candidate.payload["observation_kind"]) {
 	case "counterexample":
 		principle["counterevidence_refs"] = append(sliceFromAny(principle["counterevidence_refs"]), ref)
@@ -583,12 +625,6 @@ func characterProjectionSourceRef(candidate characterProjectionUnit) map[string]
 	}
 }
 
-func voicePrincipleKeyReplaysUtterance(principleKey, utteranceExpression string) bool {
-	principleKey = normalizeNarrativeStateSlot(principleKey)
-	utteranceKey := normalizeNarrativeStateSlot(utteranceExpression)
-	return principleKey != "" && utteranceKey != "" && principleKey == utteranceKey
-}
-
 func characterEvidenceObservationClass(kind string) string {
 	switch strings.TrimSpace(kind) {
 	case "counterexample":
@@ -600,12 +636,18 @@ func characterEvidenceObservationClass(kind string) string {
 	}
 }
 
-func characterProjectionFingerprint(rootEvidenceID int64, class string, parts ...string) string {
+func characterProjectionFingerprint(unit *store.PreciseMemoryUnit, class string, parts ...string) string {
 	contractVersion := characterProfileContractVersion
 	if class == "voice" {
 		contractVersion = voiceBehaviorProjectionContractVersion
 	}
-	material := []string{contractVersion, fmt.Sprintf("%d", rootEvidenceID), class}
+	provenance := ""
+	if unit != nil && unit.RootEvidenceID > 0 {
+		provenance = fmt.Sprintf("evidence:%d", unit.RootEvidenceID)
+	} else if unit != nil {
+		provenance = strings.Join([]string{"unit", unit.UnitID, unit.SourceRevision}, ":")
+	}
+	material := []string{contractVersion, provenance, class}
 	material = append(material, parts...)
 	sum := sha256.Sum256([]byte(strings.Join(material, "\x1f")))
 	return hex.EncodeToString(sum[:])

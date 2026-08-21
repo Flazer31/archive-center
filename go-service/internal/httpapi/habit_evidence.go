@@ -259,38 +259,15 @@ func habitEvidenceCandidateFromUnit(sid string, unit *store.PreciseMemoryUnit) (
 		strings.TrimSpace(unit.UnitID) == "" || strings.TrimSpace(unit.SourceContentHash) == "" || unit.LifecycleState != "active" {
 		return habitEvidenceCandidate{}, true, "active_accepted_source_required"
 	}
-	if unit.AdmissionState != "committed" || unit.ReviewState != "source_observed" ||
-		unit.TruthScope != "support_only" || unit.EpistemicMode != "direct" || unit.AuthorityClass != "support_hypothesis" {
-		return habitEvidenceCandidate{}, true, "committed_support_only_habit_observation_required"
-	}
-	if extractionStringFromAny(payload["admission_state"]) != "committed" || extractionStringFromAny(payload["review_state"]) != "source_observed" {
-		return habitEvidenceCandidate{}, true, "payload_admission_state_mismatch"
+	if unit.TruthScope != "support_only" || unit.EpistemicMode != "direct" || unit.AuthorityClass != "support_hypothesis" {
+		return habitEvidenceCandidate{}, true, "support_only_habit_observation_required"
 	}
 	if strings.TrimSpace(unit.SubjectEntityID) == "" || subjectLabel == "" || behaviorKey == "" {
 		return habitEvidenceCandidate{}, true, "stable_subject_and_behavior_required"
 	}
-	contextKey := strings.TrimSpace(extractionStringFromAny(payload["context_key"]))
-	contextExpression := strings.TrimSpace(extractionStringFromAny(payload["context_expression"]))
-	if (contextKey == "") != (contextExpression == "") {
-		return habitEvidenceCandidate{}, true, "valid_source_bound_context_required"
-	}
-	counterpart := strings.TrimSpace(extractionStringFromAny(payload["counterpart"]))
-	counterpartExpression := strings.TrimSpace(extractionStringFromAny(payload["counterpart_expression"]))
-	if (counterpart == "") != (counterpartExpression == "") ||
-		(counterpart != "" && strings.TrimSpace(unit.AffectedEntityID) == "") {
-		return habitEvidenceCandidate{}, true, "stable_source_bound_counterpart_required"
-	}
 	visibility := strings.ToLower(strings.TrimSpace(unit.Visibility))
-	if visibility != strings.ToLower(strings.TrimSpace(extractionStringFromAny(payload["visibility"]))) ||
-		!map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
-		return habitEvidenceCandidate{}, true, "source_bound_visibility_mismatch"
-	}
-	if strings.TrimSpace(unit.EvidenceExcerpt) == "" || strings.TrimSpace(unit.EvidenceHash) == "" {
-		return habitEvidenceCandidate{}, true, "exact_evidence_payload_required"
-	}
-	directEvidenceIDs := []int64{}
-	if unit.RootEvidenceID <= 0 || json.Unmarshal([]byte(unit.DirectEvidenceIDsJSON), &directEvidenceIDs) != nil || len(directEvidenceIDs) == 0 {
-		return habitEvidenceCandidate{}, true, "direct_evidence_refs_required"
+	if !map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
+		return habitEvidenceCandidate{}, true, "valid_visibility_required"
 	}
 	expressionScope := relationshipStateExpressionScope(unit.Visibility)
 	return habitEvidenceCandidate{
@@ -298,7 +275,7 @@ func habitEvidenceCandidateFromUnit(sid string, unit *store.PreciseMemoryUnit) (
 		payload:             payload,
 		ownerID:             habitEvidenceOwnerID(unit.SubjectEntityID, behaviorKey, expressionScope),
 		sourceUnitID:        habitEvidenceSourceUnitID(unit.UnitID),
-		evidenceFingerprint: habitEvidenceRootFingerprint(unit.RootEvidenceID, observationKind),
+		evidenceFingerprint: habitEvidenceRootFingerprint(unit, observationKind),
 		expressionScope:     expressionScope,
 	}, true, ""
 }
@@ -578,12 +555,18 @@ func habitEvidenceSourceUnitID(preciseMemoryUnitID string) string {
 	return "habit-evidence-event:" + hex.EncodeToString(sum[:])
 }
 
-func habitEvidenceRootFingerprint(rootEvidenceID int64, observationKind string) string {
+func habitEvidenceRootFingerprint(unit *store.PreciseMemoryUnit, observationKind string) string {
 	observationClass := strings.TrimSpace(observationKind)
 	if observationClass == "occurrence" || observationClass == "explicit_pattern" {
 		observationClass = "support"
 	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\x1f%d\x1f%s", habitEvidenceContractVersion, rootEvidenceID, observationClass)))
+	provenance := ""
+	if unit != nil && unit.RootEvidenceID > 0 {
+		provenance = fmt.Sprintf("evidence:%d", unit.RootEvidenceID)
+	} else if unit != nil {
+		provenance = strings.Join([]string{"unit", unit.UnitID, unit.SourceRevision}, ":")
+	}
+	sum := sha256.Sum256([]byte(strings.Join([]string{habitEvidenceContractVersion, provenance, observationClass}, "\x1f")))
 	return hex.EncodeToString(sum[:])
 }
 

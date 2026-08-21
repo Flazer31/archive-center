@@ -164,6 +164,17 @@ type turnWorkflowHUDRecoveryStore struct {
 	*adminDuplicateReprocessingStore
 	reopenErr   error
 	reopenCalls int
+	listCalls   int
+}
+
+func (f *turnWorkflowHUDRecoveryStore) ListActiveSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]store.MemorySourceRevision, error) {
+	f.listCalls++
+	return f.adminDuplicateReprocessingStore.ListActiveSourceRevisions(ctx, chatSessionID, fromTurn, toTurn)
 }
 
 func (f *turnWorkflowHUDRecoveryStore) ReopenMemoryReprocessingJob(
@@ -193,7 +204,15 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	base.source.DerivedResultJSON = ""
 	st := &turnWorkflowHUDRecoveryStore{adminDuplicateReprocessingStore: base}
 	ledger := newTurnWorkflowHUDLedger()
-	ledger.begin("request-recovery", base.source.ChatSessionID, base.source.TurnIndex)
+	ledger.begin("request-recovery", "stale-hud-session", 2)
+	if !ledger.bindRecoveryTarget(
+		"request-recovery",
+		base.source.ChatSessionID,
+		base.source.TurnIndex,
+		base.source.SourceRevision,
+	) {
+		t.Fatal("failed to bind exact recovery target")
+	}
 	ledger.failWithDetails(
 		"request-recovery",
 		"DERIVED_PERSIST_FAILED",
@@ -230,6 +249,9 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	if st.reopenCalls != 1 {
 		t.Fatalf("reopen calls=%d", st.reopenCalls)
 	}
+	if st.listCalls != 0 {
+		t.Fatalf("recovery performed ambiguous source-list sweep: calls=%d", st.listCalls)
+	}
 	select {
 	case <-srv.memoryWorkerWake:
 	default:
@@ -243,6 +265,14 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	if len(st.auditLogs) != 1 || st.auditLogs[0].TargetID != int64(base.source.TurnIndex) {
 		t.Fatalf("recovery audit=%+v", st.auditLogs)
 	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode recovery response: %v", err)
+	}
+	if stringFromMap(response, "chat_session_id") != base.source.ChatSessionID ||
+		intFromAny(response["turn_index"], 0) != base.source.TurnIndex {
+		t.Fatalf("recovery response used stale HUD coordinates: %#v", response)
+	}
 }
 
 func TestTurnWorkflowHUDRecoveryDoesNotInterruptAnActiveCriticRun(t *testing.T) {
@@ -254,6 +284,14 @@ func TestTurnWorkflowHUDRecoveryDoesNotInterruptAnActiveCriticRun(t *testing.T) 
 	}
 	ledger := newTurnWorkflowHUDLedger()
 	ledger.begin("request-running-recovery", base.source.ChatSessionID, base.source.TurnIndex)
+	if !ledger.bindRecoveryTarget(
+		"request-running-recovery",
+		base.source.ChatSessionID,
+		base.source.TurnIndex,
+		base.source.SourceRevision,
+	) {
+		t.Fatal("failed to bind exact recovery target")
+	}
 	ledger.failWithDetails(
 		"request-running-recovery",
 		"DERIVED_PERSIST_FAILED",
@@ -292,6 +330,58 @@ func TestTurnWorkflowHUDRecoveryDoesNotInterruptAnActiveCriticRun(t *testing.T) 
 	if view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
 		view.Error.RecoveryActions[0].Status != "running" {
 		t.Fatalf("active recovery view=%+v", view)
+	}
+	if st.listCalls != 0 || len(st.enqueuedJobs) != 0 {
+		t.Fatalf("active recovery rediscovered or duplicated work: list_calls=%d enqueued=%d", st.listCalls, len(st.enqueuedJobs))
+	}
+}
+
+func TestTurnWorkflowHUDRecoveryRejectsAnUnboundTarget(t *testing.T) {
+	base := newAdminDuplicateReprocessingStore()
+	base.source.DerivedAdmissionState = "pending"
+	st := &turnWorkflowHUDRecoveryStore{adminDuplicateReprocessingStore: base}
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-unbound-recovery", base.source.ChatSessionID, base.source.TurnIndex)
+	ledger.failWithDetails(
+		"request-unbound-recovery",
+		"DERIVED_PERSIST_FAILED",
+		"turn_hud.error.derived_persist_failed",
+		turnWorkflowStageDerivedPersist,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	srv := &Server{
+		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
+		Store: st,
+		RuntimeConfig: RuntimeConfig{
+			Synced:           true,
+			CriticProvider:   "openai",
+			CriticAPIKey:     "critic-key",
+			CriticEndpoint:   "https://example.invalid/v1/chat/completions",
+			CriticModel:      "critic-model",
+			CriticTimeoutSec: 30,
+		},
+		TurnWorkflows: ledger,
+	}
+	body, _ := json.Marshal(turnWorkflowHUDRecoveryRequest{
+		ContractVersion: turnWorkflowHUDRecoveryRequestContractVersion,
+		RequestID:       "request-unbound-recovery",
+		ActionID:        turnWorkflowHUDRecoveryRetryDerivedTurn,
+	})
+	rec := httptest.NewRecorder()
+	srv.handleTurnWorkflowHUDRecovery(
+		rec,
+		httptest.NewRequest(http.MethodPost, "/turn-workflow/recovery", bytes.NewReader(body)),
+	)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode recovery error: %v", err)
+	}
+	if stringFromMap(response, "code") != "recovery_target_unavailable" || st.listCalls != 0 || st.reopenCalls != 0 {
+		t.Fatalf("unbound recovery response=%#v list_calls=%d reopen_calls=%d", response, st.listCalls, st.reopenCalls)
 	}
 }
 

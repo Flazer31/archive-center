@@ -228,8 +228,10 @@ func (m *mariadbStore) ListForkLineageRecords(ctx context.Context, chatSessionID
 		limit = 1000
 	}
 	rows, err := m.db.QueryContext(ctx, `
-		SELECT id, chat_session_id, scope_id, parent_scope_id, copied_from_scope_id,
-		       copied_from_session_id, imported_at, divergence_marker, provenance_source,
+		SELECT id, contract_version, lineage_state, chat_session_id,
+		       scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+		       fork_turn, fork_source_message_id, fork_source_role, idempotency_key,
+		       imported_at, divergence_marker, provenance_source,
 		       inheritance_mode, inherited_items_json, created_at, updated_at
 		FROM session_fork_lineage
 		WHERE chat_session_id = ? AND (? = '' OR scope_id = ?)
@@ -245,10 +247,14 @@ func (m *mariadbStore) ListForkLineageRecords(ctx context.Context, chatSessionID
 	for rows.Next() {
 		var item ForkLineageRecord
 		var scopeID, parentScopeID, copiedFromScopeID, copiedFromSessionID sql.NullString
+		var forkTurn sql.NullInt64
+		var forkSourceMessageID, forkSourceRole, idempotencyKey sql.NullString
 		var divergenceMarker, inheritedItemsJSON sql.NullString
 		if err := rows.Scan(
-			&item.ID, &item.ChatSessionID, &scopeID, &parentScopeID, &copiedFromScopeID,
-			&copiedFromSessionID, &item.ImportedAt, &divergenceMarker, &item.ProvenanceSource,
+			&item.ID, &item.ContractVersion, &item.LineageState, &item.ChatSessionID,
+			&scopeID, &parentScopeID, &copiedFromScopeID, &copiedFromSessionID,
+			&forkTurn, &forkSourceMessageID, &forkSourceRole, &idempotencyKey,
+			&item.ImportedAt, &divergenceMarker, &item.ProvenanceSource,
 			&item.InheritanceMode, &inheritedItemsJSON, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -257,6 +263,10 @@ func (m *mariadbStore) ListForkLineageRecords(ctx context.Context, chatSessionID
 		item.ParentScopeID = stringFromNull(parentScopeID)
 		item.CopiedFromScopeID = stringFromNull(copiedFromScopeID)
 		item.CopiedFromSessionID = stringFromNull(copiedFromSessionID)
+		item.ForkTurn = int(forkTurn.Int64)
+		item.ForkSourceMessageID = stringFromNull(forkSourceMessageID)
+		item.ForkSourceRole = stringFromNull(forkSourceRole)
+		item.IdempotencyKey = stringFromNull(idempotencyKey)
 		item.DivergenceMarker = stringFromNull(divergenceMarker)
 		item.InheritedItemsJSON = stringFromNull(inheritedItemsJSON)
 		out = append(out, item)
@@ -268,16 +278,42 @@ func (m *mariadbStore) SaveForkLineageRecord(ctx context.Context, record ForkLin
 	if err := m.ensureDB(); err != nil {
 		return record, err
 	}
+	record.ContractVersion = firstNonEmptyString(record.ContractVersion, ForkLineageContractVersion)
+	record.LineageState = firstNonEmptyString(record.LineageState, "manual")
+	record.ChatSessionID = strings.TrimSpace(record.ChatSessionID)
+	record.ForkSourceRole = strings.TrimSpace(record.ForkSourceRole)
+	record.IdempotencyKey = strings.TrimSpace(record.IdempotencyKey)
+	if record.ChatSessionID == "" {
+		return record, errors.New("chat_session_id is required")
+	}
+	if record.ForkSourceRole != "" && record.ForkSourceRole != "user" && record.ForkSourceRole != "char" {
+		return record, errors.New("fork_source_role must be user or char")
+	}
+	if record.IdempotencyKey != "" &&
+		record.ContractVersion == RisuWorldlineForkLineageContractVersion &&
+		record.LineageState == "confirmed" && record.ForkSourceRole == "" {
+		return record, errors.New("fork_source_role is required for confirmed Risu worldline lineage")
+	}
 	importedAt := nonZeroTime(record.ImportedAt)
 	now := nonZeroTime(record.CreatedAt)
+	record.ImportedAt = importedAt
+	record.CreatedAt = now
+	if record.IdempotencyKey != "" {
+		return m.saveAutomaticForkLineageRecord(ctx, record)
+	}
 	res, err := m.db.ExecContext(ctx, `
 		INSERT INTO session_fork_lineage (
-			chat_session_id, scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+			contract_version, lineage_state, chat_session_id,
+			scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+			fork_turn, fork_source_message_id, fork_source_role, idempotency_key,
 			imported_at, divergence_marker, provenance_source, inheritance_mode, inherited_items_json,
 			created_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, record.ChatSessionID, nullableString(record.ScopeID), nullableString(record.ParentScopeID),
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, record.ContractVersion, record.LineageState, record.ChatSessionID,
+		nullableString(record.ScopeID), nullableString(record.ParentScopeID),
 		nullableString(record.CopiedFromScopeID), nullableString(record.CopiedFromSessionID),
+		nullableForkTurn(record.ForkTurn), nullableString(record.ForkSourceMessageID),
+		nullableString(record.ForkSourceRole), nil,
 		importedAt, nullableString(record.DivergenceMarker),
 		firstNonEmptyString(record.ProvenanceSource, "manual"),
 		firstNonEmptyString(record.InheritanceMode, "conservative_import"),
@@ -289,10 +325,157 @@ func (m *mariadbStore) SaveForkLineageRecord(ctx context.Context, record ForkLin
 	if err == nil && id > 0 {
 		record.ID = id
 	}
-	record.ImportedAt = importedAt
-	record.CreatedAt = now
 	record.UpdatedAt = now
 	return record, nil
+}
+
+func (m *mariadbStore) saveAutomaticForkLineageRecord(ctx context.Context, record ForkLineageRecord) (ForkLineageRecord, error) {
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelSerializable})
+	if err != nil {
+		return record, err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	existing, err := selectForkLineageByIdempotencyKey(ctx, tx, record.ChatSessionID, record.IdempotencyKey, true)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return record, err
+	}
+	expected := record
+	upgradesConfirmedV1ToV2 := existing != nil &&
+		existing.ContractVersion == ForkLineageContractVersion && existing.LineageState == "confirmed" &&
+		record.ContractVersion == RisuWorldlineForkLineageContractVersion && record.LineageState == "confirmed"
+	if existing != nil && !upgradesConfirmedV1ToV2 &&
+		(existing.LineageState == "confirmed" || existing.ImportedAt.After(record.ImportedAt)) {
+		expected = *existing
+	} else {
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO session_fork_lineage (
+				contract_version, lineage_state, chat_session_id,
+				scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+				fork_turn, fork_source_message_id, fork_source_role, idempotency_key,
+				imported_at, divergence_marker, provenance_source, inheritance_mode,
+				inherited_items_json, created_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			ON DUPLICATE KEY UPDATE
+				contract_version = VALUES(contract_version),
+				lineage_state = VALUES(lineage_state),
+				chat_session_id = VALUES(chat_session_id),
+				scope_id = VALUES(scope_id),
+				parent_scope_id = VALUES(parent_scope_id),
+				copied_from_scope_id = VALUES(copied_from_scope_id),
+				copied_from_session_id = VALUES(copied_from_session_id),
+				fork_turn = VALUES(fork_turn),
+				fork_source_message_id = VALUES(fork_source_message_id),
+				fork_source_role = VALUES(fork_source_role),
+				divergence_marker = VALUES(divergence_marker),
+				provenance_source = VALUES(provenance_source),
+				inheritance_mode = VALUES(inheritance_mode),
+				inherited_items_json = VALUES(inherited_items_json),
+				imported_at = VALUES(imported_at)
+		`, record.ContractVersion, record.LineageState, record.ChatSessionID,
+			nullableString(record.ScopeID), nullableString(record.ParentScopeID),
+			nullableString(record.CopiedFromScopeID), nullableString(record.CopiedFromSessionID),
+			nullableForkTurn(record.ForkTurn), nullableString(record.ForkSourceMessageID),
+			nullableString(record.ForkSourceRole), record.IdempotencyKey,
+			record.ImportedAt, nullableString(record.DivergenceMarker),
+			firstNonEmptyString(record.ProvenanceSource, "automatic_hook"),
+			firstNonEmptyString(record.InheritanceMode, "none"),
+			nullableString(record.InheritedItemsJSON), record.CreatedAt)
+		if err != nil {
+			return record, err
+		}
+	}
+
+	readback, err := selectForkLineageByIdempotencyKey(ctx, tx, record.ChatSessionID, record.IdempotencyKey, false)
+	if err != nil {
+		return record, err
+	}
+	if !forkLineageReadbackMatches(*readback, expected) {
+		return record, errors.New("session fork lineage readback mismatch")
+	}
+	if err := tx.Commit(); err != nil {
+		return record, err
+	}
+	committed = true
+	return *readback, nil
+}
+
+type forkLineageQueryer interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}
+
+func selectForkLineageByIdempotencyKey(ctx context.Context, queryer forkLineageQueryer, chatSessionID, key string, forUpdate bool) (*ForkLineageRecord, error) {
+	query := `
+		SELECT id, contract_version, lineage_state, chat_session_id,
+		       scope_id, parent_scope_id, copied_from_scope_id, copied_from_session_id,
+		       fork_turn, fork_source_message_id, fork_source_role, idempotency_key,
+		       imported_at, divergence_marker, provenance_source, inheritance_mode,
+		       inherited_items_json, created_at, updated_at
+		FROM session_fork_lineage
+		WHERE chat_session_id = ? AND idempotency_key = ?
+	`
+	if forUpdate {
+		query += " FOR UPDATE"
+	}
+	var record ForkLineageRecord
+	var scopeID, parentScopeID, copiedFromScopeID, copiedFromSessionID sql.NullString
+	var forkTurn sql.NullInt64
+	var forkSourceMessageID, forkSourceRole, idempotencyKey, divergenceMarker, inheritedItemsJSON sql.NullString
+	err := queryer.QueryRowContext(ctx, query, chatSessionID, key).Scan(
+		&record.ID, &record.ContractVersion, &record.LineageState, &record.ChatSessionID,
+		&scopeID, &parentScopeID, &copiedFromScopeID, &copiedFromSessionID,
+		&forkTurn, &forkSourceMessageID, &forkSourceRole, &idempotencyKey,
+		&record.ImportedAt, &divergenceMarker, &record.ProvenanceSource, &record.InheritanceMode,
+		&inheritedItemsJSON, &record.CreatedAt, &record.UpdatedAt,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	record.ScopeID = stringFromNull(scopeID)
+	record.ParentScopeID = stringFromNull(parentScopeID)
+	record.CopiedFromScopeID = stringFromNull(copiedFromScopeID)
+	record.CopiedFromSessionID = stringFromNull(copiedFromSessionID)
+	record.ForkTurn = int(forkTurn.Int64)
+	record.ForkSourceMessageID = stringFromNull(forkSourceMessageID)
+	record.ForkSourceRole = stringFromNull(forkSourceRole)
+	record.IdempotencyKey = stringFromNull(idempotencyKey)
+	record.DivergenceMarker = stringFromNull(divergenceMarker)
+	record.InheritedItemsJSON = stringFromNull(inheritedItemsJSON)
+	return &record, nil
+}
+
+func forkLineageReadbackMatches(actual, expected ForkLineageRecord) bool {
+	return actual.ContractVersion == expected.ContractVersion &&
+		actual.LineageState == expected.LineageState &&
+		actual.ChatSessionID == expected.ChatSessionID &&
+		actual.ScopeID == expected.ScopeID &&
+		actual.ParentScopeID == expected.ParentScopeID &&
+		actual.CopiedFromScopeID == expected.CopiedFromScopeID &&
+		actual.CopiedFromSessionID == expected.CopiedFromSessionID &&
+		actual.ForkTurn == expected.ForkTurn &&
+		actual.ForkSourceMessageID == expected.ForkSourceMessageID &&
+		actual.ForkSourceRole == expected.ForkSourceRole &&
+		actual.IdempotencyKey == expected.IdempotencyKey &&
+		actual.ImportedAt.Equal(expected.ImportedAt) &&
+		actual.DivergenceMarker == expected.DivergenceMarker &&
+		actual.ProvenanceSource == firstNonEmptyString(expected.ProvenanceSource, "automatic_hook") &&
+		actual.InheritanceMode == firstNonEmptyString(expected.InheritanceMode, "none") &&
+		actual.InheritedItemsJSON == expected.InheritedItemsJSON
+}
+
+func nullableForkTurn(value int) any {
+	if value <= 0 {
+		return nil
+	}
+	return value
 }
 
 func (m *mariadbStore) ListThemeOffscreenCarries(ctx context.Context, chatSessionID, surfaceType string, limit int) ([]ThemeOffscreenCarryRecord, error) {

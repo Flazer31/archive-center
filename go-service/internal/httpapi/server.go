@@ -226,6 +226,7 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerStep23CaptureVerificationRoutes(sub)
 	s.registerStatusSchemaRoutes(sub)
 	s.registerReferenceLibraryRoutes(sub)
+	s.registerLorebookReferenceRoutes(sub)
 	s.registerCanonPackPreviewRoutes(sub)
 	s.registerSourceDiscoveryRoutes(sub)
 	s.registerUpdateRoutes(sub)

@@ -18,6 +18,354 @@ type memorySearchTextBuild struct {
 	LanguageContext map[string]any
 }
 
+// publicMemoryProjection is the deterministic, item-level view used by the
+// general lexical/vector lane. Extraction remains the canonical full critic
+// result; this projection deliberately omits holder/private material while
+// leaving the typed precise-memory lanes untouched.
+type publicMemoryProjection struct {
+	Extraction map[string]any
+	SearchText memorySearchTextBuild
+	Eligible   bool
+}
+
+// buildPublicMemoryProjection is shared by fresh admission, legacy reindex,
+// /search, and prepare-turn general recall. storedEvidence is the canonical
+// Memory.Evidence JSON when rebuilding an existing row; fresh admission may
+// pass an empty string because grounded evidence_excerpts are already present
+// in extraction.
+func buildPublicMemoryProjection(extraction map[string]any, storedEvidence string) publicMemoryProjection {
+	projected := map[string]any{}
+	if len(extraction) == 0 {
+		return publicMemoryProjection{Extraction: projected}
+	}
+
+	privateEvidence, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
+	rawSummaryUnsafe := false
+	for _, key := range []string{
+		"belief_updates",
+		"protected_secrets",
+		"character_identity_accuracy",
+		"subjective_entity_memories",
+		"user_interaction_profile",
+	} {
+		if len(sliceFromAny(extraction[key])) > 0 {
+			rawSummaryUnsafe = true
+		}
+	}
+
+	interactionKeys := []string{
+		"interaction_events",
+		"relationship_observations",
+		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
+		"rp_character_profile",
+	}
+	objectiveKeys := []string{
+		"character_deltas",
+		"pending_threads",
+		"world_rules",
+		"reversible_states",
+		"physical_conditions",
+		"entity_conditions",
+		"narrative_events",
+		"state_claims",
+	}
+	for _, key := range append(append([]string{}, interactionKeys...), objectiveKeys...) {
+		for _, raw := range sliceFromAny(extraction[key]) {
+			item := mapFromAny(raw)
+			if publicMemoryProjectionHasScopedMaterial(item) {
+				rawSummaryUnsafe = true
+			}
+		}
+	}
+
+	publicInteractionCount := 0
+	for _, key := range interactionKeys {
+		items := []any{}
+		for _, raw := range sliceFromAny(extraction[key]) {
+			item := mapFromAny(raw)
+			clean, ok := publicMemoryProjectionValue(item)
+			if !ok {
+				continue
+			}
+			items = append(items, clean)
+			publicInteractionCount++
+		}
+		if len(items) > 0 {
+			projected[key] = items
+		}
+	}
+	// A mixed turn's free-form summary can blend public and private facts. Keep
+	// each public objective item and rebuild only that free-form summary below.
+	objectiveMaterialCount := 0
+	for _, key := range objectiveKeys {
+		items := []any{}
+		for _, raw := range sliceFromAny(extraction[key]) {
+			clean, ok := publicMemoryProjectionValue(mapFromAny(raw))
+			if !ok {
+				continue
+			}
+			items = append(items, clean)
+			objectiveMaterialCount++
+		}
+		if len(items) > 0 {
+			projected[key] = items
+		}
+	}
+	skip := map[string]bool{
+		"turn_summary": true, "summary": true, "scene_summary": true,
+		"core_meaning": true, "emotional_shift": true,
+		"evidence_excerpts": true,
+		"belief_updates":    true, "protected_secrets": true,
+		"character_identity_accuracy": true, "subjective_entity_memories": true,
+		"user_interaction_profile": true,
+	}
+	for _, key := range interactionKeys {
+		skip[key] = true
+	}
+	for _, key := range objectiveKeys {
+		skip[key] = true
+	}
+	for key, value := range extraction {
+		if skip[key] {
+			continue
+		}
+		clean, ok := publicMemoryProjectionValue(value)
+		if !ok {
+			continue
+		}
+		projected[key] = clean
+		switch key {
+		case "importance_score", "emotional_intensity", "narrative_significance", "language_context", "memory_write_contract", "archive_hint":
+		default:
+			objectiveMaterialCount++
+		}
+	}
+	if rawSummaryUnsafe {
+		if summary := publicMemoryProjectionNarrativeSummary(projected); summary != "" {
+			projected["turn_summary"] = summary
+			objectiveMaterialCount++
+		}
+	} else if summary := memorySummaryFromParsed(extraction); summary != "" {
+		projected["turn_summary"] = summary
+		objectiveMaterialCount++
+	} else if summary := publicMemoryProjectionNarrativeSummary(projected); summary != "" {
+		projected["turn_summary"] = summary
+		objectiveMaterialCount++
+	}
+
+	for _, key := range []string{
+		"importance_score",
+		"emotional_intensity",
+		"narrative_significance",
+		"language_context",
+		"memory_write_contract",
+	} {
+		if value, ok := extraction[key]; ok {
+			if clean, keep := publicMemoryProjectionValue(value); keep {
+				projected[key] = clean
+			}
+		}
+	}
+
+	publicEvidence := []string{}
+	appendEvidence := func(values any) {
+		for _, excerpt := range memorySearchStringValues(values) {
+			if privateEvidence[normalizeArtifactDedupeText(excerpt)] {
+				continue
+			}
+			publicEvidence = appendUniqueMemorySearchText(publicEvidence, excerpt)
+		}
+	}
+	appendEvidence(extraction["evidence_excerpts"])
+	appendEvidence(parseJSONMap(storedEvidence)["evidence_excerpts"])
+	if len(publicEvidence) > 0 {
+		projected["evidence_excerpts"] = append([]string(nil), publicEvidence...)
+	}
+
+	summary := memorySummaryFromParsed(projected)
+	aliases := memorySearchAliasesFromExtraction(projected)
+	languageContext := completeTurnLanguageContextFromExtraction(projected)
+	searchText := buildMemorySearchText(summary, publicEvidence, aliases, languageContext)
+	eligible := strings.TrimSpace(searchText.Text) != "" &&
+		(summary != "" || len(publicEvidence) > 0 || publicInteractionCount > 0 || objectiveMaterialCount > 0)
+	return publicMemoryProjection{
+		Extraction: projected,
+		SearchText: searchText,
+		Eligible:   eligible,
+	}
+}
+
+// Retained for the admission caller; publicMemoryProjectionValue owns the
+// only item-level exclusion policy.
+func publicMemoryProjectionInteractionEligible(item map[string]any) bool {
+	clean, ok := publicMemoryProjectionValue(item)
+	return ok && len(mapFromAny(clean)) > 0
+}
+
+func publicMemoryProjectionHasScopedMaterial(value any) bool {
+	item := mapFromAny(value)
+	visibility := strings.ToLower(strings.TrimSpace(stringFromMap(item, "visibility")))
+	if visibility == "owner_private" || visibility == "restricted" || visibility == "user_private" {
+		return true
+	}
+	if boolFromAny(item["secret_guard"]) || boolFromAny(item["privacy_guard"]) {
+		return true
+	}
+	sensitivity := strings.ToLower(strings.TrimSpace(stringFromMap(item, "sensitivity")))
+	if strings.Contains(sensitivity, "secret") || strings.Contains(sensitivity, "private") || strings.Contains(sensitivity, "protected") {
+		return true
+	}
+	return false
+}
+
+func publicMemoryProjectionValue(value any) (any, bool) {
+	if value == nil {
+		return nil, false
+	}
+	switch item := value.(type) {
+	case map[string]any:
+		if publicMemoryProjectionHasScopedMaterial(item) {
+			return nil, false
+		}
+		out := map[string]any{}
+		for key, nested := range item {
+			if clean, ok := publicMemoryProjectionValue(nested); ok {
+				out[key] = clean
+			}
+		}
+		return out, len(out) > 0
+	case []any:
+		out := []any{}
+		for _, nested := range item {
+			if clean, ok := publicMemoryProjectionValue(nested); ok {
+				out = append(out, clean)
+			}
+		}
+		return out, len(out) > 0
+	case []map[string]any:
+		out := []any{}
+		for _, nested := range item {
+			if clean, ok := publicMemoryProjectionValue(nested); ok {
+				out = append(out, clean)
+			}
+		}
+		return out, len(out) > 0
+	case []string:
+		out := []string{}
+		for _, nested := range item {
+			if clean := strings.TrimSpace(nested); clean != "" {
+				out = append(out, clean)
+			}
+		}
+		return out, len(out) > 0
+	case string:
+		return item, strings.TrimSpace(item) != ""
+	default:
+		return item, true
+	}
+}
+
+func publicMemoryProjectionNarrativeSummary(projected map[string]any) string {
+	parts := []string{}
+	for _, raw := range sliceFromAny(projected["narrative_events"]) {
+		item := mapFromAny(raw)
+		for _, key := range []string{"summary", "event", "description"} {
+			text := strings.TrimSpace(extractionStringFromAny(item[key]))
+			if text != "" && !looksLikeStructuredCriticPayloadText(text) {
+				parts = appendUniqueMemorySearchText(parts, text)
+				break
+			}
+		}
+	}
+	for _, key := range []string{
+		"interaction_events",
+		"relationship_observations",
+		"interaction_boundaries",
+		"habit_observations",
+		"character_profile_observations",
+		"voice_observations",
+		"rp_character_profile",
+	} {
+		for _, raw := range sliceFromAny(projected[key]) {
+			item := mapFromAny(raw)
+			semanticParts := []string{}
+			for _, field := range []string{"subject_entity", "subject", "actor", "source_entity", "character"} {
+				if text := strings.TrimSpace(extractionStringFromAny(item[field])); text != "" {
+					semanticParts = appendUniqueMemorySearchText(semanticParts, text)
+					break
+				}
+			}
+			for _, field := range []string{"target_entity", "counterpart"} {
+				if text := strings.TrimSpace(extractionStringFromAny(item[field])); text != "" {
+					semanticParts = appendUniqueMemorySearchText(semanticParts, text)
+					break
+				}
+			}
+			for _, field := range []string{
+				"summary", "description", "observation", "supported_expression",
+				"utterance_expression", "action", "behavior_key", "trait_key", "principle_key",
+			} {
+				text := strings.TrimSpace(extractionStringFromAny(item[field]))
+				if text != "" && !looksLikeStructuredCriticPayloadText(text) {
+					semanticParts = appendUniqueMemorySearchText(semanticParts, text)
+					break
+				}
+			}
+			if len(semanticParts) > 0 {
+				parts = appendUniqueMemorySearchText(parts, strings.Join(semanticParts, " | "))
+			}
+		}
+	}
+	for _, raw := range sliceFromAny(projected["state_claims"]) {
+		item := mapFromAny(raw)
+		described := false
+		for _, key := range []string{"summary", "description", "change", "observation"} {
+			text := strings.TrimSpace(extractionStringFromAny(item[key]))
+			if text != "" && !looksLikeStructuredCriticPayloadText(text) {
+				parts = appendUniqueMemorySearchText(parts, text)
+				described = true
+				break
+			}
+		}
+		if described {
+			continue
+		}
+		subject := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "subject"),
+			stringFromMap(item, "entity"),
+		))
+		slot := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "state_slot"),
+			stringFromMap(item, "key"),
+		))
+		value := strings.TrimSpace(extractionStringFromAny(item["value"]))
+		if subject != "" && (slot != "" || value != "") {
+			parts = appendUniqueMemorySearchText(parts, strings.TrimSpace(subject+" "+slot+": "+value))
+			continue
+		}
+		if evidence := interactionAdmissionEvidence(item); evidence != "" {
+			parts = appendUniqueMemorySearchText(parts, evidence)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+func publicMemoryFromCanonical(mem store.Memory) (store.Memory, bool) {
+	projection := buildPublicMemoryProjection(parseJSONMap(mem.SummaryJSON), mem.Evidence)
+	if !projection.Eligible {
+		return store.Memory{}, false
+	}
+	out := mem
+	out.SummaryJSON = mustCompactJSON(projection.Extraction)
+	out.Evidence = mustCompactJSON(map[string]any{
+		"evidence_excerpts": stringsFromAny(projection.Extraction["evidence_excerpts"]),
+	})
+	return out, true
+}
+
 func completeTurnLanguageContextFromClientMeta(meta map[string]any) map[string]any {
 	if len(meta) == 0 {
 		return nil
@@ -115,18 +463,7 @@ func completeTurnMemorySearchText(summary string, extraction map[string]any, con
 }
 
 func memorySearchTextFromMemory(mem store.Memory) memorySearchTextBuild {
-	parsed := parseJSONMap(mem.SummaryJSON)
-	summary := memorySummaryFromParsed(parsed)
-	evidence := memorySearchEvidenceFromStoredMemory(mem)
-	aliases := memorySearchAliasesFromExtraction(parsed)
-	if mem.PlaceWing != "" {
-		aliases = appendMemorySearchAlias(aliases, mem.PlaceWing)
-	}
-	if mem.PlaceRoom != "" {
-		aliases = appendMemorySearchAlias(aliases, mem.PlaceRoom)
-	}
-	languageContext := completeTurnLanguageContextFromExtraction(parsed)
-	return buildMemorySearchText(summary, evidence, aliases, languageContext)
+	return buildPublicMemoryProjection(parseJSONMap(mem.SummaryJSON), mem.Evidence).SearchText
 }
 
 func memorySummaryFromParsed(parsed map[string]any) string {

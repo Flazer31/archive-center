@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 3.9.11
+//@display-name Archive Center Pre-4.0.0
 //@author memory-scaffold
 //@api 3.0
-//@version 3.9.11
+//@version 4.0.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "3.9.11";
-  const BUILD_ID = "3.9.11";
-  const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-10 KST";
-  const BUILD_NOTES = "Archive Center 3.9.11";
+  const VERSION = "4.0.0";
+  const BUILD_ID = "Pre-4.0.0";
+  const BUILD_CHANNEL = "pre-release";
+  const BUILD_TIME = "2026-08-13 KST";
+  const BUILD_NOTES = "Archive Center Pre-4.0.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -64,7 +64,8 @@
   // RisuAI 기본 모델 호출 설정과 별개로 관리된다.
   // ──────────────────────────────────────────────────────────────
   const NARRATIVE_GUIDE_MODES = Object.freeze(["auto", "off", "standard", "romantic", "action", "mature_soft", "mature_direct"]);
-  const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong"]);
+  const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong", "extreme", "maximum"]);
+  const PUBLISHER_GUIDANCE_FORMAT_OPTIONS = Object.freeze(["compact", "standard", "explicit"]);
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
   const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
@@ -103,7 +104,7 @@
     },
     claude: {
       label: "Claude",
-      effort: "none",
+      effort: "high",
       budgetTokens: 2048,
       glmThinkingType: "disabled",
       maxCompletionTokens: 20000,
@@ -112,19 +113,34 @@
     glm: {
       label: "GLM",
       effort: "enable",
-      glm52Effort: "max",
       budgetTokens: 0,
       glmThinkingType: "enabled",
       maxCompletionTokens: 24000,
-      hint: "GLM은 thinking.type을 사용하며, GLM-5.2는 max/xhigh/high/medium/low/minimal/none을 함께 지원합니다.",
+      hint: "GLM은 공식 thinking.type enabled/disabled 토글만 사용합니다.",
+    },
+    deepseek_v4: {
+      label: "DeepSeek V4",
+      effort: "high",
+      budgetTokens: 0,
+      glmThinkingType: "disabled",
+      maxCompletionTokens: 20000,
+      hint: "DeepSeek V4는 none/high/max 추론 강도를 사용하며 별도 추론 토큰 예산을 사용하지 않습니다.",
     },
     custom: {
       label: "Custom",
-      effort: "low",
-      budgetTokens: 1024,
+      effort: "none",
+      budgetTokens: 0,
       glmThinkingType: "disabled",
       maxCompletionTokens: 1024,
-      hint: "커스텀은 effort + budget_tokens를 함께 수동 조합합니다.",
+      hint: "모델 계약이 확인되지 않으면 추론 필드를 자동으로 보내지 않습니다. 고급 필드는 Extra Body JSON에서만 명시합니다.",
+    },
+    none: {
+      label: "Auto",
+      effort: "none",
+      budgetTokens: 0,
+      glmThinkingType: "disabled",
+      maxCompletionTokens: 1024,
+      hint: "입력된 모델에서 확인된 추론 제어 형식이 없으면 추론 필드를 보내지 않습니다.",
     },
   });
   // O-2a: Takeover mode — backend generation packet 적용 수준 (4단계)
@@ -139,6 +155,7 @@
     dbEnabled: true,
     supervisorEnabled: true,
     injectionEnabled: true,
+    lorebookReferenceMode: "reference_assist",
     debug: false,
     topK: 5,
     coreObjectiveMemoryMaxItems: 5,
@@ -236,7 +253,8 @@
     failedQueueMaxAttempts: 4,       // 실패 큐 transport 최대 시도 횟수 (1-11)
     // ── E-5: Narrative Guide Mode ──
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
-    narrativeGuideStrength: "weak",  // none / weak / medium / strong
+    narrativeGuideStrength: "weak",  // none / weak / medium / strong / extreme / maximum
+    publisherGuidanceFormat: "standard", // compact / standard / explicit; Go renders the final Publisher block
     narrativeSupportMaxChars: 3000,  // 서사 안내 전용 문자 예산
     // ── J-3a: Plugin Main Apply Mode ──
     // off          → shadow call 자체를 실행하지 않음 (J-track 완전 비활성)
@@ -261,19 +279,28 @@
   const _i18n = {
     ko: {
       // ── 설정 패널 ──
-      "settings.title": `🗂️ Archive Center ${VERSION} 설정`,
-      "settings.tab.dashboard": "대시보드",
+      "settings.title": `Archive Center ${VERSION}`,
+      "settings.tab.dashboard": "상태",
       "settings.tab.review": "편집 확인",
       "settings.tab.archive": "서고",
-      "settings.tab.timeline": "타임라인",
-      "settings.tab.explore": "탐색",
+      "settings.tab.timeline": "세계선",
+      "settings.tab.explore": "기억",
+      "settings.tab.memoryManagement": "기억 관리",
+      "settings.tab.extensions": "추가 기능",
+      "settings.tab.lorebook": "로어북",
+      "settings.tab.reference": "원작 DB",
       "settings.tab.prompt": "프롬프트",
       "settings.tab.general": "일반",
       "settings.tab.settings": "설정",
-      "settings.tab.debug": "디버그",
+      "settings.tab.debug": "고급",
       "settings.section.status": "설정 상태",
       "settings.section.common": "공통 설정",
       "settings.section.common.desc": "직전 완료 턴의 연속성 맥락은 기본 적용됩니다. 입력 개선 LLM은 별도의 선택 기능이며 서사 가이드와 독립적으로 작동합니다.",
+      "settings.label.lorebookReferenceMode": "로어북 참조",
+      "settings.lorebookReferenceMode.search_only": "검색만",
+      "settings.lorebookReferenceMode.reference_assist": "본문 참조 보조",
+      "settings.lorebookReferenceMode.help": "현재 캐릭터·채팅·활성 모듈의 로어북을 별도 참조자료로 보관합니다. 일반 턴에는 RisuAI 원본을 다시 읽지 않습니다.",
+      "settings.btn.refreshLorebookReference": "로어북 새로고침",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -323,13 +350,13 @@
       "timeline.detail.from": "시작",
       "timeline.detail.to": "끝",
       "timeline.edit.title": "수정 - {title}",
-      "timeline.edit.meta": "타임라인 · 수정 가능",
-      "timeline.edit.noSelection": "수정할 타임라인 항목이 선택되지 않았습니다.",
-      "timeline.error.detailLoadFailed": "타임라인 상세 정보를 불러오지 못했습니다.",
-      "timeline.error.backendNoItems": "타임라인 백엔드가 사용할 수 있는 항목을 반환하지 않았습니다.",
-      "timeline.error.backendLoadFailed": "타임라인 백엔드 로딩 실패",
-      "timeline.error.noDetailRef": "타임라인 항목에 상세 참조가 없습니다.",
-      "timeline.error.editLoadFailed": "타임라인 수정 정보를 불러오지 못했습니다.",
+      "timeline.edit.meta": "세계선 · 수정 가능",
+      "timeline.edit.noSelection": "수정할 세계선 항목이 선택되지 않았습니다.",
+      "timeline.error.detailLoadFailed": "세계선 상세 정보를 불러오지 못했습니다.",
+      "timeline.error.backendNoItems": "세계선 백엔드가 사용할 수 있는 항목을 반환하지 않았습니다.",
+      "timeline.error.backendLoadFailed": "세계선 백엔드 로딩 실패",
+      "timeline.error.noDetailRef": "세계선 항목에 상세 참조가 없습니다.",
+      "timeline.error.editLoadFailed": "세계선 수정 정보를 불러오지 못했습니다.",
       "timeline.turn.kind.starter": "시작",
       "timeline.turn.kind.input": "입력",
       "timeline.turn.kind.turn": "턴",
@@ -374,6 +401,11 @@
       "settings.narrativeStrength.weak": "약하게",
       "settings.narrativeStrength.medium": "중간",
       "settings.narrativeStrength.strong": "강하게",
+      "settings.narrativeStrength.extreme": "매우 강하게",
+      "settings.narrativeStrength.maximum": "최대로",
+      "settings.publisherGuidanceFormat.compact": "간결형",
+      "settings.publisherGuidanceFormat.standard": "표준형",
+      "settings.publisherGuidanceFormat.explicit": "명시형",
       "settings.label.pluginMainApplyMode": "입력 개선 LLM (선택)",
       "settings.applyMode.off": "꺼짐 (입력 개선 호출 안 함)",
       "settings.applyMode.shadow": "검토만 (유저 입력 유지)",
@@ -481,7 +513,7 @@
       "persona.visibility.ownerPrivate": "주체만 아는 비공개 기억",
       "persona.reveal.requiresAttachment": "부착 후 보조 기억으로만 사용",
       "persona.reveal.ownerPrivate": "현재 세션에서 드러날 때까지 비공개",
-      "persona.button.useSelected": "선택한 타임라인 사용",
+      "persona.button.useSelected": "선택한 턴 기록 사용",
       "persona.button.create": "캡슐 만들기",
       "persona.button.loadEntityMemories": "주관 기억 불러오기",
       "persona.button.createFromEntityMemories": "선택 기억으로 캡슐 생성",
@@ -498,7 +530,7 @@
       "persona.entityBundle.desc": "현재 출처 세션에 저장된 인물별 기억 묶음입니다. 인물 하나를 고르면 세부 기억은 자동으로 선별됩니다.",
       "persona.entityBundle.empty": "불러온 인물 기억 묶음이 없습니다.",
       "persona.advanced.title": "고급 수동 캡슐 작성",
-      "persona.note.selectedTimeline": "선택된 타임라인",
+      "persona.note.selectedTimeline": "선택한 턴 기록",
       "persona.note.selectedNone": "없음",
       "persona.note.prepareTurn": "Prepare-turn은 활성 부착 항목을 읽어 페르소나 회상 보조 정보로만 주입합니다.",
       "persona.status.idle": "대기 중",
@@ -521,8 +553,8 @@
       "persona.status.detaching": "캡슐 #{id} 해제 중",
       "persona.status.detachFailed": "캡슐 해제 실패",
       "persona.status.detached": "캡슐 #{id} 해제됨",
-      "persona.status.selectTimelineFirst": "먼저 타임라인 항목을 선택하세요.",
-      "persona.status.timelineCopied": "선택한 타임라인 항목을 캡슐 초안으로 복사했습니다.",
+      "persona.status.selectTimelineFirst": "먼저 턴 기록을 선택하세요.",
+      "persona.status.timelineCopied": "선택한 턴 기록을 캡슐 초안으로 복사했습니다.",
       "persona.status.candidateRemoved": "후보를 제거했습니다.",
       "persona.status.candidateNotFound": "후보를 찾지 못했습니다.",
       "persona.status.candidateDrafted": "후보를 캡슐 초안으로 복사했습니다.",
@@ -738,12 +770,19 @@
       "explorer.tabs.trust.label": "신뢰 제어",
       "explorer.tabs.world.label": "세계 규칙",
       "explorer.tabs.entities.label": "개체 정보",
+      "explorer.tabs.lorebook.label": "보조 참조",
+      "explorer.lorebook.loading": "보조 참조를 불러오는 중입니다.",
+      "explorer.lorebook.empty": "현재 범위에 저장된 로어북이 없습니다.",
+      "explorer.lorebook.scopeUnavailable": "현재 RisuAI 채팅의 로어북 범위를 확인할 수 없습니다.",
+      "explorer.lorebook.readFailed": "보조 참조를 불러오지 못했습니다.",
       "explorer.chatLogs.loading": "로딩 중...",
       "explorer.chatLogs.empty": "대화 원문이 없습니다.",
       "explorer.chatLogs.userInput": "사용자 입력",
       "explorer.chatLogs.assistantOutput": "출력",
       "explorer.chatLogs.missing": "저장되지 않음",
       "explorer.chatLogs.complete": "완료",
+      "explorer.history.inherited": "상속됨",
+      "explorer.history.currentBranch": "현재 분기",
       "explorer.chatLogs.incomplete": "불완전",
       "explorer.chatLogs.repairReplayScope": "복구 재실행은 실패 큐에 남은 저장 턴과 로컬 삭제 스냅샷에 남은 원문 대화를 다시 삽입합니다. 파생 기억/직접 근거/KG/상태는 자동 복원되지 않으므로 원문 턴 복구 뒤 재검사를 추가로 실행해야 합니다.",
       "explorer.memories.loading": "로딩 중...",
@@ -1044,7 +1083,7 @@
       "settings.hint.primaryCanonBaseMaxChars": "0이면 비활성화합니다. 단독(primary) 원작 모드의 원작 총예산 안에서 Canon Base가 사용할 수 있는 하위 상한입니다.",
       "settings.hint.maxInjectionChars": "보조 컨텍스트 블록(기억/세계/관계)의 전체 길이를 제한합니다. 토큰이 아니라 chars 기준이며, 자동 주입 예산에는 추정 토큰도 함께 표시됩니다.",
       "settings.hint.reasoningEffort": "none이면 생략합니다. low/medium/high처럼 provider가 지원하는 값을 사용하세요.",
-      "settings.hint.reasoningPreset": "auto는 provider 기본값을 사용합니다.",
+      "settings.hint.reasoningPreset": "auto는 모델 이름과 버전을 먼저 확인하고, 식별할 수 없으면 추론 필드를 보내지 않습니다.",
       "settings.label.auxiliaryInjectionAnchorMarker": "기억 앵커 마커",
       "settings.label.auxiliaryInjectionPlacement": "기억 주입 위치",
       "settings.label.criticMaxCompletionTokens": "평론가 Max Completion Tokens",
@@ -1064,7 +1103,9 @@
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
       "settings.label.narrativeGuideMode.help": "Auto는 본문 키워드로 장르를 추정하지 않고 Standard로 동작합니다. 특정 장르 모드는 사용자가 직접 선택할 때만 적용됩니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
-      "settings.label.narrativeGuideStrength.help": "없음은 출판사 LLM 호출만 끄고 기억·비밀 보호는 유지합니다. 약함은 응답 초점, 보통은 진행 또는 유지 제안, 강함은 arc 기준과 우선 frontier까지 제안합니다. 어떤 강도도 진행이나 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않습니다.",
+      "settings.label.narrativeGuideStrength.help": "없음은 출판사 LLM 호출만 끄고 기억·비밀 보호는 유지합니다. 강도가 높을수록 이번 응답의 우선순위와 적용 순서를 더 명확하게 안내하지만 사실 권한은 늘어나지 않습니다. 최대 강도도 사용자 행동·새 사실·관계 변화·사건 종결을 강제하지 않으며, 조용한 장면은 조용하게 유지할 수 있습니다.",
+      "settings.label.publisherGuidanceFormat": "출판사 안내 표현 형식",
+      "settings.label.publisherGuidanceFormat.help": "출판사가 승인한 같은 항목을 본문 모델에 표시하는 구조만 바꿉니다. 간결형은 짧은 표식, 표준형은 현재 형식, 명시형은 작은 모델이 역할과 필드를 구분하기 쉬운 구조입니다. 강도·사실 권한·항목 수는 바뀌지 않습니다.",
       "settings.label.narrativeSupportMaxChars": "서사 안내 예산 (chars)",
       "settings.hint.narrativeSupportMaxChars": "출판사 LLM 제안과 응답 실행 규칙에만 쓰는 독립 예산입니다. 장기 기억·원작 자료·사용자 입력 예산을 사용하지 않습니다.",
       "settings.label.publisherMaxCompletionTokens": "출판사 Max Completion Tokens",
@@ -1105,20 +1146,20 @@
       "timeline.button.loadMore": "더 불러오기",
       "timeline.button.loading": "로딩 중...",
       "timeline.button.migrate": "이동",
-      "timeline.button.reload": "타임라인 다시 불러오기",
+      "timeline.button.reload": "새로고침",
       "timeline.button.rollback": "이동 취소",
       "timeline.button.viewDetail": "상세 보기",
       "timeline.count.summary": "{turns}턴 / {items}항목 / 총 {total}개",
       "timeline.detail.created": "생성",
-      "timeline.detail.itemFallback": "타임라인 항목",
+      "timeline.detail.itemFallback": "턴 기록",
       "timeline.detail.loading": "로딩 중",
       "timeline.detail.metadata": "메타데이터",
       "timeline.detail.readOnly": "읽기 전용",
       "timeline.detail.summary": "요약",
-      "timeline.detail.title": "상세 - {title}",
+      "timeline.detail.title": "턴 상세 · {title}",
       "timeline.detail.turn": "턴",
       "timeline.detail.type": "유형",
-      "timeline.empty.noItems": "이 세션의 타임라인 항목이 없습니다.",
+      "timeline.empty.noItems": "이 세션에는 아직 턴 기록이 없습니다.",
       "timeline.label.episodes": "에피소드",
       "timeline.label.items": "항목",
       "timeline.label.kg": "KG",
@@ -1128,6 +1169,32 @@
       "timeline.label.selected": "선택됨",
       "timeline.label.selectedSources": "선택된 출처",
       "timeline.label.sessions": "세션",
+      "timeline.worldline.current": "현재 세계선",
+      "timeline.worldline.session": "세션",
+      "timeline.worldline.turn": "턴",
+      "timeline.worldline.parent": "부모 세계선",
+      "timeline.worldline.forkTurn": "분기 턴",
+      "timeline.worldline.reason": "상태 사유",
+      "timeline.worldline.detail": "분기 계보",
+      "timeline.worldline.state.confirmed": "확인됨",
+      "timeline.worldline.state.unresolved": "확인 필요",
+      "timeline.worldline.state.conflict": "충돌",
+      "timeline.worldline.state.not_applicable": "독립",
+      "timeline.worldline.forkBadge": "분기 #{turn}",
+      "timeline.canvas.zoomIn": "확대",
+      "timeline.canvas.zoomOut": "축소",
+      "timeline.canvas.recenter": "현재로 이동",
+      "timeline.canvas.fitAll": "전체 맞춤",
+      "timeline.canvas.title": "세계선 지도",
+      "timeline.canvas.unavailable": "세계선 토폴로지를 사용할 수 없습니다.",
+      "timeline.canvas.empty": "아직 표시할 세계선이 없습니다.",
+      "timeline.canvas.partial": "일부 세계선 연결을 확인할 수 없습니다.",
+      "timeline.canvas.truncated": "일부 세계선만 표시 중",
+      "timeline.canvas.lineageState": "계보 상태",
+      "timeline.drawer.detail": "턴 상세",
+      "timeline.drawer.records": "턴 기록",
+      "timeline.records.selectTurn": "세계선에서 턴을 선택하면 해당 턴의 항목이 표시됩니다.",
+      "timeline.records.notLoaded": "선택한 턴의 항목이 현재 불러온 범위에 없습니다.",
       "timeline.label.total": "전체",
       "timeline.label.turns": "턴",
       "timeline.label.visible": "표시",
@@ -1158,11 +1225,11 @@
       "timeline.migration.success": "세션 이전 완료: target={target}",
       "timeline.migration.targetUnstable": "현재 채팅의 안정 CID를 확인할 수 없습니다. 새 채팅을 한 번 선택/새로고침한 뒤 다시 시도하세요.",
       "timeline.note.loadingSessions": "세션 불러오는 중...",
-      "timeline.note.noMore": "이 세션에 더 이상 타임라인 항목이 없습니다.",
+      "timeline.note.noMore": "모든 턴 기록을 불러왔습니다.",
       "timeline.note.noPreview": "백엔드가 미리보기 텍스트를 반환하지 않았습니다.",
       "timeline.note.noSessions": "반환된 세션이 없습니다.",
       "timeline.note.readOnly": "/timeline의 읽기 전용 투영입니다. 실제 archive 데이터는 수정하지 않습니다.",
-      "timeline.note.selectItem": "백엔드 데이터가 로드되면 타임라인 항목을 선택하세요.",
+      "timeline.note.selectItem": "백엔드 데이터가 로드되면 세계선 항목을 선택하세요.",
       "timeline.session.archiveSession": "Archive 세션",
       "timeline.session.attachTitle": "이 Archive 세션을 현재 채팅에 연결",
       "timeline.session.character": "캐릭터 {n}",
@@ -1351,19 +1418,28 @@
 
     en: {
       // ── Settings Panel ──
-      "settings.title": `🗂️ Archive Center ${VERSION} Settings`,
-      "settings.tab.dashboard": "Dashboard",
+      "settings.title": `Archive Center ${VERSION}`,
+      "settings.tab.dashboard": "Status",
       "settings.tab.review": "Review",
       "settings.tab.archive": "Archive",
-      "settings.tab.timeline": "Timeline",
-      "settings.tab.explore": "Explore",
+      "settings.tab.timeline": "Worldlines",
+      "settings.tab.explore": "Memory",
+      "settings.tab.memoryManagement": "Memory management",
+      "settings.tab.extensions": "Extensions",
+      "settings.tab.lorebook": "Lorebook",
+      "settings.tab.reference": "Original database",
       "settings.tab.prompt": "Prompts",
       "settings.tab.general": "General",
       "settings.tab.settings": "Settings",
-      "settings.tab.debug": "Debug",
+      "settings.tab.debug": "Advanced",
       "settings.section.status": "Settings Status",
       "settings.section.common": "Common Settings",
       "settings.section.common.desc": "The previous completed turn is included as continuity context by default. The optional input-improvement LLM is independent from narrative guidance.",
+      "settings.label.lorebookReferenceMode": "Lorebook reference",
+      "settings.lorebookReferenceMode.search_only": "Search only",
+      "settings.lorebookReferenceMode.reference_assist": "Reference assist",
+      "settings.lorebookReferenceMode.help": "Stores the current character, chat, and enabled-module lorebook as separate reference data. Normal turns do not reread the RisuAI source.",
+      "settings.btn.refreshLorebookReference": "Refresh lorebook",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -1404,7 +1480,7 @@
       "settings.label.criticProvider": "Critic Provider",
       "settings.label.criticReasoningPreset": "Critic Reasoning Preset",
       "settings.label.criticReasoningEffort": "Critic Reasoning Effort",
-      "settings.hint.reasoningPreset": "auto uses the provider default.",
+      "settings.hint.reasoningPreset": "Auto uses the model name and version first and omits reasoning fields when the contract is unknown.",
       "settings.hint.reasoningEffort": "none is omitted. Use provider-supported values like low/medium/high.",
       "settings.label.topK": "ChromaDB Semantic Memories",
       "settings.label.topK.hint": "How many semantically relevant memories ChromaDB should retrieve for the current input. MariaDB hydrates selected vector hits as canonical rows.",
@@ -1421,7 +1497,9 @@
       "settings.label.narrativeGuideMode": "Narrative Guide Mode",
       "settings.label.narrativeGuideMode.help": "Auto does not infer genre from story keywords; it uses Standard. Genre-specific modes apply only when selected explicitly.",
       "settings.label.narrativeGuideStrength": "Narrative Guide Strength",
-      "settings.label.narrativeGuideStrength.help": "None skips the Publisher LLM call while memory and secret guards remain active. Weak proposes response focus, Medium may suggest advance or hold, and Strong adds an arc anchor and preferred frontier. No strength may force progress, user actions, new truth, relationship changes, or event closure.",
+      "settings.label.narrativeGuideStrength.help": "None skips only the Publisher LLM call while memory and secret guards remain active. Higher strength makes current-response priorities and execution order more explicit without expanding truth authority. Even Maximum cannot force user actions, new facts, relationship changes, or event closure, and a quiet scene may remain quiet.",
+      "settings.label.publisherGuidanceFormat": "Publisher Guidance Format",
+      "settings.label.publisherGuidanceFormat.help": "Changes only how the same accepted Publisher items are structured for the main model. Compact uses short markers, Standard preserves the current form, and Explicit makes roles and fields easier for smaller models to distinguish. Strength, fact authority, and item count do not change.",
       "settings.label.narrativeSupportMaxChars": "Narrative guidance budget (chars)",
       "settings.hint.narrativeSupportMaxChars": "Independent budget for supervisor proposals and response execution guidance. It does not borrow from memory, original-work, or user-input budgets.",
       "settings.label.auxiliaryInjectionPlacement": "Memory Injection Placement",
@@ -1447,6 +1525,32 @@
       "dash.status.activeChatBackfill": "Active Chat Backfill",
       "header.health.allOk": "ALL OK",
       "timeline.label.sessions": "Sessions",
+      "timeline.worldline.current": "Current worldline",
+      "timeline.worldline.session": "Session",
+      "timeline.worldline.turn": "Turn",
+      "timeline.worldline.parent": "Parent worldline",
+      "timeline.worldline.forkTurn": "Fork turn",
+      "timeline.worldline.reason": "Status reason",
+      "timeline.worldline.detail": "Branch lineage",
+      "timeline.worldline.state.confirmed": "Confirmed",
+      "timeline.worldline.state.unresolved": "Needs confirmation",
+      "timeline.worldline.state.conflict": "Conflict",
+      "timeline.worldline.state.not_applicable": "Independent",
+      "timeline.worldline.forkBadge": "Fork #{turn}",
+      "timeline.canvas.zoomIn": "Zoom in",
+      "timeline.canvas.zoomOut": "Zoom out",
+      "timeline.canvas.recenter": "Recenter current",
+      "timeline.canvas.fitAll": "Fit all",
+      "timeline.canvas.title": "Worldline map",
+      "timeline.canvas.unavailable": "Worldline topology is unavailable.",
+      "timeline.canvas.empty": "No worldlines to display yet.",
+      "timeline.canvas.partial": "Some worldline connections are unavailable.",
+      "timeline.canvas.truncated": "Showing a partial worldline",
+      "timeline.canvas.lineageState": "Lineage state",
+      "timeline.drawer.detail": "Turn details",
+      "timeline.drawer.records": "Turn records",
+      "timeline.records.selectTurn": "Select a turn on the worldline to show its records.",
+      "timeline.records.notLoaded": "The selected turn is outside the currently loaded record range.",
       "timeline.label.selected": "Selected",
       "timeline.label.selectedSources": "Selected Sources",
       "timeline.label.visible": "visible",
@@ -1514,18 +1618,18 @@
       "timeline.button.viewDetail": "View in Detail",
       "timeline.button.loadMore": "Load more",
       "timeline.button.loading": "Loading...",
-      "timeline.button.reload": "Reload Timeline",
+      "timeline.button.reload": "Refresh",
       "timeline.count.summary": "{turns} turns / {items} items / {total} total",
       "timeline.badge.items": "{n} items",
       "timeline.note.noPreview": "No preview text returned by backend.",
-      "timeline.note.selectItem": "Select a Timeline item after backend data loads.",
+      "timeline.note.selectItem": "Select a worldline item after backend data loads.",
       "timeline.note.loadingSessions": "Loading sessions...",
       "timeline.note.noSessions": "No sessions returned.",
-      "timeline.note.noMore": "No more timeline items for this session.",
+      "timeline.note.noMore": "All turn records loaded.",
       "timeline.note.readOnly": "Read-only projection from /timeline. It does not modify live archive data.",
-      "timeline.empty.noItems": "No timeline items returned for this session.",
-      "timeline.detail.title": "Detail - {title}",
-      "timeline.detail.itemFallback": "Timeline item",
+      "timeline.empty.noItems": "No turn records in this session yet.",
+      "timeline.detail.title": "Turn details · {title}",
+      "timeline.detail.itemFallback": "Turn record",
       "timeline.detail.loading": "loading",
       "timeline.detail.readOnly": "read-only",
       "timeline.detail.summary": "Summary",
@@ -1564,13 +1668,13 @@
       "timeline.detail.from": "From",
       "timeline.detail.to": "To",
       "timeline.edit.title": "Edit - {title}",
-      "timeline.edit.meta": "timeline · editable",
-      "timeline.edit.noSelection": "No editable Timeline item selected.",
-      "timeline.error.detailLoadFailed": "Timeline detail load failed.",
-      "timeline.error.backendNoItems": "Timeline backend returned no usable items.",
-      "timeline.error.backendLoadFailed": "Timeline backend load failed.",
-      "timeline.error.noDetailRef": "Timeline item has no detail reference.",
-      "timeline.error.editLoadFailed": "Timeline edit load failed.",
+      "timeline.edit.meta": "Worldline · editable",
+      "timeline.edit.noSelection": "No editable Worldline item selected.",
+      "timeline.error.detailLoadFailed": "Worldline detail load failed.",
+      "timeline.error.backendNoItems": "Worldline backend returned no usable items.",
+      "timeline.error.backendLoadFailed": "Worldline backend load failed.",
+      "timeline.error.noDetailRef": "Worldline item has no detail reference.",
+      "timeline.error.editLoadFailed": "Worldline edit load failed.",
       "timeline.turn.kind.starter": "STARTER",
       "timeline.turn.kind.input": "INPUT",
       "timeline.turn.kind.turn": "TURN",
@@ -1615,6 +1719,11 @@
       "settings.narrativeStrength.weak": "Weak",
       "settings.narrativeStrength.medium": "Medium",
       "settings.narrativeStrength.strong": "Strong",
+      "settings.narrativeStrength.extreme": "Extreme",
+      "settings.narrativeStrength.maximum": "Maximum",
+      "settings.publisherGuidanceFormat.compact": "Compact",
+      "settings.publisherGuidanceFormat.standard": "Standard",
+      "settings.publisherGuidanceFormat.explicit": "Explicit",
       "settings.label.pluginMainApplyMode": "Input Improvement LLM (Optional)",
       "settings.applyMode.off": "Off (do not call input improvement)",
       "settings.applyMode.shadow": "Review only (keep user input)",
@@ -1722,7 +1831,7 @@
       "persona.visibility.ownerPrivate": "Owner-private memory",
       "persona.reveal.requiresAttachment": "Support-only after attachment",
       "persona.reveal.ownerPrivate": "Private until revealed in current session",
-      "persona.button.useSelected": "Use Selected Timeline",
+      "persona.button.useSelected": "Use Selected Turn Record",
       "persona.button.create": "Create Capsule",
       "persona.button.loadEntityMemories": "Load Subjective Memories",
       "persona.button.createFromEntityMemories": "Create from Selected Memories",
@@ -1739,7 +1848,7 @@
       "persona.entityBundle.desc": "Entity-scoped memory bundles saved in the source session. Pick one entity; detailed memories are selected automatically.",
       "persona.entityBundle.empty": "No entity memory bundles loaded.",
       "persona.advanced.title": "Advanced Manual Capsule",
-      "persona.note.selectedTimeline": "Selected Timeline",
+      "persona.note.selectedTimeline": "Selected Turn Record",
       "persona.note.selectedNone": "none",
       "persona.note.prepareTurn": "Prepare-turn reads enabled attachments and injects them only as Persona Recollection support.",
       "persona.status.idle": "idle",
@@ -1762,8 +1871,8 @@
       "persona.status.detaching": "detaching capsule #{id}",
       "persona.status.detachFailed": "capsule detach failed",
       "persona.status.detached": "detached capsule #{id}",
-      "persona.status.selectTimelineFirst": "select a Timeline item first",
-      "persona.status.timelineCopied": "selected Timeline item copied into capsule draft",
+      "persona.status.selectTimelineFirst": "select a turn record first",
+      "persona.status.timelineCopied": "selected turn record copied into capsule draft",
       "persona.status.candidateRemoved": "candidate removed",
       "persona.status.candidateNotFound": "candidate not found",
       "persona.status.candidateDrafted": "candidate copied into capsule draft",
@@ -1976,12 +2085,19 @@
       "explorer.tabs.trust.label": "Trust",
       "explorer.tabs.world.label": "World",
       "explorer.tabs.entities.label": "Entities",
+      "explorer.tabs.lorebook.label": "Auxiliary Reference",
+      "explorer.lorebook.loading": "Loading auxiliary references...",
+      "explorer.lorebook.empty": "No stored lorebook entries exist for this scope.",
+      "explorer.lorebook.scopeUnavailable": "The current RisuAI chat lorebook scope is unavailable.",
+      "explorer.lorebook.readFailed": "Failed to load auxiliary references.",
       "explorer.chatLogs.loading": "Loading...",
       "explorer.chatLogs.empty": "No chat_logs found.",
       "explorer.chatLogs.userInput": "User input",
       "explorer.chatLogs.assistantOutput": "Output",
       "explorer.chatLogs.missing": "Not saved",
       "explorer.chatLogs.complete": "Complete",
+      "explorer.history.inherited": "Inherited",
+      "explorer.history.currentBranch": "Current branch",
       "explorer.chatLogs.incomplete": "Incomplete",
       "explorer.chatLogs.repairReplayScope": "Repair Replay re-inserts missing raw turn content from the failed queue and local delete snapshots. It does not automatically rebuild derived Memory/Direct Evidence/KG/state records, so run Rescan after raw turn recovery if you need those restored.",
       "explorer.memories.loading": "Loading...",
@@ -2441,19 +2557,28 @@
 
     ja: {
       // ── 設定パネル ──
-      "settings.title": `🗂️ Archive Center ${VERSION} 設定`,
-      "settings.tab.dashboard": "ダッシュボード",
+      "settings.title": `Archive Center ${VERSION}`,
+      "settings.tab.dashboard": "状態",
       "settings.tab.review": "編集確認",
       "settings.tab.archive": "書庫",
-      "settings.tab.timeline": "タイムライン",
-      "settings.tab.explore": "探索",
+      "settings.tab.timeline": "世界線",
+      "settings.tab.explore": "記憶",
+      "settings.tab.memoryManagement": "記憶管理",
+      "settings.tab.extensions": "追加機能",
+      "settings.tab.lorebook": "ロアブック",
+      "settings.tab.reference": "原作DB",
       "settings.tab.prompt": "プロンプト",
       "settings.tab.general": "一般",
       "settings.tab.settings": "設定",
-      "settings.tab.debug": "デバッグ",
+      "settings.tab.debug": "詳細",
       "settings.section.status": "設定状態",
       "settings.section.common": "共通設定",
       "settings.section.common.desc": "直前の完了ターンは継続コンテキストとして既定で適用されます。入力改善LLMは任意機能で、ナラティブガイドとは独立しています。",
+      "settings.label.lorebookReferenceMode": "ロアブック参照",
+      "settings.lorebookReferenceMode.search_only": "検索のみ",
+      "settings.lorebookReferenceMode.reference_assist": "本文参照補助",
+      "settings.lorebookReferenceMode.help": "現在のキャラクター・チャット・有効モジュールのロアブックを別の参照資料として保存します。通常ターンではRisuAI原本を再読込しません。",
+      "settings.btn.refreshLorebookReference": "ロアブックを更新",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -2494,7 +2619,7 @@
       "settings.label.criticProvider": "評論家 Provider",
       "settings.label.criticReasoningPreset": "評論家 Reasoning Preset",
       "settings.label.criticReasoningEffort": "評論家 Reasoning Effort",
-      "settings.hint.reasoningPreset": "auto は provider の既定値を使用します。",
+      "settings.hint.reasoningPreset": "auto はモデル名とバージョンを先に確認し、判別できない場合は推論フィールドを送信しません。",
       "settings.hint.reasoningEffort": "none は送信しません。low/medium/high など provider 対応値を使用してください。",
       "settings.label.topK": "ChromaDB意味記憶検索数",
       "settings.label.topK.hint": "現在の入力に意味的に近い記憶をChromaDBで何件取得するかを指定します。MariaDBは選ばれたベクトル結果を正本rowとして確認します。",
@@ -2511,7 +2636,9 @@
       "settings.label.narrativeGuideMode": "ナラティブガイドモード",
       "settings.label.narrativeGuideMode.help": "Autoは本文キーワードからジャンルを推定せずStandardとして動作します。ジャンル別モードはユーザーが明示的に選んだ場合のみ適用されます。",
       "settings.label.narrativeGuideStrength": "ナラティブガイド強度",
-      "settings.label.narrativeGuideStrength.help": "なしはPublisher LLM呼び出しだけを停止し、記憶と秘密保護は維持します。弱は応答の焦点、中は進行または保持、強はarc anchorと優先frontierまで提案します。どの強度も進行、ユーザー行動、新事実、関係変化、事件終結を強制しません。",
+      "settings.label.narrativeGuideStrength.help": "なしはPublisher LLM呼び出しだけを停止し、記憶と秘密保護は維持します。強度が高いほど現在の応答の優先順位と適用順序を明確にしますが、事実権限は増えません。最大でもユーザー行動、新事実、関係変化、事件終結を強制せず、静かな場面は静かなまま維持できます。",
+      "settings.label.publisherGuidanceFormat": "Publisher案内の表現形式",
+      "settings.label.publisherGuidanceFormat.help": "承認済みの同じPublisher項目を本文モデルに示す構造だけを変更します。Compactは短い表記、Standardは現在の形式、Explicitは小規模モデルが役割とフィールドを区別しやすい構造です。強度・事実権限・項目数は変わりません。",
       "settings.label.narrativeSupportMaxChars": "ナラティブ案内予算（chars）",
       "settings.hint.narrativeSupportMaxChars": "監督提案と応答実行ガイド専用の独立予算です。長期記憶・原作資料・ユーザー入力の予算は使用しません。",
       "settings.label.auxiliaryInjectionPlacement": "記憶の注入位置",
@@ -2537,6 +2664,32 @@
       "dash.status.activeChatBackfill": "アクティブチャット補完",
       "header.health.allOk": "すべて正常",
       "timeline.label.sessions": "セッション",
+      "timeline.worldline.current": "現在の世界線",
+      "timeline.worldline.session": "セッション",
+      "timeline.worldline.turn": "ターン",
+      "timeline.worldline.parent": "親世界線",
+      "timeline.worldline.forkTurn": "分岐ターン",
+      "timeline.worldline.reason": "状態理由",
+      "timeline.worldline.detail": "分岐系譜",
+      "timeline.worldline.state.confirmed": "確認済み",
+      "timeline.worldline.state.unresolved": "確認が必要",
+      "timeline.worldline.state.conflict": "競合",
+      "timeline.worldline.state.not_applicable": "独立",
+      "timeline.worldline.forkBadge": "分岐 #{turn}",
+      "timeline.canvas.zoomIn": "拡大",
+      "timeline.canvas.zoomOut": "縮小",
+      "timeline.canvas.recenter": "現在位置へ",
+      "timeline.canvas.fitAll": "全体表示",
+      "timeline.canvas.title": "世界線マップ",
+      "timeline.canvas.unavailable": "世界線トポロジーを利用できません。",
+      "timeline.canvas.empty": "表示する世界線はまだありません。",
+      "timeline.canvas.partial": "一部の世界線接続を確認できません。",
+      "timeline.canvas.truncated": "世界線の一部を表示中",
+      "timeline.canvas.lineageState": "系譜状態",
+      "timeline.drawer.detail": "ターン詳細",
+      "timeline.drawer.records": "ターン記録",
+      "timeline.records.selectTurn": "世界線でターンを選択すると、そのターンの項目が表示されます。",
+      "timeline.records.notLoaded": "選択したターンは現在読み込まれている記録範囲外です。",
       "timeline.label.selected": "選択項目",
       "timeline.label.selectedSources": "選択ソース",
       "timeline.label.visible": "表示",
@@ -2569,18 +2722,18 @@
       "timeline.button.viewDetail": "詳細表示",
       "timeline.button.loadMore": "さらに読み込む",
       "timeline.button.loading": "読み込み中...",
-      "timeline.button.reload": "タイムライン再読み込み",
+      "timeline.button.reload": "再読み込み",
       "timeline.count.summary": "{turns}ターン / {items}項目 / 全体{total}",
       "timeline.badge.items": "{n}項目",
       "timeline.note.noPreview": "バックエンドからプレビュー文が返されませんでした。",
-      "timeline.note.selectItem": "バックエンドデータ読み込み後にタイムライン項目を選択してください。",
+      "timeline.note.selectItem": "バックエンドデータ読み込み後に世界線項目を選択してください。",
       "timeline.note.loadingSessions": "セッションを読み込み中...",
       "timeline.note.noSessions": "セッションがありません。",
-      "timeline.note.noMore": "このセッションのタイムライン項目はここまでです。",
+      "timeline.note.noMore": "すべてのターン記録を読み込みました。",
       "timeline.note.readOnly": "/timeline の読み取り専用表示です。実際のアーカイブデータは変更しません。",
-      "timeline.empty.noItems": "このセッションで返されたタイムライン項目はありません。",
-      "timeline.detail.title": "詳細 - {title}",
-      "timeline.detail.itemFallback": "タイムライン項目",
+      "timeline.empty.noItems": "このセッションにはまだターン記録がありません。",
+      "timeline.detail.title": "ターン詳細 · {title}",
+      "timeline.detail.itemFallback": "ターン記録",
       "timeline.detail.loading": "読み込み中",
       "timeline.detail.readOnly": "読み取り専用",
       "timeline.detail.summary": "要約",
@@ -2619,13 +2772,13 @@
       "timeline.detail.from": "開始",
       "timeline.detail.to": "終了",
       "timeline.edit.title": "編集 - {title}",
-      "timeline.edit.meta": "タイムライン · 編集可能",
-      "timeline.edit.noSelection": "編集するタイムライン項目が選択されていません。",
-      "timeline.error.detailLoadFailed": "タイムライン詳細を読み込めませんでした。",
-      "timeline.error.backendNoItems": "タイムラインバックエンドが使用可能な項目を返しませんでした。",
-      "timeline.error.backendLoadFailed": "タイムラインバックエンドの読み込みに失敗しました。",
-      "timeline.error.noDetailRef": "タイムライン項目に詳細参照がありません。",
-      "timeline.error.editLoadFailed": "タイムライン編集情報を読み込めませんでした。",
+      "timeline.edit.meta": "世界線 · 編集可能",
+      "timeline.edit.noSelection": "編集する世界線項目が選択されていません。",
+      "timeline.error.detailLoadFailed": "世界線詳細を読み込めませんでした。",
+      "timeline.error.backendNoItems": "世界線バックエンドが使用可能な項目を返しませんでした。",
+      "timeline.error.backendLoadFailed": "世界線バックエンドの読み込みに失敗しました。",
+      "timeline.error.noDetailRef": "世界線項目に詳細参照がありません。",
+      "timeline.error.editLoadFailed": "世界線編集情報を読み込めませんでした。",
       "timeline.turn.kind.starter": "開始",
       "timeline.turn.kind.input": "入力",
       "timeline.turn.kind.turn": "ターン",
@@ -2670,6 +2823,11 @@
       "settings.narrativeStrength.weak": "弱く",
       "settings.narrativeStrength.medium": "中",
       "settings.narrativeStrength.strong": "強く",
+      "settings.narrativeStrength.extreme": "非常に強く",
+      "settings.narrativeStrength.maximum": "最大",
+      "settings.publisherGuidanceFormat.compact": "Compact",
+      "settings.publisherGuidanceFormat.standard": "Standard",
+      "settings.publisherGuidanceFormat.explicit": "Explicit",
       "settings.label.pluginMainApplyMode": "入力改善LLM（任意）",
       "settings.applyMode.off": "オフ（入力改善を呼び出さない）",
       "settings.applyMode.shadow": "レビューのみ（ユーザー入力維持）",
@@ -2775,7 +2933,7 @@
       "persona.visibility.ownerPrivate": "主体だけの非公開記憶",
       "persona.reveal.requiresAttachment": "付与後も補助記憶のみ",
       "persona.reveal.ownerPrivate": "現在セッションで明示されるまで非公開",
-      "persona.button.useSelected": "選択したタイムラインを使用",
+      "persona.button.useSelected": "選択したターン記録を使用",
       "persona.button.create": "カプセル作成",
       "persona.button.loadEntityMemories": "主観記憶を読込",
       "persona.button.createFromEntityMemories": "選択記憶から作成",
@@ -2792,7 +2950,7 @@
       "persona.entityBundle.desc": "元セッションに保存された人物別の記憶束です。人物を一人選ぶと詳細記憶は自動選択されます。",
       "persona.entityBundle.empty": "読み込まれた人物記憶束はありません。",
       "persona.advanced.title": "高度な手動カプセル作成",
-      "persona.note.selectedTimeline": "選択タイムライン",
+      "persona.note.selectedTimeline": "選択したターン記録",
       "persona.note.selectedNone": "なし",
       "persona.note.prepareTurn": "Prepare-turn は有効な付与項目を読み、ペルソナ回想補助としてのみ注入します。",
       "persona.status.idle": "待機中",
@@ -2815,8 +2973,8 @@
       "persona.status.detaching": "カプセル #{id} を解除中",
       "persona.status.detachFailed": "カプセル解除失敗",
       "persona.status.detached": "カプセル #{id} を解除しました",
-      "persona.status.selectTimelineFirst": "先にタイムライン項目を選択してください",
-      "persona.status.timelineCopied": "選択したタイムライン項目をカプセル下書きへコピーしました",
+      "persona.status.selectTimelineFirst": "先にターン記録を選択してください",
+      "persona.status.timelineCopied": "選択したターン記録をカプセル下書きへコピーしました",
       "persona.status.candidateRemoved": "候補を削除しました",
       "persona.status.candidateNotFound": "候補が見つかりません",
       "persona.status.candidateDrafted": "候補をカプセル下書きへコピーしました",
@@ -3032,12 +3190,19 @@
       "explorer.tabs.trust.label": "Trust（信頼制御）",
       "explorer.tabs.world.label": "World（世界ルール）",
       "explorer.tabs.entities.label": "Entities（エンティティ）",
+      "explorer.tabs.lorebook.label": "補助参照",
+      "explorer.lorebook.loading": "補助参照を読み込み中です。",
+      "explorer.lorebook.empty": "現在の範囲に保存されたロアブックはありません。",
+      "explorer.lorebook.scopeUnavailable": "現在のRisuAIチャットのロアブック範囲を確認できません。",
+      "explorer.lorebook.readFailed": "補助参照を読み込めませんでした。",
       "explorer.chatLogs.loading": "読み込み中...",
       "explorer.chatLogs.empty": "chat_logsがありません。",
       "explorer.chatLogs.userInput": "ユーザー入力",
       "explorer.chatLogs.assistantOutput": "出力",
       "explorer.chatLogs.missing": "保存されていません",
       "explorer.chatLogs.complete": "完了",
+      "explorer.history.inherited": "継承",
+      "explorer.history.currentBranch": "現在の分岐",
       "explorer.chatLogs.incomplete": "不完全",
       "explorer.chatLogs.repairReplayScope": "復旧再実行は失敗キューとローカル削除スナップショットに残っている原文ターンを再挿入します。派生記憶/直接根拠/KG/状態は自動復元されないため、必要なら原文ターン復旧後に再検査を実行してください。",
       "explorer.memories.loading": "読み込み中...",
@@ -3882,6 +4047,15 @@
   // [STATE]
   // ──────────────────────────────────────────────────────────────
   let settings = { ...DEFAULT_SETTINGS };
+  // Host-only transient observation state. It prevents full lorebook reads on
+  // ordinary turns; all persistence, scope authority, and later retrieval stay
+  // in Go/MariaDB.
+  const _lorebookReferenceSync = {
+    attemptedScopeKey: "",
+    syncedScopeKey: "",
+    inFlight: null,
+    lastScope: null,
+  };
   const _backendRuntimeConfigBinding = {
     instanceId: "",
     dirty: true,
@@ -3893,7 +4067,8 @@
   const _sessionRoutingTurnBaselines = new Map(); // sessionId -> { backendTurnAtRoute, localPairCountAtRoute }
   const SESSION_TURN_MAP_MAX = 50;
   let panelOpen = false;
-  let _settingsActiveTab = "dashboard";
+  let _settingsPanelRenderRequestId = 0;
+  let _settingsActiveTab = "timeline";
   const _settingsTabScrollTops = Object.create(null);
   let _timelineSelectedDetail = null;
   const _timelineEditState = {
@@ -3905,6 +4080,7 @@
     error: "",
   };
   let _setActiveSettingsTabForTimeline = null;
+  let _presentationViewModelRequestId = 0;
   const _timelineState = {
     sessionId: "",
     selectedSessionId: "",
@@ -3925,6 +4101,17 @@
     detailError: "",
     expandedTurnKey: "",
     viewModel: null,
+    requestId: 0,
+    sessionsRequestId: 0,
+    worldlineViewport: {
+      scale: 1,
+      translationX: null,
+      translationY: null,
+      pointers: new Map(),
+      dragThreshold: 6,
+      lastTap: { nodeId: "", at: 0, x: 0, y: 0 },
+      selectedNodeId: "",
+    },
   };
   const _sessionMigrationUi = {
     running: false,
@@ -3958,6 +4145,7 @@
     bindingDraftDirty: false,
     bindingPreview: null,
     bindingLoading: false,
+    bindingRequestId: 0,
     bindingMessage: "",
     bindingError: "",
     vectorStatus: null,
@@ -4084,6 +4272,7 @@
     input: "unrequested",
     beforeRequest: "unrequested",
     afterRequest: "unrequested",
+    output: "unrequested",
   };
   const _step23CaptureVerificationPosted = new Set();
   const _lastBridgeFailureByPath = new Map();
@@ -4133,7 +4322,6 @@
     // Current write routing: keeps the dashboard honest when RisuAI's active CID
     // diverges from a cached before-request orchestration session.
     sessionWriteRouting: { status: "idle", time: null, detail: null },
-    lastRisuForkCopyCapture: { status: "idle", time: null, detail: null },
     // Active chat salvage: fill missed user/assistant pairs through /complete-turn.
     lastActiveChatBackfill: { status: "idle", time: null, detail: null, turnIndex: null },
     // Persona Memory Capsule UI: manual carry-over memories attached to target sessions.
@@ -4143,6 +4331,7 @@
     lastStreamingAfterRequest: { status: "idle", time: null, detail: null },
     // 2.1-4: read-only Critic Archive Ledger operator probe.
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
+    lastLorebookReferenceSync: { status: "idle", time: null, detail: null, itemCount: 0 },
   };
 
   function updateRuntimeState(key, status, extra = {}) {
@@ -4551,6 +4740,13 @@
     } catch (err) {
       debugLog("[unload] afterRequest replacer cleanup failed:", err && err.message);
     }
+    try {
+      if (typeof R.removeRisuChatListener === "function") {
+        await R.removeRisuChatListener("output", onRisuOutput);
+      }
+    } catch (err) {
+      debugLog("[unload] output listener cleanup failed:", err && err.message);
+    }
   }
 
   async function registerRisuLifecycleHooks() {
@@ -4584,6 +4780,18 @@
     } catch (regErr) {
       recordRisuHookLifecycle("afterRequest", "registration_failed");
       warnLog("addRisuReplacer afterRequest failed:", regErr && regErr.message);
+    }
+    try {
+      if (typeof R.addRisuChatListener === "function") {
+        recordRisuHookLifecycle("output", "registration_requested_unconfirmed");
+        await R.addRisuChatListener("output", onRisuOutput);
+        console.log(LOG_PREFIX, "addRisuChatListener output requested (host acceptance unconfirmed)");
+      } else {
+        recordRisuHookLifecycle("output", "capability_unavailable");
+      }
+    } catch (regErr) {
+      recordRisuHookLifecycle("output", "registration_failed");
+      warnLog("addRisuChatListener output failed:", regErr && regErr.message);
     }
     try {
       if (typeof R.onUnload === "function") {
@@ -5825,9 +6033,6 @@
     return failures;
   }
 
-  function buildLlmFailureWarningBlock(trace) {
-    return "";
-  }
 
   function isDebugIdleReentryArmed() {
     return !!(_debugContinuityOverride && _debugContinuityOverride.triggerMode === "idle_reentry");
@@ -7049,126 +7254,13 @@
     }
   }
 
-  function buildSessionRoutingResumeAnchorText(anchorState) {
-    try {
-      if (!anchorState || !anchorState.active) return "";
-      const routeReason = String(anchorState.routeReason || "session_routing");
-      const turnLabel = String(anchorState.postRouteTurn || "?");
-      return [
-        "━━ Resume Anchor ━━",
-        "Temporary post-" + routeReason + " handoff anchor (" + turnLabel + "). This is support-only and must not be stored or treated as new long-term memory.",
-        "Treat the following Input Context as the carried scene state from the source Archive session, not as unrelated old recall.",
-        "Preserve unresolved scene constraints, relationship state, current items, location, and verified evidence until the new turns update them. The current user input remains highest priority.",
-      ].join("\n");
-    } catch {
-      return "";
-    }
-  }
 
-  function applySessionRoutingResumeAnchorToInputContext(inputContextResult, sessionId) {
-    const inputCtx = inputContextResult && typeof inputContextResult === "object"
-      ? inputContextResult
-      : { applied: false, text: "", sections: [], dropped: [], chars: 0, sources: [] };
-    const anchorState = resolveSessionRoutingResumeAnchorState(sessionId);
-    if (!anchorState || !anchorState.active) {
-      return { inputContext: inputCtx, resumeAnchor: anchorState };
-    }
-    const anchorText = buildSessionRoutingResumeAnchorText(anchorState);
-    if (!anchorText) return { inputContext: inputCtx, resumeAnchor: anchorState };
-    const baseText = String(inputCtx.text || "").trim();
-    const text = [anchorText, baseText].filter(Boolean).join("\n");
-    const anchorSection = {
-      key: "resume_anchor",
-      label: "Resume Anchor",
-      text: anchorText,
-      source: "session_routing_baseline",
-      family: "resume",
-      mandatory: true,
-      displayOrder: -1,
-      routeReason: anchorState.routeReason,
-      postRouteTurn: anchorState.postRouteTurn,
-      maxPostRouteTurns: anchorState.maxPostRouteTurns,
-    };
-    const sections = [anchorSection].concat(Array.isArray(inputCtx.sections) ? inputCtx.sections : []);
-    const sources = Array.isArray(inputCtx.sources) ? inputCtx.sources.slice() : [];
-    if (sources.indexOf("session_routing_baseline") < 0) sources.unshift("session_routing_baseline");
-    return {
-      inputContext: {
-        ...inputCtx,
-        applied: true,
-        text,
-        sections,
-        chars: text.length,
-        slotCount: sections.length,
-        sources,
-        resumeAnchor: anchorState,
-      },
-      resumeAnchor: anchorState,
-    };
-  }
 
   function normalizeTurnPairCompareText(text) {
     try {
       return String(text || "").replace(/\r\n/g, "\n").replace(/[ \t]+/g, " ").trim();
     } catch {
       return "";
-    }
-  }
-
-  function scoreAssistantCandidateForTurnSelection(content) {
-    try {
-      const s = String(content || "").replace(/\r\n/g, "\n").trim();
-      if (!s) return -100000;
-      const compact = s.replace(/\s+/g, "");
-      const lines = s.split(/\r?\n/).map(function(line) {
-        return String(line || "").trim();
-      }).filter(Boolean);
-      let score = Math.min(compact.length, 2400);
-      if (lines.length >= 2) score += Math.min(lines.length, 12) * 20;
-      if (/[.!?]\s*$/.test(s)) score += 30;
-      if (/["')\]]\s*$/.test(s)) score += 15;
-      if (/[,;:]\s*$/.test(s)) score -= 80;
-      return score;
-    } catch {
-      return -100000;
-    }
-  }
-
-  function selectBestAssistantCandidateRecord(records) {
-    try {
-      const list = (Array.isArray(records) ? records : []).filter(function(record) {
-        return record && String(record.candidate || "").trim();
-      });
-      if (list.length === 0) return null;
-      let best = null;
-      for (const record of list) {
-        const candidate = String(record.candidate || "").trim();
-        const score = scoreAssistantCandidateForTurnSelection(candidate);
-        const index = Number(record.index || 0);
-        const enriched = { ...record, candidate, score, index };
-        if (!best) {
-          best = enriched;
-          continue;
-        }
-        const currentLen = candidate.length;
-        const bestLen = String(best.candidate || "").length;
-        if (score > best.score + 80) {
-          best = enriched;
-          continue;
-        }
-        if (Math.abs(score - best.score) <= 80) {
-          if (currentLen >= bestLen * 1.15) {
-            best = enriched;
-            continue;
-          }
-          if (currentLen >= bestLen * 0.9 && index > Number(best.index || 0)) {
-            best = enriched;
-          }
-        }
-      }
-      return best;
-    } catch {
-      return null;
     }
   }
 
@@ -7317,7 +7409,7 @@
       return null;
     }
   }
-  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent) {
+  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent, hostTurnObservation = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return nextTurnIndex(sessionId);
@@ -7347,10 +7439,27 @@
           activePairMatchMode = wantedUser && latestUser === wantedUser ? "latest_user_content" : "latest_assistant_content";
         }
       }
+      if (hostTurnObservation && hostTurnObservation.accepted === true) {
+        const observedUserMessageIndex = Number.isInteger(hostTurnObservation.user_message_index)
+          ? hostTurnObservation.user_message_index
+          : null;
+        const observedPairOrdinal = Math.max(0, Math.floor(Number(hostTurnObservation.user_observed_pair_ordinal || 0)));
+        if ((Number.isInteger(observedUserMessageIndex) && observedUserMessageIndex >= 0) || observedPairOrdinal > 0) {
+          activePair = {
+            risuUserMessageIndex: observedUserMessageIndex,
+            observedPairOrdinal,
+            source: "official_after_request_user_anchor",
+          };
+          activePairMatchMode = "official_host_coordinate";
+        }
+      }
       if (activePair) {
         const routingTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", activePair);
-        if (routingTurnResolution && routingTurnResolution.status === "skip_pre_route_visible_pair") {
-          return previousNextTurnIndex;
+        if (routingTurnResolution && (
+          routingTurnResolution.status === "skip_pre_route_visible_pair"
+          || routingTurnResolution.status === "worldline_ownership_unresolved"
+        )) {
+          return 0;
         }
         const routingTurnIndex = routingTurnResolution && routingTurnResolution.status !== "skip_pre_route_visible_pair"
           ? Number(routingTurnResolution.turnIndex || 0)
@@ -7581,7 +7690,9 @@
     }
     let turnResolution;
     try {
-      turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", pair);
+      turnResolution = await requestBackendSessionRoutingTurnResolution(sid, "pair", Object.assign({}, pair, {
+        routingContext: String(opts.routingContext || ""),
+      }));
     } catch (err) {
       if (sourceAcceptanceFinality && opts.skipRecoveryAdmission !== true) {
         return admitAcceptedFinalTransportRecovery(
@@ -7613,6 +7724,14 @@
         turnIndex: turnResolution.turnIndex,
         localTurnIndex: turnResolution.localTurnIndex,
         routingBaseline: turnResolution.baseline,
+      };
+    }
+    if (turnResolution.status === "worldline_ownership_unresolved") {
+      return {
+        status: "skipped",
+        reason: "worldline_ownership_unresolved",
+        turnIndex: 0,
+        localTurnIndex: turnResolution.localTurnIndex,
       };
     }
     const turn = Number(turnResolution.turnIndex);
@@ -7792,6 +7911,34 @@
     _activeChatBackfillInFlight.add(sid);
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const rawMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
+      const worldlineObservation = buildRisuWorldlineObservationFromMessages(
+        rawMessages,
+        Date.now(),
+        "active_chat_pre_backfill"
+      );
+      let routingContext = "";
+      if (worldlineObservation) {
+        const hostChatId = String(resolvedActiveChat.chat && resolvedActiveChat.chat.id || "").trim();
+        const worldlineRouting = await requestBackendSessionRoutingTurnResolution(sid, "identity", {
+          hostChatId,
+          hostChatIdState: hostChatId ? "observed" : "unobserved",
+          worldlineObservation,
+        });
+        if (!worldlineRouting || !worldlineRouting.worldline || worldlineRouting.worldline.state !== "confirmed") {
+          const reason = String(
+            worldlineRouting && worldlineRouting.worldline && worldlineRouting.worldline.reason
+            || worldlineRouting && worldlineRouting.status
+            || "worldline_ownership_unresolved"
+          );
+          updateRuntimeState("lastActiveChatBackfill", "skipped", {
+            reason_code: "worldline_ownership_unresolved",
+            detail: reason,
+          });
+          return { status: "skipped", reason: "worldline_ownership_unresolved", detail: reason };
+        }
+        routingContext = "automatic_active_chat_full_sweep";
+      }
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       if (pairs.length === 0) {
@@ -7821,6 +7968,7 @@
       for (let pairIndex = 0; pairIndex < targetPairs.length; pairIndex++) {
         const pair = targetPairs[pairIndex];
         const pairOptions = Object.assign({}, options, {
+          routingContext,
           hostObservedActiveTailReplacement: options.reason === "before_request"
             && pair === activeTailPair,
         });
@@ -8078,12 +8226,6 @@
     refreshedAt: 0,
   };
 
-  function clearSessionDisplayLookup() {
-    _sessionDisplayLookup.byRawSessionId.clear();
-    _sessionDisplayLookup.byChatUniqueId.clear();
-    _sessionDisplayLookup.byIndexKey.clear();
-    _sessionDisplayLookup.byCharKey.clear();
-  }
 
   function serializeSessionDisplayLookupMap(map) {
     try {
@@ -8904,102 +9046,6 @@
   // 캐시: charIdx + chatIdx 조합이 같으면 재조회하지 않는다 (getCharacter가 무거울 수 있으므로).
   let _sessionCache = { charIdx: null, chatIdx: null, sessionId: null, stableCharacterId: "", observedChatUniqueId: "" };
 
-  const RISU_FORK_COPY_PROVENANCE_KEY = `${PLUGIN_ID}_risu_fork_copy_provenance_v1`;
-  const RISU_FORK_COPY_PROVENANCE_VERSION = "step23.auto_capture.v1";
-  const RISU_FORK_COPY_PROVENANCE_MAX = 80;
-
-  function readRisuForkCopyProvenanceLedger() {
-    try {
-      const raw = safeStorageGet(RISU_FORK_COPY_PROVENANCE_KEY);
-      if (!raw) return [];
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed;
-      if (parsed && Array.isArray(parsed.items)) return parsed.items;
-    } catch (err) {
-      warnLog("readRisuForkCopyProvenanceLedger failed:", err.message);
-    }
-    return [];
-  }
-
-  function writeRisuForkCopyProvenanceLedger(items) {
-    try {
-      const compact = (Array.isArray(items) ? items : []).slice(0, RISU_FORK_COPY_PROVENANCE_MAX);
-      const payload = JSON.stringify({
-        version: RISU_FORK_COPY_PROVENANCE_VERSION,
-        updatedAt: new Date().toISOString(),
-        items: compact,
-      });
-      safeStorageSet(RISU_FORK_COPY_PROVENANCE_KEY, payload);
-      persistentSet(RISU_FORK_COPY_PROVENANCE_KEY, payload).catch(function() {});
-    } catch (err) {
-      warnLog("writeRisuForkCopyProvenanceLedger failed:", err.message);
-    }
-  }
-
-  function recordRisuForkCopyProvenanceCapture(meta) {
-    try {
-      const charIdx = meta && meta.charIdx != null ? Number(meta.charIdx) : null;
-      const chatIdx = meta && meta.chatIdx != null ? Number(meta.chatIdx) : null;
-      const previousChatUniqueId = String(meta && meta.previousChatUniqueId || "").trim();
-      const currentChatUniqueId = String(meta && meta.currentChatUniqueId || "").trim();
-      const previousSessionId = String(meta && meta.previousSessionId || "").trim();
-      const currentSessionId = String(meta && meta.currentSessionId || "").trim();
-      if (!currentChatUniqueId || !previousChatUniqueId || currentChatUniqueId === previousChatUniqueId) return null;
-
-      const now = new Date().toISOString();
-      const item = {
-        version: RISU_FORK_COPY_PROVENANCE_VERSION,
-        observed_at: now,
-        reason: String(meta && meta.reason || "chat_unique_id_changed"),
-        char_idx: Number.isFinite(charIdx) ? charIdx : null,
-        chat_idx: Number.isFinite(chatIdx) ? chatIdx : null,
-        source_chat_unique_id: previousChatUniqueId,
-        target_chat_unique_id: currentChatUniqueId,
-        source_session_id: previousSessionId,
-        target_session_id: currentSessionId,
-        source_message_count: Number(meta && meta.previousMessageCount || 0),
-        target_message_count: Number(meta && meta.currentMessageCount || 0),
-        action: "record_only_manual_attach_or_migrate_required",
-      };
-      const signature = [
-        item.char_idx,
-        item.chat_idx,
-        item.source_chat_unique_id,
-        item.target_chat_unique_id,
-        item.source_session_id,
-        item.target_session_id,
-      ].join("|");
-      const ledger = readRisuForkCopyProvenanceLedger().filter(function(row) {
-        const rowSig = [
-          row && row.char_idx,
-          row && row.chat_idx,
-          row && row.source_chat_unique_id,
-          row && row.target_chat_unique_id,
-          row && row.source_session_id,
-          row && row.target_session_id,
-        ].join("|");
-        return rowSig !== signature;
-      });
-      ledger.unshift(item);
-      writeRisuForkCopyProvenanceLedger(ledger);
-      updateRuntimeState("lastRisuForkCopyCapture", "warn", {
-        reason_code: "risu_fork_copy_observed",
-        detail: "observed " + (previousSessionId || previousChatUniqueId.slice(0, 8)) + " -> " + (currentSessionId || currentChatUniqueId.slice(0, 8)),
-        sourceSessionId: previousSessionId,
-        targetSessionId: currentSessionId,
-        reason: item.reason,
-      });
-      debugLog("[risu-fork-copy-capture] recorded:", JSON.stringify(item));
-      return item;
-    } catch (err) {
-      warnLog("recordRisuForkCopyProvenanceCapture failed:", err.message);
-      return null;
-    }
-  }
-
-
-
-
   async function getCurrentChatSessionId() {
     try {
       if (!R) return SESSION_FALLBACK;
@@ -9110,26 +9156,6 @@
         }
         if (stableCharacterId && (!identityResolution || identityResolution.bindingAcknowledged !== true)) {
           throw new Error("session_route_binding_readback_unverified");
-        }
-      }
-
-      if (chatUniqueId && charIdx != null && chatIdx != null) {
-        const previousObservedChatUniqueId = pinnedObservedChatUniqueId
-          || String(_sessionCache && _sessionCache.observedChatUniqueId || "").trim();
-        const previousSessionId = (pinnedRecord && pinnedRecord.sessionId)
-          || String(_sessionCache && _sessionCache.sessionId || "").trim();
-        if (previousObservedChatUniqueId && previousObservedChatUniqueId !== chatUniqueId) {
-          recordRisuForkCopyProvenanceCapture({
-            reason: "active_chat_unique_id_changed_same_slot",
-            charIdx,
-            chatIdx,
-            previousChatUniqueId: previousObservedChatUniqueId,
-            currentChatUniqueId: chatUniqueId,
-            previousSessionId,
-            currentSessionId: sessionId,
-            previousMessageCount: 0,
-            currentMessageCount: activeChatIdentity.messageCount,
-          });
         }
       }
 
@@ -10389,12 +10415,6 @@
     return host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1" || host === "127.0.0.1" || /^127\./.test(host);
   }
 
-  function formatHostForUrl(hostname) {
-    const host = String(hostname || "").trim();
-    if (!host) return "";
-    if (host.indexOf(":") >= 0 && host[0] !== "[") return `[${host}]`;
-    return host;
-  }
 
   function resolveBridgeRuntimeRoute(rawUrl) {
     const configuredUrl = sanitizeBridgeUrl(rawUrl);
@@ -10504,18 +10524,24 @@
     return sanitizeNumber(value, fallback, 0, 131072);
   }
 
-  function detectReasoningFamily(provider, preset) {
+  function detectReasoningFamily(provider, preset, model) {
+    const normalizedModel = normalizeReasoningModelIdentifier(model);
+    if (/(^|\/)deepseek[-_]?v4($|[-_:])/.test(normalizedModel)) return "deepseek_v4";
+    if (/(^|\/)gemini[-_]/.test(normalizedModel)) return "gemini";
+    if (/(^|\/)glm[-_]/.test(normalizedModel)) return "glm";
+    if (/(^|\/)claude[-_]/.test(normalizedModel)) return "claude";
+    if (/(^|\/)(?:gpt[-_]?5(?:$|[-_.:])|o[134](?:$|[-_:]))/.test(normalizedModel)) return "gpt";
+    const normalizedProvider = normalizeLlmProvider(provider, "openai");
+    if (normalizedProvider === "gemini" || normalizedProvider === "vertex") return "gemini";
+    if (normalizedProvider === "claude") return "claude";
+    if (normalizedProvider === "ollama" && /(^|\/)(?:gpt[-_]?oss|qwen3|deepseek[-_]?r1|deepseek[-_]?v3\.1)(?:$|[-_:])/.test(normalizedModel)) {
+      return "ollama_thinking";
+    }
     const normalizedPreset = normalizeReasoningPreset(preset, "auto");
     if (normalizedPreset === "gpt" || normalizedPreset === "gemini" || normalizedPreset === "claude" || normalizedPreset === "glm") {
       return normalizedPreset;
     }
-    if (normalizedPreset === "custom") {
-      return "custom";
-    }
-    const normalizedProvider = normalizeLlmProvider(provider, "openai");
-    if (normalizedProvider === "gemini" || normalizedProvider === "vertex") return "gemini";
-    if (normalizedProvider === "claude") return "claude";
-    return "gpt";
+    return "none";
   }
 
   function normalizeReasoningModelIdentifier(model) {
@@ -10524,82 +10550,62 @@
 
   function resolveGeminiThinkingMode(model) {
     const normalizedModel = normalizeReasoningModelIdentifier(model);
-    if (!normalizedModel) return "budget";
     if (normalizedModel.indexOf("gemini-2.5") !== -1) return "budget";
-    if (/gemini-(?:3(?:\D|$)|[4-9](?:\D|$)|\d{2,}(?:\D|$))/.test(normalizedModel)) {
+    if (/gemini-3(?:\D|$)/.test(normalizedModel)) {
       return "level";
     }
-    return "budget";
+    return "none";
   }
 
-  function resolveGLMThinkingMode(model) {
+  function resolveGeminiThinkingLevelOptions(model) {
     const normalizedModel = normalizeReasoningModelIdentifier(model);
-    if (/\bglm[-_]?5\.2(?:\b|[-_])/.test(normalizedModel)) return "reasoning_effort";
-    return "toggle";
+    if (normalizedModel.indexOf("gemini-3.1-flash-lite-image") !== -1) return ["none", "minimal", "high"];
+    if (normalizedModel.indexOf("gemini-3-pro-preview") !== -1) return ["none", "low", "high"];
+    if (normalizedModel.indexOf("gemini-3.1-pro") !== -1 || normalizedModel.indexOf("gemini-3.7-flash") !== -1) {
+      return ["none", "low", "medium", "high"];
+    }
+    if (/gemini-3(?:\.5|\.6)?-(?:flash|flash-lite)/.test(normalizedModel)) {
+      return ["none", "minimal", "low", "medium", "high"];
+    }
+    return ["none", "low", "high"];
+  }
+
+  function resolveClaudeThinkingMode(model) {
+    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/[._]/g, "-");
+    const match = normalizedModel.match(/claude(?:-[a-z]+)*-(\d+)(?:-(\d{1,2})(?:-|$))?/);
+    if (!match) return "none";
+    const major = Number(match[1]);
+    const minor = match[2] === undefined ? -1 : Number(match[2]);
+    if (major >= 5 || (major === 4 && minor >= 6)) return "adaptive";
+    if ((major === 3 && minor === 7) || (major === 4 && (minor < 0 || minor <= 5))) return "manual_budget";
+    return "none";
+  }
+
+  function resolveGPTReasoningEffortOptions(model) {
+    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/_/g, "-");
+    if (/(^|\/)gpt-?5\.6(?:$|[-_:])/.test(normalizedModel)) {
+      return ["none", "low", "medium", "high", "xhigh", "max"];
+    }
+    if (/(^|\/)gpt-?5\.(?:2|5)(?:$|[-_:])/.test(normalizedModel)) {
+      return ["none", "low", "medium", "high", "xhigh"];
+    }
+    if (/(^|\/)gpt-?5(?:$|[-_:])/.test(normalizedModel)) {
+      return ["minimal", "low", "medium", "high"];
+    }
+    if (/(^|\/)o[134](?:$|[-_:])/.test(normalizedModel)) {
+      return ["none", "low", "medium", "high"];
+    }
+    return [];
   }
 
   function resolveReasoningControls(provider, preset, model) {
-    const normalizedPreset = normalizeReasoningPreset(preset, "auto");
-    const family = detectReasoningFamily(provider, preset);
+    const family = detectReasoningFamily(provider, preset, model);
     const normalizedProvider = normalizeLlmProvider(provider, "openai");
     const geminiMode = resolveGeminiThinkingMode(model);
-    const glmMode = resolveGLMThinkingMode(model);
-    if (normalizedPreset === "custom") {
-      if (normalizedProvider === "gemini" || normalizedProvider === "vertex") {
-        return geminiMode === "level"
-          ? {
-            family,
-            mode: "thinking_level",
-            showEffort: true,
-            effortOptions: ["none", "minimal", "low", "medium", "high"],
-            effortLabel: "Thinking Level",
-            effortHint: "none은 thinking level을 전달하지 않습니다. Gemini 3 계열은 minimal/low/medium/high thinking level을 사용합니다.",
-            showBudget: false,
-            budgetLabel: "Reasoning Budget Tokens",
-            budgetHint: "Gemini 3 계열에서는 token budget 대신 thinking level을 사용합니다.",
-            guideModeText: "현재 모델 감지: Gemini 3 thinkingLevel",
-          }
-          : {
-            family,
-            mode: "thinking_budget",
-            showEffort: false,
-            effortOptions: [],
-            effortLabel: "Reasoning Effort",
-            effortHint: "",
-            showBudget: true,
-            budgetLabel: "Reasoning Budget Tokens",
-            budgetHint: "Gemini 2.5 계열은 thinkingBudget(토큰 예산)을 사용합니다.",
-            guideModeText: "현재 모델 감지: Gemini 2.5 thinkingBudget",
-          };
-      }
-      return {
-        family,
-        mode: "custom",
-        showEffort: true,
-        effortOptions: ["none", "low", "medium", "high"],
-        effortLabel: "Reasoning Effort",
-        effortHint: "none은 전달하지 않습니다. low/medium/high 등 provider 지원값을 사용하세요.",
-        showBudget: true,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "Custom/Claude 계열에서 토큰 예산으로 사용됩니다.",
-        guideModeText: "현재 프록시 호환 모드: custom reasoning",
-      };
-    }
+    const geminiLevelOptions = resolveGeminiThinkingLevelOptions(model);
+    const claudeMode = resolveClaudeThinkingMode(model);
+    const gptEffortOptions = resolveGPTReasoningEffortOptions(model);
     if (family === "glm") {
-      if (glmMode === "reasoning_effort") {
-        return {
-          family,
-          mode: "glm_52_reasoning_effort",
-          showEffort: true,
-          effortOptions: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
-          effortLabel: "Reasoning Effort",
-          effortHint: "GLM-5.2는 thinking.type과 max/xhigh/high/medium/low/minimal/none을 함께 사용합니다. none은 thinking을 끕니다.",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "",
-          guideModeText: "현재 모델 감지: GLM-5.2 thinking.type + reasoning_effort",
-        };
-      }
       return {
         family,
         mode: "glm_toggle",
@@ -10613,13 +10619,63 @@
         guideModeText: "현재 모델 감지: GLM thinking.type",
       };
     }
+    if (family === "deepseek_v4") {
+      return {
+        family,
+        mode: "deepseek_v4_reasoning_effort",
+        showEffort: true,
+        effortOptions: ["none", "high", "max"],
+        effortLabel: "Reasoning Effort",
+        effortHint: "DeepSeek V4는 none/high/max를 사용합니다. 별도 추론 토큰 예산은 전달하지 않습니다.",
+        showBudget: false,
+        budgetLabel: "Reasoning Budget Tokens",
+        budgetHint: "",
+        guideModeText: normalizedProvider === "ollama"
+          ? "현재 모델 감지: Ollama OpenAI 호환 reasoning_effort"
+          : "현재 모델 감지: DeepSeek V4 thinking.type + reasoning_effort",
+      };
+    }
+    if (normalizedProvider === "ollama"
+      && (family === "ollama_thinking"
+        || (family === "gemini" && geminiMode !== "none")
+        || (family === "claude" && claudeMode !== "none")
+        || (family === "gpt" && gptEffortOptions.length > 0))) {
+      return {
+        family,
+        mode: "ollama_reasoning_effort",
+        showEffort: true,
+        effortOptions: family === "gpt"
+          ? gptEffortOptions.filter((option) => ["none", "low", "medium", "high", "max"].includes(option))
+          : ["none", "low", "medium", "high", "max"],
+        effortLabel: "Reasoning Effort",
+        effortHint: "Ollama OpenAI 호환 reasoning_effort로 전달합니다.",
+        showBudget: false,
+        budgetLabel: "Reasoning Budget Tokens",
+        budgetHint: "",
+        guideModeText: "현재 모델 감지: Ollama OpenAI 호환 reasoning_effort",
+      };
+    }
     if (family === "gemini") {
+      if ((normalizedProvider !== "gemini" && normalizedProvider !== "vertex") || geminiMode === "none") {
+        return {
+          family,
+          mode: "unsupported",
+          showEffort: false,
+          effortOptions: [],
+          effortLabel: "Reasoning Effort",
+          effortHint: "",
+          showBudget: false,
+          budgetLabel: "Reasoning Budget Tokens",
+          budgetHint: "",
+          guideModeText: "현재 Gemini 모델에서 확인된 추론 제어 형식이 없어 추론 필드를 전달하지 않습니다.",
+        };
+      }
       return geminiMode === "level"
         ? {
           family,
           mode: "thinking_level",
           showEffort: true,
-          effortOptions: ["none", "minimal", "low", "medium", "high"],
+          effortOptions: geminiLevelOptions,
           effortLabel: "Thinking Level",
           effortHint: "none은 thinking level을 전달하지 않습니다. Gemini 3 계열은 minimal/low/medium/high thinking level을 사용합니다.",
           showBudget: false,
@@ -10641,26 +10697,56 @@
         };
     }
     if (family === "claude") {
+      if (normalizedProvider === "claude" && claudeMode === "adaptive") {
+        return {
+          family,
+          mode: "claude_adaptive",
+          showEffort: true,
+          effortOptions: ["none", "low", "medium", "high", "max"],
+          effortLabel: "Reasoning Effort",
+          effortHint: "Claude 4.6 이상은 adaptive thinking과 effort를 사용합니다. 숫자 budget은 전달하지 않습니다.",
+          showBudget: false,
+          budgetLabel: "Reasoning Budget Tokens",
+          budgetHint: "",
+          guideModeText: "현재 모델 감지: Claude adaptive thinking + effort",
+        };
+      }
+      if (normalizedProvider === "claude" && claudeMode === "manual_budget") {
+        return {
+          family,
+          mode: "claude_manual_budget",
+          showEffort: false,
+          effortOptions: [],
+          effortLabel: "Reasoning Effort",
+          effortHint: "",
+          showBudget: true,
+          budgetLabel: "Reasoning Budget Tokens",
+          budgetHint: "Claude 3.7~4.5는 thinking budget_tokens를 사용하며 max completion보다 작아야 합니다.",
+          guideModeText: "현재 모델 감지: Claude manual thinking budget",
+        };
+      }
+    }
+    if (family !== "gpt" || gptEffortOptions.length === 0) {
       return {
         family,
-        mode: "thinking_budget",
+        mode: "unsupported",
         showEffort: false,
         effortOptions: [],
         effortLabel: "Reasoning Effort",
         effortHint: "",
-        showBudget: true,
+        showBudget: false,
         budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "Claude 계열은 thinking budget_tokens를 사용합니다.",
-        guideModeText: "현재 모델 감지: Claude thinking budget",
+        budgetHint: "",
+        guideModeText: "현재 모델에서 확인된 추론 제어 형식이 없어 추론 필드를 전달하지 않습니다.",
       };
     }
     return {
       family,
       mode: "reasoning_effort",
       showEffort: true,
-      effortOptions: ["none", "low", "medium", "high"],
+      effortOptions: gptEffortOptions,
       effortLabel: "Reasoning Effort",
-      effortHint: "none은 reasoning_effort를 전달하지 않습니다. OpenAI reasoning effort(low/medium/high)를 사용할 수도 있습니다.",
+      effortHint: "선택한 OpenAI 모델 세대가 지원하는 reasoning_effort만 표시합니다.",
       showBudget: false,
       budgetLabel: "Reasoning Budget Tokens",
       budgetHint: "",
@@ -10672,17 +10758,19 @@
     if (!controls || !controls.showEffort) return "none";
     const options = Array.isArray(controls.effortOptions) ? controls.effortOptions.filter(Boolean) : [];
     if (!options.length) return "none";
+    let normalizedValue = String(value || "").trim().toLowerCase();
+    if (controls.mode === "deepseek_v4_reasoning_effort") {
+      if (normalizedValue === "low" || normalizedValue === "medium") normalizedValue = "high";
+      if (normalizedValue === "xhigh") normalizedValue = "max";
+    }
     const fallback = options[0];
-    return sanitizeEnumValue(value, fallback, options);
+    return sanitizeEnumValue(normalizedValue, fallback, options);
   }
 
   function resolveReasoningDefaultEffortValue(presetInfo, controls) {
     if (!controls || !controls.showEffort) return "none";
     if (controls.mode === "thinking_level") {
       return normalizeReasoningEffortForControls((presetInfo && presetInfo.thinkingLevel) || "high", controls);
-    }
-    if (controls.mode === "glm_52_reasoning_effort") {
-      return normalizeReasoningEffortForControls((presetInfo && presetInfo.glm52Effort) || "max", controls);
     }
     return normalizeReasoningEffortForControls((presetInfo && presetInfo.effort) || controls.effortOptions[0], controls);
   }
@@ -10707,18 +10795,12 @@
       payload.reasoning_preset = String(reasoningPreset).trim();
     }
     if (controls.family === "glm") {
-      if (controls.mode === "glm_52_reasoning_effort") {
-        if (effort === "none") {
-          payload.glm_thinking_type = "disabled";
-        } else if (effort) {
-          payload.glm_thinking_type = "enabled";
-          payload.reasoning_effort = effort;
-        }
-      } else if (controls.showEffort && effort && effort !== "none") {
-        payload.reasoning_effort = effort;
+      if (controls.showEffort && effort) {
         payload.glm_thinking_type = (effort === "disable" || effort === "disabled") ? "disabled" : "enabled";
       }
-    } else if (controls.showEffort && effort && effort !== "none") {
+    } else if (controls.family === "deepseek_v4") {
+      payload.reasoning_effort = effort || "none";
+    } else if (controls.showEffort && effort && (effort !== "none" || controls.mode === "reasoning_effort" || controls.mode === "ollama_reasoning_effort")) {
       payload.reasoning_effort = effort;
     }
     if (controls.showBudget && reasoningBudgetTokens > 0) {
@@ -10779,9 +10861,9 @@
     const provider = normalizeLlmProvider(source.provider, "openai");
     const preset = normalizeReasoningPreset(source.preset, "auto");
     const model = String(source.model || "").trim();
-    const family = detectReasoningFamily(provider, preset);
+    const family = detectReasoningFamily(provider, preset, model);
     const controls = resolveReasoningControls(provider, preset, model);
-    const presetInfo = REASONING_PRESET_GUIDE[family] || REASONING_PRESET_GUIDE.gpt;
+    const presetInfo = REASONING_PRESET_GUIDE[family] || REASONING_PRESET_GUIDE.none;
     const syncKey = [provider, preset, normalizeReasoningModelIdentifier(model), controls.mode].join("|");
     const previousSyncKey = String(source.previousSyncKey || "");
     const isFirstSync = !!source.isFirstSync;
@@ -10789,7 +10871,9 @@
     const currentEffort = String(source.currentEffort || "").trim();
     const currentBudget = String(source.currentBudget !== undefined && source.currentBudget !== null ? source.currentBudget : "").trim();
     const currentMaxCompletion = String(source.currentMaxCompletion !== undefined && source.currentMaxCompletion !== null ? source.currentMaxCompletion : "").trim();
-    const currentEffortSupported = controls.effortOptions.indexOf(currentEffort) >= 0;
+    const storedDeepSeekV4EffortCompatible = controls.mode === "deepseek_v4_reasoning_effort"
+      && ["low", "medium", "xhigh"].indexOf(currentEffort.toLowerCase()) >= 0;
+    const currentEffortSupported = controls.effortOptions.indexOf(currentEffort) >= 0 || storedDeepSeekV4EffortCompatible;
     const currentBudgetIsNumeric = currentBudget !== "" && isFinite(Number(currentBudget));
     const currentMaxCompletionIsNumeric = currentMaxCompletion !== "" && isFinite(Number(currentMaxCompletion));
     const defaultEffort = resolveReasoningDefaultEffortValue(presetInfo, controls);
@@ -10912,10 +10996,6 @@
     return sanitizeNumber(source, DEFAULT_SETTINGS.subLlmTimeoutMs, 5000, 300000);
   }
 
-  function getSourceSearchPlannerTimeoutSettingMs(value) {
-    const source = value !== undefined ? value : (settings && settings.sourceSearchPlannerTimeoutMs);
-    return sanitizeNumber(source, DEFAULT_SETTINGS.sourceSearchPlannerTimeoutMs, 5000, 300000);
-  }
 
   function getSubLlmProviderSetting(value) {
     const source = value !== undefined ? value : (settings && settings.subLlmProvider);
@@ -10950,18 +11030,6 @@
     );
   }
 
-  function isUnsupportedLlmParameterError(detail) {
-    const text = String(detail || "").toLowerCase();
-    if (!text) return false;
-    return (
-      text.indexOf("unsupported parameter") !== -1 ||
-      text.indexOf("unknown parameter") !== -1 ||
-      text.indexOf("unrecognized parameter") !== -1 ||
-      text.indexOf("extra fields not permitted") !== -1 ||
-      text.indexOf("additional properties are not allowed") !== -1 ||
-      (text.indexOf("invalid_request_error") !== -1 && text.indexOf("parameter") !== -1)
-    );
-  }
 
   function migrateLegacyInjectionBudgetSettings(raw) {
     const migrated = raw && typeof raw === "object" ? { ...raw } : {};
@@ -11078,6 +11146,16 @@
       merged.narrativeGuideStrength,
       DEFAULT_SETTINGS.narrativeGuideStrength,
       NARRATIVE_GUIDE_STRENGTH_OPTIONS,
+    );
+    merged.publisherGuidanceFormat = sanitizeEnumValue(
+      merged.publisherGuidanceFormat,
+      DEFAULT_SETTINGS.publisherGuidanceFormat,
+      PUBLISHER_GUIDANCE_FORMAT_OPTIONS,
+    );
+    merged.lorebookReferenceMode = sanitizeEnumValue(
+      merged.lorebookReferenceMode === "off" ? DEFAULT_SETTINGS.lorebookReferenceMode : merged.lorebookReferenceMode,
+      DEFAULT_SETTINGS.lorebookReferenceMode,
+      ["search_only", "reference_assist"],
     );
     merged.narrativeSupportMaxChars = sanitizeNumber(
       merged.narrativeSupportMaxChars,
@@ -11907,32 +11985,57 @@
     };
   }
 
-  async function referenceLibraryLoadBindings() {
+  async function referenceLibraryLoadBindings(sessionIdOverride = "") {
     const state = _referenceLibraryState;
+    const requestId = Number(state.bindingRequestId || 0) + 1;
+    state.bindingRequestId = requestId;
+    const selectedSessionId = String(
+      sessionIdOverride
+      || _timelineState.selectedSessionId
+      || _timelineState.sessionId
+      || ""
+    ).trim();
+    const sessionId = selectedSessionId || String(await getCurrentChatSessionId() || "").trim();
+    if (state.bindingRequestId !== requestId) return false;
+    if (String(state.sessionId || "") !== sessionId) {
+      state.bindings = [];
+      state.bindingDraft = null;
+      state.bindingDraftDirty = false;
+      state.bindingPreview = null;
+      state.bindingMessage = "";
+    }
+    state.sessionId = sessionId;
     state.bindingLoading = true;
     state.bindingError = "";
     referenceLibraryRefreshUI();
-    const sessionId = String(await getCurrentChatSessionId() || "").trim();
-    state.sessionId = sessionId;
     if (!sessionId) {
-      state.bindings = [];
       state.bindingLoading = false;
       state.bindingError = "현재 채팅의 세션 ID를 확인하지 못했습니다.";
       referenceLibraryRefreshUI();
       return false;
     }
-    const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings", { method: "GET" });
-    state.bindingLoading = false;
-    if (!data || !Array.isArray(data.bindings)) {
+    try {
+      const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings", { method: "GET" });
+      if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
+      if (!data || !Array.isArray(data.bindings)) {
+        state.bindings = [];
+        state.bindingError = "세션 연결 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
+        return false;
+      }
+      state.bindings = data.bindings;
+      if (!state.bindingDraftDirty) state.bindingDraft = null;
+      return true;
+    } catch (err) {
+      if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
       state.bindings = [];
-      state.bindingError = "세션 연결 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
-      referenceLibraryRefreshUI();
+      state.bindingError = err && err.message ? err.message : "세션 연결 API를 사용할 수 없습니다. 최신 소스 백엔드를 재시작하세요.";
       return false;
+    } finally {
+      if (state.bindingRequestId === requestId && String(state.sessionId || "") === sessionId) {
+        state.bindingLoading = false;
+        referenceLibraryRefreshUI();
+      }
     }
-    state.bindings = data.bindings;
-    if (!state.bindingDraftDirty) state.bindingDraft = null;
-    referenceLibraryRefreshUI();
-    return true;
   }
 
   function referenceLibraryBindingBody(root) {
@@ -11962,7 +12065,12 @@
 
   async function referenceLibraryPreviewBinding(root) {
     const state = _referenceLibraryState;
-    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    const requestId = Number(state.bindingRequestId || 0) + 1;
+    state.bindingRequestId = requestId;
+    state.bindingLoading = false;
+    const selectedSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "").trim();
+    const sessionId = selectedSessionId || String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    if (state.bindingRequestId !== requestId) return false;
     const body = referenceLibraryRememberBindingDraft(root);
     state.sessionId = sessionId;
     state.bindingDraft = body;
@@ -11976,10 +12084,20 @@
       referenceLibraryRefreshUI();
       return false;
     }
-    const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings/preview", {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
+    let data = null;
+    try {
+      data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings/preview", {
+        method: "POST",
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
+      state.bindingMessage = "";
+      state.bindingError = err && err.message ? err.message : "세션 연결 미리보기를 불러오지 못했습니다.";
+      referenceLibraryRefreshUI();
+      return false;
+    }
+    if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
     state.bindingPreview = data && typeof data === "object" ? data : null;
     state.bindingMessage = data ? (data.valid ? "이 설정으로 연결할 수 있습니다." : "차단된 항목을 확인하세요.") : "";
     state.bindingError = data ? "" : "세션 연결 미리보기를 불러오지 못했습니다.";
@@ -11989,7 +12107,12 @@
 
   async function referenceLibraryApplyBinding(root) {
     const state = _referenceLibraryState;
-    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    const requestId = Number(state.bindingRequestId || 0) + 1;
+    state.bindingRequestId = requestId;
+    state.bindingLoading = false;
+    const selectedSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "").trim();
+    const sessionId = selectedSessionId || String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    if (state.bindingRequestId !== requestId || (state.sessionId && String(state.sessionId) !== sessionId)) return false;
     const body = referenceLibraryRememberBindingDraft(root);
     const existing = referenceLibrarySelectedBinding();
     state.sessionId = sessionId;
@@ -12008,6 +12131,7 @@
       method: existing ? "PATCH" : "POST",
       body: JSON.stringify(body),
     });
+    if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
     if (!data || data.status !== "ok") {
       state.bindingMessage = "";
       state.bindingError = "세션 연결을 저장하지 못했습니다. 미리보기에서 차단 이유와 최신 revision을 확인하세요.";
@@ -12016,20 +12140,29 @@
     }
     state.bindingPreview = data.preview || null;
     state.bindingDraftDirty = false;
-    state.bindingMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
+    const successMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
+    state.bindingMessage = successMessage;
     state.bindingError = "";
-    await referenceLibraryLoadBindings();
-    state.bindingMessage = existing ? "세션 연결 설정을 갱신했습니다." : "현재 세션에 원작 자료를 연결했습니다.";
+    const loaded = await referenceLibraryLoadBindings(sessionId);
+    if (!loaded || String(state.sessionId || "") !== sessionId) return true;
+    state.bindingMessage = successMessage;
     referenceLibraryRefreshUI();
     return true;
   }
 
   async function referenceLibraryUnlinkBinding() {
     const state = _referenceLibraryState;
+    const requestId = Number(state.bindingRequestId || 0) + 1;
+    state.bindingRequestId = requestId;
+    state.bindingLoading = false;
+    const selectedSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "").trim();
+    const sessionId = selectedSessionId || String(state.sessionId || await getCurrentChatSessionId() || "").trim();
+    if (state.bindingRequestId !== requestId || (state.sessionId && String(state.sessionId) !== sessionId)) return false;
+    state.sessionId = sessionId;
     const existing = referenceLibrarySelectedBinding();
-    const sessionId = String(state.sessionId || await getCurrentChatSessionId() || "").trim();
     if (!existing || !sessionId) return false;
     const data = await bridgeFetch("/sessions/" + referenceLibraryPath(sessionId) + "/reference-bindings/" + referenceLibraryPath(existing.binding_id) + "?expected_revision=" + encodeURIComponent(Number(existing.revision || 0)), { method: "DELETE" });
+    if (state.bindingRequestId !== requestId || String(state.sessionId || "") !== sessionId) return false;
     if (!data || data.status !== "ok") {
       state.bindingError = "세션 연결을 해제하지 못했습니다. 연결 정보를 다시 불러온 뒤 시도하세요.";
       referenceLibraryRefreshUI();
@@ -12038,10 +12171,12 @@
     state.bindingDraft = null;
     state.bindingDraftDirty = false;
     state.bindingPreview = null;
-    state.bindingMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
+    const successMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
+    state.bindingMessage = successMessage;
     state.bindingError = "";
-    await referenceLibraryLoadBindings();
-    state.bindingMessage = "세션 연결을 해제했습니다. 원작 자료 자체는 유지됩니다.";
+    const loaded = await referenceLibraryLoadBindings(sessionId);
+    if (!loaded || String(state.sessionId || "") !== sessionId) return true;
+    state.bindingMessage = successMessage;
     referenceLibraryRefreshUI();
     return true;
   }
@@ -12791,12 +12926,12 @@
     const workManagement = !selectedWork ? "" : state.editingWork
       ? '<div class="mo-row"><label>작품 정보</label><input id="mo-reference-work-edit-title" type="text" value="' + escapeAttr(selectedWork.title || "") + '"><select id="mo-reference-work-edit-type">' + workTypeOptions + '</select></div><div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-edit-save">저장</button><button type="button" class="mo-btn" id="mo-reference-work-edit-cancel">취소</button></div>'
       : '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-work-edit">작품 수정</button><button type="button" class="mo-btn mo-btn-danger-solid" id="mo-reference-work-delete">작품 삭제</button></div>';
-    const selector = '<div class="mo-dash-card">'
+    const selector = '<div class="mo-dash-card mo-context-card">'
       + '<div class="mo-row"><label>작품</label><select id="mo-reference-work-select">' + workOptions + '</select></div>'
       + '<div class="mo-row"><label>이야기 흐름</label><select id="mo-reference-continuity-select">' + continuityOptions + '</select></div>'
       + workManagement
       + '</div>';
-    const tabs = '<div class="mo-inline-actions">'
+    const tabs = '<div class="mo-inline-actions mo-section-nav" role="tablist">'
       + '<button type="button" class="mo-btn ' + (panelView === "library" ? 'mo-btn-success' : '') + '" data-reference-panel="library">생성된 자료 ' + Number(library.count || 0) + '</button>'
       + '<button type="button" class="mo-btn ' + (panelView === "canon" ? 'mo-btn-info' : '') + '" data-reference-panel="canon">작품 찾기</button>'
       + '<button type="button" class="mo-btn ' + (panelView === "import" ? 'mo-btn-info' : '') + '" data-reference-panel="import">자료 추가</button>'
@@ -12804,16 +12939,16 @@
       + '<button type="button" class="mo-btn ' + (panelView === "search_settings" ? 'mo-btn-info' : '') + '" data-reference-panel="search_settings">검색 설정</button>'
       + '</div>';
     if (panelView === "search_settings") {
-      return '<div class="mo-section">원작 자료</div>' + tabs + renderReferenceSearchLlmSettingsPanel();
+      return tabs + renderReferenceSearchLlmSettingsPanel();
     }
     if (panelView === "binding") {
-      return '<div class="mo-section">원작 자료</div>' + tabs + renderReferenceBindingPanel();
+      return tabs + renderReferenceBindingPanel();
     }
     if (panelView === "canon") {
-      return '<div class="mo-section">원작 자료</div>' + tabs + selector + renderReferenceCanonPackPanel();
+      return tabs + selector + renderReferenceCanonPackPanel();
     }
     if (panelView === "import") {
-      return '<div class="mo-section">원작 자료</div>' + tabs + selector
+      return tabs + selector
         + '<div class="mo-dash-card"><div class="mo-row"><label>새 작품</label><input id="mo-reference-work-title" type="text" placeholder="작품 이름"><select id="mo-reference-work-type"><option value="novel">소설</option><option value="animation">애니메이션</option><option value="game">게임</option><option value="comic">만화</option><option value="other">기타</option></select><button type="button" class="mo-btn mo-btn-success" id="mo-reference-work-create">만들기</button></div>'
         + '<div class="mo-row"><label>새 흐름</label><input id="mo-reference-continuity-label" type="text" placeholder="예: 애니메이션 본편"><input id="mo-reference-continuity-key" type="text" placeholder="선택 키"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-continuity-create">추가</button></div></div>'
         + '<div class="mo-dash-card"><div class="mo-row"><label>자료 파일</label><input id="mo-reference-file" type="file" accept=".txt,.md,.markdown,.json,text/plain,application/json"><button type="button" class="mo-btn mo-btn-info" id="mo-reference-file-import">파일 저장</button><button type="button" class="mo-btn mo-btn-success" id="mo-reference-extract"' + (state.document ? '' : ' disabled') + '>평론가 자동 생성</button></div>'
@@ -12826,7 +12961,7 @@
     const excluded = library.excluded || { timeline: [], entities: [], claims: [], count: 0 };
     const diagnostics = library.diagnostics || {};
     const legacyAutoReviewPreview = renderReferenceLegacyAutoReviewPreview(library.legacy_auto_review_preview);
-    const filters = '<div class="mo-inline-actions">'
+    const filters = '<div class="mo-inline-actions mo-filter-strip">'
       + '<button type="button" class="mo-btn ' + (libraryView === "all" ? 'mo-btn-info' : '') + '" data-reference-library-view="all">전체 ' + Number(library.count || 0) + '</button>'
       + '<button type="button" class="mo-btn ' + (libraryView === "documents" ? 'mo-btn-info' : '') + '" data-reference-library-view="documents">원문 문서 ' + sourceDocuments.length + '</button>'
       + '<button type="button" class="mo-btn ' + (libraryView === "character" ? 'mo-btn-info' : '') + '" data-reference-library-view="character">인물 ' + entitiesByType("character").length + '</button>'
@@ -12860,7 +12995,7 @@
         : '';
       return '<div class="mo-memory-item mo-reference-document"><div class="mo-reference-document-main"><div class="mo-dash-card-title">' + escapeAttr(String(item.document_title || "입력 문서")) + '</div><div class="mo-section-desc"><strong>' + escapeAttr(String(item.source_type || "source")) + '</strong> · ' + escapeAttr(String(item.import_status || "pending")) + ' · 보존 ' + escapeAttr(String(item.raw_retention || "none")) + '</div><div class="mo-section-desc">' + escapeAttr(String(item.source_uri || "출처 URL 없음")) + '</div><div class="mo-section-desc">SHA-256 ' + escapeAttr(String(item.content_hash || "")) + ' · 본문 ' + Number(item.raw_text_length || 0) + '자</div></div>' + action + '</div>';
     }).join("");
-    return '<div class="mo-section">원작 자료</div>' + tabs + selector + jobRefreshAction + renderReferenceVectorPanel() + legacyAutoReviewPreview + filters + diagnosticSummary + timelineActions + empty
+    return tabs + selector + jobRefreshAction + renderReferenceVectorPanel() + legacyAutoReviewPreview + filters + diagnosticSummary + timelineActions + empty
       + ((libraryView === "all" || libraryView === "documents") && sourceDocuments.length ? '<div class="mo-section">원문 문서</div>' + sourceDocumentRows : '')
       + ((libraryView === "all" || libraryView === "character") && entitiesByType("character").length ? '<div class="mo-section">인물</div>' + referenceLibraryRows("entity", entitiesByType("character"), false) : '')
       + ((libraryView === "all" || libraryView === "location") && entitiesByType("location").length ? '<div class="mo-section">장소</div>' + referenceLibraryRows("entity", entitiesByType("location"), false) : '')
@@ -12965,7 +13100,6 @@
       if (budgetRow) budgetRow.style.display = (effectivePreset === "gemini" || effectivePreset === "claude" || effectivePreset === "custom") ? "" : "none";
     };
     provider.addEventListener("change", sync);
-    byId("mo-sourceSearchPlannerReasoningPreset")?.addEventListener("change", sync);
     byId("mo-sourceSearchPlannerModel")?.addEventListener("input", sync);
     byId("mo-sourceSearchPlannerApiKeyToggle")?.addEventListener("click", () => {
       const input = byId("mo-sourceSearchPlannerApiKey");
@@ -13879,7 +14013,7 @@
     });
   }
 
-  async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly) {
+  async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly, onClick) {
     if (_turnWorkflowHUDUnloaded) return;
     if (!card || typeof card.addEventListener !== "function") return;
     const target = closeButtonOnly && typeof card.querySelector === "function"
@@ -13909,6 +14043,10 @@
         || clientY < top
         || clientY > bottom
       ) return;
+      if (typeof onClick === "function") {
+        await onClick();
+        return;
+      }
       await dismissTurnWorkflowHUD(requestId);
     };
     const listenerId = await target.addEventListener("click", dismiss);
@@ -13930,7 +14068,11 @@
       + "\n\n"
       + tf(String(action.confirm_message_key || "turn_hud.recovery.confirm_retry_derived_turn"), { turn })
     );
-    if (!confirmed || requestId !== _turnWorkflowHUDActiveRequestId) return;
+    if (!confirmed) {
+      dismissTurnWorkflowHUD(requestId);
+      return;
+    }
+    if (requestId !== _turnWorkflowHUDActiveRequestId) return;
     try {
       const result = await bridgeFetch("/turn-workflow/recovery", {
         method: "POST",
@@ -13940,6 +14082,7 @@
           action_id: actionId,
         },
       });
+      if (!result) throw null;
       const updated = result && result.turn_workflow_hud;
       if (!updated || updated.contract_version !== TURN_WORKFLOW_HUD_CONTRACT) {
         throw new Error("turn workflow recovery response is missing its HUD ViewModel");
@@ -13951,6 +14094,14 @@
         "turn_workflow_recovery_transport_unavailable"
       );
       warning.message = t("turn_hud.recovery.request_failed");
+      const recorded = _lastBridgeFailureByPath.get("/turn-workflow/recovery") || {};
+      try {
+        const backendFailure = JSON.parse(String(recorded.response_body || ""));
+        const backendCode = String(backendFailure && backendFailure.code || "").trim();
+        const backendMessage = String(backendFailure && backendFailure.error || "").trim();
+        if (backendCode) warning.code = backendCode;
+        if (backendMessage) warning.message = backendMessage;
+      } catch { /* transport diagnostics already contain the raw backend response */ }
       if (err && err.message) {
         warning.detail = String(err.message);
         warning.details = (Array.isArray(warning.details) ? warning.details : []).concat([
@@ -13966,16 +14117,10 @@
     if (_turnWorkflowHUDUnloaded || !root || !action) return;
     if (typeof root.querySelector !== "function") return;
     const target = await root.querySelector("[data-turn-workflow-recovery-action]");
-    if (!target || typeof target.addEventListener !== "function") return;
-    const listenerId = await target.addEventListener("click", async function() {
+    if (!target) return;
+    await attachTurnWorkflowHUDDismiss(target, String(view.request_id || "").trim(), false, async function() {
       await requestTurnWorkflowHUDRecovery(view, action);
     });
-    if (listenerId === null || listenerId === undefined) return;
-    if (_turnWorkflowHUDUnloaded) {
-      await removeTurnWorkflowHUDDismissListeners([listenerId]);
-      return;
-    }
-    _turnWorkflowHUDDismissListenerIds.push(listenerId);
   }
 
   function turnWorkflowHUDCloseButtonOnly(view) {
@@ -14865,9 +15010,7 @@
 
   function buildPrepareMessageObservation(sourceKind, observationRef, message, messageIndex, observedAt) {
     try {
-      const parsed = message && message.role && message.content != null
-        ? { role: String(message.role || ""), text: String(message.content) }
-        : getPayloadMessageRoleAndText(message);
+	  const parsed = getPayloadMessageRoleAndText(message);
       const role = String(parsed && parsed.role || "").toLowerCase();
       const rawContent = parsed && parsed.text != null ? String(parsed.text) : "";
       const rawMessage = message && message.raw && typeof message.raw === "object" ? message.raw : message;
@@ -14996,6 +15139,162 @@
     };
   }
 
+  function canonicalLorebookReferenceModuleIds(values) {
+    const seen = new Set();
+    const result = [];
+    for (const value of (Array.isArray(values) ? values : [])) {
+      const normalized = String(value == null ? "" : value).trim();
+      if (!normalized || seen.has(normalized)) continue;
+      seen.add(normalized);
+      result.push(normalized);
+    }
+    result.sort();
+    return result;
+  }
+
+  async function observeLorebookReferenceScope(sessionId) {
+    let characterIndex = null;
+    let chatIndex = null;
+    let enabledModuleIds = [];
+    let enabledModulesObserved = false;
+    if (R && typeof R.getCurrentCharacterIndex === "function") {
+      try {
+        const value = await R.getCurrentCharacterIndex();
+        if (value !== null && value !== undefined && String(value).trim() !== "" && Number.isInteger(Number(value)) && Number(value) >= 0) {
+          characterIndex = Math.trunc(Number(value));
+        }
+      } catch { characterIndex = null; }
+    }
+    if (R && typeof R.getCurrentChatIndex === "function") {
+      try {
+        const value = await R.getCurrentChatIndex();
+        if (value !== null && value !== undefined && String(value).trim() !== "" && Number.isInteger(Number(value)) && Number(value) >= 0) {
+          chatIndex = Math.trunc(Number(value));
+        }
+      } catch { chatIndex = null; }
+    }
+    if (R && typeof R.getDatabase === "function") {
+      try {
+        const observation = await R.getDatabase(["enabledModules"]);
+        if (observation && Array.isArray(observation.enabledModules)) {
+          enabledModuleIds = canonicalLorebookReferenceModuleIds(observation.enabledModules);
+          enabledModulesObserved = true;
+        }
+      } catch { enabledModulesObserved = false; }
+    }
+    return {
+      chat_session_id: String(sessionId || ""),
+      character_index: characterIndex,
+      chat_index: chatIndex,
+      enabled_module_ids: enabledModuleIds,
+      enabled_modules_observed: enabledModulesObserved,
+    };
+  }
+
+  function lorebookReferenceScopeKey(scope) {
+    const source = scope && typeof scope === "object" ? scope : {};
+    return JSON.stringify({
+      chat_session_id: String(source.chat_session_id || ""),
+      character_index: source.character_index == null ? null : Number(source.character_index),
+      chat_index: source.chat_index == null ? null : Number(source.chat_index),
+      enabled_module_ids: canonicalLorebookReferenceModuleIds(source.enabled_module_ids),
+      enabled_modules_observed: source.enabled_modules_observed === true,
+    });
+  }
+
+  function currentLorebookReferencePrepareScope(sessionId) {
+    const scope = _lorebookReferenceSync.lastScope;
+    if (!scope || String(scope.chat_session_id || "") !== String(sessionId || "")) return null;
+    const fullyObserved = scope.character_index != null
+      && scope.chat_index != null
+      && scope.enabled_modules_observed === true;
+    return {
+      contract_version: "lorebook_reference_scope.v1",
+      observation_state: fullyObserved ? "observed" : "partial",
+      character_index: scope.character_index == null ? null : Number(scope.character_index),
+      chat_index: scope.chat_index == null ? null : Number(scope.chat_index),
+      enabled_module_ids: canonicalLorebookReferenceModuleIds(scope.enabled_module_ids),
+      enabled_modules_observed: scope.enabled_modules_observed === true,
+    };
+  }
+
+  async function postLorebookReferenceSnapshot(scope, observation) {
+    const sessionId = String(scope && scope.chat_session_id || "").trim();
+    if (!sessionId) return null;
+    const payload = observation && typeof observation === "object" ? observation : {};
+    return await bridgeFetch(
+      "/sessions/" + encodeURIComponent(sessionId) + "/lorebook-reference/snapshots",
+      {
+        method: "POST",
+        timeoutMs: getRequestTimeoutSettingMs(),
+        body: {
+          contract_version: "lorebook_reference_snapshot.v1",
+          consent_state: payload.consent_state || "active",
+          observation_state: payload.observation_state || "unavailable",
+          complete_snapshot: payload.complete_snapshot === true,
+          character_index: scope.character_index,
+          chat_index: scope.chat_index,
+          enabled_module_ids: canonicalLorebookReferenceModuleIds(scope.enabled_module_ids),
+          enabled_modules_observed: scope.enabled_modules_observed === true,
+          entries: Array.isArray(payload.entries) ? payload.entries : [],
+          observed_at: new Date().toISOString(),
+        },
+      },
+    );
+  }
+
+  async function syncCurrentLorebookReference(options = {}) {
+    const sessionId = String(options.sessionId || await getCurrentChatSessionId() || SESSION_FALLBACK).trim() || SESSION_FALLBACK;
+    const scope = await observeLorebookReferenceScope(sessionId);
+    const scopeKey = lorebookReferenceScopeKey(scope);
+    _lorebookReferenceSync.lastScope = scope;
+    const force = options.force === true;
+    if (!force && (_lorebookReferenceSync.syncedScopeKey === scopeKey || _lorebookReferenceSync.attemptedScopeKey === scopeKey)) {
+      return { status: _lorebookReferenceSync.syncedScopeKey === scopeKey ? "current" : "attempted", scope };
+    }
+    if (_lorebookReferenceSync.inFlight) return await _lorebookReferenceSync.inFlight;
+    _lorebookReferenceSync.attemptedScopeKey = scopeKey;
+    _lorebookReferenceSync.inFlight = (async function() {
+      updateRuntimeState("lastLorebookReferenceSync", "running", { detail: "reading_host_lorebook", itemCount: 0 });
+      if (!R || typeof R.getCurrentLorebookEntries !== "function") {
+        await postLorebookReferenceSnapshot(scope, { observation_state: "unavailable" });
+        updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "official_lorebook_api_not_exposed", itemCount: 0 });
+        return { status: "unavailable", scope };
+      }
+      let entries;
+      try {
+        entries = await R.getCurrentLorebookEntries();
+      } catch (err) {
+        await postLorebookReferenceSnapshot(scope, { observation_state: "unavailable" });
+        updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_read_failed: " + String(err && err.message || err), itemCount: 0 });
+        return { status: "unavailable", scope };
+      }
+      if (!Array.isArray(entries)) {
+        await postLorebookReferenceSnapshot(scope, { observation_state: "unavailable" });
+        updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_snapshot_shape_unavailable", itemCount: 0 });
+        return { status: "unavailable", scope };
+      }
+      const result = await postLorebookReferenceSnapshot(scope, {
+        consent_state: "active",
+        observation_state: "observed",
+        complete_snapshot: true,
+        entries,
+      });
+      if (!result) {
+        updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_snapshot_store_failed", itemCount: entries.length });
+        return { status: "store_failed", scope };
+      }
+      _lorebookReferenceSync.syncedScopeKey = scopeKey;
+      updateRuntimeState("lastLorebookReferenceSync", "ok", { detail: "lorebook_snapshot_stored", itemCount: entries.length });
+      return { status: "ok", scope, itemCount: entries.length, result };
+    })();
+    try {
+      return await _lorebookReferenceSync.inFlight;
+    } finally {
+      _lorebookReferenceSync.inFlight = null;
+    }
+  }
+
   async function tryPrepareTurn(sessionId, userInput, messages, continuityInfo, type, languageContext, options = {}) {
     let workflowRequestId = "";
     try {
@@ -15003,6 +15302,7 @@
       const freshFirstTurnLightMode = !!prepareOptions.freshFirstTurnLightMode;
       const prepareInjectionBudget = estimateAdaptiveInjectionBudgetParts(settings, prepareOptions.runtimeTokenInfo || null);
       const guideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";
+      await syncCurrentLorebookReference({ sessionId });
       const requestedGuideMode = guideDisabled
         ? "off"
         : String(settings.narrativeGuideMode || "auto");
@@ -15012,6 +15312,7 @@
         response_projection: "prepare_turn.production_compact.v1",
         raw_user_input: String(userInput || ""),
         narrative_support_max_chars: Number(settings.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars),
+        publisher_guidance_format: settings.publisherGuidanceFormat || DEFAULT_SETTINGS.publisherGuidanceFormat,
         messages: (messages || []).map(function(m) {
           const parsed = getPayloadMessageRoleAndText(m);
           return {
@@ -15033,6 +15334,7 @@
           reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,
           reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
           reference_injection_enabled: settings.injectionEnabled !== false,
+          lorebook_reference_mode: settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode,
           primary_canon_base_max_chars: settings.primaryCanonBaseMaxChars,
           max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
@@ -15044,6 +15346,8 @@
           ),
         },
       };
+      const lorebookReferenceScope = currentLorebookReferencePrepareScope(sessionId);
+      if (lorebookReferenceScope) body.lorebook_reference_scope = lorebookReferenceScope;
       if (prepareOptions.sourceDecisionOnly === true) {
         body.source_decision_only = true;
       }
@@ -18036,6 +18340,11 @@
         }
         break;
       }
+      let userObservedPairOrdinal = 0;
+      for (let index = 0; index <= userMessageIndex; index++) {
+        const message = chat.message[index];
+        if (message && message.role === "user" && message.disabled !== true) userObservedPairOrdinal++;
+      }
       const context = {
         sessionId: sid,
         requestId: String(requestId || ""),
@@ -18045,6 +18354,7 @@
         hostChatId,
         requestMessageCount: chat.message.length,
         userMessageIndex,
+        userObservedPairOrdinal,
         userMessageChatId,
         userMessageTimeMs,
         userObservedContentHash,
@@ -18076,6 +18386,117 @@
     }
   }
 
+  function buildRisuWorldlineObservationFromMessages(messages, observedAtMs, hostSignalSource) {
+    let candidate = null;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      const message = messages[index];
+      const marker = message && message.disabled === true && typeof message.data === "string"
+        ? message.data.trim()
+        : "";
+      if (marker.startsWith("{{specialcomment::branchedfrom::")) {
+        candidate = { index, marker, message };
+        break;
+      }
+    }
+    if (!candidate) {
+      return null;
+    }
+    const source = candidate.index > 0 ? messages[candidate.index - 1] : null;
+    const facts = [];
+    if (source && source.role === "char") {
+      for (let index = candidate.index - 2; index >= 0; index--) {
+        const anchor = messages[index];
+        if (
+          anchor
+          && anchor.role === "user"
+          && anchor.disabled !== true
+          && String(anchor.chatId || "").trim()
+        ) {
+          facts.push({
+            message_index: index,
+            role: "user",
+            message_chat_id: String(anchor.chatId).trim(),
+            disabled: false,
+          });
+          break;
+        }
+      }
+    }
+    facts.push(
+      {
+        message_index: candidate.index - 1,
+        role: String(source && source.role || ""),
+        message_chat_id: String(source && source.chatId || "").trim(),
+        disabled: !!(source && source.disabled === true),
+      },
+      {
+        message_index: candidate.index,
+        role: String(candidate.message && candidate.message.role || ""),
+        message_chat_id: String(candidate.message && candidate.message.chatId || "").trim(),
+        disabled: true,
+      }
+    );
+    return {
+      contract_version: "risu_worldline_observation.v2",
+      host_signal_source: String(hostSignalSource || "output"),
+      branch_shape_contract: "risu_branchedfrom.v1",
+      observed_at_ms: observedAtMs,
+      marker_state: "observed",
+      branch_marker: candidate.marker,
+      marker_index: candidate.index,
+      messages: facts,
+    };
+  }
+
+  function onRisuOutput(snapshot) {
+    try {
+      const chat = snapshot && snapshot.chat && typeof snapshot.chat === "object" ? snapshot.chat : null;
+      const messages = chat && Array.isArray(chat.message) ? chat.message : null;
+      const characterIndex = Number.isInteger(snapshot && snapshot.characterIndex)
+        ? snapshot.characterIndex
+        : -1;
+      const chatIndex = Number.isInteger(snapshot && snapshot.chatIndex)
+        ? snapshot.chatIndex
+        : -1;
+      const messageIndex = Number.isInteger(snapshot && snapshot.messageIndex)
+        ? snapshot.messageIndex
+        : -1;
+      const hostChatId = String(chat && chat.id || "").trim();
+      if (!messages) return;
+
+      // Freeze the exact Host marker/source facts before dispatch. The output
+      // hook observes worldline shape only; it does not prove displayed
+      // finality and never schedules complete-turn persistence.
+      const worldlineObservation = buildRisuWorldlineObservationFromMessages(messages, Date.now(), "output");
+      if (!worldlineObservation) return;
+      _risuHookLifecycle.output = "callback_observed";
+      if (characterIndex < 0 || chatIndex < 0 || messageIndex < 0 || !hostChatId) {
+        debugLog("[worldline] output callback missing branch observation coordinates");
+        return;
+      }
+      const stableCharacterId = String(
+        snapshot && snapshot.char && snapshot.char.chaId || ""
+      ).trim();
+      const requestedSessionId = "char_" + String(characterIndex) + "_cid_" + hostChatId;
+      Promise.resolve().then(function routeFrozenWorldlineObservation() {
+        return requestBackendSessionRoutingTurnResolution(requestedSessionId, "identity", {
+          stableCharacterId,
+          stableCharacterIdState: stableCharacterId ? "observed" : "unobserved",
+          hostChatId,
+          hostChatIdState: "observed",
+          worldlineObservation,
+        });
+      }).then(function recordWorldlineRoutingResult(routing) {
+        debugLog("[worldline] output branch observation routed:", String(
+          routing && routing.worldline && routing.worldline.state || "unresolved"
+        ));
+      }).catch(function reportWorldlineObservationFailure(err) {
+        warnLog("onRisuOutput failed:", err && err.message);
+      });
+    } catch (err) {
+      warnLog("onRisuOutput observation failed:", err && err.message);
+    }
+  }
   function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent) {
     const sid = String(sessionId || "").trim();
     const requestType = String(type || "model");
@@ -18152,6 +18573,7 @@
       user_message_index: Number.isInteger(requestContext.userMessageIndex)
         ? requestContext.userMessageIndex
         : -1,
+      user_observed_pair_ordinal: Math.max(0, Math.floor(Number(requestContext.userObservedPairOrdinal || 0))),
       user_message_chat_id: String(requestContext.userMessageChatId || ""),
       user_message_chat_id_state: requestContext.userMessageChatId ? "observed_before_request" : "unobserved",
       user_message_time_ms: Number(requestContext.userMessageTimeMs || 0),
@@ -18458,7 +18880,8 @@
     return requestContext.hostSignalObservationPromise;
   }
 
-  function pendingFinalConfirmationKey(pending) {
+
+ function pendingFinalConfirmationKey(pending) {
     const payloadKey = String(
       pending
       && pending.payload
@@ -19484,6 +19907,12 @@
           };
         }),
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
+        ...(observed.worldlineObservation && typeof observed.worldlineObservation === "object" ? {
+          worldline_observation: observed.worldlineObservation,
+        } : {}),
+        ...(observed.routingContext ? {
+          routing_context: String(observed.routingContext),
+        } : {}),
       },
     });
     if (!result || result.status !== "ok" || result.contract_version !== "session-routing.turn-resolution.v1") {
@@ -19514,6 +19943,7 @@
       localTurnIndex: Number(result.local_turn_index || 0),
       localTurnSource: String(result.local_turn_source || ""),
       resolvedObservations: Array.isArray(result.resolved_observations) ? result.resolved_observations : [],
+      worldline: result.worldline && typeof result.worldline === "object" ? result.worldline : null,
       protectedBeforeTurn: Number(result.protected_before_turn || 0),
       minFromTurn: Number(result.min_from_turn || 0),
       baseline: result.baseline_applied ? getSessionRoutingTurnBaseline(sessionId) : null,
@@ -20194,16 +20624,6 @@
     };
   }
 
-  function buildContinuityUserInputPreview(continuityInfo) {
-    try {
-      if (!continuityInfo || !continuityInfo.suppressUserInputPath) return "";
-      if (continuityInfo.triggerMode === "manual_resume") return "(resume trigger → continuity recall)";
-      if (continuityInfo.triggerMode === "empty_input") return "(빈 입력 → continuity recall)";
-      return "(continuity recall)";
-    } catch {
-      return "";
-    }
-  }
 
   function summarizeContinuityPackSections(continuityPackResult) {
     try {
@@ -20418,24 +20838,6 @@
     } catch { return null; }
   }
 
-  function normalizeSupervisorEnvelope(result) {
-    try {
-      if (!result || typeof result !== "object") return result;
-      const wrapped = result.supervisor_result;
-      if (!wrapped || typeof wrapped !== "object" || Array.isArray(wrapped)) return result;
-      const directive = (wrapped.directive && typeof wrapped.directive === "object" && !Array.isArray(wrapped.directive))
-        ? wrapped.directive
-        : wrapped;
-      if (!result.directive && directive && typeof directive === "object") result.directive = directive;
-      if (!result.book_author && directive && directive.book_author) result.book_author = directive.book_author;
-      if (!result.director && directive && directive.director) result.director = directive.director;
-      if (!result.section_world && directive && directive.section_world) result.section_world = directive.section_world;
-      if (!result.storyline_selection && wrapped.storyline_selection) result.storyline_selection = wrapped.storyline_selection;
-      return result;
-    } catch {
-      return result;
-    }
-  }
 
   function extractStorylineSelectionSummary(supervisorResult) {
     try {
@@ -21748,20 +22150,28 @@
   function composeEffectiveInputFromTransparency(it) {
     try {
       if (!it || typeof it !== "object") return "";
-      const blocks = [];
-      const inputCtxText = (it.inputContext && typeof it.inputContext.text === "string")
-        ? it.inputContext.text.trim()
+      const injection = it.injection && typeof it.injection === "object" ? it.injection : null;
+      const plan = injection && injection.payloadApplicationPlan && typeof injection.payloadApplicationPlan === "object"
+        ? injection.payloadApplicationPlan
+        : null;
+      if (!plan
+          || plan.contract_version !== "payload_application_plan.v1"
+          || plan.owner !== "go"
+          || plan.apply_rule !== "apply_exact_text_without_reassembly"
+          || (plan.status !== "ready" && plan.status !== "empty")) {
+        return "";
+      }
+      const backendPreview = isBackendEffectiveInputPreview(it.backendEffectiveInputPreview)
+        ? it.backendEffectiveInputPreview
+        : null;
+      const finalUserText = backendPreview && typeof backendPreview.final_user_text === "string"
+        ? backendPreview.final_user_text
         : "";
-      const auxText = (it.injection && typeof it.injection.auxiliaryPreview === "string")
-        ? it.injection.auxiliaryPreview.trim()
-        : "";
-      const backendText = composeEffectiveInputFromBackendRenderModel(it.backendRenderModel);
-      const hasInputCtxInAux = !!(inputCtxText && auxText && auxText.includes(inputCtxText));
-
-      if (inputCtxText && !hasInputCtxInAux) blocks.push("━━ Input Context ━━\n" + inputCtxText);
-      if (auxText) blocks.push(auxText);
-
-      return (blocks.join("\n\n") || backendText).replace(/\n{3,}/g, "\n\n").trim();
+      if (!backendPreview) return "";
+      return [
+        finalUserText,
+        String(plan.auxiliary_text || ""),
+      ].filter(function(block) { return block !== ""; }).join("\n\n");
     } catch {
       return "";
     }
@@ -21782,26 +22192,6 @@
       typeof preview === "object" &&
       preview.contract_version === "effective_input_preview.v1"
     );
-  }
-
-  function composeEffectiveInputFromBackendRenderModel(model) {
-    try {
-      if (!isBackendInputTransparencyModel(model)) return "";
-      return model.blocks
-        .filter(function(block) {
-          if (!block || typeof block !== "object") return false;
-          if (String(block.key || "") === "user_input") return false;
-          if (String(block.status || "") !== "included") return false;
-          return typeof block.text === "string" && block.text.trim();
-        })
-        .map(function(block) { return String(block.text || "").trim(); })
-        .filter(Boolean)
-        .join("\n\n")
-        .replace(/\n{3,}/g, "\n\n")
-        .trim();
-    } catch {
-      return "";
-    }
   }
 
   function renderBackendRenderCountsSummary(counts) {
@@ -21920,27 +22310,68 @@
       const afterSystem = findLastPayloadMessage(afterMessages, "system");
       const injection = meta && meta.injectionResult ? meta.injectionResult : {};
       const applyMode = meta && meta.applyMode ? meta.applyMode : {};
-      const effectiveInput = String((meta && meta.effectiveInputText) || "").trim();
-      const effectiveUserInput = String((meta && meta.effectiveUserInput) || "").trim();
-      const payloadUserRoleTail = afterUser && afterUser.content ? String(afterUser.content) : "";
+      const effectiveInput = String((meta && meta.effectiveInputText) || "");
+      const effectiveUserInput = String((meta && meta.effectiveUserInput) || "");
+	  const payloadUserRoleTail = afterUser ? String(getPayloadMessageRoleAndText(afterUser).text || "") : "";
       const payloadMutated = !!(meta && meta.payloadMutated);
       const applyModeName = String(applyMode.mode || settings.pluginMainApplyMode || "shadow");
       const payloadRewritten = !!(applyMode && applyMode.payloadReplaced);
-	  const normalizedOutboundMessages = afterMessages.map(function(message) {
-		return {
-		  role: String(message && message.role || ""),
-		  content: String(message && message.content || ""),
-		};
-	  });
-	  const outboundPayloadText = normalizedOutboundMessages.map(function(message) { return message.content; }).join("\n");
-	  const expectedInjectedComponents = [
-		String(injection.mainInjectionPreview || "").trim(),
-		String(injection.referenceInjectionPreview || "").trim(),
-		String(injection.inputContext && injection.inputContext.text || "").trim(),
-	  ].filter(Boolean);
-	  const payloadContentMatch = expectedInjectedComponents.every(function(component) {
-		return outboundPayloadText.includes(component);
-	  });
+      const normalizedOutboundMessages = afterMessages.map(function(message) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        return {
+          role: String(parsed.role || ""),
+          content: String(parsed.text || ""),
+        };
+      });
+      const plan = injection.payloadApplicationPlan && typeof injection.payloadApplicationPlan === "object"
+        ? injection.payloadApplicationPlan
+        : null;
+      const applicationObservation = injection.payloadApplicationObservation && typeof injection.payloadApplicationObservation === "object"
+        ? injection.payloadApplicationObservation
+        : null;
+      const observedBlocks = applicationObservation && Array.isArray(applicationObservation.blocks)
+        ? applicationObservation.blocks
+        : [];
+      const expectedObservedBlocks = [];
+      if (plan && String(plan.auxiliary_text || "")) {
+        expectedObservedBlocks.push({ key: "auxiliary_context", plannedHash: plan.auxiliary_observation_hash });
+      }
+      const payloadApplicationMatch = !!(
+        plan
+        && plan.contract_version === "payload_application_plan.v1"
+        && plan.owner === "go"
+        && plan.apply_rule === "apply_exact_text_without_reassembly"
+        && (plan.status === "ready" || plan.status === "empty")
+        && applicationObservation
+        && applicationObservation.contract_version === "payload_application_observation.v1"
+        && applicationObservation.status === "ready"
+        && observedBlocks.length === expectedObservedBlocks.length
+        && (expectedObservedBlocks.length === 0
+          ? applicationObservation.payload_application_status === "empty"
+          : applicationObservation.payload_application_status === "applied"
+            && expectedObservedBlocks.every(function(expectedBlock) {
+              return observedBlocks.some(function(block) {
+                return block
+                  && block.key === expectedBlock.key
+                  && block.status === "applied"
+                  && block.hash_match === true
+                  && block.planned_content_hash === expectedBlock.plannedHash;
+              });
+            }))
+      );
+      let observedFinalUserInput = "";
+      for (let i = normalizedOutboundMessages.length - 1; i >= 0; i--) {
+        const message = normalizedOutboundMessages[i];
+        if (message.role === "user" && message.content === effectiveUserInput) {
+          observedFinalUserInput = message.content;
+          break;
+        }
+      }
+      const payloadContentMatch = !!(
+        payloadApplicationMatch
+        && effectiveUserInput
+        && observedFinalUserInput === effectiveUserInput
+      );
       return {
 		status: payloadContentMatch ? "ready" : "mismatch",
         source: "js_host_adapter",
@@ -21949,7 +22380,7 @@
 		effectiveInputHash: computeOrchestrationDirtyHashOr1c(effectiveInput),
 		outboundPayloadHash: computeOrchestrationDirtyHashOr1c(JSON.stringify(normalizedOutboundMessages)),
 		payloadContentMatch,
-		verifiedComponentCount: expectedInjectedComponents.length,
+		verifiedComponentCount: payloadContentMatch ? observedBlocks.length + 1 : 0,
         chatSessionId: String((meta && meta.chatSessionId) || ""),
         requestType: String((meta && meta.requestType) || "model"),
         payloadMutated,
@@ -21974,9 +22405,9 @@
         beforeUserInputPreview: truncPreview(beforeUser && beforeUser.content ? String(beforeUser.content) : "", 240),
         finalUserInputPreview: truncPreview(effectiveUserInput, 240),
         payloadUserRoleTailPreview: truncPreview(payloadUserRoleTail, 240),
-        payloadUserRoleTailKind: payloadUserRoleTail && isMetaUserMessage(payloadUserRoleTail)
-          ? "risu_host_prompt_scaffold"
-          : (payloadUserRoleTail ? "user_role_message" : "none"),
+		payloadUserRoleTailKind: payloadUserRoleTail === effectiveUserInput
+		  ? "verified_final_user"
+		  : (payloadUserRoleTail ? "different_user_role_message" : "none"),
         finalSystemPreview: truncPreview(afterSystem && afterSystem.content ? String(afterSystem.content) : "", 240),
         assembledPreview: truncPreview(effectiveInput, 500),
         prepareTurnSource: String((meta && meta.prepareTurnSource) || ""),
@@ -22010,10 +22441,10 @@
 
   function resolveLatestTransparencyTrace() {
     try {
-      if (lastTurnTrace && lastTurnTrace._inputTransparency) return lastTurnTrace;
       if (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency) {
         return lastOrchResult._trace;
       }
+      if (lastTurnTrace && lastTurnTrace._inputTransparency) return lastTurnTrace;
       const latest = getLatestExplorerRuntimeTrace();
       if (latest && latest._inputTransparency) return latest;
       return null;
@@ -22040,57 +22471,46 @@
       const injectionPreview = tr._inputTransparency.injection && typeof tr._inputTransparency.injection === "object"
         ? tr._inputTransparency.injection
         : null;
-      const hasSplitAuxiliaryPreview = !!(injectionPreview && (
-        Object.prototype.hasOwnProperty.call(injectionPreview, "mainInjectionPreview") ||
-        Object.prototype.hasOwnProperty.call(injectionPreview, "referenceInjectionPreview") ||
-        Object.prototype.hasOwnProperty.call(injectionPreview, "guidanceInjectionPreview")
-      ));
-      const mainAuxiliaryContext = hasSplitAuxiliaryPreview
-        ? String(injectionPreview.mainInjectionPreview || "").trim()
-        : finalInput;
+	  const payloadPlan = injectionPreview && injectionPreview.payloadApplicationPlan && typeof injectionPreview.payloadApplicationPlan === "object"
+		? injectionPreview.payloadApplicationPlan
+		: null;
+	  const appliedPlanLanes = payloadPlan && Array.isArray(payloadPlan.lanes)
+		? payloadPlan.lanes.filter(function(lane) {
+			return lane && lane.applied === true && typeof lane.text === "string" && lane.text !== "";
+		  })
+		: [];
       const memoryDeliveryPlan = injectionPreview && injectionPreview.memoryDeliveryPlan && typeof injectionPreview.memoryDeliveryPlan === "object"
         ? injectionPreview.memoryDeliveryPlan
         : null;
-      const originalWorkReferenceContext = hasSplitAuxiliaryPreview
-        ? String(injectionPreview.referenceInjectionPreview || "").trim()
-        : "";
-      const outputGuidanceContext = hasSplitAuxiliaryPreview
-        ? String(injectionPreview.guidanceInjectionPreview || "").trim()
-        : "";
       const imp = tr.inputImprovement && typeof tr.inputImprovement === "object" ? tr.inputImprovement : null;
       const improvedInputText = imp && typeof imp.finalInput === "string" ? imp.finalInput.trim() : "";
       const fp = tr.finalPayloadParity || (tr._inputTransparency && tr._inputTransparency.finalPayloadParity) || null;
-	  if (fp && fp.capturedBeforeRequestReturn === true) {
-		const renderedHash = computeOrchestrationDirtyHashOr1c(finalInput);
-		if (fp.payloadContentMatch !== true || !fp.effectiveInputHash || fp.effectiveInputHash !== renderedHash) {
-		  return '<div class="mo-note">Actual final input preview was withheld because the pre-request payload verification did not match.</div>';
-		}
-	  }
+	  const renderedHash = computeOrchestrationDirtyHashOr1c(finalInput);
+	  const payloadVerificationMismatch = !!(
+		fp
+		&& fp.capturedBeforeRequestReturn === true
+		&& (fp.payloadContentMatch !== true || !fp.effectiveInputHash || fp.effectiveInputHash !== renderedHash)
+	  );
       const languageContextText = formatLanguageContextBlock(tr._inputTransparency.languageContext);
       const backendPreview = isBackendEffectiveInputPreview(tr._inputTransparency.backendEffectiveInputPreview)
         ? tr._inputTransparency.backendEffectiveInputPreview
         : null;
-      const actualUserText = String(
-        backendPreview && backendPreview.final_user_text
-          ? backendPreview.final_user_text
-          : (fp && fp.finalUserInputPreview ? fp.finalUserInputPreview : "")
-      ).trim();
+      const actualUserText = backendPreview && typeof backendPreview.final_user_text === "string"
+        ? backendPreview.final_user_text
+        : "";
       const protectionText = String(
         injectionPreview && injectionPreview.protection && injectionPreview.protection.text
           ? injectionPreview.protection.text
           : ""
       ).trim();
-      const inputContextText = String(
-        tr._inputTransparency.inputContext && tr._inputTransparency.inputContext.text
-          ? tr._inputTransparency.inputContext.text
-          : ""
-      ).trim();
-
-      if (!mainAuxiliaryContext && !originalWorkReferenceContext && !improvedInputText && !actualUserText && !languageContextText && !inputContextText) {
+	  if (appliedPlanLanes.length === 0 && !improvedInputText && !actualUserText && !languageContextText) {
         return '<div class="mo-note">' + t('dash.preview.notApplied') + '</div>';
       }
 
       const parts = [];
+	  if (payloadVerificationMismatch) {
+		parts.push('<div class="mo-note">The pre-request payload verification did not match. The complete backend input is shown below for inspection, but it will not be stored as verified effective input.</div>');
+	  }
       if (actualUserText) {
         parts.push(renderItBlock("Actual User Input", actualUserText, false));
       }
@@ -22110,31 +22530,25 @@
         const totalUsageText = "사용 " + totalUsed + " / 할당 " + totalAllocated + " chars"
           + (globalCap > totalAllocated ? " · 전체 주입 상한 " + globalCap + " chars" : "");
         parts.push(renderItBlock("Auxiliary Context Budget", totalUsageText, false));
-        memoryDeliveryPlan.classes.forEach(function(deliveryClass) {
-          const classTextLines = String(deliveryClass && deliveryClass.text || "").trim().split("\n");
-          if (classTextLines.length && /^\[[^\]]+\]$/.test(classTextLines[0].trim())) classTextLines.shift();
-          const classText = classTextLines.join("\n").trim();
-          if (!classText) return;
-          const classTitle = String(deliveryClass.title || deliveryClass.key || "Memory Delivery");
-          const classUsed = Number(deliveryClass.used_chars || 0);
-          const classReserved = Number(deliveryClass.reserved_chars || 0);
-          const classBorrowed = Number(deliveryClass.borrowed_chars || Math.max(0, classUsed - classReserved));
-          const classUsage = "사용 " + classUsed + " chars · 기본 배정 " + classReserved + " chars"
-            + (classBorrowed > 0 ? " · 공유 예산 " + classBorrowed + " chars" : "");
-          parts.push(renderItBlock(classTitle + " · " + classUsage, classText, false));
-        });
-      } else if (mainAuxiliaryContext) {
-        parts.push(renderItBlock("Assembled Auxiliary Context", mainAuxiliaryContext, false));
+		memoryDeliveryPlan.classes.forEach(function(deliveryClass) {
+		  const classTextLines = String(deliveryClass && deliveryClass.text || "").trim().split("\n");
+		  if (classTextLines.length && /^\[[^\]]+\]$/.test(classTextLines[0].trim())) classTextLines.shift();
+		  const classText = classTextLines.join("\n").trim();
+		  if (!classText) return;
+		  const classTitle = String(deliveryClass.title || deliveryClass.key || "Memory Delivery");
+		  const classUsed = Number(deliveryClass.used_chars || 0);
+		  const classReserved = Number(deliveryClass.reserved_chars || 0);
+		  const classBorrowed = Number(deliveryClass.borrowed_chars || Math.max(0, classUsed - classReserved));
+		  const classUsage = "사용 " + classUsed + " chars · 기본 배정 " + classReserved + " chars"
+		    + (classBorrowed > 0 ? " · 공유 예산 " + classBorrowed + " chars" : "");
+		  parts.push(renderItBlock(classTitle + " · " + classUsage, classText, false));
+		});
       }
-      if (originalWorkReferenceContext) {
-        parts.push(renderItBlock("Original Work Reference Context", originalWorkReferenceContext, false));
-      }
-      if (outputGuidanceContext) {
-        parts.push(renderItBlock("Output Guidance Context", outputGuidanceContext, false));
-      }
-      if (inputContextText) {
-        parts.push(renderItBlock("Input Context", inputContextText, false));
-      }
+      appliedPlanLanes.forEach(function(lane) {
+		if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes) && String(lane.key || "") === "long_term_memory") return;
+        const title = String(lane.title || lane.key || "Auxiliary Context");
+        parts.push(renderItBlock(title, String(lane.text || ""), false));
+      });
       return parts.join("");
     } catch {
       return '<div class="mo-note">effective input render error</div>';
@@ -22888,87 +23302,7 @@
     }
   }
 
-  function analyzeLowTrustCurrentInputShape(content) {
-    try {
-      var s = String(content || "").trim();
-      if (!s) return { score: 0, hasModelCue: false };
 
-      var lines = s.split(/\r?\n/).map(function(line) { return String(line || "").trim(); }).filter(Boolean);
-      var score = 0;
-      var hasModelCue = false;
-
-      if (/^<\//.test(s)) {
-        score += 3;
-        hasModelCue = true;
-      } else if (/^<\s*[A-Za-z]/.test(s)) {
-        score += 1;
-      }
-
-      if (/^---\s*[\r\n]/.test(s)) {
-        score += 2;
-        hasModelCue = true;
-      }
-      if (/^#\s+\S/.test(s)) {
-        score += 2;
-      }
-
-      var openTagCount = (s.match(/<\s*[A-Za-z][A-Za-z0-9_:-]*(?:\s+[^>\n]{1,80})?>/g) || []).length;
-      if (openTagCount >= 2) {
-        score += 2;
-        hasModelCue = true;
-      } else if (openTagCount === 1 && /^<\s*[A-Za-z]/.test(s)) {
-        score += 1;
-      }
-
-      if (/<\s*[A-Za-z][A-Za-z0-9_:-]*\s+[A-Za-z_:][-A-Za-z0-9_:.]*\s*=/.test(s)) {
-        score += 2;
-        hasModelCue = true;
-      }
-
-      if (/(?:`current_input`|#\s*current\s*input\b|\b(?:current|user|client)[\s_]*input\b)/i.test(s)) {
-        score += 2;
-        hasModelCue = true;
-      }
-
-      var headingCount = lines.filter(function(line) {
-        return /^(?:#{1,6}\s+|\[[A-Za-z0-9 _:-]{3,}\]|<\/?[A-Za-z])/.test(line);
-      }).length;
-      if (headingCount >= 2) score += 2;
-
-      var bulletCount = lines.filter(function(line) {
-        return /^(?:[-*•]|\d+\.)\s+/.test(line);
-      }).length;
-      if (bulletCount >= 2) score += 2;
-
-      var directiveCueCount = lines.filter(function(line) {
-        return /^(?:(?:[-*•]|\d+\.)\s+)?(?:write|respond|continue|begin|follow|use|guide|reflect|limit|format|stop|end|apply|include|exclude|never|always|must|should)\b/i.test(line);
-      }).length;
-      if (directiveCueCount >= 2) {
-        score += 2;
-        hasModelCue = true;
-      }
-
-      if (/"[A-Za-z0-9_:-]+"\s*:/.test(s) || /[{[]\s*"?[A-Za-z0-9_:-]+/.test(s)) {
-        score += 1;
-      }
-      if (lines.length >= 6 && (headingCount + bulletCount) >= 3) score += 1;
-
-      return { score: score, hasModelCue: hasModelCue };
-    } catch {
-      return { score: 0, hasModelCue: false };
-    }
-  }
-
-  function shouldRejectLowTrustCurrentInput(content) {
-    try {
-      if (!content || typeof content !== "string") return false;
-      if (isMetaPromptLikeMessage(content)) return true;
-      var shape = analyzeLowTrustCurrentInputShape(content);
-      return shape.score >= 5 || (shape.score >= 4 && shape.hasModelCue);
-    } catch {
-      return false;
-    }
-  }
 
   function isMetaPromptLikeMessage(content) {
     try {
@@ -23908,22 +24242,6 @@
    * KG recall 결과를 사람이 읽기 쉬운 관계 정보 블록으로 포맷한다.
    * 포맷: A —(관계)→ B
    */
-  function formatKGBlock(kgRecallResult) {
-    try {
-      if (!kgRecallResult || !Array.isArray(kgRecallResult.items) || kgRecallResult.items.length === 0) return "";
-      return kgRecallResult.items.map(function(t) {
-        const subj = t.subject || "?";
-        const pred = t.predicate || "?";
-        const obj = t.object || "?";
-        let line = subj + " —(" + pred + ")→ " + obj;
-        // valid_to가 있으면 과거 관계 표시
-        if (t.valid_to != null) {
-          line += " [~turn " + t.valid_to + "]";
-        }
-        return line;
-      }).join("\n");
-    } catch { return ""; }
-  }
 
   // ────────────────────────────────────────────────────────────
   // Phase 3-3: Episode Recall & Block Formatting
@@ -24281,17 +24599,6 @@
     }
   }
 
-  function isAssembledPromptMessageList(messages) {
-    try {
-      if (!Array.isArray(messages) || messages.length === 0) return false;
-      const lastUserMsg = [...messages].reverse().find(function(msg) {
-        return msg && String(msg.role || "") === "user" && msg.content;
-      });
-      return !!(lastUserMsg && isRisuPromptScaffoldMessage(String(lastUserMsg.content || "")));
-    } catch {
-      return false;
-    }
-  }
 
   function isBoundaryOnlyUserInput(content) {
     try {
@@ -25277,40 +25584,6 @@
   }
   // ── end J-4a ──────────────────────────────────────────────────────────────
 
-  async function runMandatoryCriticProbe() {
-    if (!subLlmHasConfig()) {
-      return {
-        called: false,
-        ok: false,
-        reason: "평론가 LLM 설정이 비어 있습니다.",
-        code: "critic_not_configured",
-      };
-    }
-    try {
-      await callSubLlmReview(
-        "You are a connectivity probe. Reply with only OK.",
-        "health-check",
-        {
-          timeoutMs: getSubLlmTimeoutSettingMs(),
-          maxTokens: 8,
-          temperature: 0,
-        }
-      );
-      return {
-        called: true,
-        ok: true,
-        reason: "ok",
-        code: "critic_ok",
-      };
-    } catch (err) {
-      return {
-        called: true,
-        ok: false,
-        reason: (err && err.message) ? String(err.message) : "unknown error",
-        code: "critic_call_failed",
-      };
-    }
-  }
 
   function normalizeStorylineStatus(value) {
     var status = String(value || "").trim().toLowerCase();
@@ -29631,29 +29904,6 @@
    * Phase 4-3: Section World 블록을 사람이 읽기 쉬운 텍스트로 변환.
    * applies=false이거나 rules가 비어 있으면 빈 문자열을 반환한다.
    */
-  function formatSectionWorldBlock(supervisorResult) {
-    try {
-      if (!supervisorResult) return "";
-      const d = supervisorResult.directive || supervisorResult;
-      if (!d || typeof d !== "object") return "";
-      const sw = d.section_world;
-      if (!sw || typeof sw !== "object") return "";
-      if (!sw.applies) return "";
-      if (!Array.isArray(sw.rules) || sw.rules.length === 0) return "";
-      // Sprint 4-C-3: confidence 필터
-      const conf = (sw.confidence || "").toLowerCase();
-      if (conf === "low") return "";
-      const lines = [];
-      if (conf === "medium") {
-        lines.push("[Reference] Current Scene World Rules:");
-      } else {
-        lines.push("Current Scene World Rules:");
-      }
-      sw.rules.slice(0, 3).forEach(function(r) { if (r) lines.push("- " + r); });
-      if (sw.confidence) lines.push("Confidence: " + sw.confidence);
-      return lines.join("\n");
-    } catch { return ""; }
-  }
 
   /**
    * E-1e: Storyline 블록을 사람이 읽기 쉬운 텍스트로 변환.
@@ -29733,47 +29983,6 @@
    * E-2: Character 블록을 사람이 읽기 쉬운 텍스트로 변환.
    * fetchCharacterStates 결과를 받아 주요 캐릭터 상태를 포맷.
    */
-  function formatCharacterBlock(characterResult) {
-    try {
-      if (!characterResult || !Array.isArray(characterResult.items) || characterResult.items.length === 0) return "";
-      var lines = [];
-      var items = characterResult.items.slice(0, 6); // 최대 6명
-      for (var i = 0; i < items.length; i++) {
-        var c = items[i];
-        var name = formatDisplayEntityLabel(c.character_name || "?");
-        var parts = [name];
-        // status에서 감정 추출
-        var status = null;
-        try { status = typeof c.status_json === "string" ? JSON.parse(c.status_json) : c.status_json; } catch {}
-        if (status && typeof status === "object") {
-          if (status.emotion) parts.push("(" + status.emotion + ")");
-          if (status.location) parts.push("@ " + status.location);
-        }
-        lines.push("• " + parts.join(" "));
-        // relationships 요약
-        var rels = null;
-        try { rels = typeof c.relationships_json === "string" ? JSON.parse(c.relationships_json) : c.relationships_json; } catch {}
-        if (Array.isArray(rels) && rels.length > 0) {
-          rels.slice(0, 3).forEach(function(r) {
-            if (!r || !r.target) return;
-            var relLine = "  → " + formatDisplayEntityLabel(r.target);
-            if (r.sentiment) relLine += " [" + r.sentiment + "]";
-            if (typeof r.affection === "number") relLine += " aff:" + r.affection;
-            if (typeof r.tension === "number") relLine += " ten:" + r.tension;
-            lines.push(relLine);
-          });
-        }
-        // personality 요약 (짧게)
-        var personality = null;
-        try { personality = typeof c.personality_json === "string" ? JSON.parse(c.personality_json) : c.personality_json; } catch {}
-        if (personality && typeof personality === "object") {
-          var traits = Object.entries(personality).slice(0, 3).map(function(e) { return e[0] + ": " + e[1]; }).join(", ");
-          if (traits) lines.push("  Personality: " + traits);
-        }
-      }
-      return lines.join("\n");
-    } catch { return ""; }
-  }
 
   /**
    * E-3: formatSpeechStyleBlock
@@ -29880,57 +30089,12 @@
   /**
    * 매칭된 장소 컨텍스트를 읽기 쉬운 블록으로 포맷.
    */
-  function formatLocationContextBlock(locationContextResult) {
-    try {
-      if (!locationContextResult || !Array.isArray(locationContextResult.items) || locationContextResult.items.length === 0) return "";
-      var lines = [];
-      for (var i = 0; i < locationContextResult.items.length; i++) {
-        var r = locationContextResult.items[i];
-        var name = r.scope_name || r.key || "?";
-        var entry = "• " + name;
-        if (r.scope && r.scope !== "location") entry += " [" + r.scope + "]";
-        if (r.value_json) {
-          try {
-            var val = typeof r.value_json === "string" ? JSON.parse(r.value_json) : r.value_json;
-            if (typeof val === "string") entry += ": " + val.slice(0, 80);
-            else if (val && typeof val === "object") entry += ": " + Object.entries(val).slice(0, 3).map(function(e) { return e[0] + "=" + String(e[1]).slice(0, 30); }).join(", ");
-          } catch {}
-        }
-        lines.push(entry);
-      }
-      return lines.join("\n");
-    } catch { return ""; }
-  }
 
   /**
    * H-5d: Continuity Hooks 블록을 주입용 텍스트로 변환.
    * fetchPendingThreads 결과(open + paused)를 받아 type별로 간결하게 포맷한다.
    * 최대 5개, resolved hook은 이미 필터링된 상태로 들어온다.
    */
-  function formatPendingThreadBlock(hookResult) {
-    try {
-      if (!hookResult || !Array.isArray(hookResult.items) || hookResult.items.length === 0) return "";
-      var lines = [];
-      // thread_type 아이콘 매핑
-      var typePrefix = {
-        promise: "🤝 Promise",
-        unresolved_goal: "🎯 Goal",
-        open_question: "❓ Question",
-        risk: "⚠️ Risk",
-        emotional_debt: "💭 Debt",
-      };
-      var active = hookResult.items.slice(0, 5); // 최대 5개
-      for (var i = 0; i < active.length; i++) {
-        var h = active[i];
-        var prefix = typePrefix[h.thread_type] || h.thread_type;
-        var entry = "• [" + prefix + "] " + (h.title || "?");
-        if (h.owner) entry += " (" + h.owner + ")";
-        if (h.status === "paused") entry += " [paused]";
-        lines.push(entry);
-      }
-      return lines.join("\n");
-    } catch { return ""; }
-  }
 
   // ================================================================
   // E-5: Narrative Guide Mode — supervisor suffix + director overrides
@@ -30272,18 +30436,6 @@
       const { payload: mod, injected } = injectAuxiliaryBlock(payload, prot.text);
       return injected ? mod : payload;
     } catch { return payload; }
-  }
-
-  /**
-   * Sprint 4-B-1: Input Context Builder.
-   * 유저 메시지 직전에 배치할 맥락 앵커를 조립한다.
-    * 시간/장면/관계/연속성/활성 스레드 앵커를 예산 내에서 조립하고,
-   * 모든 섹션이 비면 applied: false를 반환한다.
-   */
-  function isTemporalQueryInput(text) {
-    const rawInput = String(text || "").trim();
-    if (!rawInput) return false;
-    return /(before|after|earlier|previous|recap|resume|what happened|where were we|how long|time passed|what day|story day|elapsed|지난|이전|직전|방금|아까|전에|정리|요약|어떻게 여기|언제|얼마나 (?:지났|흘렀)|며칠째|몇\s*일째|지금 몇\s*(?:일|날))/i.test(rawInput);
   }
 
   function extractTemporalRelationEntriesStep19(text, inputModeOrOptions, maybeOptions) {
@@ -30661,5243 +30813,6 @@
       return null;
     }
   }
-
-  function buildInputContext(userInput, orchResult, bundledContinuityText, governorContext) {
-    const budget = Math.max(1, Math.floor(Number(settings.maxInputContextChars) || DEFAULT_SETTINGS.maxInputContextChars));
-    const empty = {
-      text: "",
-      sections: [],
-      dropped: [],
-      applied: false,
-      chars: 0,
-      budget,
-      maxSlots: 0,
-      slotCount: 0,
-      slotGovernorPolicyVersion: "s16.5-ig.v1",
-      slotGovernorMode: "turn_need_risk_slot_governor",
-      adaptiveProfile: "empty",
-      signals: {
-        weakInput: false,
-        temporalQuery: false,
-        resumePressure: false,
-        longGapResume: false,
-        explicitRedirection: false,
-        strongUserIntent: false,
-      },
-      needs: [],
-      risks: [],
-      sources: [],
-      staleArcDemotionApplied: false,
-      helperOverlapSuppressionApplied: false,
-      helperOverlapLabels: [],
-      supportLaneNote: "Support-only anchor lane; does not overwrite canonical state.",
-    };
-    try {
-      if (!orchResult) return empty;
-      const helperContext = (governorContext && typeof governorContext === "object") ? governorContext : {};
-	  if (helperContext.backendOwned === true) {
-		const backendText = String(bundledContinuityText || "").trim();
-		return {
-		  ...empty,
-		  text: backendText,
-		  sections: backendText ? [{ key: "backend_previous_completed_turn", label: "Previous Completed Turn", text: backendText, source: "prepare_turn_backend" }] : [],
-		  applied: !!backendText,
-		  chars: backendText.length,
-		  maxSlots: backendText ? 1 : 0,
-		  slotCount: backendText ? 1 : 0,
-		  slotGovernorPolicyVersion: "go_owned_input_context.v1",
-		  slotGovernorMode: "backend_verbatim_apply",
-		  adaptiveProfile: "backend_owned",
-		  sources: backendText ? ["prepare_turn_backend"] : [],
-		  supportLaneNote: "Backend-selected previous completed logical turn; adapter applies verbatim.",
-		};
-	  }
-      const helperBlocks = Array.isArray(helperContext.helperBlocks) ? helperContext.helperBlocks : [];
-      const helperBlockLabels = new Set(helperBlocks.map(function(block) {
-        return typeof block === "string" ? block : (block && block.label ? String(block.label) : "");
-      }).filter(Boolean));
-      const continuityTrace = helperContext.continuity && typeof helperContext.continuity === "object"
-        ? helperContext.continuity
-        : (orchResult && orchResult._trace && orchResult._trace.continuity && typeof orchResult._trace.continuity === "object" ? orchResult._trace.continuity : null);
-      const idleGapMs = Math.max(0, Number(helperContext.idleGapMs != null ? helperContext.idleGapMs : (continuityTrace && continuityTrace.idleGapMs) || 0));
-      const continuityTriggerMode = String(helperContext.triggerMode || (continuityTrace && continuityTrace.triggerMode) || "").trim();
-      const rawInput = String(userInput || "").trim();
-      const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);
-      const temporalQuery = isTemporalQueryInput(rawInput);
-      const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);
-      const longGapResume = continuityTriggerMode === "idle_reentry";
-      const explicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(rawInput);
-      const strongUserIntent = rawInput.length >= 48 || rawInput.split(/\s+/).filter(Boolean).length >= 10;
-
-      function normalizeInlineText(value) {
-        return String(value || "").replace(/\s*\n+\s*/g, " | ").replace(/\s+/g, " ").trim();
-      }
-
-      function truncateInlineText(value, limit) {
-        const clean = normalizeInlineText(value);
-        const cap = Math.max(40, Math.floor(Number(limit || 0)));
-        if (!clean) return "";
-        if (clean.length <= cap) return clean;
-        return clean.slice(0, Math.max(0, cap - 1)).trim() + "…";
-      }
-
-      function coerceParsed(value) {
-        if (!value) return null;
-        if (typeof value === "string") {
-          try { return JSON.parse(value); } catch { return value; }
-        }
-        return value;
-      }
-
-      function buildTemporalCandidate() {
-        try {
-          if (!temporalQuery) return null;
-          const packetSource = normalizeInlineText((orchResult && orchResult._injectionPack && orchResult._injectionPack.temporal_packet_text) || "");
-          if (!packetSource) return null;
-          const alreadyTagged = /^\[[^\]]+\]/.test(packetSource);
-          return {
-            key: "temporal_packet",
-            label: "Temporal Packet",
-            text: alreadyTagged ? packetSource : "[Temporal Packet] " + packetSource,
-            priority: 110,
-            displayOrder: 0,
-            family: "temporal",
-            staleArc: false,
-            source: "temporal_packet",
-            mandatory: true,
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildSceneCandidate() {
-        try {
-          const as = orchResult.activeStatesResult;
-          if (!as || !Array.isArray(as.states)) return null;
-          const scene = as.states.find(function(state) { return state && state.state_type === "scene_state"; });
-          if (!scene || !scene.content) return null;
-          const raw = coerceParsed(scene.content);
-          if (!raw || typeof raw !== "object") return null;
-          const parts = [];
-          if (raw.location) parts.push(raw.location);
-          if (raw.mood) parts.push(raw.mood);
-          if (raw.tension != null) parts.push("Tension " + raw.tension + "/5");
-          if (parts.length === 0) return null;
-          return {
-            key: "scene",
-            label: "Scene Anchor",
-            text: "[Scene] " + parts.join(" · "),
-            priority: explicitRedirection ? 95 : 90,
-            displayOrder: 2,
-            family: "scene",
-            staleArc: false,
-            source: "active_state",
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildEntityCandidate() {
-        try {
-          const as = orchResult.activeStatesResult;
-          if (as && Array.isArray(as.states)) {
-            const relationshipState = as.states.find(function(state) { return state && state.state_type === "relationship_state"; });
-            if (relationshipState && relationshipState.content) {
-              const raw = coerceParsed(relationshipState.content);
-              if (Array.isArray(raw) && raw.length > 0) {
-                const lines = raw.slice(0, 2).map(function(item) {
-                  const from = item && item.from ? String(item.from) : "?";
-                  const to = item && item.to ? String(item.to) : "?";
-                  const change = item && item.change ? String(item.change) : "state shift";
-                  return from + " -> " + to + ": " + change;
-                }).filter(Boolean);
-                if (lines.length > 0) {
-                  return {
-                    key: "entity",
-                    label: "Entity Anchor",
-                    text: "[Entity] " + lines.join(" | "),
-                    priority: 82,
-                    displayOrder: 3,
-                    family: "entity",
-                    staleArc: false,
-                    source: "relationship_state",
-                    entityCount: lines.length,
-                  };
-                }
-              }
-            }
-          }
-        } catch { /* relationship_state parse failure ignored */ }
-
-        try {
-          const kg = orchResult.kgRecallResult;
-          if (!kg || !Array.isArray(kg.items) || kg.items.length === 0) return null;
-          const lines = kg.items.slice(0, 2).map(function(item) {
-            return normalizeInlineText(formatDisplayKgTripleLine(item, true));
-          }).filter(Boolean);
-          if (lines.length === 0) return null;
-          return {
-            key: "entity",
-            label: "Entity Anchor",
-            text: "[Entity] " + lines.join(" | "),
-            priority: 78,
-            displayOrder: 3,
-            family: "entity",
-            staleArc: false,
-            source: "kg",
-            entityCount: lines.length,
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildContinuityCandidate() {
-        try {
-          const bundled = normalizeInlineText(bundledContinuityText);
-          if (bundled) {
-            const alreadyTagged = /^\[[^\]]+\]/.test(bundled);
-            return {
-              key: "continuity",
-              label: temporalQuery || resumePressure ? "Temporal Anchor" : "Previous Anchor",
-              text: alreadyTagged ? bundled : (temporalQuery || resumePressure ? "[Temporal Anchor] " : "[Previous] ") + bundled,
-              priority: temporalQuery || resumePressure || weakInput ? 100 : 62,
-              displayOrder: 1,
-              family: "continuity",
-              staleArc: true,
-              source: "bundle",
-              mandatory: !explicitRedirection && (temporalQuery || resumePressure || weakInput),
-            };
-          }
-        } catch { /* bundled continuity parse failure ignored */ }
-
-        try {
-          const sr = orchResult.searchResult;
-          if (!sr || !Array.isArray(sr.items)) return null;
-          const memItems = sr.items.filter(function(item) { return item && item.source === "memory" && item.turn_index != null; });
-          if (memItems.length === 0) return null;
-          memItems.sort(function(a, b) { return (b.turn_index || 0) - (a.turn_index || 0); });
-          const latest = memItems[0];
-          const raw = latest.summary_json || latest.summary || "";
-          const parsed = coerceParsed(raw);
-          const summary = typeof parsed === "string"
-            ? parsed
-            : (parsed && (parsed.turn_summary || parsed.summary)) ? (parsed.turn_summary || parsed.summary) : JSON.stringify(parsed || raw);
-          const clean = normalizeInlineText(summary);
-          if (!clean) return null;
-          return {
-            key: "continuity",
-            label: temporalQuery || resumePressure ? "Temporal Anchor" : "Previous Anchor",
-            text: (temporalQuery || resumePressure ? "[Temporal Anchor] " : "[Previous] ") + clean,
-            priority: temporalQuery || resumePressure || weakInput ? 100 : 58,
-            displayOrder: 1,
-            family: "continuity",
-            staleArc: true,
-            source: "memory",
-            mandatory: !explicitRedirection && (temporalQuery || resumePressure || weakInput),
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildPendingThreadCandidate() {
-        try {
-          const pending = orchResult.pendingThreadsResult;
-          if (!pending || !Array.isArray(pending.items) || pending.items.length === 0) return null;
-          const top = pending.items[0];
-          if (!top) return null;
-          const parts = [];
-          if (top.title) parts.push(top.title);
-          if (top.owner) parts.push("owner " + top.owner);
-          if (top.status === "paused") parts.push("paused");
-          if (parts.length === 0) return null;
-          return {
-            key: "pending_thread",
-            label: "Active Thread",
-            text: "[Active Thread] " + parts.join(" · "),
-            priority: explicitRedirection ? 38 : 68,
-            displayOrder: 4,
-            family: "thread",
-            staleArc: true,
-            source: "pending_threads",
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildSagaCandidate() {
-        try {
-          const sagaSource = normalizeInlineText(helperContext.sagaText || (orchResult && orchResult._injectionPack && orchResult._injectionPack.saga_text) || "");
-          if (!sagaSource) return null;
-          const alreadyTagged = /^\[[^\]]+\]/.test(sagaSource);
-          return {
-            key: "saga",
-            label: "Saga Anchor",
-            text: alreadyTagged ? sagaSource : "[Saga] " + sagaSource,
-            priority: explicitRedirection ? 30 : 50,
-            displayOrder: 6,
-            family: "saga",
-            staleArc: true,
-            source: "saga",
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      function buildStorylineCandidate() {
-        try {
-          const storyline = orchResult.storylineResult;
-          if (!storyline || !Array.isArray(storyline.items) || storyline.items.length === 0) return null;
-          const active = storyline.items.find(function(item) { return item && item.status === "active"; }) || storyline.items[0];
-          if (!active) return null;
-          const parts = [];
-          if (active.name) parts.push(active.name);
-          if (active.current_context) parts.push(active.current_context);
-          if (parts.length === 0) return null;
-          return {
-            key: "storyline",
-            label: "Chapter Anchor",
-            text: "[Chapter] " + parts.join(" — "),
-            priority: explicitRedirection ? 34 : 56,
-            displayOrder: 5,
-            family: "storyline",
-            staleArc: true,
-            source: "storylines",
-          };
-        } catch {
-          return null;
-        }
-      }
-
-      const temporalCandidate = buildTemporalCandidate();
-      const continuityCandidate = buildContinuityCandidate();
-      const sceneCandidate = buildSceneCandidate();
-      const entityCandidate = buildEntityCandidate();
-      const pendingThreadCandidate = buildPendingThreadCandidate();
-      const storylineCandidate = buildStorylineCandidate();
-      const sagaCandidate = buildSagaCandidate();
-      const kgEntityCount = orchResult && orchResult.kgRecallResult && Array.isArray(orchResult.kgRecallResult.items)
-        ? orchResult.kgRecallResult.items.length
-        : 0;
-      const entityPressureCount = Math.max(Number(entityCandidate && entityCandidate.entityCount || 0), kgEntityCount);
-      const pendingThreadCount = orchResult && orchResult.pendingThreadsResult
-        ? Number(orchResult.pendingThreadsResult.count || ((Array.isArray(orchResult.pendingThreadsResult.items) && orchResult.pendingThreadsResult.items.length) || 0))
-        : 0;
-
-      const needSignals = [];
-      if (weakInput) needSignals.push("weak_input");
-      if (temporalQuery) needSignals.push("temporal_query");
-      if (resumePressure) needSignals.push("resume_pressure");
-      if (longGapResume) needSignals.push("long_gap_resume");
-      if (entityPressureCount > 1) needSignals.push("multi_entity_pressure");
-      if (pendingThreadCandidate) needSignals.push("unresolved_thread_pressure");
-      if (pendingThreadCount > 1) needSignals.push("multi_thread_pressure");
-      if (sceneCandidate && /(scene|장면|장소|where|어디)/i.test(rawInput)) needSignals.push("scene_transition_pressure");
-
-      let maxSlots = 2;
-      if (weakInput || temporalQuery || resumePressure || longGapResume) maxSlots = 3;
-      if (strongUserIntent && !weakInput && !temporalQuery && !resumePressure && !longGapResume) maxSlots = 2;
-      if (explicitRedirection) maxSlots = sceneCandidate || entityCandidate ? 2 : 1;
-
-      const riskSignals = [];
-      if (explicitRedirection) riskSignals.push("explicit_user_redirection");
-      if (strongUserIntent) riskSignals.push("strong_user_intent");
-      if (continuityCandidate && !temporalQuery && !resumePressure) riskSignals.push("stale_continuity_pressure");
-      if (helperBlockLabels.size > 0) riskSignals.push("helper_overlap_pressure");
-
-      const perSlotCap = Math.max(90, Math.min(280, Math.floor(budget / Math.max(1, maxSlots))));
-      const candidates = [temporalCandidate, continuityCandidate, sceneCandidate, entityCandidate, pendingThreadCandidate, storylineCandidate, sagaCandidate]
-        .filter(Boolean)
-        .map(function(candidate) {
-          return {
-            ...candidate,
-            mandatory: !!candidate.mandatory,
-            text: truncateInlineText(candidate.text, perSlotCap),
-          };
-        })
-        .filter(function(candidate) { return candidate.text; });
-
-      if (candidates.length === 0) {
-        return {
-          ...empty,
-          maxSlots,
-          signals: {
-            weakInput,
-            temporalQuery,
-            resumePressure,
-            explicitRedirection,
-            strongUserIntent,
-          },
-          adaptiveProfile: explicitRedirection ? "scene_redirection" : (temporalQuery || resumePressure || weakInput ? "resume_reanchor" : "balanced_context"),
-          needs: needSignals,
-          risks: riskSignals,
-        };
-      }
-
-      if (candidates.length > maxSlots) riskSignals.push("slot_competition");
-      if (continuityCandidate && (sceneCandidate || entityCandidate || pendingThreadCandidate || storylineCandidate || sagaCandidate)) {
-        riskSignals.push("cross_lane_duplication_pressure");
-      }
-
-      const selected = [];
-      const dropped = [];
-      let remainingBudget = budget;
-      let staleArcDemotionApplied = false;
-      let helperOverlapSuppressionApplied = false;
-      const helperOverlapLabels = [];
-
-      function resolveHelperOverlap(candidate) {
-        if (!candidate || candidate.mandatory) return null;
-        if (candidate.key === "storyline" && (helperBlockLabels.has("storylines") || helperBlockLabels.has("chapter") || helperBlockLabels.has("episode"))) {
-          return ["storylines", "chapter", "episode"].filter(function(label) { return helperBlockLabels.has(label); });
-        }
-        if (candidate.key === "pending_thread" && helperBlockLabels.has("pending_threads")) {
-          return ["pending_threads"];
-        }
-        if (candidate.key === "saga" && (helperBlockLabels.has("saga") || helperBlockLabels.has("arc"))) {
-          return ["saga", "arc"].filter(function(label) { return helperBlockLabels.has(label); });
-        }
-        return null;
-      }
-
-      function dropCandidate(candidate, reason) {
-        dropped.push({
-          key: candidate.key,
-          label: candidate.label,
-          family: candidate.family,
-          source: candidate.source,
-          text: candidate.text,
-          reason,
-          staleArc: !!candidate.staleArc,
-          helperOverlapLabels: Array.isArray(candidate.helperOverlapLabels) ? candidate.helperOverlapLabels.slice() : [],
-        });
-      }
-
-      function keepCandidate(candidate, reason, forcedLimit) {
-        const safeLimit = Number.isFinite(forcedLimit) ? forcedLimit : remainingBudget;
-        const nextText = truncateInlineText(candidate.text, safeLimit);
-        if (!nextText) {
-          dropCandidate(candidate, "budget_exhausted");
-          return false;
-        }
-        selected.push({
-          key: candidate.key,
-          label: candidate.label,
-          family: candidate.family,
-          source: candidate.source,
-          text: nextText,
-          reason,
-          mandatory: !!candidate.mandatory,
-        });
-        remainingBudget = Math.max(0, remainingBudget - nextText.length - (selected.length > 1 ? 1 : 0));
-        return true;
-      }
-
-      const ranked = candidates.slice().sort(function(a, b) {
-        if (!!a.mandatory !== !!b.mandatory) return a.mandatory ? -1 : 1;
-        if ((b.priority || 0) !== (a.priority || 0)) return (b.priority || 0) - (a.priority || 0);
-        return (a.displayOrder || 99) - (b.displayOrder || 99);
-      });
-
-      ranked.forEach(function(candidate) {
-        const helperOverlap = resolveHelperOverlap(candidate);
-        if (helperOverlap && helperOverlap.length > 0) {
-          candidate.helperOverlapLabels = helperOverlap.slice();
-          helperOverlapSuppressionApplied = true;
-          helperOverlap.forEach(function(label) {
-            if (helperOverlapLabels.indexOf(label) === -1) helperOverlapLabels.push(label);
-          });
-          dropCandidate(candidate, "helper_overlap_suppression");
-          return;
-        }
-        if (explicitRedirection && candidate.staleArc && !candidate.mandatory) {
-          staleArcDemotionApplied = true;
-          dropCandidate(candidate, "explicit_user_redirection");
-          return;
-        }
-        if (selected.length >= maxSlots) {
-          dropCandidate(candidate, "slot_limit");
-          return;
-        }
-        if (selected.some(function(sec) { return sec.key === candidate.key; })) {
-          dropCandidate(candidate, "duplicate_anchor");
-          return;
-        }
-        const joinCost = selected.length > 0 ? 1 : 0;
-        if ((candidate.text.length + joinCost) > remainingBudget) {
-          if (candidate.mandatory || selected.length === 0) {
-            if (!keepCandidate(candidate, "budget_trimmed", Math.max(40, remainingBudget - joinCost))) {
-              dropCandidate(candidate, "budget_exhausted");
-            }
-            return;
-          }
-          dropCandidate(candidate, "budget_competition");
-          return;
-        }
-        keepCandidate(candidate, candidate.mandatory ? "mandatory_resume_anchor" : "slot_competition_win");
-      });
-
-      if (selected.length === 0) {
-        return {
-          ...empty,
-          maxSlots,
-          dropped,
-          signals: {
-            weakInput,
-            temporalQuery,
-            resumePressure,
-            longGapResume,
-            explicitRedirection,
-            strongUserIntent,
-          },
-          adaptiveProfile: explicitRedirection ? "scene_redirection" : (temporalQuery || resumePressure || weakInput ? "resume_reanchor" : "balanced_context"),
-          needs: needSignals,
-          risks: riskSignals,
-          staleArcDemotionApplied,
-          sources: candidates.map(function(candidate) { return candidate.source; }).filter(Boolean),
-          helperOverlapSuppressionApplied,
-          helperOverlapLabels,
-          supportLaneNote: "Support-only anchor lane; does not overwrite canonical state.",
-        };
-      }
-
-      const ordered = selected.slice().sort(function(a, b) {
-        const left = candidates.find(function(candidate) { return candidate.key === a.key && candidate.source === a.source; });
-        const right = candidates.find(function(candidate) { return candidate.key === b.key && candidate.source === b.source; });
-        return ((left && left.displayOrder) || 99) - ((right && right.displayOrder) || 99);
-      });
-      const text = ordered.map(function(section) { return section.text; }).join("\n");
-      return {
-        text,
-        sections: ordered,
-        dropped,
-        applied: true,
-        chars: text.length,
-        budget,
-        maxSlots,
-        slotCount: ordered.length,
-        slotGovernorPolicyVersion: "s16.5-ig.v1",
-        slotGovernorMode: "turn_need_risk_slot_governor",
-        adaptiveProfile: explicitRedirection ? "scene_redirection" : (temporalQuery || resumePressure || weakInput ? "resume_reanchor" : "balanced_context"),
-        signals: {
-          weakInput,
-          temporalQuery,
-          resumePressure,
-          longGapResume,
-          explicitRedirection,
-          strongUserIntent,
-        },
-        needs: needSignals,
-        risks: helperOverlapSuppressionApplied ? riskSignals.concat(["helper_overlap_suppression"]).filter(function(value, index, arr) { return arr.indexOf(value) === index; }) : riskSignals,
-        sources: ordered.map(function(section) { return section.source; }).filter(Boolean),
-        staleArcDemotionApplied,
-        helperOverlapSuppressionApplied,
-        helperOverlapLabels,
-        supportLaneNote: "Support-only anchor lane; does not overwrite canonical state.",
-      };
-    } catch {
-      return empty;
-    }
-  }
-
- function buildAdaptiveInjectionGovernorTrace(userInput, orchResult, budgetResult, inputContextResult) {
-    try {
-      const budgetPolicy = (budgetResult && budgetResult.budgetPolicy && typeof budgetResult.budgetPolicy === "object")
-        ? budgetResult.budgetPolicy
-        : {};
-      const helperGovernor = budgetPolicy.helperGovernor && typeof budgetPolicy.helperGovernor === "object"
-        ? budgetPolicy.helperGovernor
-        : null;
-      const oldArcForegroundGuard = budgetPolicy.oldArcForegroundGuard && typeof budgetPolicy.oldArcForegroundGuard === "object"
-        ? budgetPolicy.oldArcForegroundGuard
-        : null;
-      const rawInput = String(userInput || "").trim();
-      const continuityTrace = orchResult && orchResult._trace && orchResult._trace.continuity && typeof orchResult._trace.continuity === "object"
-        ? orchResult._trace.continuity
-        : null;
-
-      function normalizeOldArcDecision(entry, lane) {
-        return {
-          lane,
-          label: entry && entry.label ? entry.label : null,
-          action: entry && entry.action ? entry.action : null,
-          reason: entry && entry.reason ? entry.reason : null,
-          explicitAlignment: !!(entry && entry.explicitAlignment),
-          currentSceneEvidence: !!(entry && entry.currentSceneEvidence),
-          suppressionTrigger: !!(entry && entry.suppressionTrigger),
-          originalChars: Number(entry && entry.originalChars || 0),
-          keptChars: Number(entry && entry.keptChars || 0),
-          ceilingChars: Number(entry && entry.ceilingChars || 0) || null,
-        };
-      }
-
-      function buildOldArcFailureTaxonomy(decisions) {
-        const list = Array.isArray(decisions) ? decisions.slice() : [];
-        const countsByAction = { keep: 0, demote: 0, suppress: 0, drop: 0 };
-        const countsByLane = { helper: 0, continuity: 0 };
-        const countsByReason = {};
-        let explicitAlignmentKeepCount = 0;
-        let currentSceneKeepCount = 0;
-        let noAlignmentDemoteCount = 0;
-        let redirectedSuppressCount = 0;
-
-        list.forEach(function(entry) {
-          const action = String(entry && entry.action || "").trim();
-          const lane = String(entry && entry.lane || "").trim();
-          const reason = String(entry && entry.reason || "").trim();
-          if (Object.prototype.hasOwnProperty.call(countsByAction, action)) countsByAction[action] += 1;
-          if (Object.prototype.hasOwnProperty.call(countsByLane, lane)) countsByLane[lane] += 1;
-          if (reason) countsByReason[reason] = (countsByReason[reason] || 0) + 1;
-          if (action === "keep" && reason === "explicit_query_alignment") explicitAlignmentKeepCount += 1;
-          if (action === "keep" && reason === "current_scene_evidence") currentSceneKeepCount += 1;
-          if (action === "demote" && reason === "no_alignment_rescue_ceiling") noAlignmentDemoteCount += 1;
-          if (action === "suppress" && reason === "explicit_user_redirection") redirectedSuppressCount += 1;
-        });
-
-        const recallGainCount = explicitAlignmentKeepCount + currentSceneKeepCount;
-        const monopolyCostCount = noAlignmentDemoteCount + redirectedSuppressCount;
-        const explicitRedirectionOnly = redirectedSuppressCount > 0 && noAlignmentDemoteCount === 0 && recallGainCount === 0;
-        const validDelayedPayoffRescue = recallGainCount > 0;
-        const foregroundHijackRisk = !explicitRedirectionOnly && monopolyCostCount >= 2;
-        const sceneMonopolyRisk = !explicitRedirectionOnly && monopolyCostCount >= 2 && list.length >= 3;
-        const arcMonopolyAttempt = !explicitRedirectionOnly && recallGainCount === 0 && monopolyCostCount >= 2 && list.length >= 3;
-
-        let primaryClass = "no_old_arc_pressure";
-        if (explicitRedirectionOnly) primaryClass = "explicit_redirection_guard";
-        else if (validDelayedPayoffRescue && monopolyCostCount > 0) primaryClass = "tail_recall_with_monopoly_cost";
-        else if (!validDelayedPayoffRescue && arcMonopolyAttempt) primaryClass = "arc_monopoly_attempt";
-        else if (!validDelayedPayoffRescue && foregroundHijackRisk) primaryClass = "foreground_hijack_risk";
-        else if (!validDelayedPayoffRescue && monopolyCostCount > 0) primaryClass = "guarded_old_arc_pressure";
-        else if (validDelayedPayoffRescue) primaryClass = "valid_delayed_payoff_rescue";
-
-        const secondaryClasses = [];
-        if (validDelayedPayoffRescue) secondaryClasses.push("valid_delayed_payoff_rescue");
-        if (!explicitRedirectionOnly && monopolyCostCount > 0) secondaryClasses.push("guarded_old_arc_pressure");
-        if (foregroundHijackRisk) secondaryClasses.push("foreground_hijack_risk");
-        if (arcMonopolyAttempt) secondaryClasses.push("arc_monopoly_attempt");
-        if (sceneMonopolyRisk) secondaryClasses.push("scene_monopoly_risk");
-        if (explicitRedirectionOnly || redirectedSuppressCount > 0) secondaryClasses.push("explicit_redirection_guard");
-
-        return {
-          policyVersion: "s16.8-ft.v1",
-          mode: "recall_gain_vs_monopoly_cost_split",
-          primaryClass,
-          secondaryClasses: secondaryClasses.filter(function(value, index, arr) { return value && arr.indexOf(value) === index; }),
-          validDelayedPayoffRescue,
-          foregroundHijackRisk,
-          arcMonopolyAttempt,
-          sceneMonopolyRisk,
-          step20CarryInBaseline: {
-            selectiveRerankConsumesStep168Suppression: true,
-            selectiveRerankConsumesStep168MonopolyTaxonomy: true,
-            laterRecallRerankSharesMonopolyCostTrace: true,
-          },
-          splitTrace: {
-            recallGainCount,
-            monopolyCostCount,
-            explicitAlignmentKeepCount,
-            currentSceneKeepCount,
-            noAlignmentDemoteCount,
-            redirectedSuppressCount,
-          },
-          decisionCounts: {
-            total: list.length,
-            helper: countsByLane.helper,
-            continuity: countsByLane.continuity,
-            keep: countsByAction.keep,
-            demote: countsByAction.demote,
-            suppress: countsByAction.suppress,
-            drop: countsByAction.drop,
-          },
-          reasonCounts: countsByReason,
-          decisionPreview: list.slice(0, 8).map(function(entry) {
-            return {
-              lane: entry && entry.lane ? entry.lane : null,
-              label: entry && entry.label ? entry.label : null,
-              action: entry && entry.action ? entry.action : null,
-              reason: entry && entry.reason ? entry.reason : null,
-            };
-          }),
-        };
-      }
-
-      function buildOldArcReplayGate(taxonomy, decisions) {
-        const list = Array.isArray(decisions) ? decisions.slice() : [];
-        const splitTrace = taxonomy && taxonomy.splitTrace && typeof taxonomy.splitTrace === "object"
-          ? taxonomy.splitTrace
-          : {};
-        const recallGainCount = Number(splitTrace.recallGainCount || 0);
-        const monopolyCostCount = Number(splitTrace.monopolyCostCount || 0);
-        const invalidDecisionCount = list.filter(function(entry) {
-          if (!entry) return false;
-          if (entry.action === "keep") return ["explicit_query_alignment", "current_scene_evidence"].indexOf(entry.reason) < 0;
-          if (entry.action === "demote") return entry.reason !== "no_alignment_rescue_ceiling";
-          if (entry.action === "suppress") return entry.reason !== "explicit_user_redirection";
-          return false;
-        }).length;
-        const staleArcRevivalReplayStatus = list.length === 0
-          ? "not_applicable"
-          : (invalidDecisionCount > 0 ? "block" : "pass");
-        const tailRecallVsForegroundHijackStatus = list.length === 0
-          ? "not_applicable"
-          : (recallGainCount > 0 && monopolyCostCount > 0 ? "warn" : "pass");
-        const narrativeDiversityStatus = list.length === 0
-          ? "not_applicable"
-          : (taxonomy && taxonomy.arcMonopolyAttempt ? "block" : ((taxonomy && (taxonomy.foregroundHijackRisk || taxonomy.sceneMonopolyRisk)) ? "warn" : "pass"));
-        const arcMonopolyStatus = list.length === 0
-          ? "not_applicable"
-          : (taxonomy && taxonomy.arcMonopolyAttempt ? "block" : (monopolyCostCount > 0 && !(taxonomy && taxonomy.primaryClass === "explicit_redirection_guard") ? "warn" : "pass"));
-        const replayScenarios = [];
-        if (taxonomy && taxonomy.validDelayedPayoffRescue) replayScenarios.push("valid_delayed_payoff_rescue");
-        if (Number(splitTrace.explicitAlignmentKeepCount || 0) > 0) replayScenarios.push("explicit_alignment_rescue");
-        if (Number(splitTrace.currentSceneKeepCount || 0) > 0) replayScenarios.push("current_scene_evidence_rescue");
-        if (Number(splitTrace.noAlignmentDemoteCount || 0) > 0) replayScenarios.push("no_alignment_stale_arc_demoted");
-        if (Number(splitTrace.redirectedSuppressCount || 0) > 0) replayScenarios.push("explicit_redirection_suppressed");
-        if (taxonomy && taxonomy.arcMonopolyAttempt) replayScenarios.push("single_incident_monopoly_attempt");
-        if (taxonomy && taxonomy.primaryClass === "tail_recall_with_monopoly_cost") replayScenarios.push("tail_recall_with_monopoly_cost");
-
-        return {
-          policyVersion: "s16.8-vx.v1",
-          mode: "stale_arc_replay_and_diversity_adoption_gate",
-          taxonomyPolicyVersion: taxonomy && taxonomy.policyVersion ? taxonomy.policyVersion : null,
-          step17CarryInBaseline: {
-            evaluationHarnessConsumesStep168ReplayCorpus: true,
-            inspectionSurfaceUsesStep168ReasonVisibilityLane: true,
-            adoptionGateUsesStep168DiversityGate: true,
-            redefines17_1f: false,
-            redefines17_3f: false,
-            redefines17_4g: false,
-          },
-          replayScenarios: replayScenarios.filter(function(value, index, arr) { return value && arr.indexOf(value) === index; }),
-          staleArcRevivalReplay: {
-            status: staleArcRevivalReplayStatus,
-            detail: list.length === 0
-              ? "no old-arc decisions observed"
-              : (invalidDecisionCount > 0 ? (invalidDecisionCount + " invalid decision(s) detected") : (list.length + " guarded decision(s) observed")),
-          },
-          tailRecallVsForegroundHijackGate: {
-            status: tailRecallVsForegroundHijackStatus,
-            detail: recallGainCount > 0 && monopolyCostCount > 0
-              ? ("recall gain " + recallGainCount + " with monopoly cost " + monopolyCostCount)
-              : (recallGainCount > 0
-                  ? ("recall gain " + recallGainCount + " without monopoly cost")
-                  : (monopolyCostCount > 0
-                      ? ("monopoly cost " + monopolyCostCount + " blocked before rescue")
-                      : "no split pressure observed")),
-          },
-          narrativeDiversityGate: {
-            status: narrativeDiversityStatus,
-            detail: taxonomy && taxonomy.arcMonopolyAttempt
-              ? "single incident tried to retake foreground across multiple surfaces"
-              : ((taxonomy && (taxonomy.foregroundHijackRisk || taxonomy.sceneMonopolyRisk))
-                  ? "old-arc pressure was present but remained inspectable"
-                  : "scene diversity stayed clear of old-arc monopoly pressure"),
-          },
-          arcMonopolyGate: {
-            status: arcMonopolyStatus,
-            detail: taxonomy && taxonomy.arcMonopolyAttempt
-              ? "arc monopoly attempt detected"
-              : (monopolyCostCount > 0 && !(taxonomy && taxonomy.primaryClass === "explicit_redirection_guard")
-                  ? ("monopoly cost recorded: " + monopolyCostCount)
-                  : "no arc monopoly attempt detected"),
-          },
-          handoffReady: [staleArcRevivalReplayStatus, narrativeDiversityStatus, arcMonopolyStatus].every(function(status) {
-            return status !== "block";
-          }),
-        };
-      }
-
-      const helperOldArcDecisions = oldArcForegroundGuard && Array.isArray(oldArcForegroundGuard.decisions)
-        ? oldArcForegroundGuard.decisions.map(function(entry) { return normalizeOldArcDecision(entry, "helper"); })
-        : [];
-      const continuityOldArcDecisions = continuityTrace && Array.isArray(continuityTrace.oldArcGuardDecisions)
-        ? continuityTrace.oldArcGuardDecisions.map(function(entry) { return normalizeOldArcDecision(entry, "continuity"); })
-        : [];
-      const combinedOldArcDecisions = helperOldArcDecisions.concat(continuityOldArcDecisions);
-      const oldArcTaxonomy = buildOldArcFailureTaxonomy(combinedOldArcDecisions);
-      const oldArcReplayGate = buildOldArcReplayGate(oldArcTaxonomy, combinedOldArcDecisions);
-      const longGapResume = String((continuityTrace && continuityTrace.triggerMode) || "") === "idle_reentry";
-      const weakInput = !rawInput || rawInput.length <= 24 || /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(rawInput);
-      const temporalQuery = isTemporalQueryInput(rawInput);
-      const resumePressure = /(continue|resume|pick up|where we left|keep going|이어서|이어가|계속|재개|다시 이어)/i.test(rawInput);
-      const explicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(rawInput);
-      const strongUserIntent = rawInput.length >= 48 || rawInput.split(/\s+/).filter(Boolean).length >= 10;
-
-      let relationshipCount = 0;
-      try {
-        const states = orchResult && orchResult.activeStatesResult && Array.isArray(orchResult.activeStatesResult.states)
-          ? orchResult.activeStatesResult.states
-          : [];
-        const relationshipState = states.find(function(state) { return state && state.state_type === "relationship_state"; });
-        if (relationshipState && relationshipState.content) {
-          const raw = typeof relationshipState.content === "string"
-            ? JSON.parse(relationshipState.content)
-            : relationshipState.content;
-          relationshipCount = Array.isArray(raw) ? raw.length : 0;
-        }
-      } catch { relationshipCount = 0; }
-
-      const kgCount = orchResult && orchResult.kgRecallResult && Array.isArray(orchResult.kgRecallResult.items)
-        ? orchResult.kgRecallResult.items.length
-        : 0;
-      const pendingThreadCount = orchResult && orchResult.pendingThreadsResult
-        ? Number(orchResult.pendingThreadsResult.count || ((Array.isArray(orchResult.pendingThreadsResult.items) && orchResult.pendingThreadsResult.items.length) || 0))
-        : 0;
-      const storylineCount = orchResult && orchResult.storylineResult
-        ? Number(orchResult.storylineResult.count || ((Array.isArray(orchResult.storylineResult.items) && orchResult.storylineResult.items.length) || 0))
-        : 0;
-      const memoryCount = orchResult && orchResult.searchResult && Array.isArray(orchResult.searchResult.items)
-        ? orchResult.searchResult.items.filter(function(item) { return item && item.source === "memory"; }).length
-        : 0;
-      const hasSceneState = !!(
-        orchResult && orchResult.activeStatesResult && Array.isArray(orchResult.activeStatesResult.states) &&
-        orchResult.activeStatesResult.states.some(function(state) { return state && state.state_type === "scene_state"; })
-      );
-      const trimmed = Array.isArray(budgetResult && budgetResult.trimmed) ? budgetResult.trimmed : [];
-
-      const needSignals = helperGovernor && Array.isArray(helperGovernor.needSignals)
-        ? helperGovernor.needSignals.slice()
-        : [];
-      if (needSignals.length === 0) {
-        if (weakInput) needSignals.push("weak_input");
-        if (temporalQuery) needSignals.push("temporal_query");
-        if (resumePressure) needSignals.push("resume_pressure");
-        if (longGapResume) needSignals.push("long_gap_resume");
-        if (Math.max(relationshipCount, kgCount) > 1) needSignals.push("multi_entity_pressure");
-        if (pendingThreadCount > 0) needSignals.push("unresolved_thread_pressure");
-        if (pendingThreadCount > 1) needSignals.push("multi_thread_pressure");
-        if (hasSceneState && /(scene|장면|장소|where|어디)/i.test(rawInput)) needSignals.push("scene_transition_pressure");
-        if (memoryCount > 0) needSignals.push("continuity_pressure");
-      } else if (pendingThreadCount > 1 && needSignals.indexOf("multi_thread_pressure") < 0) {
-        needSignals.push("multi_thread_pressure");
-      }
-
-      const riskSignals = helperGovernor && Array.isArray(helperGovernor.riskSignals)
-        ? helperGovernor.riskSignals.slice()
-        : [];
-      if (riskSignals.length === 0) {
-        if (explicitRedirection) riskSignals.push("explicit_user_redirection");
-        if (strongUserIntent) riskSignals.push("strong_user_intent");
-        if (!temporalQuery && !resumePressure && (storylineCount > 0 || pendingThreadCount > 0 || memoryCount > 0)) {
-          riskSignals.push("stale_arc_pressure");
-        }
-      }
-      if (budgetPolicy.runtimeAdaptiveBudgetApplied && riskSignals.indexOf("runtime_budget_secondary_cap") < 0) riskSignals.push("runtime_budget_secondary_cap");
-      if (trimmed.length > 0 && riskSignals.indexOf("helper_budget_trim_pressure") < 0) riskSignals.push("helper_budget_trim_pressure");
-      if (budgetPolicy.canonicalStateLayerHardFloorEnabled && riskSignals.indexOf("canonical_state_floor_enabled") < 0) riskSignals.push("canonical_state_floor_enabled");
-      if (Number(budgetPolicy.canonicalConflictGuardSuppressedCount || 0) > 0 && riskSignals.indexOf("canonical_conflict_guard") < 0) riskSignals.push("canonical_conflict_guard");
-      if (inputContextResult && inputContextResult.helperOverlapSuppressionApplied && riskSignals.indexOf("helper_overlap_suppression") < 0) riskSignals.push("helper_overlap_suppression");
-
-      let profile = "balanced_context";
-      if (explicitRedirection) profile = "scene_local_focus";
-      else if (longGapResume && memoryCount > 0) profile = "long_gap_resume";
-      else if ((temporalQuery || resumePressure || weakInput) && memoryCount > 0) profile = "resume_heavy";
-      else if (pendingThreadCount > 0 && !strongUserIntent) profile = "thread_pressure";
-
-      return {
-        policyVersion: "s16.5-bg.v1",
-        mode: "turn_need_risk_authority",
-        profile,
-        displayGuard: {
-          supportOnly: true,
-          note: "Support lane only; does not overwrite canonical state.",
-        },
-        authority: {
-          primaryBudgetSource: budgetPolicy.budgetLimitSource || "manual_setting",
-          effectiveBudgetLimit: Number(budgetPolicy.budgetLimit || budgetResult.budgetLimit || settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
-          manualBudgetLimit: Number(budgetPolicy.manualBudgetLimit || settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars),
-          runtimeAdaptiveBudgetApplied: !!budgetPolicy.runtimeAdaptiveBudgetApplied,
-          runtimeTokenSource: budgetPolicy.runtimeTokenSource || null,
-          runtimeCurrentChatTokensEffective: Number.isFinite(Number(budgetPolicy.runtimeCurrentChatTokensEffective))
-            ? Number(budgetPolicy.runtimeCurrentChatTokensEffective)
-            : null,
-        },
-        helperBudget: {
-          policyVersion: helperGovernor && helperGovernor.policyVersion ? helperGovernor.policyVersion : null,
-          mode: helperGovernor && helperGovernor.mode ? helperGovernor.mode : null,
-          profile: helperGovernor && helperGovernor.profile ? helperGovernor.profile : null,
-          baseBudgetChars: helperGovernor ? Number(helperGovernor.baseBudgetChars || 0) : null,
-          floorBudgetChars: helperGovernor ? Number(helperGovernor.floorBudgetChars || 0) : null,
-          ceilingBudgetChars: helperGovernor ? Number(helperGovernor.ceilingBudgetChars || 0) : null,
-          targetBudgetChars: helperGovernor ? Number(helperGovernor.targetBudgetChars || 0) : null,
-          deliveredBudgetChars: helperGovernor ? Number(helperGovernor.deliveredBudgetChars || 0) : null,
-          conservativeShrinkApplied: !!(helperGovernor && helperGovernor.conservativeShrinkApplied),
-          needSignals,
-          riskSignals,
-          selectedBlocks: Array.isArray(budgetResult && budgetResult.blocks)
-            ? budgetResult.blocks.map(function(block) { return block && block.label ? block.label : null; }).filter(Boolean)
-            : [],
-          trimmedBlocks: trimmed.map(function(item) {
-            return {
-              label: item && item.label ? item.label : null,
-              reason: item && item.reason ? item.reason : null,
-            };
-          }).filter(function(item) { return item.label || item.reason; }),
-          laneConfigs: helperGovernor && helperGovernor.laneConfigs ? helperGovernor.laneConfigs : {},
-        },
-        oldArcForeground: oldArcForegroundGuard ? {
-          policyVersion: oldArcForegroundGuard.policyVersion || null,
-          mode: oldArcForegroundGuard.mode || null,
-          suppressionTriggerActive: !!oldArcForegroundGuard.suppressionTriggerActive,
-          decisionVocabulary: oldArcForegroundGuard.decisionVocabulary && typeof oldArcForegroundGuard.decisionVocabulary === "object"
-            ? {
-                actions: Array.isArray(oldArcForegroundGuard.decisionVocabulary.actions) ? oldArcForegroundGuard.decisionVocabulary.actions.slice() : [],
-                reasons: Array.isArray(oldArcForegroundGuard.decisionVocabulary.reasons) ? oldArcForegroundGuard.decisionVocabulary.reasons.slice() : [],
-              }
-            : null,
-          decisionCounts: oldArcForegroundGuard.decisionCounts && typeof oldArcForegroundGuard.decisionCounts === "object"
-            ? Object.assign({}, oldArcForegroundGuard.decisionCounts)
-            : {},
-          decisions: Array.isArray(oldArcForegroundGuard.decisions) ? oldArcForegroundGuard.decisions.map(function(entry) {
-            return {
-              label: entry && entry.label ? entry.label : null,
-              action: entry && entry.action ? entry.action : null,
-              reason: entry && entry.reason ? entry.reason : null,
-              explicitAlignment: !!(entry && entry.explicitAlignment),
-              currentSceneEvidence: !!(entry && entry.currentSceneEvidence),
-              suppressionTrigger: !!(entry && entry.suppressionTrigger),
-              originalChars: Number(entry && entry.originalChars || 0),
-              keptChars: Number(entry && entry.keptChars || 0),
-              ceilingChars: Number(entry && entry.ceilingChars || 0) || null,
-            };
-          }) : [],
-        } : null,
-        oldArcTaxonomy,
-        oldArcReplayGate,
-        inputContext: {
-          policyVersion: inputContextResult && inputContextResult.slotGovernorPolicyVersion ? inputContextResult.slotGovernorPolicyVersion : null,
-          profile: inputContextResult && inputContextResult.adaptiveProfile ? inputContextResult.adaptiveProfile : "none",
-          maxSlots: Number(inputContextResult && inputContextResult.maxSlots || 0),
-          slotCount: Number(inputContextResult && inputContextResult.slotCount || 0),
-          selectedLabels: inputContextResult && Array.isArray(inputContextResult.sections)
-            ? inputContextResult.sections.map(function(section) { return section && section.label ? section.label : null; }).filter(Boolean)
-            : [],
-          droppedLabels: inputContextResult && Array.isArray(inputContextResult.dropped)
-            ? inputContextResult.dropped.map(function(section) { return section && section.label ? section.label : null; }).filter(Boolean)
-            : [],
-          needSignals: inputContextResult && Array.isArray(inputContextResult.needs) ? inputContextResult.needs.slice() : [],
-          riskSignals: inputContextResult && Array.isArray(inputContextResult.risks) ? inputContextResult.risks.slice() : [],
-          helperOverlapSuppressionApplied: !!(inputContextResult && inputContextResult.helperOverlapSuppressionApplied),
-        },
-      };
-    } catch {
-      return null;
-    }
-  }
-
-  /** memory item들에서 summary 텍스트를 추출해 주입용 블록으로 조립 */
-  function formatMemoryBlock(searchResult, maxItems) {
-    try {
-      if (!searchResult || !Array.isArray(searchResult.items)) return "";
-      const requestedTopK = sanitizeTopKSetting(maxItems || settings.topK, DEFAULT_SETTINGS.topK);
-      const memItems = searchResult.items
-        .filter(it => it && it.source === "memory")
-        .slice(0, requestedTopK);
-      if (memItems.length === 0) return "";
-      return memItems.map((item, i) => {
-        const raw = item.summary_json || item.summary || "";
-        let summary;
-        if (typeof raw === "string") {
-          try {
-            const parsed = JSON.parse(raw);
-            summary = parsed.turn_summary || parsed.summary || raw;
-          } catch { summary = raw; }
-        } else if (typeof raw === "object") {
-          summary = raw.turn_summary || raw.summary || JSON.stringify(raw);
-        } else {
-          summary = String(raw);
-        }
-        summary = summary.replace(/\s+/g, " ").trim();
-        const meta = [];
-        if (item.lane) meta.push(String(item.lane));
-        if (item.turn_index != null) meta.push("turn " + item.turn_index);
-        if (item.importance != null && !item.lane) meta.push("imp " + formatMemoryImportanceDisplay(item.importance) + "/10");
-        const metaText = meta.length ? "[" + meta.join(", ") + "] " : "[memory " + (i + 1) + "] ";
-        return "- " + metaText + summary;
-      }).join("\n");
-    } catch { return ""; }
-  }
-
-  /** fallback chat_log items에서 preview 블록 생성 */
-  function formatFallbackBlock(searchResult) {
-    try {
-      if (!searchResult || !Array.isArray(searchResult.items)) return "";
-      const fbItems = searchResult.items.filter(it => it && it.source === "chat_log");
-      if (fbItems.length === 0) return "";
-      return fbItems.map((item, i) => {
-        const content = item.content || "";
-        const preview = content.replace(/\s+/g, " ").trim();
-        return "[Past Chat " + (i + 1) + "] " + preview;
-      }).join("\n");
-    } catch { return ""; }
-  }
-
-  function buildNarrativeGuideBlock(authorText, directorText) {
-    try {
-      const a = String(authorText || "").trim();
-      const d = String(directorText || "").trim();
-      if (!a && !d) return "";
-      if (a && d) return "[Narrative Guide]\n" + d + "\n\n[Story Intent]\n" + a;
-      if (d) return "[Narrative Guide]\n" + d;
-      return "[Story Intent]\n" + a;
-    } catch {
-      return "";
-    }
-  }
-
-  function buildWorldContextBlock(sectionWorldText, worldRulesText) {
-    try {
-      const sw = String(sectionWorldText || "").trim();
-      const wr = String(worldRulesText || "").trim();
-      if (!sw && !wr) return "";
-      if (sw && wr) return "[Scene Rules]\n" + sw + "\n\n[Persistent Rules]\n" + wr;
-      if (sw) return "[Scene Rules]\n" + sw;
-      return "[Persistent Rules]\n" + wr;
-    } catch {
-      return "";
-    }
-  }
-
-  function adaptiveInjectionBudgetProfileLimits() {
-    return {
-      mid_context_300k: 9000,
-      wide_context_500k: 18000,
-      ultra_long_1m_plus: 27000,
-      extreme_long_2m_plus: 36000,
-    };
-  }
-
-  function adaptiveInjectionAutomaticCap(lowConfidenceRuntimeTokens) {
-    return 36000;
-  }
-
-  function estimateContextGrowthInjectionBudget(tokens, manualBudgetLimit, lowConfidenceRuntimeTokens) {
-    const base = Math.max(500, Number(manualBudgetLimit || DEFAULT_SETTINGS.maxInjectionChars || 6000));
-    const n = Number(tokens);
-    if (!Number.isFinite(n) || n <= 0) return base;
-
-    const limits = adaptiveInjectionBudgetProfileLimits();
-    let growthBudget = limits.mid_context_300k;
-    if (n >= 1700000) growthBudget = limits.extreme_long_2m_plus;
-    else if (n >= 900000) growthBudget = limits.ultra_long_1m_plus;
-    else if (n >= 300000) growthBudget = limits.wide_context_500k;
-
-    const cap = adaptiveInjectionAutomaticCap(!!lowConfidenceRuntimeTokens);
-    return Math.max(base, Math.min(cap, growthBudget));
-  }
-
-  /**
-   * Budget Manager: 각 블록을 우선순위에 따라 예산 내에서 조립.
-   *
-   * EA-1f 하이브리드 계약:
-   *  - 상위 권위층(canonical + dense summary)의 hard floor를 먼저 확보한다.
-   *  - 하위 지원층(retrieval/supporting inference)은 남은 예산에서 ratio로 경쟁한다.
-   *
-   * 반환: { finalText, blocks, trimmed, totalChars, budgetLimit, budgetPolicy }
-   */
-  function assembleInjectionWithBudget(activeStateText, authorText, directorText, memoryText, wakeUpText, fallbackText, kgText, episodeText, chapterText, arcText, sagaText, sectionWorldText, storylineText, characterText, locationContextText, worldRulesText, pendingThreadText, personaRecollectionText, characterPrivateRecollectionText, contextProfileHint, runtimeTokenHint, runtimeTokenSourceHint, runtimeTokenSessionKey, latestDirectEvidenceText, recentRawTurnText, canonicalStateLayerText, governorContext) {
-      const _buildNarrativeGuideBlock = (typeof buildNarrativeGuideBlock === "function")
-        ? buildNarrativeGuideBlock
-        : function(author, director) {
-            const a = String(author || "").trim(); 
-            const d = String(director || "").trim();
-            if (!a && !d) return "";
-            if (a && d) return "[Narrative Guide]\n" + d + "\n\n[Story Intent]\n" + a;
-            if (d) return "[Narrative Guide]\n" + d;
-            return "[Story Intent]\n" + a;
-          };
-      const _buildWorldContextBlock = (typeof buildWorldContextBlock === "function")
-        ? buildWorldContextBlock
-        : function(sectionWorld, worldRules) {
-            const sw = String(sectionWorld || "").trim();
-            const wr = String(worldRules || "").trim();
-            if (!sw && !wr) return "";
-            if (sw && wr) return "[Scene Rules]\n" + sw + "\n\n[Persistent Rules]\n" + wr;
-            if (sw) return "[Scene Rules]\n" + sw;
-            return "[Persistent Rules]\n" + wr;
-          };
-      const manualBudgetLimit = Math.max(500, settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars);
-      const userExtraBudgetChars = Math.max(0, Math.min(15000, Number(settings.injectionBudgetExtraChars || 0)));
-      const normalizedRuntimeTokenSource = String(runtimeTokenSourceHint || "").trim().toLowerCase();
-      const runtimeTokens = Number(runtimeTokenHint);
-      const runtimeTokenSourceIsEstimate = normalizedRuntimeTokenSource === "message_char_estimate";
-      const runtimeTieringEnabled = !!(normalizedRuntimeTokenSource && normalizedRuntimeTokenSource !== "none");
-      const runtimeBudgetAdaptiveEligible = !!(runtimeTieringEnabled && Number.isFinite(runtimeTokens) && runtimeTokens > 0);
-      const step13TokenEstimatorPolicyVersion = "tb1a.v1";
-      const step13TokenBudgetFallbackPolicyVersion = "tb1d.v1";
-      const step13TokenEstimatorMode = "profile_first_shared_thresholds";
-      const step13TokenEstimatorModelMode = "shared_thresholds_all_models";
-      const step13TokenEstimatorModelOverrides = {};
-      const step13TokenEstimatorProfiles = [
-        "mid_context_300k",
-        "wide_context_500k",
-        "ultra_long_1m_plus",
-        "extreme_long_2m_plus",
-      ];
-      const step13TokenEstimatorProfileSourceOrder = ["injection_pack_hint", "plugin_setting", "runtime_tokens", "max_injection_chars_proxy"];
-      const step13TokenEstimatorRuntimeThresholds = {
-        wide_context_500k: 300000,
-        ultra_long_1m_plus: 900000,
-        extreme_long_2m_plus: 1700000,
-      };
-      const step13TokenEstimatorBudgetLimitByProfile = adaptiveInjectionBudgetProfileLimits();
-      const step13TokenEstimatorLowConfidenceSources = ["none", "message_char_estimate"];
-      const step13TokenEstimatorDriftTelemetryFields = [
-        "manualBudgetLimit",
-        "budgetLimit",
-        "budgetLimitSource",
-        "runtimeCurrentChatTokens",
-        "runtimeCurrentChatTokensEffective",
-        "contextProfile",
-        "contextProfileSource",
-      ];
-      const step13TokenBudgetFallbackRules = {
-        reliable_runtime_tokens: {
-          budget_limit_source: "runtime_tokens",
-          profile_source_after_hint_and_setting: "runtime_tokens",
-          adaptive_budget_applied: true,
-        },
-        low_confidence_runtime_source: {
-          budget_limit_source: "manual_setting",
-          profile_source_fallback: "max_injection_chars_proxy",
-          profile_source_precedence_before_fallback: ["injection_pack_hint", "plugin_setting"],
-          adaptive_budget_applied: false,
-        },
-        low_confidence_runtime_source_adaptive: {
-          budget_limit_source: "runtime_token_estimate",
-          profile_source_after_hint_and_setting: "runtime_tokens",
-          adaptive_budget_applied: true,
-          conservative: true,
-        },
-        runtime_tokens_unavailable: {
-          budget_limit_source: "manual_setting",
-          profile_source_fallback: "max_injection_chars_proxy",
-          profile_source_precedence_before_fallback: ["injection_pack_hint", "plugin_setting"],
-          adaptive_budget_applied: false,
-        },
-        manual_setting_only: {
-          budget_limit_source: "manual_setting",
-          profile_source_fallback: "max_injection_chars_proxy",
-          profile_source_precedence_before_fallback: ["injection_pack_hint", "plugin_setting"],
-          adaptive_budget_applied: false,
-        },
-      };
-      const step13TokenTruthFloorPolicyVersion = "tb1b.v1";
-      const step13TokenTruthFloorMode = "char_floor_projected_minimums";
-      const step13TokenTruthFloorProjectionStatus = "contract_only_no_runtime_enforcement";
-      const step13TokenTruthFloorReferenceCharsPerToken = 4;
-      const step13TokenTruthFloorCoreLabels = ["latest_direct_evidence", "recent_raw_turn", "active_state", "canonical_state_layer"];
-      const step13TokenTruthFloorContinuityLabels = ["storylines", "episode", "chapter", "arc", "saga"];
-      const step13TokenTruthFloorReliabilityGuardLabels = step13TokenTruthFloorCoreLabels.slice();
-      const step13TokenDensityProfilePolicyVersion = "tb1c.v1";
-      const step13TokenDensityProfileLevels = ["light", "balanced", "heavy"];
-      const step13TokenDensityProfileThresholds = {
-        light_max_ratio: 0.08,
-        balanced_max_ratio: 0.15,
-      };
-      const runtimeTokenSmoothingWindow = 4;
-      const runtimeTokenSmoothingState = assembleInjectionWithBudget._runtimeTokenSmoothingState || new Map();
-      assembleInjectionWithBudget._runtimeTokenSmoothingState = runtimeTokenSmoothingState;
-      const runtimeTokenSmoothingKey = (function resolveRuntimeSmoothingKey() {
-        const sessionKey = String(runtimeTokenSessionKey || "").trim();
-        const sourceKey = String(runtimeTokenSourceHint || "").trim();
-        if (sessionKey) return "session:" + sessionKey;
-        if (sourceKey) return "source:" + sourceKey;
-        return "global";
-      })();
-      const runtimeAdaptiveTokens = (function resolveAdaptiveRuntimeTokens() {
-        if (!runtimeBudgetAdaptiveEligible) {
-          return {
-            effectiveTokens: Number.isFinite(runtimeTokens) && runtimeTokens > 0 ? Math.max(1, Math.floor(runtimeTokens)) : 0,
-            smoothingApplied: false,
-          };
-        }
-
-        const prev = runtimeTokenSmoothingState.get(runtimeTokenSmoothingKey);
-        const history = Array.isArray(prev && prev.history)
-          ? prev.history.slice(-(runtimeTokenSmoothingWindow - 1))
-          : [];
-        history.push(Math.max(1, Math.floor(runtimeTokens)));
-
-        const total = history.reduce(function(acc, v) {
-          const n = Number(v);
-          return acc + (Number.isFinite(n) ? n : 0);
-        }, 0);
-        const avgTokens = history.length > 0
-          ? Math.max(1, Math.floor(total / history.length))
-          : Math.max(1, Math.floor(runtimeTokens));
-
-        runtimeTokenSmoothingState.set(runtimeTokenSmoothingKey, {
-          history: history,
-          updatedAt: Date.now(),
-        });
-        if (runtimeTokenSmoothingState.size > 80) {
-          const oldest = runtimeTokenSmoothingState.keys().next().value;
-          runtimeTokenSmoothingState.delete(oldest);
-        }
-
-        return {
-          effectiveTokens: avgTokens,
-          smoothingApplied: history.length > 1,
-        };
-      })();
-      const runtimeTokensForTiering = runtimeAdaptiveTokens.effectiveTokens;
-      const runtimeTokenSmoothingApplied = runtimeAdaptiveTokens.smoothingApplied;
-      const runtimeAdaptiveBudgetLimit = (function resolveAdaptiveBudgetLimit() {
-        if (!runtimeBudgetAdaptiveEligible) return manualBudgetLimit;
-        let profileBudget = step13TokenEstimatorBudgetLimitByProfile.mid_context_300k;
-        if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.extreme_long_2m_plus) {
-          profileBudget = step13TokenEstimatorBudgetLimitByProfile.extreme_long_2m_plus;
-        } else if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.ultra_long_1m_plus) {
-          profileBudget = step13TokenEstimatorBudgetLimitByProfile.ultra_long_1m_plus;
-        } else if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.wide_context_500k) {
-          profileBudget = step13TokenEstimatorBudgetLimitByProfile.wide_context_500k;
-        }
-        const growthBudget = estimateContextGrowthInjectionBudget(runtimeTokensForTiering, manualBudgetLimit, runtimeTokenSourceIsEstimate);
-        return Math.max(manualBudgetLimit, profileBudget, growthBudget);
-      })();
-      const automaticBudgetCap = adaptiveInjectionAutomaticCap(runtimeTokenSourceIsEstimate);
-      const automaticBudgetLimit = Math.max(500, Math.min(automaticBudgetCap, runtimeAdaptiveBudgetLimit));
-      const budgetLimit = Math.max(500, Math.min(51000, automaticBudgetLimit + userExtraBudgetChars));
-      const budgetLimitSource = runtimeBudgetAdaptiveEligible
-        ? (runtimeTokenSourceIsEstimate ? "runtime_token_estimate:message_char_estimate" : (runtimeTokenSourceHint ? ("runtime_tokens:" + runtimeTokenSourceHint) : "runtime_tokens"))
-        : "manual_setting";
-      const step13TokenBudgetFallbackDecision = (function resolveStep13TokenBudgetFallbackDecision() {
-        if (runtimeBudgetAdaptiveEligible && runtimeTokenSourceIsEstimate) return "low_confidence_runtime_source_adaptive";
-        if (runtimeBudgetAdaptiveEligible) return "reliable_runtime_tokens";
-        if (normalizedRuntimeTokenSource === "message_char_estimate") return "low_confidence_runtime_source";
-        if (runtimeTieringEnabled) return "runtime_tokens_unavailable";
-        return "manual_setting_only";
-      })();
-      const blocks = [];
-      const trimmed = [];
-      let remaining = budgetLimit;
-      const helperGovernorContext = (governorContext && typeof governorContext === "object") ? governorContext : null;
-
-      // V-0f runtime optimization: 가능한 경우 현재 챗 token 힌트를 우선 사용하고,
-      // hint -> settings.contextWindowProfile -> runtime token -> maxInjectionChars proxy 순으로 profile을 결정한다.
-      const resolvedContextProfile = (function resolveContextProfile() {
-        const allowed = step13TokenEstimatorProfiles;
-        const normalizedHint = String(contextProfileHint || "").trim().toLowerCase();
-        if (allowed.indexOf(normalizedHint) >= 0) {
-          return { profile: normalizedHint, source: "injection_pack_hint" };
-        }
-
-        const normalizedSetting = String((settings && settings.contextWindowProfile) || "").trim().toLowerCase();
-        if (allowed.indexOf(normalizedSetting) >= 0) {
-          return { profile: normalizedSetting, source: "plugin_setting" };
-        }
-
-        if (runtimeTieringEnabled && Number.isFinite(runtimeTokensForTiering) && runtimeTokensForTiering > 0) {
-          if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.extreme_long_2m_plus) {
-            return {
-              profile: "extreme_long_2m_plus",
-              source: runtimeTokenSourceHint ? ("runtime_tokens:" + runtimeTokenSourceHint) : "runtime_tokens",
-            };
-          }
-          if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.ultra_long_1m_plus) {
-            return {
-              profile: "ultra_long_1m_plus",
-              source: runtimeTokenSourceHint ? ("runtime_tokens:" + runtimeTokenSourceHint) : "runtime_tokens",
-            };
-          }
-          if (runtimeTokensForTiering >= step13TokenEstimatorRuntimeThresholds.wide_context_500k) {
-            return {
-              profile: "wide_context_500k",
-              source: runtimeTokenSourceHint ? ("runtime_tokens:" + runtimeTokenSourceHint) : "runtime_tokens",
-            };
-          }
-          return {
-            profile: "mid_context_300k",
-            source: runtimeTokenSourceHint ? ("runtime_tokens:" + runtimeTokenSourceHint) : "runtime_tokens",
-          };
-        }
-
-        const maxRaw = Number((settings && settings.maxInjectionChars));
-        const maxChars = Number.isFinite(maxRaw)
-          ? Math.min(10000, Math.max(500, maxRaw))
-          : 3000;
-        if (maxChars >= 7000) return { profile: "extreme_long_2m_plus", source: "max_injection_chars_proxy" };
-        if (maxChars >= 5000) return { profile: "ultra_long_1m_plus", source: "max_injection_chars_proxy" };
-        if (maxChars >= 3600) return { profile: "wide_context_500k", source: "max_injection_chars_proxy" };
-        return { profile: "mid_context_300k", source: "max_injection_chars_proxy" };
-      })();
-
-      // V-0a: arc/saga budget ratio (ultra/extreme profile only)
-      const contextProfile = resolvedContextProfile.profile;
-      const contextProfileSource = resolvedContextProfile.source;
-      const isUltraOrExtreme = contextProfile === "ultra_long_1m_plus" || contextProfile === "extreme_long_2m_plus";
-      const isExtreme = contextProfile === "extreme_long_2m_plus";
-      const arcRatio = (isUltraOrExtreme && arcText) ? 0.08 : 0;
-      const sagaRatio = (isUltraOrExtreme && sagaText) ? 0.06 : 0;
-
-    // active state 예산 비율 — 비어 있으면 재분배
-    const asRatio = settings.activeStateBudgetRatio || 0.20;
-    const hasActiveState = !!(activeStateText && activeStateText.trim());
-    const canonicalStateLayerBlockText = String(canonicalStateLayerText || "").trim();
-    const hasCanonicalStateLayer = !!canonicalStateLayerBlockText;
-    const canonicalStateHardFloorPolicyVersion = "hs1c.v1";
-    const canonicalConflictGuardPolicyVersion = "hs1d.v1";
-    const retrievalConflictPolicyVersion = "rg1c.v1";
-    const hypaLoreIngestPolicyVersion = "rg1d.v1";
-    const reliabilityGuardPolicyVersion = "rg1g.v1";
-    const reliabilityGuardPolicyTag = "rg1g_conservative_hold";
-    const supportingGuidanceGuardPolicyVersion = "rg1h.v1";
-    const supportingGuidanceGuardPolicyTag = "rg1h_supporting_guidance_guard";
-    const narrativeQualityLayerPolicyVersion = "rg1i.v1";
-    const narrativeQualityLayerMode = "quality_hint_only";
-    const narrativeQualityLayerLabels = ["narrative_guide", "storylines", "world_context"];
-    const narrativeQualityLayerDisallowedUsage = ["truth_arbitration", "canonical_overwrite", "verified_direct_override", "current_fact_override"];
-    const narrativeQualityCoprocessorContractPolicyVersion = "nq1a.v1";
-    const narrativeQualityCoprocessorOutputPolicyVersion = "nq1b.v1";
-    const narrativeQualityCoprocessorConflictGuardPolicyVersion = "nq1c.v1";
-    const narrativeQualityCoprocessorTraceDisplayPolicyVersion = "nq1d.v1";
-    const narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion = "nq1d.truth.v1";
-    const narrativeQualityCoprocessorAblationPolicyVersion = "nq1e.v1";
-    const narrativeQualityCoprocessorPlannerSplitPolicyVersion = "nq1f.v1";
-    const narrativeQualityCoprocessorInputSurfaces = Array.from(new Set(narrativeQualityLayerLabels.concat(["recent_raw_turn"])));
-    const narrativeQualityCoprocessorSourceRoles = ["scene_pilot_brief", "supervisor_hint", "storyline_context"];
-    const narrativeQualityCoprocessorOutputMode = "guidance_trace_only";
-    const narrativeQualityCoprocessorOutputHintTypes = ["pacing_hint", "scene_obligation_reminder", "callback_opportunity_hint", "emphasis_ordering_proposal"];
-    const narrativeQualityCoprocessorOutputRequiredFields = ["hint_type", "hint_text", "priority"];
-    const narrativeQualityCoprocessorOutputOptionalFields = ["callback_anchor", "scene_obligation_anchor", "emphasis_target", "pace_axis"];
-    const narrativeQualityCoprocessorAblationProfiles = ["short_session", "long_session"];
-    const narrativeQualityCoprocessorAblationBaselineMode = "narrative_quality_off";
-    const narrativeQualityCoprocessorAblationEvaluationWindowByProfile = {
-      short_session: "recent_turns_8",
-      long_session: "continuity_window_32",
-    };
-    const narrativeQualityCoprocessorAblationPrimaryMetrics = ["hint_acceptance_delta", "conflict_free_guidance_rate", "response_coherence_delta"];
-    const narrativeQualityCoprocessorAblationDecisionGate = "keep_experimental_shadow_until_profiles_green";
-    const narrativeQualityCoprocessorAblationTruthLeakBudget = "zero_tolerance";
-    const entityCoprocessorAblationPolicyVersion = "vx1e.entity.v1";
-    const entityCoprocessorAblationBaselineMode = "entity_coprocessor_off";
-    const entityCoprocessorAblationPrimaryMetrics = ["relation_hint_acceptance_delta", "conflict_free_relation_hint_rate", "scene_carryover_precision"];
-    const entityCoprocessorAblationDecisionGate = "keep_manual_enable_until_profiles_green";
-    const worldCoprocessorAblationPolicyVersion = "vx1e.world.v1";
-    const worldCoprocessorAblationBaselineMode = "world_coprocessor_off";
-    const worldCoprocessorAblationPrimaryMetrics = ["world_hint_acceptance_delta", "conflict_free_world_hint_rate", "scene_scope_precision"];
-    const worldCoprocessorAblationDecisionGate = "keep_manual_enable_until_profiles_green";
-    const coprocessorTakeoverGatePolicyVersion = "vx1f.v1";
-    const coprocessorTakeoverGateRequiredSignals = ["module_replay_green", "module_ablation_green", "release_gate_green"];
-    const entityCoprocessorTakeoverGateDefaultAction = "stay_off_until_gate_green";
-    const worldCoprocessorTakeoverGateDefaultAction = "stay_off_until_gate_green";
-    const narrativeQualityCoprocessorTakeoverGateDefaultAction = "stay_experimental_shadow_until_gate_green";
-    const narrativeQualityCoprocessorPlannerSplitMode = "beat_planner_vs_scene_pilot_guidance_only";
-    const narrativeQualityCoprocessorPlannerRole = "beat_planner";
-    const narrativeQualityCoprocessorPlannerFields = ["current_arc", "narrative_goal", "next_marks", "guardrails"];
-    const narrativeQualityCoprocessorPlannerHintTypes = ["callback_opportunity_hint", "emphasis_ordering_proposal"];
-    const narrativeQualityCoprocessorExecutionRole = "scene_pilot";
-    const narrativeQualityCoprocessorExecutionFields = ["scene_target", "target_outcomes", "blocked_moves", "tension_level"];
-    const narrativeQualityCoprocessorExecutionHintTypes = ["pacing_hint", "scene_obligation_reminder"];
-    const narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed = false;
-    const narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed = false;
-    const narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed = false;
-    const step13BeatPlannerSchemaPolicyVersion = "ps1a.v1";
-    const step13ScenePilotSchemaPolicyVersion = "ps1b.v1";
-    const step13SettingFrameSchemaPolicyVersion = "ps1c.v1";
-    const seq13P214BundleLatestRootRuntimeGate = "bundle_latest_root_runtime_draft";
-    const seq13P215RootBundleRegenerateGate = "root_bundle_regenerate_draft";
-    const seq13P216PackagedBundleRoundtripGate = "packaged_bundle_import_export_roundtrip";
-    const seq13P216ReembedFallbackSmokePass = "reembed_fallback_smoke_check_pass";
-    const seq13P216GovernorTraceSmokePass = "governor_trace_smoke_check_pass";
-    const seq13P216TokenProfileTraceSmokePass = "token_profile_trace_smoke_check_pass";
-    const seq13P217PlanningSurfaceGuidanceOnlyLeakGuard = "guidance_only_experimental_authority_leak_guard";
-    const seq13P218NamingReviewChecklistConfirmed = "step13_naming_review_checklist_confirmed";
-    const seq14P85BundleLatestRootRuntimeGate = "step14_bundle_latest_root_runtime_contract_only";
-    const seq14P85BundleArtifactGenerationAllowed = false;
-    const seq14P85BundleGeneratedArtifactTypes = [];
-    const seq14P85BundleGateArtifactPolicy = "no_exe_zip_bundle_or_db_snapshot_generated";
-    const seq14P85BundleGateValidationMode = "contract_marker_smoke_only";
-    const seq15P144BundleLatestRootRuntimeGate = "step15_bundle_latest_root_runtime_contract_only";
-    const seq15P144BundleArtifactGenerationAllowed = false;
-    const seq15P144BundleGeneratedArtifactTypes = [];
-    const seq15P144BundleGateArtifactPolicy = "no_exe_zip_bundle_or_db_snapshot_generated";
-    const seq15P144BundleGateValidationMode = "contract_marker_smoke_only";
-    const step13PlanningRuntimeMode = "guidance_only_schema_draft";
-    const step13PlanningRolloutStage = "experimental_shadow";
-    const step13PlanningTakeoverGate = "stay_guidance_only_until_vx_green";
-    const step13PlanningTruthWriteAllowed = false;
-    const step13PlanningReducerReentryAllowed = false;
-    const step13BeatPlannerDraftRequiredFields = ["narrative_goal", "tension_axis", "open_question", "payoff_candidate"];
-    const step13BeatPlannerDraftOptionalFields = ["current_arc", "next_marks", "guardrails"];
-    const step13ScenePilotDraftRequiredFields = ["execution_mode", "scene_target", "emphasis_axis", "pacing", "forbidden_move"];
-    const step13ScenePilotDraftOptionalFields = ["target_outcomes", "blocked_moves", "tension_level"];
-    const step13SettingFrameDraftOptionalFields = ["pressure_axis", "offscreen_thread_ref"];
-    const narrativeQualityCoprocessorConflictGuardMode = "current_fact_conflict_auto_degrade";
-    const narrativeQualityCoprocessorConflictGuardAnchorSource = "step11_truth_core";
-    const narrativeQualityCoprocessorConflictGuardConflictReason = "supporting_guidance_conflict_blocked";
-    const narrativeQualityCoprocessorConflictGuardDropAction = "drop_conflicting_quality_hint";
-    const narrativeQualityCoprocessorConflictGuardDegradeAction = "degrade_to_lower_priority_hint";
-    const narrativeQualityCoprocessorConflictGuardTruthFloorFallback = "preserve_step11_factual_state";
-    const narrativeQualityCoprocessorConflictGuardDisallowedTargets = ["current_fact", "canonical_state", "canonical_state_layer"];
-    const narrativeQualityCoprocessorConflictGuardFailOpenWithoutFactualState = true;
-    const narrativeQualityCoprocessorTraceDisplayMode = "quality_hint_vs_factual_state_split";
-    const narrativeQualityCoprocessorTraceDisplayHintLane = "response_quality_hint";
-    const narrativeQualityCoprocessorTraceDisplayTruthLane = "step11_factual_state";
-    const narrativeQualityCoprocessorTraceDisplayTruthTargets = ["current_fact", "canonical_state", "canonical_state_layer"];
-    const narrativeQualityCoprocessorTraceDisplayTruthOwner = "step11_truth_core";
-    const narrativeQualityCoprocessorTraceDisplayDisallowedAliases = ["quality_hint_as_current_fact", "quality_hint_as_canonical_state"];
-    const narrativeQualityCoprocessorTraceDisplayLabelPrefixes = {
-      response_quality_hint: "[Response Quality Hint]",
-      step11_factual_state: "[Factual State]",
-    };
-    const hypaLorePolicyTag = "rg1d_ingest_only";
-    const legacyAlwaysOnSourceLabels = ["wake_up", "lorebook", "hypamemory"];
-    const wakeUpTextSource = String(wakeUpText || "").trim();
-    const hypaLoreAlwaysOnDetected = !!wakeUpTextSource;
-    const _HS1D_CONTRADICTION_PAIRS = [
-      ["reconciled", "hostile"],
-      ["ally", "enemy"],
-      ["friend", "enemy"],
-      ["trust", "betray"],
-      ["cooperative", "conflict"],
-      ["peace", "war"],
-      ["allowed", "forbidden"],
-      ["enabled", "disabled"],
-      ["open", "closed"],
-      ["alive", "dead"],
-      ["stable", "collapsed"],
-      ["화해", "적대"],
-      ["협력", "대립"],
-      ["신뢰", "배신"],
-      ["허용", "금지"],
-      ["활성", "비활성"],
-      ["열림", "닫힘"],
-      ["생존", "사망"],
-      ["안정", "붕괴"],
-    ];
-    const conflictGuardSuppressedBlockSet = new Set();
-    const conflictGuardSuppressedAnchorSet = new Set();
-    const conflictGuardCheckedLabels = [];
-    const conflictGuardSuppressedDetails = [];
-    const retrievalKeepDropTrace = [];
-    const supportingGuidanceBlockedSet = new Set();
-    const supportingGuidanceBlockedDetails = [];
-
-    function _recordRetrievalDecisionRg1c(label, action, reason, anchors, detail) {
-      const normalizedLabel = String(label || "").trim();
-      if (!normalizedLabel) return;
-      const normalizedAction = action === "drop" ? "drop" : "keep";
-      const normalizedReason = String(reason || "").trim() || (normalizedAction === "drop" ? "canonical_polarity_conflict" : "no_canonical_conflict");
-      const entry = {
-        label: normalizedLabel,
-        action: normalizedAction,
-        reason: normalizedReason,
-      };
-      const anchorList = Array.isArray(anchors) ? anchors.filter(Boolean).slice(0, 3) : [];
-      if (anchorList.length) entry.anchors = anchorList;
-      if (detail) entry.detail = String(detail).slice(0, 180);
-      retrievalKeepDropTrace.push(entry);
-    }
-
-    function _normalizeHs1d(value) {
-      return String(value || "").toLowerCase();
-    }
-
-    function _buildAnchorTokensHs1d(anchorLabel) {
-      const raw = String(anchorLabel || "");
-      if (!raw.trim()) return [];
-
-      const out = new Set();
-      const normalized = _normalizeHs1d(raw)
-        .replace(/[\[\]\(\)\{\},.;:]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-
-      if (normalized) out.add(normalized);
-      normalized.split(/[\/|>|\s]+/).forEach(function(token) {
-        const t = String(token || "").trim();
-        if (t && t.length >= 3) out.add(t);
-      });
-      return Array.from(out);
-    }
-
-    function _buildCanonicalFactsHs1d(canonText) {
-      const src = String(canonText || "");
-      if (!src.trim()) return [];
-
-      const rows = [];
-      const lines = src.split(/\r?\n/);
-      for (const rawLine of lines) {
-        const line = String(rawLine || "").trim();
-        if (!line.startsWith("- ")) continue;
-
-        let kind = "";
-        let rest = "";
-        if (line.startsWith("- Relationship:")) {
-          kind = "relationship";
-          rest = line.slice("- Relationship:".length).trim();
-        } else if (line.startsWith("- World:")) {
-          kind = "world";
-          rest = line.slice("- World:".length).trim();
-        } else {
-          continue;
-        }
-        if (!rest) continue;
-
-        const divider = "—";
-        const dividerIndex = rest.indexOf(divider);
-        const anchorLabel = dividerIndex >= 0 ? rest.slice(0, dividerIndex).trim() : rest;
-        const summaryText = dividerIndex >= 0 ? rest.slice(dividerIndex + divider.length).trim() : rest;
-        const anchorTokens = _buildAnchorTokensHs1d(anchorLabel);
-        const summaryNorm = _normalizeHs1d(summaryText);
-        if (!anchorTokens.length || !summaryNorm) continue;
-
-        rows.push({
-          kind: kind,
-          anchorLabel: anchorLabel,
-          anchorTokens: anchorTokens,
-          summaryNorm: summaryNorm,
-        });
-      }
-      return rows;
-    }
-
-    function _hasPolarityConflictHs1d(canonicalSummaryNorm, candidateNorm) {
-      if (!canonicalSummaryNorm || !candidateNorm) return false;
-      for (const pair of _HS1D_CONTRADICTION_PAIRS) {
-        const left = pair[0];
-        const right = pair[1];
-        const canonicalHasLeft = canonicalSummaryNorm.indexOf(left) >= 0;
-        const canonicalHasRight = canonicalSummaryNorm.indexOf(right) >= 0;
-        const candidateHasLeft = candidateNorm.indexOf(left) >= 0;
-        const candidateHasRight = candidateNorm.indexOf(right) >= 0;
-
-        if ((canonicalHasLeft && candidateHasRight && !candidateHasLeft) || (canonicalHasRight && candidateHasLeft && !candidateHasRight)) {
-          return true;
-        }
-      }
-      return false;
-    }
-
-    const canonicalFactsHs1d = _buildCanonicalFactsHs1d(canonicalStateLayerBlockText);
-    const canonicalConflictGuardEnabled = hasCanonicalStateLayer && canonicalFactsHs1d.length > 0;
-    let supportingGuidanceEvidenceCeilingEnabled = !!(
-      hasActiveState ||
-      hasCanonicalStateLayer
-    );
-
-    function _guardSupportingGuidanceRg1h(label, text) {
-      const source = String(text || "").trim();
-      if (!source) return "";
-      if (!supportingGuidanceEvidenceCeilingEnabled) return source;
-      if (!canonicalConflictGuardEnabled) return source;
-
-      const sourceNorm = _normalizeHs1d(source);
-      const matchedAnchors = [];
-      for (const fact of canonicalFactsHs1d) {
-        const anchorHit = (fact.anchorTokens || []).some(function(token) {
-          return token && sourceNorm.indexOf(token) >= 0;
-        });
-        if (!anchorHit) continue;
-        if (_hasPolarityConflictHs1d(fact.summaryNorm, sourceNorm)) {
-          matchedAnchors.push(fact.anchorLabel || fact.kind);
-        }
-      }
-
-      if (!matchedAnchors.length) return source;
-      const uniqueAnchors = Array.from(new Set(matchedAnchors)).slice(0, 3);
-      supportingGuidanceBlockedSet.add(label);
-      supportingGuidanceBlockedDetails.push({
-        label: label,
-        reason: "supporting_guidance_conflict_blocked",
-        anchors: uniqueAnchors,
-      });
-      _recordRetrievalDecisionRg1c(label, "drop", "supporting_guidance_conflict_blocked", uniqueAnchors, null);
-      trimmed.push({
-        label: label,
-        reason: "supporting_guidance_conflict_blocked",
-        originalChars: source.length,
-        keptChars: 0,
-        policyTag: supportingGuidanceGuardPolicyTag,
-      });
-      return "";
-    }
-
-    function _guardRetrievalTextHs1d(label, text) {
-      const source = String(text || "").trim();
-      if (!source) return "";
-      if (!canonicalConflictGuardEnabled) {
-        _recordRetrievalDecisionRg1c(label, "keep", "canonical_guard_disabled", null, null);
-        return source;
-      }
-
-      conflictGuardCheckedLabels.push(label);
-      const sourceNorm = _normalizeHs1d(source);
-      const matchedAnchors = [];
-
-      for (const fact of canonicalFactsHs1d) {
-        const anchorHit = (fact.anchorTokens || []).some(function(token) {
-          return token && sourceNorm.indexOf(token) >= 0;
-        });
-        if (!anchorHit) continue;
-        if (_hasPolarityConflictHs1d(fact.summaryNorm, sourceNorm)) {
-          matchedAnchors.push(fact.anchorLabel || fact.kind);
-        }
-      }
-
-      if (!matchedAnchors.length) {
-        _recordRetrievalDecisionRg1c(label, "keep", "no_canonical_conflict", null, null);
-        return source;
-      }
-
-      const uniqueAnchors = Array.from(new Set(matchedAnchors)).slice(0, 3);
-      conflictGuardSuppressedBlockSet.add(label);
-      uniqueAnchors.forEach(function(anchor) {
-        conflictGuardSuppressedAnchorSet.add(anchor);
-      });
-      conflictGuardSuppressedDetails.push({
-        label: label,
-        reason: "canonical_polarity_conflict",
-        anchors: uniqueAnchors,
-      });
-      _recordRetrievalDecisionRg1c(label, "drop", "canonical_polarity_conflict", uniqueAnchors, null);
-      return "";
-    }
-
-    // T-1f: long-tier + relationship signal 존재 시에만
-    // relationship/character/hook 신호를 memory보다 우선한다.
-    // signal이 없으면 기존 long-tier budget 동작을 유지한다.
-    const hasRelationshipSignals = !!(
-      (characterText && characterText.trim()) ||
-      (pendingThreadText && pendingThreadText.trim())
-    );
-    const hasLatestDirectEvidence = !!(latestDirectEvidenceText && String(latestDirectEvidenceText).trim());
-    const hasRecentRawTurn = !!(recentRawTurnText && String(recentRawTurnText).trim());
-    supportingGuidanceEvidenceCeilingEnabled = !!(
-      hasLatestDirectEvidence ||
-      hasActiveState ||
-      hasCanonicalStateLayer
-    );
-    const relationshipFirstEnabled = isUltraOrExtreme && hasRelationshipSignals;
-    const relationshipPolicy = relationshipFirstEnabled ? "t1f_relationship_first" : "legacy_balance";
-    const relationshipPolicyVersion = relationshipFirstEnabled ? "t1f.v1" : "";
-    const recentPriorityPolicyVersion = "ea1g.v1";
-    const recentPriorityTag = (hasLatestDirectEvidence || hasRecentRawTurn) ? "ea1g_priority_frontline" : "";
-    const verifiedCurrentStatePrecedenceEnabled = hasActiveState;
-    const verifiedCurrentStatePolicyVersion = verifiedCurrentStatePrecedenceEnabled ? "rg1f.v1" : "";
-    const verifiedCurrentStatePolicyTag = verifiedCurrentStatePrecedenceEnabled ? "rg1f_verified_current_state" : "";
-    const retrievalRolePolicyVersion = "rg1a.v1";
-    const retrievalRolePolicyTag = "rg1a_retrieval_audit_only";
-    const retrievalAllowedUsage = ["detail_recall", "audit_reference"];
-    const retrievalDisallowedUsage = ["truth_overwrite", "canonical_override"];
-    const retrievalSupportingLabels = ["characters", "pending_threads", "memories", "kg_relations", "world_context", "fallback", "location_context"];
-    const retrievalPromotionPolicyVersion = "rg1b.v1";
-    const retrievalPromotionTargets = ["canonical_state", "dense_summary"];
-    const retrievalPromotionImportanceTokens = ["[pinned]", "pinned", "must", "critical", "promise", "callback", "important", "중요", "핵심", "약속", "반드시", "복선"];
-    const coprocessorAuthorityMatrixPolicyVersion = "mg1a.v1";
-    const coprocessorBoundaryPolicyVersion = "mg1b.v1";
-    const coprocessorFeatureControlPolicyVersion = "mg1c.v1";
-    const coprocessorBudgetIsolationPolicyVersion = "mg1d.v1";
-    const coprocessorReasonTracePolicyVersion = "mg1e.v1";
-    const coprocessorAntiCopyReviewPolicyVersion = "mg1f.v1";
-    const coprocessorProposalReentryPolicyVersion = "mg1g.v1";
-    const coprocessorAnalysisProviderPolicyVersion = "mg1h.v1";
-    const coprocessorOrchestrationPolicyVersion = "or1a.v1";
-    const coprocessorAuthorityModes = ["truth_writer", "proposal_only", "guidance_only", "diagnostic_only"];
-    const coprocessorTruthWriteTargets = ["current_fact", "canonical_state", "canonical_state_layer", "dense_summary"];
-    const coprocessorSidecarWritableTargets = ["proposal_trace", "guidance_trace", "audit_trace", "maintenance_metadata"];
-    const coprocessorFeatureFlagModes = ["always_on", "conservative", "experimental", "off"];
-    const coprocessorRolloutStages = ["truth_floor_locked", "diagnostic_default_on", "experimental_shadow", "manual_enable_required"];
-    const coprocessorKillSwitchStates = ["not_applicable", "armed_standby", "engaged"];
-    const truthFloorBudgetLane = "truth_floor";
-    const coprocessorHintBudgetLane = "coprocessor_hint";
-    const truthFloorBudgetLabels = [
-      "latest_direct_evidence",
-      "recent_raw_turn",
-      "active_state",
-      "canonical_state_layer",
-      "storylines",
-      "episode",
-      "chapter",
-      "arc",
-      "saga",
-    ];
-    const step13TokenDensityLedgerLabels = ["storylines", "episode", "chapter", "arc", "saga"];
-    const step13TokenDensityWorldLabels = ["world_context", "location_context", "kg_relations"];
-    const step13TokenDensityGuidanceLabels = ["narrative_guide"];
-    const narrativeQualityCoprocessorAblationProtectedTruthLabels = truthFloorBudgetLabels.slice();
-    const coprocessorHintBudgetPromptLabels = [
-      "characters",
-      "pending_threads",
-      "location_context",
-      "memories",
-      "kg_relations",
-      "narrative_guide",
-      "world_context",
-      "fallback",
-    ];
-    const coprocessorHintBudgetPromptModules = [
-      "retrieval_supporting_inference",
-      "entity_coprocessor",
-      "world_coprocessor",
-      "narrative_quality_coprocessor",
-    ];
-    const coprocessorReasonTraceActions = ["keep", "drop", "degrade"];
-    const coprocessorReasonTraceKeepReasonCodes = ["truth_floor_reserved", "hint_budget_delivered", "delivered_full", "no_canonical_conflict", "canonical_guard_disabled"];
-    const coprocessorReasonTraceDropReasonCodes = ["budget_exhausted", "supporting_guidance_conflict_blocked", "canonical_polarity_conflict", "budget_collision_saga_reserve", "reliability_guard_hold", "ingest_only_not_injected", "explicit_user_redirection"];
-    const coprocessorReasonTraceDegradeReasonCodes = ["item_truncated", "hard_cap_unstructured", "no_alignment_rescue_ceiling"];
-    const coprocessorReasonTraceBudgetReasonCodes = ["item_truncated", "hard_cap_unstructured", "budget_exhausted", "budget_collision_saga_reserve"];
-    const coprocessorReasonTraceReasonCodes = Array.from(new Set(
-      coprocessorReasonTraceKeepReasonCodes
-        .concat(coprocessorReasonTraceDropReasonCodes)
-        .concat(coprocessorReasonTraceDegradeReasonCodes)
-    ));
-    const coprocessorAntiCopyReviewScope = "pr_unit";
-    const coprocessorAntiCopyAllowedReferenceMode = "behavioral_reference_only";
-    const coprocessorAntiCopyReviewEvidenceFields = [
-      "local_owner_surface",
-      "behavioral_source_note",
-      "diff_review_note",
-      "constant_origin_note",
-    ];
-    const coprocessorAntiCopyReviewChecklist = [
-      {
-        check_id: "external_structure",
-        carryover_class: "structure",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "외부 시스템의 top-level structure 또는 module partition을 그대로 이식하지 않았는가?",
-      },
-      {
-        check_id: "function_body",
-        carryover_class: "function_body",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "외부 함수 본문이나 branch body를 line-by-line로 옮기지 않았는가?",
-      },
-      {
-        check_id: "call_flow",
-        carryover_class: "call_flow",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "외부 호출 순서와 orchestration flow를 그대로 재현하지 않았는가?",
-      },
-      {
-        check_id: "constant_values",
-        carryover_class: "constant_value",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "상수값을 provenance 설명 없이 그대로 들여오지 않았는가?",
-      },
-      {
-        check_id: "thresholds",
-        carryover_class: "threshold",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "threshold를 외부 수치 그대로 복제하지 않고 로컬 검증 근거를 남겼는가?",
-      },
-      {
-        check_id: "ratios",
-        carryover_class: "ratio",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "budget ratio나 weight를 외부 기본값 그대로 옮기지 않았는가?",
-      },
-      {
-        check_id: "token_budget_defaults",
-        carryover_class: "token_budget_default",
-        review_scope: coprocessorAntiCopyReviewScope,
-        blocking: true,
-        forbidden_direct_carryover: true,
-        review_prompt: "token budget default와 tier cut을 외부 preset에서 직접 가져오지 않았는가?",
-      },
-    ];
-    const coprocessorAntiCopyReviewCheckIds = coprocessorAntiCopyReviewChecklist.map(function(entry) {
-      return entry.check_id;
-    });
-    const coprocessorAntiCopyReviewBlockingChecks = coprocessorAntiCopyReviewChecklist.filter(function(entry) {
-      return !!(entry && entry.blocking);
-    }).map(function(entry) {
-      return entry.check_id;
-    });
-    const coprocessorAntiCopyForbiddenCarryoverClasses = coprocessorAntiCopyReviewChecklist.map(function(entry) {
-      return entry.carryover_class;
-    });
-    const coprocessorProposalTraceRequiredFields = ["evidence_refs", "source_turns", "confidence"];
-    const coprocessorProposalReentryRequiredModules = ["entity_coprocessor", "world_coprocessor"];
-    const coprocessorProposalAdoptionPath = ["proposal_trace", "reducer_reentry", "step11_truth_core"];
-    const coprocessorAnalysisProviderModules = ["entity_coprocessor", "world_coprocessor", "narrative_quality_coprocessor"];
-    const coprocessorAnalysisProviderRawOutputMode = "proposal_only";
-    const coprocessorAnalysisProviderCallFrequencyOwner = "step13_governor";
-    const step13GovernorPolicyVersion = "gv1a.v1";
-    const step13CacheKeeperPolicyVersion = "gv1b.v1";
-    const step13GovernorFailureBudgetPolicyVersion = "gv1c.v1";
-    const step13GovernorRunLedgerPolicyVersion = "gv1d.v1";
-    const step13GovernorBypassPolicyVersion = "gv1e.v1";
-    const step13GovernorManagedModules = ["entity_coprocessor", "world_coprocessor", "narrative_quality_coprocessor"];
-    const step13GovernorApprovalStates = ["run", "reuse", "skip", "suspend"];
-    const step13GovernorCooldownTurnsByModule = {
-      entity_coprocessor: 0,
-      world_coprocessor: 0,
-      narrative_quality_coprocessor: 0,
-    };
-    const step13GovernorDirtySeverityOrder = ["none", "low", "medium", "high", "critical"];
-    const step13GovernorMinDirtySeverityByModule = {
-      entity_coprocessor: "medium",
-      world_coprocessor: "medium",
-      narrative_quality_coprocessor: "low",
-    };
-    const step13GovernorFailureBucketMode = "shared_sidecar_channel";
-    const step13GovernorTrackedFailureClasses = ["plugin_main_error", "sub_review_error", "supervisor_unavailable", "delivery_gate_blocked"];
-    const step13GovernorFailureWindowTurns = 4;
-    const step13GovernorConsecutiveFailureThreshold = 2;
-    const step13GovernorResumeSuccessTurnsRequired = 1;
-    const step13GovernorFailureRuntimeAction = "trace_only_no_prompt_mutation";
-    const step13GovernorFailureFailOpenBehavior = "keep_current_turn_execution_and_truth_floor";
-    const step13GovernorBypassBlockedRoutes = ["self_triggered_sidecar_rerun", "proposal_trace_direct_reentry", "guidance_trace_recursive_requeue", "pending_ready_self_rearm"];
-    const step13GovernorBypassProtectedPromptTargets = ["proposal_trace", "guidance_trace", "pending_ready_orchestration_result"];
-    const step13GovernorBypassAction = "deny_and_trace_only";
-    const step13GovernorBypassRuntimeStatus = "contract_only";
-    const step13GovernorMaxParallelism = 1;
-    const step13GovernorRuntimeMode = "trace_and_transport_aligned";
-    const coprocessorAnalysisProviderTraceTargetsByModule = {
-      entity_coprocessor: "proposal_trace",
-      world_coprocessor: "proposal_trace",
-      narrative_quality_coprocessor: "guidance_trace",
-    };
-    const coprocessorAnalysisProviderNormalizationByModule = {
-      entity_coprocessor: "proposal_trace_passthrough",
-      world_coprocessor: "proposal_trace_passthrough",
-      narrative_quality_coprocessor: "proposal_to_guidance_trace_adapter",
-    };
-    const coprocessorAnalysisProviderDisallowedUsage = ["autonomous_truth_write", "current_fact_write", "canonical_write", "dense_summary_write"];
-    const coprocessorOrchestrationRuntimeStages = ["step11_truth_stack", "residual_guidance"];
-    const coprocessorOrchestrationTruthStackOwner = "step11_truth_core";
-    const coprocessorOrchestrationCallEntryGate = "after_step11_truth_stack";
-    const coprocessorOrchestrationResidualBudgetSource = "coprocessor_hint_residual";
-    const coprocessorOrchestrationProviderCallOrder = ["entity_coprocessor", "world_coprocessor", "narrative_quality_coprocessor"];
-    const coprocessorOrchestrationDirtySignalPolicyVersion = "or1c.v1";
-    const coprocessorOrchestrationDirtySignalEvaluationMode = "trace_contract_only";
-    const coprocessorOrchestrationDirtySignals = ["session_bootstrap", "user_input_changed", "input_source_changed", "continuity_mode_changed", "continuity_query_changed", "prepare_turn_source_changed", "prepare_turn_bundle_changed", "rollback_invalidation", "guidance_invalidation", "stable_session_snapshot"];
-    const coprocessorOrchestrationDirtyRecomputeSignals = coprocessorOrchestrationDirtySignals.filter(function(signal) {
-      return signal !== "stable_session_snapshot";
-    });
-    const coprocessorOrchestrationDirtyStableSignals = ["stable_session_snapshot"];
-    const step13CacheKeeperForcedRefreshSignals = coprocessorOrchestrationDirtyRecomputeSignals.slice();
-    const step13CacheKeeperStaleDiscardReasons = [
-      "cache_key_mismatch",
-      "session_scope_mismatch",
-      "rollback_invalidation_drift",
-      "guidance_invalidation_drift",
-      "rebuild_pending",
-      "chapter_evidence_mismatch",
-    ];
-    const step13CacheKeeperNoServeConditions = ["blocked_empty_result", "stale_sidecar_blocked", "backend_offline"];
-    const coprocessorOrchestrationDirtySnapshotFields = ["chat_session_id", "user_input_hash", "input_source", "continuity_mode", "continuity_query_hash", "prepare_turn_source", "prepare_turn_bundle_signature", "rollback_token", "guidance_token"];
-    const coprocessorOrchestrationCachePolicyVersion = "or1d.v1";
-    const coprocessorOrchestrationCacheUnit = "pending_ready_orchestration_result";
-    const coprocessorOrchestrationCacheReuseScope = "same_chat_session_after_request_only";
-    const coprocessorOrchestrationCacheKeyFields = coprocessorOrchestrationDirtySnapshotFields.concat(["dirty_policy_version"]);
-    const coprocessorOrchestrationCacheInvalidationSignals = coprocessorOrchestrationDirtyRecomputeSignals.slice();
-    const coprocessorOrchestrationCacheInvalidationTokens = ["rollback_token", "guidance_token"];
-    const coprocessorOrchestrationCacheStaleGuard = "deny_reuse_on_cache_key_mismatch_or_invalidation_drift";
-    const coprocessorOrchestrationModuleTransportPolicyVersion = "or1e.v1";
-    const coprocessorOrchestrationRollbackDetectionPolicyVersion = "or1f.v1";
-    const coprocessorOrchestrationRollbackDetectionSources = ["history_diff_common_prefix_suffix", "persisted_turn_ledger", "tail_hash_guard"];
-    const coprocessorOrchestrationRollbackDetectionHistoryDiffMode = "common_prefix_plus_suffix";
-    const coprocessorOrchestrationRollbackDetectionPrimaryResolver = "history_diff_then_ledger_anchor";
-    const coprocessorOrchestrationRollbackDetectionFallbackResolver = "tail_hash_count_delta_heuristic";
-    const coprocessorOrchestrationRollbackDetectionSupportedShapes = ["tail_delete", "assistant_deleted_before_next_user_turn", "historical_contiguous_delete"];
-    const coprocessorOrchestrationRollbackDetectionDuplicateGuard = "session_history_diff_signature";
-    const coprocessorOrchestrationRollbackDetectionLedgerStorage = "plugin_storage_and_sync_cache";
-    const coprocessorOrchestrationRollbackInvalidationPolicyVersion = "or1g.v1";
-    const coprocessorOrchestrationRollbackInvalidationRoute = "/rollback/{turn_index}";
-    const coprocessorOrchestrationRollbackInvalidationTriggerSources = ["auto_rollback", "manual_ui"];
-    const coprocessorOrchestrationRollbackInvalidationLocalTargets = ["rollback_token", "guidance_token_on_backend_reset", "session_snapshot_cache", "persisted_turn_ledger", "turn_counter_rewind", "pending_ready_cache_blocked_by_token_drift"];
-    const coprocessorOrchestrationRollbackInvalidationCleanupSurfaces = ["chat_logs", "effective_inputs", "memories", "direct_evidence_records", "kg_triples", "active_states", "canonical_state_layers", "episode_summaries", "chapter_summaries", "arc_summaries", "saga_digests", "storylines", "character_states", "character_events", "world_rules", "pending_threads", "critic_feedbacks", "active_scope_cache", "guidance_plan_state", "guidance_compact_records", "maintenance_passes"];
-    const coprocessorOrchestrationRollbackInvalidationGuidanceMode = "invalidate_guidance_plan_and_delete_compacts_and_maintenance";
-    const coprocessorOrchestrationRollbackInvalidationCacheGuard = "rollback_and_guidance_token_drift_block_pending_ready_reuse";
-    const coprocessorOrchestrationRollbackInvalidationStaleSidecarGuard = "backend_cleanup_then_dirty_signal_recompute";
-    const coprocessorOrchestrationDirtyMatrixPolicyVersion = "or1h.v1";
-    const coprocessorOrchestrationDirtyMatrixTargets = ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"];
-    const coprocessorOrchestrationDirtyMatrixRuntimeEventTypes = ["user_correction", "canonical_update", "world_state_update", "turn_deletion", "backfill_import", "schema_migration"];
-    const coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix = {
-      user_correction: ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-      canonical_update: ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-      world_state_update: ["guidance_state", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-      turn_deletion: ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-      backfill_import: ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-      schema_migration: ["guidance_state", "entity_coprocessor", "world_coprocessor", "narrative_quality", "sidecar_cache"],
-    };
-    const coprocessorOrchestrationDirtyMatrixDelegatedEventMatrixVersions = {
-      truth_maintenance_drift: "or1h.tm1d.v1",
-      truth_maintenance_importance: "or1h.tm1d.v1",
-    };
-    const coprocessorOrchestrationDirtyMatrixDeferredObservedEventTypes = ["truth_maintenance_drift", "truth_maintenance_importance"];
-    const coprocessorOrchestrationRebuildPolicyVersion = "or1i.v1";
-    const coprocessorOrchestrationRebuildStaleServingPolicy = "deny_stale_sidecar_on_rebuild_pending";
-    const coprocessorOrchestrationRebuildPendingTriggerStates = ["empty"];
-    const coprocessorOrchestrationRebuildStaleDropTargets = ["pending_ready_orchestration_result", "sidecar_cache", "guidance_trace"];
-    const coprocessorOrchestrationRebuildHardResetTargets = ["prepare_turn_bundle", "session_snapshot_cache", "persisted_turn_ledger", "pending_ready_orchestration_result", "sidecar_cache", "guidance_trace"];
-    const coprocessorOrchestrationRebuildStartPointPrecedence = ["checkpoint_full_rebuild", "rollback_turn_anchor_then_prepare_turn", "next_narrative_control_fetch", "next_prepare_turn_fetch", "step11_truth_stack"];
-    const coprocessorOrchestrationRebuildEventModes = {
-      user_correction: "selective",
-      canonical_update: "selective",
-      world_state_update: "selective",
-      turn_deletion: "selective",
-      backfill_import: "selective",
-      schema_migration: "full",
-      truth_maintenance_drift: "selective",
-      truth_maintenance_importance: "selective",
-    };
-    const coprocessorOrchestrationRebuildStartPointsByEvent = {
-      user_correction: "step11_truth_stack",
-      canonical_update: "step11_truth_stack",
-      world_state_update: "next_prepare_turn_fetch",
-      turn_deletion: "rollback_turn_anchor_then_prepare_turn",
-      backfill_import: "next_prepare_turn_fetch",
-      schema_migration: "checkpoint_full_rebuild",
-      truth_maintenance_drift: "next_narrative_control_fetch",
-      truth_maintenance_importance: "next_prepare_turn_fetch",
-    };
-    const coprocessorOrchestrationStaleProposalPolicyVersion = "or1j.v1";
-    const coprocessorOrchestrationStaleProposalBlockedPromptTargets = ["pending_ready_orchestration_result", "proposal_trace", "guidance_trace", "sidecar_cache"];
-    const coprocessorOrchestrationStaleProposalBlockedCacheReasons = ["missing_cache_assessment", "missing_cache_descriptor", "session_scope_mismatch", "cache_key_mismatch", "rollback_invalidation_drift", "guidance_invalidation_drift"];
-    const coprocessorOrchestrationStaleProposalEvidenceMismatchSignals = ["chapter_block_mismatch", "chapter_input_anchor_mismatch"];
-    const coprocessorOrchestrationStaleProposalRuntimeEnforcement = "after_request_pending_salvage_guard";
-    const coprocessorOrchestrationStaleProposalAction = "drop_stale_pending_before_prompt_and_persistence";
-    const coprocessorOrchestrationBackendRequiredModules = [
-      "prepare_turn_probe",
-      "memory_search",
-      "kg_recall",
-      "episode_recall",
-      "active_states_fetch",
-      "narrative_control_fetch",
-      "maintenance_pass_writeback",
-      "turn_complete_commit",
-      "rollback_invalidation",
-    ];
-    const coprocessorOrchestrationBackendBundleAssistedSurfaces = [
-      "session_state",
-      "narrative_control",
-      "progression_ledger",
-      "generation_packet",
-      "continuity_pack",
-      "recall_result",
-      "supervisor_input_pack",
-      "injection_pack",
-      "writeback_preview",
-      "trace_preview",
-    ];
-    const coprocessorOrchestrationBackendProxyAssistedModules = [
-      "plugin_main_first_pass",
-      "sub_llm_second_pass",
-    ];
-    const coprocessorOrchestrationPluginOnlyModules = [
-      "entity_coprocessor",
-      "world_coprocessor",
-      "narrative_quality_coprocessor",
-      "orchestration_fallback_contract",
-      "orchestration_dirty_signal_contract",
-      "orchestration_cache_contract",
-      "rollback_detection_contract",
-      "rollback_invalidation_contract",
-      "dirty_matrix_contract",
-      "rebuild_orchestration_contract",
-      "stale_proposal_serving_contract",
-      "context_injection_assembly",
-      "input_improvement_merge",
-      "protection_only_injection",
-    ];
-    const coprocessorOrchestrationBackendBundleEntryPoint = "/prepare-turn";
-    const coprocessorOrchestrationBackendProxyRoute = "/proxy/plugin-main";
-    const coprocessorOrchestrationBackendOfflineGuard = "block_input_before_orchestration";
-    const coprocessorOrchestrationPluginOnlyExecutionMode = "local_runtime_contract_only";
-    const coprocessorOrchestrationModuleTransportRuntimeStatus = "trace_contract_only";
-    const coprocessorOrchestrationPromptLabelsByModule = {
-      entity_coprocessor: ["characters", "pending_threads"],
-      world_coprocessor: ["world_context"],
-      narrative_quality_coprocessor: ["narrative_guide"],
-    };
-    const entityCoprocessorContractPolicyVersion = "ec1a.v1";
-    const entityCoprocessorEvidenceContractPolicyVersion = "ec1b.v1";
-    const entityCoprocessorInputSurfaces = ["characters", "pending_threads", "latest_direct_evidence", "recent_raw_turn"];
-    const entityCoprocessorInputFocusSignals = ["relation_change", "emotion_drift", "continuity_risk", "scene_carryover"];
-    const entityCoprocessorOutputProposalTypes = ["relation_drift_hint", "emotion_drift_hint", "continuity_risk_hint", "scene_carryover_candidate", "evidence_bound_patch_proposal"];
-    const entityCoprocessorOutputRequiredFields = coprocessorProposalTraceRequiredFields.slice();
-    const entityCoprocessorOutputOptionalFields = ["suggested_relation_change", "emotion_delta", "continuity_anchor", "patch_preview"];
-    const entityCoprocessorOutputMode = "proposal_trace_only";
-    const entityCoprocessorPatchApplicationMode = "reducer_reentry_only";
-    const entityCoprocessorEvidenceBindingMode = "required_for_all_outputs";
-    const entityCoprocessorPatchDirectWriteGuardPolicyVersion = "ec1c.v1";
-    const entityCoprocessorPatchDirectWriteBlockedTarget = "canonical_relationship_state";
-    const entityCoprocessorPatchDirectWriteAllowedRoute = "proposal_trace_to_reducer_reentry_only";
-    const entityCoprocessorPatchDirectWriteAuthorityCeiling = "step11_truth_core_only";
-    const entityCoprocessorTraceDisplayPolicyVersion = "ec1d.v1";
-    const entityCoprocessorTraceDisplayMode = "hint_vs_current_fact_split";
-    const entityCoprocessorTraceDisplayHintLane = "entity_proposal_hint";
-    const entityCoprocessorTraceDisplayTruthLane = "step11_current_fact";
-    const entityCoprocessorTraceDisplayHintTypes = entityCoprocessorOutputProposalTypes.slice();
-    const entityCoprocessorTraceDisplayTruthTargets = ["current_fact", "canonical_relationship_state"];
-    const entityCoprocessorTraceDisplayTruthOwner = "step11_truth_core";
-    const entityCoprocessorTraceDisplayDisallowedAliases = ["proposal_trace_as_current_fact", "relation_drift_hint_as_canonical_relationship_state"];
-    const entityCoprocessorTraceDisplayLabelPrefixes = {
-      entity_proposal_hint: "[Entity Proposal Hint]",
-      step11_current_fact: "[Current Fact]",
-    };
-    const entityCoprocessorStaleSceneGuardPolicyVersion = "ec1e.v1";
-    const entityCoprocessorStaleSceneGuardMode = "canonical_conflict_guard_bridge";
-    const entityCoprocessorStaleSceneGuardInputLabels = ["characters", "pending_threads"];
-    const entityCoprocessorStaleSceneGuardAnchorSource = "canonical_state_layer";
-    const entityCoprocessorStaleSceneGuardConflictReason = "canonical_polarity_conflict";
-    const entityCoprocessorStaleSceneGuardSuppressionTarget = "scene_carryover_candidate";
-    const entityCoprocessorStaleSceneGuardSuppressionRoute = "drop_entity_hint_keep_truth_floor";
-    const entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical = true;
-    const entityCoprocessorStaleSceneGuardDelegatedPolicyVersion = canonicalConflictGuardPolicyVersion;
-    const entityCoprocessorBranchRegistryPolicyVersion = "ec1f.v1";
-    const entityCoprocessorBranchRegistryVocabularyPolicyVersion = "hs1g.v1";
-    const entityCoprocessorBranchRegistryCanonicalSource = "relationship_state.drive_lattice";
-    const entityCoprocessorBranchRegistrySignalKeys = ["pull", "alarm", "scar", "veil", "tether", "lock"];
-    const entityCoprocessorBranchRegistrySignalClass = "relationship_dynamics";
-    const entityCoprocessorBranchRegistryProposalScope = "guidance_only";
-    const entityCoprocessorBranchRegistryTraceTarget = "proposal_trace";
-    const entityCoprocessorBranchRegistryTruthPathAllowed = false;
-    const entityCoprocessorBranchRegistryReducerReentryAllowed = false;
-    const entityCoprocessorBranchRegistryCanonicalWriteAllowed = false;
-    const worldCoprocessorContractPolicyVersion = "wc1a.v1";
-    const worldCoprocessorSchemaPolicyVersion = "hs1i.v1";
-    const worldCoprocessorCanonicalCurrentStatePolicyVersion = "hs1h.v1";
-    const worldCoprocessorInputSurfaces = ["world_context", "storylines", "latest_direct_evidence", "recent_raw_turn"];
-    const worldCoprocessorInputFocusSignals = ["faction_pressure", "region_pressure", "offscreen_thread_pressure", "public_pressure", "propagation_risk", "scene_scope"];
-    const worldCoprocessorOutputProposalTypes = ["offscreen_pressure_hint", "faction_region_pressure_summary", "public_pressure_summary", "propagation_risk_proposal", "scene_scoped_setting_hint"];
-    const worldCoprocessorOutputRequiredFields = coprocessorProposalTraceRequiredFields.slice();
-    const worldCoprocessorOutputOptionalFields = ["scope_name", "pressure_axis", "offscreen_thread_ref", "risk_anchor", "scene_rule_anchor"];
-    const worldCoprocessorOutputMode = "proposal_trace_only";
-    const worldCoprocessorPatchApplicationMode = "reducer_reentry_only";
-    const worldCoprocessorEvidenceBindingMode = "required_for_all_outputs";
-    const worldCoprocessorWriteGuardPolicyVersion = "wc1b.v1";
-    const worldCoprocessorWriteGuardScope = "world_patch_proposal";
-    const worldCoprocessorWriteGuardBlockedTargets = ["scene_rules", "persistent_rules", "canonical_world_current_state"];
-    const worldCoprocessorWriteGuardAllowedRoute = "proposal_trace_to_reducer_reentry_only";
-    const worldCoprocessorWriteGuardAuthorityCeiling = "step11_truth_core_only";
-    const worldCoprocessorTraceDisplayPolicyVersion = "wc1c.v1";
-    const worldCoprocessorTraceDisplayMode = "hint_vs_current_world_state_split";
-    const worldCoprocessorTraceDisplayHintLane = "world_pressure_hint";
-    const worldCoprocessorTraceDisplayTruthLane = "step11_world_current_state";
-    const worldCoprocessorTraceDisplayHintTypes = worldCoprocessorOutputProposalTypes.slice();
-    const worldCoprocessorTraceDisplayTruthTargets = ["scene_rules", "persistent_rules", "canonical_world_current_state"];
-    const worldCoprocessorTraceDisplayTruthOwner = "step11_truth_core";
-    const worldCoprocessorTraceDisplayDisallowedAliases = ["world_pressure_hint_as_current_world_state", "scene_scoped_setting_hint_as_scene_rule"];
-    const worldCoprocessorTraceDisplayLabelPrefixes = {
-      world_pressure_hint: "[World Pressure Hint]",
-      step11_world_current_state: "[World Current State]",
-    };
-    const worldCoprocessorGuidanceBudgetPolicyVersion = "wc1d.v1";
-    const worldCoprocessorGuidanceBudgetMode = "guidance_only_competition";
-    const worldCoprocessorGuidanceBudgetLane = coprocessorHintBudgetLane;
-    const worldCoprocessorGuidanceBudgetSource = coprocessorOrchestrationResidualBudgetSource;
-    const worldCoprocessorGuidanceBudgetCompetitionScope = "coprocessor_hint_only";
-    const worldCoprocessorGuidanceBudgetCompetitionModules = coprocessorHintBudgetPromptModules.slice();
-    const worldCoprocessorGuidanceBudgetPromptLabels = coprocessorHintBudgetPromptLabels.slice();
-    const worldCoprocessorGuidanceBudgetProtectedTruthLabels = truthFloorBudgetLabels.slice();
-    const worldCoprocessorGuidanceBudgetHintTypes = ["offscreen_pressure_hint", "propagation_risk_proposal"];
-    const worldCoprocessorConservativeDegradePolicyVersion = "wc1e.v1";
-    const worldCoprocessorConservativeDegradeMode = "evidence_bound_conservative_degrade";
-    const worldCoprocessorConservativeDegradeRequiredFields = coprocessorProposalTraceRequiredFields.slice();
-    const worldCoprocessorConservativeDegradeReasonCodes = ["reliability_guard_hold", "ingest_only_not_injected"];
-    const worldCoprocessorConservativeDegradeMissingEvidenceAction = "drop_world_patch_proposal";
-    const worldCoprocessorConservativeDegradeLowConfidenceAction = "degrade_to_hint_only_or_skip";
-    const worldCoprocessorConservativeDegradeTruthFloorFallback = "preserve_step11_world_current_state";
-    const worldCoprocessorConservativeDegradeFailOpenWithoutCanonical = true;
-    const worldCoprocessorSceneSlicePolicyVersion = "wc1f.v1";
-    const worldCoprocessorSceneSliceVocabularyPolicyVersion = worldCoprocessorSchemaPolicyVersion;
-    const worldCoprocessorSceneSliceInputLabels = worldCoprocessorInputSurfaces.slice();
-    const worldCoprocessorSceneSliceSelectorSignal = "scene_scope";
-    const worldCoprocessorSceneSliceExtractionMode = "current_scene_thin_frame_only";
-    const worldCoprocessorSceneSliceOutputType = "scene_scoped_setting_hint";
-    const worldCoprocessorSceneSliceRequiredFields = ["scope_name", "scene_rule_anchor"];
-    const worldCoprocessorSceneSliceTraceLane = worldCoprocessorTraceDisplayHintLane;
-    const worldCoprocessorSceneSliceBudgetLane = coprocessorHintBudgetLane;
-    const worldCoprocessorSceneSliceDeliverySurface = "guidance_only_setting_frame";
-    const worldCoprocessorSceneSliceTruthAliasBlocked = true;
-    const worldCoprocessorSceneSliceTruthBorrowAllowed = false;
-    const step13PlanningKeepDropConflictPolicyVersion = "ps1d.v1";
-    const step13PlanningConflictSourcePolicyVersions = [
-      supportingGuidanceGuardPolicyVersion,
-      narrativeQualityCoprocessorConflictGuardPolicyVersion,
-      worldCoprocessorConservativeDegradePolicyVersion,
-    ];
-    const step13PlanningConflictEvaluationOrder = ["beat_planner", "scene_pilot", "setting_frame"];
-    const step13PlanningConflictBlockedTargets = ["current_fact", "canonical_state", "canonical_state_layer"];
-    const step13PlanningBeatPlannerConflictAction = "drop_conflicting_planning_hint";
-    const step13PlanningScenePilotConflictAction = "degrade_conflicting_planning_hint";
-    const step13PlanningSettingFrameConflictAction = "drop_conflicting_setting_frame";
-    const step13PlanningConflictTruthFloorFallback = "preserve_step11_truth_floor";
-    const step13PlanningConflictAllowedDeliverySurfaces = [
-      narrativeQualityCoprocessorOutputMode,
-      worldCoprocessorSceneSliceDeliverySurface,
-    ];
-    const step13PlanningMonolithGuardPolicyVersion = "ps1e.v1";
-    const step13PlanningMonolithGuardMode = "split_lanes_not_unified_core";
-    const step13PlanningMonolithGuardLaneNames = ["beat_planner", "scene_pilot", "setting_frame"];
-    const step13PlanningMonolithGuardForbiddenShapes = ["unified_planning_core", "truth_path_frontload", "authority_promotion_bridge"];
-    const step13PlanningMonolithGuardRequiredDeliverySurfaces = [
-      narrativeQualityCoprocessorOutputMode,
-      worldCoprocessorSceneSliceDeliverySurface,
-    ];
-    const step13PlanningMonolithGuardDefaultAction = "keep_split_guidance_only_surfaces";
-    const step13NamingGatePolicyVersion = "ps1f.v1";
-    const step13NamingGateMode = "local_vocab_review_only";
-    const step13NamingGateLegacyRenameScope = "step_owned_contract_values_only";
-    const step13NamingGateReviewScope = ["planning", "governor", "portability"];
-    const step13NamingGateSourceDraft = "STEP13_NAMING_MAP_DRAFT.md";
-    const step13NamingGateApprovedLabelsByPhase = {
-      planning: [
-        "beat_planner",
-        "scene_pilot",
-        "setting_frame",
-        "scene_pilot_brief",
-        "scene_scoped_setting_hint",
-        "guidance_only_setting_frame",
-      ],
-      governor: [
-        "step13_governor",
-        "pending_ready_orchestration_result",
-        "residual_guidance",
-      ],
-      portability: [
-        "manual_db_snapshot_export",
-        "backfill_import",
-        "next_prepare_turn_fetch",
-        "selective",
-      ],
-    };
-    const step13NamingGateReviewedFunctionNames = [
-      "assembleInjectionWithBudget",
-      "getStep13GovernorPolicyGv1a",
-      "getStep13CacheKeeperPolicyGv1b",
-      "getStep13GovernorBypassPolicyGv1e",
-      "resolveStep13GovernorLedgerGv1d",
-    ];
-    const step13NamingGateReviewedHelperNames = [
-      "step13BeatPlannerDraftRequiredFields",
-      "step13ScenePilotDraftRequiredFields",
-      "step13SettingFrameDraftOptionalFields",
-      "step13GovernorBypassProtectedPromptTargets",
-      "coprocessorOrchestrationCacheUnit",
-    ];
-    const step13NamingGateBlockedLegacyValues = [
-      "book_author",
-      "director",
-      "director_directive",
-      "scene_scoped_world_hint",
-      "guidance_only_world_slice",
-      "author_planning_vs_director_execution_guidance_only",
-    ];
-    const step13NamingGateApprovalRule = "allow_local_vocab_block_external_like_reuse";
-    const step13NamingGateRuntimeAction = "review_only_no_runtime_rename";
-    const step13ValidationGatePolicyVersion = "vx1g.v1";
-    const step13ValidationGateMode = "default_takeover_blocked_until_slice_green";
-    const step13ValidationGateInheritedModuleTakeoverPolicyVersion = coprocessorTakeoverGatePolicyVersion;
-    const step13ValidationGateRequiredSignals = ["slice_replay_green", "slice_ablation_green_or_not_applicable", "release_gate_green"];
-    const step13ValidationGateSliceOrder = ["portability", "reembed", "governor", "token_budget", "planning"];
-    const step13ValidationGateDefaultState = "draft_locked";
-    const step13ValidationGateRuntimeAction = "review_only_no_runtime_takeover";
-    const step13PortabilityValidationPolicyVersions = ["sp1a.v1", "sp1b.v1", "sp1c.v1", "sp1d.v1", "sp1e.v1"];
-    const step13ReembedValidationPolicyVersions = ["em1a.v1", "em1b.v1", "em1c.v1", "em1d.v1"];
-    const step13GovernorValidationPolicyVersions = [
-      step13GovernorPolicyVersion,
-      step13CacheKeeperPolicyVersion,
-      step13GovernorFailureBudgetPolicyVersion,
-      step13GovernorRunLedgerPolicyVersion,
-      step13GovernorBypassPolicyVersion,
-    ];
-    const step13TokenValidationPolicyVersions = [
-      step13TokenEstimatorPolicyVersion,
-      step13TokenTruthFloorPolicyVersion,
-      step13TokenDensityProfilePolicyVersion,
-      step13TokenBudgetFallbackPolicyVersion,
-    ];
-    const step13PlanningValidationPolicyVersions = [
-      step13BeatPlannerSchemaPolicyVersion,
-      step13ScenePilotSchemaPolicyVersion,
-      step13SettingFrameSchemaPolicyVersion,
-      step13PlanningKeepDropConflictPolicyVersion,
-      step13PlanningMonolithGuardPolicyVersion,
-      step13NamingGatePolicyVersion,
-    ];
-    const step13ValidationGateDefaultsBySlice = {
-      portability: {
-        default_state: step13ValidationGateDefaultState,
-        takeover_allowed_by_default: false,
-        default_action: "stay_manual_first_review_only_until_vx_green",
-        rollout_stage: "manual_review_only",
-      },
-      reembed: {
-        default_state: step13ValidationGateDefaultState,
-        takeover_allowed_by_default: false,
-        default_action: "stay_manual_admin_batch_until_vx_green",
-        rollout_stage: "manual_review_only",
-      },
-      governor: {
-        default_state: step13ValidationGateDefaultState,
-        takeover_allowed_by_default: false,
-        default_action: "stay_trace_only_no_prompt_mutation_until_vx_green",
-        rollout_stage: "trace_contract_only",
-      },
-      token_budget: {
-        default_state: step13ValidationGateDefaultState,
-        takeover_allowed_by_default: false,
-        default_action: "stay_contract_only_no_runtime_enforcement_until_vx_green",
-        rollout_stage: "contract_review_only",
-      },
-      planning: {
-        default_state: step13ValidationGateDefaultState,
-        takeover_allowed_by_default: false,
-        default_action: step13PlanningTakeoverGate,
-        rollout_stage: step13PlanningRolloutStage,
-      },
-    };
-    const coprocessorOrchestrationStageByModule = {
-      entity_coprocessor: "residual_guidance",
-      world_coprocessor: "residual_guidance",
-      narrative_quality_coprocessor: "residual_guidance",
-    };
-    const narrativeQualityAuthorityLabels = narrativeQualityLayerLabels.filter(function(label) {
-      return label !== "world_context";
-    });
-    // Step 12 MG-1a/MG-1b/MG-1c/MG-1d/MG-1e/MG-1f/MG-1g/MG-1h and OR-1a: authority roles, boundaries,
-    // feature control, budget isolation, reason trace, anti-copy review checklist, proposal re-entry gate,
-    // analysis provider contract, and residual-guidance orchestration order are fixed without changing injection behavior.
-    const coprocessorAuthorityMatrix = [
-      {
-        module: "step11_truth_core",
-        authority_mode: "truth_writer",
-        owner_labels: [
-          "current_user_input",
-          "explicit_correction",
-          "hard_rule",
-          "verified_direct_evidence",
-          "canonical_state",
-          "canonical_state_layer",
-          "dense_summary",
-        ],
-        prompt_surface_role: "truth_floor",
-        boundary_scope: "step11_truth_owner",
-        read_surfaces: [
-          "current_user_input",
-          "explicit_correction",
-          "hard_rule",
-          "verified_direct_evidence",
-          "recent_raw_turn",
-          "canonical_state",
-          "canonical_state_layer",
-          "dense_summary",
-          "retrieval_supporting_inference",
-        ],
-        write_targets: coprocessorTruthWriteTargets.slice(),
-        denied_write_targets: [],
-        current_fact_write: true,
-        canonical_write: true,
-        allowed_usage: ["current_fact_write", "canonical_write", "dense_summary_write", "truth_floor_injection"],
-        disallowed_usage: ["sidecar_autonomous_override", "ungrounded_proposal_apply"],
-      },
-      {
-        module: "truth_maintenance",
-        authority_mode: "diagnostic_only",
-        owner_labels: ["maintenance_pass", "tm_audit_replay"],
-        prompt_surface_role: "audit_replay_only",
-        boundary_scope: "step12_diagnostic_sidecar",
-        read_surfaces: ["maintenance_pass", "canonical_state_layer", "memories", "pending_threads", "storylines"],
-        write_targets: ["maintenance_metadata", "audit_trace"],
-        denied_write_targets: coprocessorTruthWriteTargets.slice(),
-        current_fact_write: false,
-        canonical_write: false,
-        allowed_usage: ["drift_signal", "provenance_maintenance", "importance_reweighting", "audit_replay"],
-        disallowed_usage: ["current_fact_write", "canonical_content_overwrite", "autonomous_patch_apply"],
-      },
-      {
-        module: "retrieval_supporting_inference",
-        authority_mode: "diagnostic_only",
-        owner_labels: retrievalSupportingLabels.slice(),
-        prompt_surface_role: "detail_recall_audit",
-        boundary_scope: "step12_diagnostic_sidecar",
-        read_surfaces: retrievalSupportingLabels.slice(),
-        write_targets: ["audit_trace"],
-        denied_write_targets: coprocessorTruthWriteTargets.slice(),
-        current_fact_write: false,
-        canonical_write: false,
-        allowed_usage: retrievalAllowedUsage.slice(),
-        disallowed_usage: retrievalDisallowedUsage.concat(["autonomous_patch_apply"]),
-      },
-      {
-        module: "entity_coprocessor",
-        authority_mode: "proposal_only",
-        owner_labels: ["characters", "pending_threads"],
-        prompt_surface_role: "evidence_bound_patch_proposal",
-        boundary_scope: "step12_proposal_sidecar",
-        read_surfaces: ["characters", "pending_threads", "latest_direct_evidence", "recent_raw_turn"],
-        write_targets: ["proposal_trace"],
-        denied_write_targets: coprocessorTruthWriteTargets.slice(),
-        current_fact_write: false,
-        canonical_write: false,
-        input_contract_policy_version: entityCoprocessorContractPolicyVersion,
-        input_contract_surfaces: entityCoprocessorInputSurfaces.slice(),
-        input_contract_focus_signals: entityCoprocessorInputFocusSignals.slice(),
-        output_contract_policy_version: entityCoprocessorEvidenceContractPolicyVersion,
-        output_contract_mode: entityCoprocessorOutputMode,
-        output_contract_proposal_types: entityCoprocessorOutputProposalTypes.slice(),
-        output_contract_required_fields: entityCoprocessorOutputRequiredFields.slice(),
-        output_contract_optional_fields: entityCoprocessorOutputOptionalFields.slice(),
-        output_contract_evidence_binding: entityCoprocessorEvidenceBindingMode,
-        output_patch_application_mode: entityCoprocessorPatchApplicationMode,
-        patch_direct_write_guard_policy_version: entityCoprocessorPatchDirectWriteGuardPolicyVersion,
-        patch_direct_write_guard_scope: "entity_patch_proposal",
-        patch_direct_write_guard_blocked_target: entityCoprocessorPatchDirectWriteBlockedTarget,
-        patch_direct_write_guard_direct_write_allowed: false,
-        patch_direct_write_guard_allowed_route: entityCoprocessorPatchDirectWriteAllowedRoute,
-        patch_direct_write_guard_authority_ceiling: entityCoprocessorPatchDirectWriteAuthorityCeiling,
-        trace_display_policy_version: entityCoprocessorTraceDisplayPolicyVersion,
-        trace_display_mode: entityCoprocessorTraceDisplayMode,
-        trace_display_hint_lane: entityCoprocessorTraceDisplayHintLane,
-        trace_display_truth_lane: entityCoprocessorTraceDisplayTruthLane,
-        trace_display_hint_types: entityCoprocessorTraceDisplayHintTypes.slice(),
-        trace_display_truth_targets: entityCoprocessorTraceDisplayTruthTargets.slice(),
-        trace_display_truth_owner: entityCoprocessorTraceDisplayTruthOwner,
-        trace_display_disallowed_aliases: entityCoprocessorTraceDisplayDisallowedAliases.slice(),
-        trace_display_label_prefixes: Object.assign({}, entityCoprocessorTraceDisplayLabelPrefixes),
-        stale_scene_guard_policy_version: entityCoprocessorStaleSceneGuardPolicyVersion,
-        stale_scene_guard_mode: entityCoprocessorStaleSceneGuardMode,
-        stale_scene_guard_input_labels: entityCoprocessorStaleSceneGuardInputLabels.slice(),
-        stale_scene_guard_anchor_source: entityCoprocessorStaleSceneGuardAnchorSource,
-        stale_scene_guard_conflict_reason: entityCoprocessorStaleSceneGuardConflictReason,
-        stale_scene_guard_suppression_target: entityCoprocessorStaleSceneGuardSuppressionTarget,
-        stale_scene_guard_suppression_route: entityCoprocessorStaleSceneGuardSuppressionRoute,
-        stale_scene_guard_fail_open_without_canonical: entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical,
-        stale_scene_guard_delegated_policy_version: entityCoprocessorStaleSceneGuardDelegatedPolicyVersion,
-        branch_registry_policy_version: entityCoprocessorBranchRegistryPolicyVersion,
-        branch_registry_vocabulary_policy_version: entityCoprocessorBranchRegistryVocabularyPolicyVersion,
-        branch_registry_canonical_source: entityCoprocessorBranchRegistryCanonicalSource,
-        branch_registry_signal_keys: entityCoprocessorBranchRegistrySignalKeys.slice(),
-        branch_registry_signal_class: entityCoprocessorBranchRegistrySignalClass,
-        branch_registry_proposal_scope: entityCoprocessorBranchRegistryProposalScope,
-        branch_registry_trace_target: entityCoprocessorBranchRegistryTraceTarget,
-        branch_registry_truth_path_allowed: entityCoprocessorBranchRegistryTruthPathAllowed,
-        branch_registry_reducer_reentry_allowed: entityCoprocessorBranchRegistryReducerReentryAllowed,
-        branch_registry_canonical_write_allowed: entityCoprocessorBranchRegistryCanonicalWriteAllowed,
-        proposal_trace_schema_required_fields: coprocessorProposalTraceRequiredFields.slice(),
-        truth_path_reentry_gate: "reducer_reentry_required",
-        truth_path_entry_requirements: coprocessorProposalTraceRequiredFields.concat(["reducer_reentry"]),
-        truth_path_blocked_without_required_fields: true,
-        canonical_write_before_reducer_reentry: false,
-        canonical_write_authority_after_reentry: "step11_truth_core_only",
-        analysis_provider_class: "llm_based_sidecar",
-        analysis_provider_raw_output_mode: coprocessorAnalysisProviderRawOutputMode,
-        analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.entity_coprocessor,
-        analysis_provider_normalization: coprocessorAnalysisProviderNormalizationByModule.entity_coprocessor,
-        analysis_provider_autonomous_truth_write: false,
-        analysis_provider_call_frequency_owner: coprocessorAnalysisProviderCallFrequencyOwner,
-        orchestration_stage: coprocessorOrchestrationStageByModule.entity_coprocessor,
-        orchestration_entry_gate: coprocessorOrchestrationCallEntryGate,
-        orchestration_budget_source: coprocessorOrchestrationResidualBudgetSource,
-        orchestration_call_order: 1,
-        orchestration_prompt_labels: coprocessorOrchestrationPromptLabelsByModule.entity_coprocessor.slice(),
-        allowed_usage: ["relation_drift_hint", "emotion_drift_hint", "continuity_risk_hint", "scene_carryover_candidate", "drive_lattice_guidance_signal", "evidence_bound_patch_proposal"],
-        disallowed_usage: ["canonical_relationship_overwrite", "direct_canonical_relationship_patch_apply", "stale_scene_truth_promotion", "drive_lattice_truth_promotion", "autonomous_truth_write", "ungrounded_fact_commit"],
-      },
-      {
-        module: "world_coprocessor",
-        authority_mode: "proposal_only",
-        owner_labels: ["world_context"],
-        prompt_surface_role: "scene_scoped_world_proposal",
-        boundary_scope: "step12_proposal_sidecar",
-        read_surfaces: ["world_context", "storylines", "latest_direct_evidence", "recent_raw_turn"],
-        write_targets: ["proposal_trace"],
-        denied_write_targets: coprocessorTruthWriteTargets.slice(),
-        current_fact_write: false,
-        canonical_write: false,
-        input_contract_policy_version: worldCoprocessorContractPolicyVersion,
-        input_contract_vocabulary_policy_version: worldCoprocessorSchemaPolicyVersion,
-        input_contract_surfaces: worldCoprocessorInputSurfaces.slice(),
-        input_contract_focus_signals: worldCoprocessorInputFocusSignals.slice(),
-        output_contract_mode: worldCoprocessorOutputMode,
-        output_contract_proposal_types: worldCoprocessorOutputProposalTypes.slice(),
-        output_contract_required_fields: worldCoprocessorOutputRequiredFields.slice(),
-        output_contract_optional_fields: worldCoprocessorOutputOptionalFields.slice(),
-        output_contract_evidence_binding: worldCoprocessorEvidenceBindingMode,
-        output_patch_application_mode: worldCoprocessorPatchApplicationMode,
-        patch_direct_write_guard_policy_version: worldCoprocessorWriteGuardPolicyVersion,
-        patch_direct_write_guard_scope: worldCoprocessorWriteGuardScope,
-        patch_direct_write_guard_blocked_targets: worldCoprocessorWriteGuardBlockedTargets.slice(),
-        patch_direct_write_guard_direct_write_allowed: false,
-        patch_direct_write_guard_allowed_route: worldCoprocessorWriteGuardAllowedRoute,
-        patch_direct_write_guard_authority_ceiling: worldCoprocessorWriteGuardAuthorityCeiling,
-        trace_display_policy_version: worldCoprocessorTraceDisplayPolicyVersion,
-        trace_display_truth_policy_version: worldCoprocessorCanonicalCurrentStatePolicyVersion,
-        trace_display_mode: worldCoprocessorTraceDisplayMode,
-        trace_display_hint_lane: worldCoprocessorTraceDisplayHintLane,
-        trace_display_truth_lane: worldCoprocessorTraceDisplayTruthLane,
-        trace_display_hint_types: worldCoprocessorTraceDisplayHintTypes.slice(),
-        trace_display_truth_targets: worldCoprocessorTraceDisplayTruthTargets.slice(),
-        trace_display_truth_owner: worldCoprocessorTraceDisplayTruthOwner,
-        trace_display_disallowed_aliases: worldCoprocessorTraceDisplayDisallowedAliases.slice(),
-        trace_display_label_prefixes: Object.assign({}, worldCoprocessorTraceDisplayLabelPrefixes),
-        guidance_budget_policy_version: worldCoprocessorGuidanceBudgetPolicyVersion,
-        guidance_budget_mode: worldCoprocessorGuidanceBudgetMode,
-        guidance_budget_lane: worldCoprocessorGuidanceBudgetLane,
-        guidance_budget_source: worldCoprocessorGuidanceBudgetSource,
-        guidance_budget_competition_scope: worldCoprocessorGuidanceBudgetCompetitionScope,
-        guidance_budget_competition_modules: worldCoprocessorGuidanceBudgetCompetitionModules.slice(),
-        guidance_budget_prompt_labels: worldCoprocessorGuidanceBudgetPromptLabels.slice(),
-        guidance_budget_protected_truth_labels: worldCoprocessorGuidanceBudgetProtectedTruthLabels.slice(),
-        guidance_budget_hint_types: worldCoprocessorGuidanceBudgetHintTypes.slice(),
-        conservative_degrade_policy_version: worldCoprocessorConservativeDegradePolicyVersion,
-        conservative_degrade_mode: worldCoprocessorConservativeDegradeMode,
-        conservative_degrade_required_fields: worldCoprocessorConservativeDegradeRequiredFields.slice(),
-        conservative_degrade_reason_codes: worldCoprocessorConservativeDegradeReasonCodes.slice(),
-        conservative_degrade_missing_evidence_action: worldCoprocessorConservativeDegradeMissingEvidenceAction,
-        conservative_degrade_low_confidence_action: worldCoprocessorConservativeDegradeLowConfidenceAction,
-        conservative_degrade_truth_floor_fallback: worldCoprocessorConservativeDegradeTruthFloorFallback,
-        conservative_degrade_fail_open_without_canonical: worldCoprocessorConservativeDegradeFailOpenWithoutCanonical,
-        scene_slice_policy_version: worldCoprocessorSceneSlicePolicyVersion,
-        scene_slice_vocabulary_policy_version: worldCoprocessorSceneSliceVocabularyPolicyVersion,
-        scene_slice_input_labels: worldCoprocessorSceneSliceInputLabels.slice(),
-        scene_slice_selector_signal: worldCoprocessorSceneSliceSelectorSignal,
-        scene_slice_extraction_mode: worldCoprocessorSceneSliceExtractionMode,
-        scene_slice_output_type: worldCoprocessorSceneSliceOutputType,
-        scene_slice_required_fields: worldCoprocessorSceneSliceRequiredFields.slice(),
-        scene_slice_trace_lane: worldCoprocessorSceneSliceTraceLane,
-        scene_slice_budget_lane: worldCoprocessorSceneSliceBudgetLane,
-        scene_slice_delivery_surface: worldCoprocessorSceneSliceDeliverySurface,
-        scene_slice_truth_alias_blocked: worldCoprocessorSceneSliceTruthAliasBlocked,
-        scene_slice_truth_borrow_allowed: worldCoprocessorSceneSliceTruthBorrowAllowed,
-        proposal_trace_schema_required_fields: coprocessorProposalTraceRequiredFields.slice(),
-        truth_path_reentry_gate: "reducer_reentry_required",
-        truth_path_entry_requirements: coprocessorProposalTraceRequiredFields.concat(["reducer_reentry"]),
-        truth_path_blocked_without_required_fields: true,
-        canonical_write_before_reducer_reentry: false,
-        canonical_write_authority_after_reentry: "step11_truth_core_only",
-        analysis_provider_class: "llm_based_sidecar",
-        analysis_provider_raw_output_mode: coprocessorAnalysisProviderRawOutputMode,
-        analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.world_coprocessor,
-        analysis_provider_normalization: coprocessorAnalysisProviderNormalizationByModule.world_coprocessor,
-        analysis_provider_autonomous_truth_write: false,
-        analysis_provider_call_frequency_owner: coprocessorAnalysisProviderCallFrequencyOwner,
-        orchestration_stage: coprocessorOrchestrationStageByModule.world_coprocessor,
-        orchestration_entry_gate: coprocessorOrchestrationCallEntryGate,
-        orchestration_budget_source: coprocessorOrchestrationResidualBudgetSource,
-        orchestration_call_order: 2,
-        orchestration_prompt_labels: coprocessorOrchestrationPromptLabelsByModule.world_coprocessor.slice(),
-        allowed_usage: worldCoprocessorOutputProposalTypes.slice(),
-        disallowed_usage: ["hard_world_rule_overwrite", "unverified_world_fact_commit", "higher_than_scene_rule_authority", "truth_floor_budget_takeover", "scene_scope_bypass"],
-      },
-      {
-        module: "narrative_quality_coprocessor",
-        authority_mode: "guidance_only",
-        owner_labels: (narrativeQualityAuthorityLabels.length > 0 ? narrativeQualityAuthorityLabels : narrativeQualityLayerLabels).slice(),
-        prompt_surface_role: "quality_hint",
-        boundary_scope: "step12_guidance_sidecar",
-        read_surfaces: Array.from(new Set((narrativeQualityAuthorityLabels.length > 0 ? narrativeQualityAuthorityLabels : narrativeQualityLayerLabels).concat(["storylines", "recent_raw_turn"]))),
-        write_targets: ["guidance_trace"],
-        denied_write_targets: coprocessorTruthWriteTargets.slice(),
-        current_fact_write: false,
-        canonical_write: false,
-        input_contract_policy_version: narrativeQualityCoprocessorContractPolicyVersion,
-        input_contract_surfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-        input_contract_source_roles: narrativeQualityCoprocessorSourceRoles.slice(),
-        output_contract_policy_version: narrativeQualityCoprocessorOutputPolicyVersion,
-        output_contract_mode: narrativeQualityCoprocessorOutputMode,
-        output_contract_hint_types: narrativeQualityCoprocessorOutputHintTypes.slice(),
-        output_contract_required_fields: narrativeQualityCoprocessorOutputRequiredFields.slice(),
-        output_contract_optional_fields: narrativeQualityCoprocessorOutputOptionalFields.slice(),
-        ablation_policy_version: narrativeQualityCoprocessorAblationPolicyVersion,
-        ablation_profiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-        ablation_baseline_mode: narrativeQualityCoprocessorAblationBaselineMode,
-        ablation_evaluation_window_by_profile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-        ablation_primary_metrics: narrativeQualityCoprocessorAblationPrimaryMetrics.slice(),
-        ablation_decision_gate: narrativeQualityCoprocessorAblationDecisionGate,
-        ablation_truth_leak_budget: narrativeQualityCoprocessorAblationTruthLeakBudget,
-        ablation_protected_truth_labels: narrativeQualityCoprocessorAblationProtectedTruthLabels.slice(),
-        planner_split_policy_version: narrativeQualityCoprocessorPlannerSplitPolicyVersion,
-        planner_split_mode: narrativeQualityCoprocessorPlannerSplitMode,
-        planner_role: narrativeQualityCoprocessorPlannerRole,
-        planner_fields: narrativeQualityCoprocessorPlannerFields.slice(),
-        planner_hint_types: narrativeQualityCoprocessorPlannerHintTypes.slice(),
-        execution_role: narrativeQualityCoprocessorExecutionRole,
-        execution_fields: narrativeQualityCoprocessorExecutionFields.slice(),
-        execution_hint_types: narrativeQualityCoprocessorExecutionHintTypes.slice(),
-        planner_authority_promotion_allowed: narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed,
-        execution_authority_promotion_allowed: narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed,
-        cross_role_truth_borrow_allowed: narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed,
-        conflict_guard_policy_version: narrativeQualityCoprocessorConflictGuardPolicyVersion,
-        conflict_guard_mode: narrativeQualityCoprocessorConflictGuardMode,
-        conflict_guard_anchor_source: narrativeQualityCoprocessorConflictGuardAnchorSource,
-        conflict_guard_conflict_reason: narrativeQualityCoprocessorConflictGuardConflictReason,
-        conflict_guard_drop_action: narrativeQualityCoprocessorConflictGuardDropAction,
-        conflict_guard_degrade_action: narrativeQualityCoprocessorConflictGuardDegradeAction,
-        conflict_guard_truth_floor_fallback: narrativeQualityCoprocessorConflictGuardTruthFloorFallback,
-        conflict_guard_disallowed_targets: narrativeQualityCoprocessorConflictGuardDisallowedTargets.slice(),
-        conflict_guard_fail_open_without_factual_state: narrativeQualityCoprocessorConflictGuardFailOpenWithoutFactualState,
-        trace_display_policy_version: narrativeQualityCoprocessorTraceDisplayPolicyVersion,
-        trace_display_truth_policy_version: narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion,
-        trace_display_mode: narrativeQualityCoprocessorTraceDisplayMode,
-        trace_display_hint_lane: narrativeQualityCoprocessorTraceDisplayHintLane,
-        trace_display_truth_lane: narrativeQualityCoprocessorTraceDisplayTruthLane,
-        trace_display_hint_types: narrativeQualityCoprocessorOutputHintTypes.slice(),
-        trace_display_truth_targets: narrativeQualityCoprocessorTraceDisplayTruthTargets.slice(),
-        trace_display_truth_owner: narrativeQualityCoprocessorTraceDisplayTruthOwner,
-        trace_display_disallowed_aliases: narrativeQualityCoprocessorTraceDisplayDisallowedAliases.slice(),
-        trace_display_label_prefixes: Object.assign({}, narrativeQualityCoprocessorTraceDisplayLabelPrefixes),
-        analysis_provider_class: "llm_based_sidecar",
-        analysis_provider_raw_output_mode: coprocessorAnalysisProviderRawOutputMode,
-        analysis_provider_trace_target: coprocessorAnalysisProviderTraceTargetsByModule.narrative_quality_coprocessor,
-        analysis_provider_normalization: coprocessorAnalysisProviderNormalizationByModule.narrative_quality_coprocessor,
-        analysis_provider_autonomous_truth_write: false,
-        analysis_provider_call_frequency_owner: coprocessorAnalysisProviderCallFrequencyOwner,
-        orchestration_stage: coprocessorOrchestrationStageByModule.narrative_quality_coprocessor,
-        orchestration_entry_gate: coprocessorOrchestrationCallEntryGate,
-        orchestration_budget_source: coprocessorOrchestrationResidualBudgetSource,
-        orchestration_call_order: 3,
-        orchestration_prompt_labels: coprocessorOrchestrationPromptLabelsByModule.narrative_quality_coprocessor.slice(),
-        allowed_usage: narrativeQualityCoprocessorOutputHintTypes.slice(),
-        disallowed_usage: narrativeQualityLayerDisallowedUsage.concat(["current_fact_write", "current_fact_conflict_bypass", "factual_state_aliasing", "planning_authority_promotion", "execution_authority_promotion"]),
-      },
-    ];
-    const coprocessorFeatureControlMatrix = [
-      {
-        module: "step11_truth_core",
-        feature_flag_key: "step11TruthCoreMode",
-        default_mode: "always_on",
-        supported_modes: ["always_on"],
-        rollout_flag_key: "step11TruthCoreRollout",
-        rollout_stage: "truth_floor_locked",
-        supported_rollout_stages: ["truth_floor_locked"],
-        kill_switch_key: null,
-        kill_switch_supported: false,
-        kill_switch_default_state: "not_applicable",
-        kill_switch_action: "not_applicable",
-        ablation_supported: false,
-        wiring_status: "hard_enabled_runtime",
-        default_reason: "truth_floor_must_remain_central",
-      },
-      {
-        module: "truth_maintenance",
-        feature_flag_key: "truthMaintenanceMode",
-        default_mode: "conservative",
-        supported_modes: ["off", "conservative"],
-        rollout_flag_key: "truthMaintenanceRollout",
-        rollout_stage: "diagnostic_default_on",
-        supported_rollout_stages: ["diagnostic_default_on"],
-        kill_switch_key: "truthMaintenanceKillSwitch",
-        kill_switch_supported: true,
-        kill_switch_default_state: "armed_standby",
-        kill_switch_action: "fail_open_skip",
-        ablation_supported: true,
-        wiring_status: "runtime_active_contract_traced",
-        default_reason: "diagnostic_path_stays_conservative_and_fail_open",
-      },
-      {
-        module: "retrieval_supporting_inference",
-        feature_flag_key: "retrievalSupportingInferenceMode",
-        default_mode: "conservative",
-        supported_modes: ["off", "conservative"],
-        rollout_flag_key: "retrievalSupportingInferenceRollout",
-        rollout_stage: "diagnostic_default_on",
-        supported_rollout_stages: ["diagnostic_default_on"],
-        kill_switch_key: "retrievalSupportingInferenceKillSwitch",
-        kill_switch_supported: true,
-        kill_switch_default_state: "armed_standby",
-        kill_switch_action: "fail_open_skip",
-        ablation_supported: true,
-        wiring_status: "runtime_active_contract_traced",
-        default_reason: "audit_recall_should_remain_conservative_until_release_gate",
-      },
-      {
-        module: "entity_coprocessor",
-        feature_flag_key: "entityCoprocessorMode",
-        default_mode: "off",
-        supported_modes: ["off", "experimental", "conservative"],
-        rollout_flag_key: "entityCoprocessorRollout",
-        rollout_stage: "manual_enable_required",
-        supported_rollout_stages: ["manual_enable_required", "experimental_shadow"],
-        kill_switch_key: "entityCoprocessorKillSwitch",
-        kill_switch_supported: true,
-        kill_switch_default_state: "armed_standby",
-        kill_switch_action: "fail_open_skip",
-        ablation_supported: true,
-        ablation_policy_version: entityCoprocessorAblationPolicyVersion,
-        ablation_profiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-        ablation_baseline_mode: entityCoprocessorAblationBaselineMode,
-        ablation_evaluation_window_by_profile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-        ablation_primary_metrics: entityCoprocessorAblationPrimaryMetrics.slice(),
-        ablation_decision_gate: entityCoprocessorAblationDecisionGate,
-        takeover_gate_policy_version: coprocessorTakeoverGatePolicyVersion,
-        takeover_gate_required_signals: coprocessorTakeoverGateRequiredSignals.slice(),
-        takeover_gate_applied_by_default: false,
-        takeover_gate_default_action: entityCoprocessorTakeoverGateDefaultAction,
-        wiring_status: "trace_contract_only",
-        default_reason: "entity_sidecar_stays_off_until_vx_validation_and_release_gate_close",
-      },
-      {
-        module: "world_coprocessor",
-        feature_flag_key: "worldCoprocessorMode",
-        default_mode: "off",
-        supported_modes: ["off", "experimental", "conservative"],
-        rollout_flag_key: "worldCoprocessorRollout",
-        rollout_stage: "manual_enable_required",
-        supported_rollout_stages: ["manual_enable_required", "experimental_shadow"],
-        kill_switch_key: "worldCoprocessorKillSwitch",
-        kill_switch_supported: true,
-        kill_switch_default_state: "armed_standby",
-        kill_switch_action: "fail_open_skip",
-        ablation_supported: true,
-        ablation_policy_version: worldCoprocessorAblationPolicyVersion,
-        ablation_profiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-        ablation_baseline_mode: worldCoprocessorAblationBaselineMode,
-        ablation_evaluation_window_by_profile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-        ablation_primary_metrics: worldCoprocessorAblationPrimaryMetrics.slice(),
-        ablation_decision_gate: worldCoprocessorAblationDecisionGate,
-        takeover_gate_policy_version: coprocessorTakeoverGatePolicyVersion,
-        takeover_gate_required_signals: coprocessorTakeoverGateRequiredSignals.slice(),
-        takeover_gate_applied_by_default: false,
-        takeover_gate_default_action: worldCoprocessorTakeoverGateDefaultAction,
-        wiring_status: "trace_contract_only",
-        default_reason: "world_sidecar_stays_off_until_vx_validation_and_release_gate_close",
-      },
-      {
-        module: "narrative_quality_coprocessor",
-        feature_flag_key: "narrativeQualityCoprocessorMode",
-        default_mode: "experimental",
-        supported_modes: ["off", "experimental", "conservative"],
-        rollout_flag_key: "narrativeQualityCoprocessorRollout",
-        rollout_stage: "experimental_shadow",
-        supported_rollout_stages: ["experimental_shadow", "manual_enable_required"],
-        kill_switch_key: "narrativeQualityCoprocessorKillSwitch",
-        kill_switch_supported: true,
-        kill_switch_default_state: "armed_standby",
-        kill_switch_action: "fail_open_skip",
-        ablation_supported: true,
-        ablation_policy_version: narrativeQualityCoprocessorAblationPolicyVersion,
-        ablation_profiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-        ablation_baseline_mode: narrativeQualityCoprocessorAblationBaselineMode,
-        ablation_evaluation_window_by_profile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-        ablation_primary_metrics: narrativeQualityCoprocessorAblationPrimaryMetrics.slice(),
-        ablation_decision_gate: narrativeQualityCoprocessorAblationDecisionGate,
-        takeover_gate_policy_version: coprocessorTakeoverGatePolicyVersion,
-        takeover_gate_required_signals: coprocessorTakeoverGateRequiredSignals.slice(),
-        takeover_gate_applied_by_default: false,
-        takeover_gate_default_action: narrativeQualityCoprocessorTakeoverGateDefaultAction,
-        wiring_status: "trace_contract_only",
-        default_reason: "quality hints stay experimental until vx_validation_and_release_gate_close",
-      },
-    ];
-    const coprocessorAuthorityMatrixByMode = {};
-    const coprocessorFeatureControlByMode = {};
-    const coprocessorFeatureControlByRolloutStage = {};
-    const coprocessorReadBoundaryBySurface = {};
-    const coprocessorWriteBoundaryByTarget = {};
-    for (const mode of coprocessorAuthorityModes) {
-      coprocessorAuthorityMatrixByMode[mode] = [];
-    }
-    for (const mode of coprocessorFeatureFlagModes) {
-      coprocessorFeatureControlByMode[mode] = [];
-    }
-    for (const stage of coprocessorRolloutStages) {
-      coprocessorFeatureControlByRolloutStage[stage] = [];
-    }
-    for (const entry of coprocessorAuthorityMatrix) {
-      const authorityMode = String(entry && entry.authority_mode || "");
-      if (!coprocessorAuthorityMatrixByMode[authorityMode]) {
-        coprocessorAuthorityMatrixByMode[authorityMode] = [];
-      }
-      coprocessorAuthorityMatrixByMode[authorityMode].push(entry.module);
-      const readSurfaces = Array.isArray(entry && entry.read_surfaces) ? entry.read_surfaces : [];
-      for (const surface of readSurfaces) {
-        const readSurface = String(surface || "");
-        if (!readSurface) continue;
-        if (!coprocessorReadBoundaryBySurface[readSurface]) {
-          coprocessorReadBoundaryBySurface[readSurface] = [];
-        }
-        coprocessorReadBoundaryBySurface[readSurface].push(entry.module);
-      }
-      const writeTargets = Array.isArray(entry && entry.write_targets) ? entry.write_targets : [];
-      for (const target of writeTargets) {
-        const writeTarget = String(target || "");
-        if (!writeTarget) continue;
-        if (!coprocessorWriteBoundaryByTarget[writeTarget]) {
-          coprocessorWriteBoundaryByTarget[writeTarget] = [];
-        }
-        coprocessorWriteBoundaryByTarget[writeTarget].push(entry.module);
-      }
-    }
-    for (const entry of coprocessorFeatureControlMatrix) {
-      const featureMode = String(entry && entry.default_mode || "");
-      if (!coprocessorFeatureControlByMode[featureMode]) {
-        coprocessorFeatureControlByMode[featureMode] = [];
-      }
-      coprocessorFeatureControlByMode[featureMode].push(entry.module);
-      const rolloutStage = String(entry && entry.rollout_stage || "");
-      if (!coprocessorFeatureControlByRolloutStage[rolloutStage]) {
-        coprocessorFeatureControlByRolloutStage[rolloutStage] = [];
-      }
-      coprocessorFeatureControlByRolloutStage[rolloutStage].push(entry.module);
-    }
-    const coprocessorAuthorityTruthWriterModules = (coprocessorAuthorityMatrixByMode.truth_writer || []).slice();
-    const coprocessorAuthoritySidecarModules = coprocessorAuthorityMatrix
-      .filter(function(entry) { return entry && entry.authority_mode !== "truth_writer"; })
-      .map(function(entry) { return entry.module; });
-    const coprocessorFeatureAlwaysOnModules = (coprocessorFeatureControlByMode.always_on || []).slice();
-    const coprocessorFeatureConservativeModules = (coprocessorFeatureControlByMode.conservative || []).slice();
-    const coprocessorFeatureExperimentalModules = (coprocessorFeatureControlByMode.experimental || []).slice();
-    const coprocessorFeatureOffModules = (coprocessorFeatureControlByMode.off || []).slice();
-    const coprocessorKillSwitchableModules = coprocessorFeatureControlMatrix.filter(function(entry) {
-      return !!(entry && entry.kill_switch_supported);
-    }).map(function(entry) {
-      return entry.module;
-    });
-    const coprocessorTraceContractOnlyModules = coprocessorFeatureControlMatrix.filter(function(entry) {
-      return String(entry && entry.wiring_status || "") === "trace_contract_only";
-    }).map(function(entry) {
-      return entry.module;
-    });
-    const coprocessorRuntimeActiveModules = coprocessorFeatureControlMatrix.filter(function(entry) {
-      return String(entry && entry.wiring_status || "").indexOf("runtime_active") >= 0 || String(entry && entry.wiring_status || "") === "hard_enabled_runtime";
-    }).map(function(entry) {
-      return entry.module;
-    });
-    const coprocessorHintBudgetNonPromptModules = coprocessorAuthoritySidecarModules.filter(function(moduleName) {
-      return coprocessorHintBudgetPromptModules.indexOf(moduleName) < 0;
-    });
-    const coprocessorProposalTraceModules = coprocessorAuthorityMatrix.filter(function(entry) {
-      return entry && entry.authority_mode === "proposal_only";
-    }).map(function(entry) {
-      return entry.module;
-    });
-    const coprocessorAnalysisProviderTraceTargets = Object.assign({}, coprocessorAnalysisProviderTraceTargetsByModule);
-    const coprocessorAnalysisProviderNormalizationModes = Object.assign({}, coprocessorAnalysisProviderNormalizationByModule);
-    const coprocessorBoundaryReadableSurfaces = Object.keys(coprocessorReadBoundaryBySurface);
-    const coprocessorBoundaryWritableTargets = Object.keys(coprocessorWriteBoundaryByTarget);
-    const coprocessorBudgetLaneByLabel = {};
-    for (const label of truthFloorBudgetLabels) {
-      coprocessorBudgetLaneByLabel[label] = truthFloorBudgetLane;
-    }
-    for (const label of coprocessorHintBudgetPromptLabels) {
-      coprocessorBudgetLaneByLabel[label] = coprocessorHintBudgetLane;
-    }
-    const precedencePolicyVersion = "ea1a.v1";
-    const precedenceOrder = [
-      "current_user_input",
-      "explicit_correction",
-      "hard_rule",
-      "verified_direct_evidence",
-      "canonical_state",
-      "dense_summary",
-      "retrieval_supporting_inference",
-    ];
-    const precedenceSurface = {
-      current_user_input: {
-        owner: "payload.user_input",
-        status: "always_primary",
-      },
-      explicit_correction: {
-        owner: "protection.user_priority",
-        status: "contract_only",
-      },
-      hard_rule: {
-        owner: "protection.base_rules",
-        status: "plugin_enforced",
-      },
-      verified_direct_evidence: {
-        owner: "backend.direct_evidence",
-        status: "backend_expected",
-      },
-      canonical_state: {
-        owner: "active_state",
-        status: verifiedCurrentStatePrecedenceEnabled ? "verified_current_state_precedence" : "plugin_floor",
-      },
-      canonical_state_layer: {
-        owner: "injection_pack.canon_text",
-        status: hasCanonicalStateLayer ? "hard_floor_slot_enabled" : "missing_or_empty",
-      },
-      dense_summary: {
-        owner: ["storylines", "episode", "chapter", "arc", "saga"],
-        status: "plugin_budgeted",
-      },
-      retrieval_supporting_inference: {
-        owner: ["characters", "pending_threads", "memories", "kg_relations", "world_context", "fallback"],
-        status: verifiedCurrentStatePrecedenceEnabled ? "lower_than_verified_current_state" : "plugin_budgeted",
-        role: "detail_recall_audit_only",
-        allowed_usage: retrievalAllowedUsage.slice(),
-        disallowed_usage: retrievalDisallowedUsage.slice(),
-        conflict_guard_policy_version: retrievalConflictPolicyVersion,
-        promotion_policy_version: retrievalPromotionPolicyVersion,
-        promotion_targets: retrievalPromotionTargets.slice(),
-      },
-      supporting_guidance_guard: {
-        owner: ["narrative_guide", "storylines", "world_context"],
-        status: supportingGuidanceEvidenceCeilingEnabled ? "ceiling_active" : "ceiling_idle",
-        policy_version: supportingGuidanceGuardPolicyVersion,
-        disallowed_usage: ["verified_direct_override", "canonical_current_fact_override", "single_source_truth_override"],
-      },
-      narrative_quality_layer: {
-        owner: narrativeQualityLayerLabels.slice(),
-        status: "quality_hint_only",
-        policy_version: narrativeQualityLayerPolicyVersion,
-        mode: narrativeQualityLayerMode,
-        disallowed_usage: narrativeQualityLayerDisallowedUsage.slice(),
-      },
-      coprocessor_narrative_quality_contract: {
-        owner: "step12.narrative_quality_coprocessor",
-        status: "quality_hint_contract_fixed",
-        input_contract_policy_version: narrativeQualityCoprocessorContractPolicyVersion,
-        output_contract_policy_version: narrativeQualityCoprocessorOutputPolicyVersion,
-        conflict_guard_policy_version: narrativeQualityCoprocessorConflictGuardPolicyVersion,
-        trace_display_policy_version: narrativeQualityCoprocessorTraceDisplayPolicyVersion,
-        trace_display_truth_policy_version: narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion,
-        input_surfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-        source_roles: narrativeQualityCoprocessorSourceRoles.slice(),
-        prompt_labels: coprocessorOrchestrationPromptLabelsByModule.narrative_quality_coprocessor.slice(),
-        output_mode: narrativeQualityCoprocessorOutputMode,
-        output_hint_types: narrativeQualityCoprocessorOutputHintTypes.slice(),
-        output_required_fields: narrativeQualityCoprocessorOutputRequiredFields.slice(),
-        output_optional_fields: narrativeQualityCoprocessorOutputOptionalFields.slice(),
-        guidance_trace_target: "guidance_trace",
-        truth_path_allowed: false,
-        canonical_write_allowed: false,
-      },
-      coprocessor_narrative_quality_ablation: {
-        owner: "step12.narrative_quality_coprocessor",
-        status: "quality_hint_ablation_profiles_fixed",
-        policy_version: narrativeQualityCoprocessorAblationPolicyVersion,
-        profiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-        baseline_mode: narrativeQualityCoprocessorAblationBaselineMode,
-        evaluation_window_by_profile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-        primary_metrics: narrativeQualityCoprocessorAblationPrimaryMetrics.slice(),
-        decision_gate: narrativeQualityCoprocessorAblationDecisionGate,
-        truth_leak_budget: narrativeQualityCoprocessorAblationTruthLeakBudget,
-        protected_truth_labels: narrativeQualityCoprocessorAblationProtectedTruthLabels.slice(),
-      },
-      coprocessor_narrative_quality_planner_split: {
-        owner: "step12.narrative_quality_coprocessor",
-        status: "author_director_guidance_split_fixed",
-        policy_version: narrativeQualityCoprocessorPlannerSplitPolicyVersion,
-        split_mode: narrativeQualityCoprocessorPlannerSplitMode,
-        planner_role: narrativeQualityCoprocessorPlannerRole,
-        planner_fields: narrativeQualityCoprocessorPlannerFields.slice(),
-        planner_hint_types: narrativeQualityCoprocessorPlannerHintTypes.slice(),
-        execution_role: narrativeQualityCoprocessorExecutionRole,
-        execution_fields: narrativeQualityCoprocessorExecutionFields.slice(),
-        execution_hint_types: narrativeQualityCoprocessorExecutionHintTypes.slice(),
-        delivery_surface: narrativeQualityCoprocessorOutputMode,
-        planner_authority_promotion_allowed: narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed,
-        execution_authority_promotion_allowed: narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed,
-        cross_role_truth_borrow_allowed: narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed,
-      },
-      coprocessor_narrative_quality_conflict_guard: {
-        owner: "step12.narrative_quality_coprocessor",
-        status: "quality_hint_conflict_auto_degrade_fixed",
-        policy_version: narrativeQualityCoprocessorConflictGuardPolicyVersion,
-        guard_mode: narrativeQualityCoprocessorConflictGuardMode,
-        anchor_source: narrativeQualityCoprocessorConflictGuardAnchorSource,
-        conflict_reason: narrativeQualityCoprocessorConflictGuardConflictReason,
-        drop_action: narrativeQualityCoprocessorConflictGuardDropAction,
-        degrade_action: narrativeQualityCoprocessorConflictGuardDegradeAction,
-        truth_floor_fallback: narrativeQualityCoprocessorConflictGuardTruthFloorFallback,
-        disallowed_targets: narrativeQualityCoprocessorConflictGuardDisallowedTargets.slice(),
-        fail_open_without_factual_state: narrativeQualityCoprocessorConflictGuardFailOpenWithoutFactualState,
-      },
-      coprocessor_narrative_quality_trace_display: {
-        owner: "step12.narrative_quality_coprocessor",
-        status: "quality_hint_factual_state_split_fixed",
-        policy_version: narrativeQualityCoprocessorTraceDisplayPolicyVersion,
-        truth_policy_version: narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion,
-        display_mode: narrativeQualityCoprocessorTraceDisplayMode,
-        hint_lane: narrativeQualityCoprocessorTraceDisplayHintLane,
-        truth_lane: narrativeQualityCoprocessorTraceDisplayTruthLane,
-        hint_types: narrativeQualityCoprocessorOutputHintTypes.slice(),
-        truth_targets: narrativeQualityCoprocessorTraceDisplayTruthTargets.slice(),
-        truth_owner: narrativeQualityCoprocessorTraceDisplayTruthOwner,
-        disallowed_aliases: narrativeQualityCoprocessorTraceDisplayDisallowedAliases.slice(),
-        label_prefixes: Object.assign({}, narrativeQualityCoprocessorTraceDisplayLabelPrefixes),
-        trace_source: "guidance_trace_vs_step11_factual_state",
-      },
-      hypa_lore_ingest_policy: {
-        owner: legacyAlwaysOnSourceLabels.slice(),
-        status: "ingest_only",
-        always_on_mode: "discouraged",
-        policy_version: hypaLoreIngestPolicyVersion,
-      },
-      coprocessor_authority_matrix: {
-        owner: "step12.module_gate",
-        status: "authority_matrix_fixed",
-        policy_version: coprocessorAuthorityMatrixPolicyVersion,
-        boundary_policy_version: coprocessorBoundaryPolicyVersion,
-        supported_modes: coprocessorAuthorityModes.slice(),
-        truth_write_targets: coprocessorTruthWriteTargets.slice(),
-        sidecar_writable_targets: coprocessorSidecarWritableTargets.slice(),
-        sidecar_denied_truth_targets: coprocessorTruthWriteTargets.slice(),
-        read_boundary_by_surface: coprocessorReadBoundaryBySurface,
-        write_boundary_by_target: coprocessorWriteBoundaryByTarget,
-        truth_writer_modules: coprocessorAuthorityTruthWriterModules.slice(),
-        sidecar_modules: coprocessorAuthoritySidecarModules.slice(),
-        modules: coprocessorAuthorityMatrix.slice(),
-      },
-      coprocessor_feature_control: {
-        owner: "step12.module_gate",
-        status: "feature_control_contract_fixed",
-        policy_version: coprocessorFeatureControlPolicyVersion,
-        supported_feature_flag_modes: coprocessorFeatureFlagModes.slice(),
-        supported_rollout_stages: coprocessorRolloutStages.slice(),
-        supported_kill_switch_states: coprocessorKillSwitchStates.slice(),
-        default_always_on_modules: coprocessorFeatureAlwaysOnModules.slice(),
-        default_conservative_modules: coprocessorFeatureConservativeModules.slice(),
-        default_experimental_modules: coprocessorFeatureExperimentalModules.slice(),
-        default_off_modules: coprocessorFeatureOffModules.slice(),
-        kill_switchable_modules: coprocessorKillSwitchableModules.slice(),
-        trace_contract_only_modules: coprocessorTraceContractOnlyModules.slice(),
-        runtime_active_modules: coprocessorRuntimeActiveModules.slice(),
-        modules: coprocessorFeatureControlMatrix.slice(),
-      },
-      coprocessor_budget_isolation: {
-        owner: "step12.module_gate",
-        status: "truth_floor_reserved_hint_residual",
-        policy_version: coprocessorBudgetIsolationPolicyVersion,
-        budget_isolation_strategy: "truth_floor_reserved_then_hint_residual",
-        truth_floor_lane: truthFloorBudgetLane,
-        truth_floor_owner_modules: coprocessorAuthorityTruthWriterModules.slice(),
-        truth_floor_labels: truthFloorBudgetLabels.slice(),
-        truth_floor_reservation_mode: "hard_floor_reserved_first",
-        hint_budget_lane: coprocessorHintBudgetLane,
-        hint_budget_modules: coprocessorAuthoritySidecarModules.slice(),
-        hint_budget_prompt_modules: coprocessorHintBudgetPromptModules.slice(),
-        hint_budget_non_prompt_modules: coprocessorHintBudgetNonPromptModules.slice(),
-        hint_budget_prompt_labels: coprocessorHintBudgetPromptLabels.slice(),
-        hint_budget_reservation_mode: "residual_only",
-        label_lane_map: Object.assign({}, coprocessorBudgetLaneByLabel),
-      },
-      coprocessor_reason_trace: {
-        owner: "step12.module_gate",
-        status: "keep_drop_degrade_trace_fixed",
-        policy_version: coprocessorReasonTracePolicyVersion,
-        supported_actions: coprocessorReasonTraceActions.slice(),
-        supported_reason_codes: coprocessorReasonTraceReasonCodes.slice(),
-        keep_reason_codes: coprocessorReasonTraceKeepReasonCodes.slice(),
-        drop_reason_codes: coprocessorReasonTraceDropReasonCodes.slice(),
-        degrade_reason_codes: coprocessorReasonTraceDegradeReasonCodes.slice(),
-        budget_reason_codes: coprocessorReasonTraceBudgetReasonCodes.slice(),
-        truth_floor_lane: truthFloorBudgetLane,
-        hint_budget_lane: coprocessorHintBudgetLane,
-        trace_sources: ["blocks", "trimmed", "retrievalKeepDropTrace"],
-      },
-      coprocessor_anti_copy_review: {
-        owner: "step12.module_gate",
-        status: "review_checklist_fixed",
-        policy_version: coprocessorAntiCopyReviewPolicyVersion,
-        review_scope: coprocessorAntiCopyReviewScope,
-        allowed_reference_mode: coprocessorAntiCopyAllowedReferenceMode,
-        required_evidence_fields: coprocessorAntiCopyReviewEvidenceFields.slice(),
-        forbidden_carryover_classes: coprocessorAntiCopyForbiddenCarryoverClasses.slice(),
-        blocking_checks: coprocessorAntiCopyReviewBlockingChecks.slice(),
-        checklist: coprocessorAntiCopyReviewChecklist.slice(),
-      },
-      coprocessor_proposal_reentry: {
-        owner: "step12.module_gate",
-        status: "proposal_reentry_gate_fixed",
-        policy_version: coprocessorProposalReentryPolicyVersion,
-        proposal_trace_modules: coprocessorProposalTraceModules.slice(),
-        required_trace_fields: coprocessorProposalTraceRequiredFields.slice(),
-        reducer_reentry_required_modules: coprocessorProposalReentryRequiredModules.slice(),
-        truth_path_blocked_without_required_fields: true,
-        canonical_write_before_reducer_reentry: false,
-        canonical_write_authority: "step11_truth_core_only",
-        adoption_path: coprocessorProposalAdoptionPath.slice(),
-      },
-      coprocessor_analysis_provider: {
-        owner: "step12.module_gate",
-        status: "analysis_provider_contract_fixed",
-        policy_version: coprocessorAnalysisProviderPolicyVersion,
-        provider_class: "llm_based_sidecar",
-        provider_backed_modules: coprocessorAnalysisProviderModules.slice(),
-        raw_output_mode: coprocessorAnalysisProviderRawOutputMode,
-        trace_target_by_module: Object.assign({}, coprocessorAnalysisProviderTraceTargets),
-        normalization_by_module: Object.assign({}, coprocessorAnalysisProviderNormalizationModes),
-        autonomous_truth_write_allowed: false,
-        disallowed_usage: coprocessorAnalysisProviderDisallowedUsage.slice(),
-        canonical_write_authority: "step11_truth_core_only",
-        call_frequency_owner: coprocessorAnalysisProviderCallFrequencyOwner,
-        call_frequency_policy_version: step13GovernorPolicyVersion,
-        call_frequency_policy_status: "governor_contract_fixed",
-      },
-      coprocessor_entity_contract: {
-        owner: "step12.entity_coprocessor",
-        status: "entity_io_contract_fixed",
-        input_contract_policy_version: entityCoprocessorContractPolicyVersion,
-        output_contract_policy_version: entityCoprocessorEvidenceContractPolicyVersion,
-        patch_direct_write_guard_policy_version: entityCoprocessorPatchDirectWriteGuardPolicyVersion,
-        trace_display_policy_version: entityCoprocessorTraceDisplayPolicyVersion,
-        stale_scene_guard_policy_version: entityCoprocessorStaleSceneGuardPolicyVersion,
-        branch_registry_policy_version: entityCoprocessorBranchRegistryPolicyVersion,
-        input_surfaces: entityCoprocessorInputSurfaces.slice(),
-        input_focus_signals: entityCoprocessorInputFocusSignals.slice(),
-        prompt_labels: coprocessorOrchestrationPromptLabelsByModule.entity_coprocessor.slice(),
-        output_mode: entityCoprocessorOutputMode,
-        output_proposal_types: entityCoprocessorOutputProposalTypes.slice(),
-        output_required_fields: entityCoprocessorOutputRequiredFields.slice(),
-        output_optional_fields: entityCoprocessorOutputOptionalFields.slice(),
-        output_evidence_binding: entityCoprocessorEvidenceBindingMode,
-        patch_application_mode: entityCoprocessorPatchApplicationMode,
-        patch_direct_write_guard_scope: "entity_patch_proposal",
-        patch_direct_write_blocked_target: entityCoprocessorPatchDirectWriteBlockedTarget,
-        patch_direct_write_allowed: false,
-        patch_direct_write_allowed_route: entityCoprocessorPatchDirectWriteAllowedRoute,
-        stale_scene_guard_mode: entityCoprocessorStaleSceneGuardMode,
-        stale_scene_guard_input_labels: entityCoprocessorStaleSceneGuardInputLabels.slice(),
-        stale_scene_guard_anchor_source: entityCoprocessorStaleSceneGuardAnchorSource,
-        stale_scene_guard_conflict_reason: entityCoprocessorStaleSceneGuardConflictReason,
-        stale_scene_guard_suppression_target: entityCoprocessorStaleSceneGuardSuppressionTarget,
-        stale_scene_guard_suppression_route: entityCoprocessorStaleSceneGuardSuppressionRoute,
-        stale_scene_guard_fail_open_without_canonical: entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical,
-        stale_scene_guard_delegated_policy_version: entityCoprocessorStaleSceneGuardDelegatedPolicyVersion,
-        branch_registry_vocabulary_policy_version: entityCoprocessorBranchRegistryVocabularyPolicyVersion,
-        branch_registry_canonical_source: entityCoprocessorBranchRegistryCanonicalSource,
-        branch_registry_signal_keys: entityCoprocessorBranchRegistrySignalKeys.slice(),
-        branch_registry_signal_class: entityCoprocessorBranchRegistrySignalClass,
-        branch_registry_proposal_scope: entityCoprocessorBranchRegistryProposalScope,
-        branch_registry_trace_target: entityCoprocessorBranchRegistryTraceTarget,
-        branch_registry_truth_path_allowed: entityCoprocessorBranchRegistryTruthPathAllowed,
-        branch_registry_reducer_reentry_allowed: entityCoprocessorBranchRegistryReducerReentryAllowed,
-        branch_registry_canonical_write_allowed: entityCoprocessorBranchRegistryCanonicalWriteAllowed,
-        truth_path_reentry_gate: "reducer_reentry_required",
-        canonical_write_authority: "step11_truth_core_only",
-      },
-      coprocessor_entity_trace_display: {
-        owner: "step12.entity_coprocessor",
-        status: "hint_current_fact_split_fixed",
-        policy_version: entityCoprocessorTraceDisplayPolicyVersion,
-        display_mode: entityCoprocessorTraceDisplayMode,
-        hint_lane: entityCoprocessorTraceDisplayHintLane,
-        truth_lane: entityCoprocessorTraceDisplayTruthLane,
-        hint_types: entityCoprocessorTraceDisplayHintTypes.slice(),
-        truth_targets: entityCoprocessorTraceDisplayTruthTargets.slice(),
-        truth_owner: entityCoprocessorTraceDisplayTruthOwner,
-        disallowed_aliases: entityCoprocessorTraceDisplayDisallowedAliases.slice(),
-        label_prefixes: Object.assign({}, entityCoprocessorTraceDisplayLabelPrefixes),
-        trace_source: "proposal_trace_vs_current_fact",
-      },
-      coprocessor_entity_stale_scene_guard: {
-        owner: "step12.entity_coprocessor",
-        status: "stale_scene_truth_promotion_blocked",
-        policy_version: entityCoprocessorStaleSceneGuardPolicyVersion,
-        guard_mode: entityCoprocessorStaleSceneGuardMode,
-        input_labels: entityCoprocessorStaleSceneGuardInputLabels.slice(),
-        anchor_source: entityCoprocessorStaleSceneGuardAnchorSource,
-        conflict_reason: entityCoprocessorStaleSceneGuardConflictReason,
-        suppression_target: entityCoprocessorStaleSceneGuardSuppressionTarget,
-        suppression_route: entityCoprocessorStaleSceneGuardSuppressionRoute,
-        fail_open_without_canonical: entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical,
-        delegated_policy_version: entityCoprocessorStaleSceneGuardDelegatedPolicyVersion,
-      },
-      coprocessor_entity_branch_registry_scope: {
-        owner: "step12.entity_coprocessor",
-        status: "drive_lattice_guidance_scope_fixed",
-        policy_version: entityCoprocessorBranchRegistryPolicyVersion,
-        vocabulary_policy_version: entityCoprocessorBranchRegistryVocabularyPolicyVersion,
-        canonical_source: entityCoprocessorBranchRegistryCanonicalSource,
-        signal_keys: entityCoprocessorBranchRegistrySignalKeys.slice(),
-        signal_class: entityCoprocessorBranchRegistrySignalClass,
-        proposal_scope: entityCoprocessorBranchRegistryProposalScope,
-        trace_target: entityCoprocessorBranchRegistryTraceTarget,
-        truth_path_allowed: entityCoprocessorBranchRegistryTruthPathAllowed,
-        reducer_reentry_allowed: entityCoprocessorBranchRegistryReducerReentryAllowed,
-        canonical_write_allowed: entityCoprocessorBranchRegistryCanonicalWriteAllowed,
-      },
-      coprocessor_world_contract: {
-        owner: "step12.world_coprocessor",
-        status: "world_io_contract_fixed",
-        input_contract_policy_version: worldCoprocessorContractPolicyVersion,
-        input_contract_vocabulary_policy_version: worldCoprocessorSchemaPolicyVersion,
-        write_guard_policy_version: worldCoprocessorWriteGuardPolicyVersion,
-        trace_display_policy_version: worldCoprocessorTraceDisplayPolicyVersion,
-        trace_display_truth_policy_version: worldCoprocessorCanonicalCurrentStatePolicyVersion,
-        guidance_budget_policy_version: worldCoprocessorGuidanceBudgetPolicyVersion,
-        conservative_degrade_policy_version: worldCoprocessorConservativeDegradePolicyVersion,
-        scene_slice_policy_version: worldCoprocessorSceneSlicePolicyVersion,
-        input_surfaces: worldCoprocessorInputSurfaces.slice(),
-        input_focus_signals: worldCoprocessorInputFocusSignals.slice(),
-        prompt_labels: coprocessorOrchestrationPromptLabelsByModule.world_coprocessor.slice(),
-        output_mode: worldCoprocessorOutputMode,
-        output_proposal_types: worldCoprocessorOutputProposalTypes.slice(),
-        output_required_fields: worldCoprocessorOutputRequiredFields.slice(),
-        output_optional_fields: worldCoprocessorOutputOptionalFields.slice(),
-        output_evidence_binding: worldCoprocessorEvidenceBindingMode,
-        patch_application_mode: worldCoprocessorPatchApplicationMode,
-        patch_direct_write_guard_scope: worldCoprocessorWriteGuardScope,
-        patch_direct_write_blocked_targets: worldCoprocessorWriteGuardBlockedTargets.slice(),
-        patch_direct_write_allowed: false,
-        patch_direct_write_allowed_route: worldCoprocessorWriteGuardAllowedRoute,
-        truth_path_reentry_gate: "reducer_reentry_required",
-        canonical_write_authority: "step11_truth_core_only",
-      },
-      coprocessor_world_trace_display: {
-        owner: "step12.world_coprocessor",
-        status: "world_hint_current_state_split_fixed",
-        policy_version: worldCoprocessorTraceDisplayPolicyVersion,
-        truth_policy_version: worldCoprocessorCanonicalCurrentStatePolicyVersion,
-        display_mode: worldCoprocessorTraceDisplayMode,
-        hint_lane: worldCoprocessorTraceDisplayHintLane,
-        truth_lane: worldCoprocessorTraceDisplayTruthLane,
-        hint_types: worldCoprocessorTraceDisplayHintTypes.slice(),
-        truth_targets: worldCoprocessorTraceDisplayTruthTargets.slice(),
-        truth_owner: worldCoprocessorTraceDisplayTruthOwner,
-        disallowed_aliases: worldCoprocessorTraceDisplayDisallowedAliases.slice(),
-        label_prefixes: Object.assign({}, worldCoprocessorTraceDisplayLabelPrefixes),
-        trace_source: "proposal_trace_vs_world_current_state",
-      },
-      coprocessor_world_guidance_budget: {
-        owner: "step12.world_coprocessor",
-        status: "world_hint_budget_scope_fixed",
-        policy_version: worldCoprocessorGuidanceBudgetPolicyVersion,
-        budget_mode: worldCoprocessorGuidanceBudgetMode,
-        budget_lane: worldCoprocessorGuidanceBudgetLane,
-        budget_source: worldCoprocessorGuidanceBudgetSource,
-        competition_scope: worldCoprocessorGuidanceBudgetCompetitionScope,
-        competition_modules: worldCoprocessorGuidanceBudgetCompetitionModules.slice(),
-        prompt_labels: worldCoprocessorGuidanceBudgetPromptLabels.slice(),
-        protected_truth_labels: worldCoprocessorGuidanceBudgetProtectedTruthLabels.slice(),
-        hint_types: worldCoprocessorGuidanceBudgetHintTypes.slice(),
-      },
-      coprocessor_world_conservative_degrade: {
-        owner: "step12.world_coprocessor",
-        status: "world_insufficient_evidence_degrade_fixed",
-        policy_version: worldCoprocessorConservativeDegradePolicyVersion,
-        guard_mode: worldCoprocessorConservativeDegradeMode,
-        required_fields: worldCoprocessorConservativeDegradeRequiredFields.slice(),
-        reason_codes: worldCoprocessorConservativeDegradeReasonCodes.slice(),
-        missing_evidence_action: worldCoprocessorConservativeDegradeMissingEvidenceAction,
-        low_confidence_action: worldCoprocessorConservativeDegradeLowConfidenceAction,
-        truth_floor_fallback: worldCoprocessorConservativeDegradeTruthFloorFallback,
-        fail_open_without_canonical: worldCoprocessorConservativeDegradeFailOpenWithoutCanonical,
-      },
-      coprocessor_world_scene_slice: {
-        owner: "step12.world_coprocessor",
-        status: "scene_scoped_setting_frame_fixed",
-        policy_version: worldCoprocessorSceneSlicePolicyVersion,
-        vocabulary_policy_version: worldCoprocessorSceneSliceVocabularyPolicyVersion,
-        input_labels: worldCoprocessorSceneSliceInputLabels.slice(),
-        selector_signal: worldCoprocessorSceneSliceSelectorSignal,
-        extraction_mode: worldCoprocessorSceneSliceExtractionMode,
-        output_type: worldCoprocessorSceneSliceOutputType,
-        required_fields: worldCoprocessorSceneSliceRequiredFields.slice(),
-        trace_lane: worldCoprocessorSceneSliceTraceLane,
-        budget_lane: worldCoprocessorSceneSliceBudgetLane,
-        delivery_surface: worldCoprocessorSceneSliceDeliverySurface,
-        truth_alias_blocked: worldCoprocessorSceneSliceTruthAliasBlocked,
-        truth_borrow_allowed: worldCoprocessorSceneSliceTruthBorrowAllowed,
-      },
-      coprocessor_orchestration: {
-        owner: "step12.orchestration",
-        status: "residual_guidance_stage_fixed",
-        policy_version: coprocessorOrchestrationPolicyVersion,
-        runtime_stage_order: coprocessorOrchestrationRuntimeStages.slice(),
-        truth_stack_owner: coprocessorOrchestrationTruthStackOwner,
-        truth_stack_labels: truthFloorBudgetLabels.slice(),
-        call_entry_gate: coprocessorOrchestrationCallEntryGate,
-        residual_guidance_stage: "residual_guidance",
-        residual_guidance_budget_source: coprocessorOrchestrationResidualBudgetSource,
-        provider_call_order: coprocessorOrchestrationProviderCallOrder.slice(),
-        dirty_signal_policy_version: coprocessorOrchestrationDirtySignalPolicyVersion,
-        dirty_signal_evaluation_mode: coprocessorOrchestrationDirtySignalEvaluationMode,
-        dirty_signal_snapshot_fields: coprocessorOrchestrationDirtySnapshotFields.slice(),
-        dirty_signal_supported: coprocessorOrchestrationDirtySignals.slice(),
-        dirty_signal_recompute: coprocessorOrchestrationDirtyRecomputeSignals.slice(),
-        dirty_signal_stable: coprocessorOrchestrationDirtyStableSignals.slice(),
-        dirty_signal_stable_reuse_route: "cached_result",
-        dirty_signal_overlap_route: "skip_protection_only",
-        dirty_signal_stale_pending_action: "clear_stale_then_recompute",
-        cache_policy_version: coprocessorOrchestrationCachePolicyVersion,
-        cache_unit: coprocessorOrchestrationCacheUnit,
-        cache_reuse_scope: coprocessorOrchestrationCacheReuseScope,
-        cache_key_fields: coprocessorOrchestrationCacheKeyFields.slice(),
-        cache_invalidation_signals: coprocessorOrchestrationCacheInvalidationSignals.slice(),
-        cache_invalidation_tokens: coprocessorOrchestrationCacheInvalidationTokens.slice(),
-        cache_stale_guard: coprocessorOrchestrationCacheStaleGuard,
-        cache_advanced_policy_status: "deferred_to_step13",
-        governor_policy_version: step13GovernorPolicyVersion,
-        cache_keeper_policy_version: step13CacheKeeperPolicyVersion,
-        run_ledger_policy_version: step13GovernorRunLedgerPolicyVersion,
-        governor_runtime_mode: step13GovernorRuntimeMode,
-        governor_max_parallelism: step13GovernorMaxParallelism,
-        governor_approval_states: step13GovernorApprovalStates.slice(),
-        governor_cooldown_turns_by_module: Object.assign({}, step13GovernorCooldownTurnsByModule),
-        governor_min_dirty_severity_by_module: Object.assign({}, step13GovernorMinDirtySeverityByModule),
-        governor_dirty_severity_order: step13GovernorDirtySeverityOrder.slice(),
-        governor_forced_refresh_signals: step13CacheKeeperForcedRefreshSignals.slice(),
-        governor_stale_discard_reasons: step13CacheKeeperStaleDiscardReasons.slice(),
-        governor_no_serve_conditions: step13CacheKeeperNoServeConditions.slice(),
-        rollback_detection_policy_version: coprocessorOrchestrationRollbackDetectionPolicyVersion,
-        rollback_detection_sources: coprocessorOrchestrationRollbackDetectionSources.slice(),
-        rollback_detection_history_diff_mode: coprocessorOrchestrationRollbackDetectionHistoryDiffMode,
-        rollback_detection_primary_target_resolver: coprocessorOrchestrationRollbackDetectionPrimaryResolver,
-        rollback_detection_fallback_resolver: coprocessorOrchestrationRollbackDetectionFallbackResolver,
-        rollback_detection_supported_delete_shapes: coprocessorOrchestrationRollbackDetectionSupportedShapes.slice(),
-        rollback_detection_duplicate_guard: coprocessorOrchestrationRollbackDetectionDuplicateGuard,
-        rollback_detection_ledger_storage: coprocessorOrchestrationRollbackDetectionLedgerStorage,
-        rollback_invalidation_policy_version: coprocessorOrchestrationRollbackInvalidationPolicyVersion,
-        rollback_invalidation_route: coprocessorOrchestrationRollbackInvalidationRoute,
-        rollback_invalidation_trigger_sources: coprocessorOrchestrationRollbackInvalidationTriggerSources.slice(),
-        rollback_invalidation_local_targets: coprocessorOrchestrationRollbackInvalidationLocalTargets.slice(),
-        rollback_invalidation_cleanup_surfaces: coprocessorOrchestrationRollbackInvalidationCleanupSurfaces.slice(),
-        rollback_invalidation_guidance_mode: coprocessorOrchestrationRollbackInvalidationGuidanceMode,
-        rollback_invalidation_cache_guard: coprocessorOrchestrationRollbackInvalidationCacheGuard,
-        rollback_invalidation_stale_sidecar_guard: coprocessorOrchestrationRollbackInvalidationStaleSidecarGuard,
-        dirty_matrix_policy_version: coprocessorOrchestrationDirtyMatrixPolicyVersion,
-        dirty_matrix_targets: coprocessorOrchestrationDirtyMatrixTargets.slice(),
-        dirty_matrix_runtime_event_types: coprocessorOrchestrationDirtyMatrixRuntimeEventTypes.slice(),
-        dirty_matrix_runtime_event_target_matrix: {
-          user_correction: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.user_correction.slice(),
-          canonical_update: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.canonical_update.slice(),
-          world_state_update: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.world_state_update.slice(),
-          turn_deletion: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.turn_deletion.slice(),
-          backfill_import: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.backfill_import.slice(),
-          schema_migration: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.schema_migration.slice(),
-        },
-        dirty_matrix_delegated_event_matrix_versions: Object.assign({}, coprocessorOrchestrationDirtyMatrixDelegatedEventMatrixVersions),
-        dirty_matrix_deferred_observed_event_types: coprocessorOrchestrationDirtyMatrixDeferredObservedEventTypes.slice(),
-        rebuild_policy_version: coprocessorOrchestrationRebuildPolicyVersion,
-        rebuild_stale_serving_policy: coprocessorOrchestrationRebuildStaleServingPolicy,
-        rebuild_pending_trigger_states: coprocessorOrchestrationRebuildPendingTriggerStates.slice(),
-        rebuild_stale_drop_targets: coprocessorOrchestrationRebuildStaleDropTargets.slice(),
-        rebuild_hard_reset_targets: coprocessorOrchestrationRebuildHardResetTargets.slice(),
-        rebuild_start_point_precedence: coprocessorOrchestrationRebuildStartPointPrecedence.slice(),
-        rebuild_event_modes: Object.assign({}, coprocessorOrchestrationRebuildEventModes),
-        rebuild_start_points_by_event: Object.assign({}, coprocessorOrchestrationRebuildStartPointsByEvent),
-        stale_proposal_policy_version: coprocessorOrchestrationStaleProposalPolicyVersion,
-        stale_proposal_blocked_prompt_targets: coprocessorOrchestrationStaleProposalBlockedPromptTargets.slice(),
-        stale_proposal_blocked_cache_reasons: coprocessorOrchestrationStaleProposalBlockedCacheReasons.slice(),
-        stale_proposal_evidence_mismatch_signals: coprocessorOrchestrationStaleProposalEvidenceMismatchSignals.slice(),
-        stale_proposal_runtime_enforcement: coprocessorOrchestrationStaleProposalRuntimeEnforcement,
-        stale_proposal_action: coprocessorOrchestrationStaleProposalAction,
-        module_transport_policy_version: coprocessorOrchestrationModuleTransportPolicyVersion,
-        backend_required_modules: coprocessorOrchestrationBackendRequiredModules.slice(),
-        backend_bundle_assisted_surfaces: coprocessorOrchestrationBackendBundleAssistedSurfaces.slice(),
-        backend_proxy_assisted_modules: coprocessorOrchestrationBackendProxyAssistedModules.slice(),
-        plugin_only_modules: coprocessorOrchestrationPluginOnlyModules.slice(),
-        backend_bundle_entry_point: coprocessorOrchestrationBackendBundleEntryPoint,
-        backend_proxy_route: coprocessorOrchestrationBackendProxyRoute,
-        backend_offline_guard: coprocessorOrchestrationBackendOfflineGuard,
-        plugin_only_execution_mode: coprocessorOrchestrationPluginOnlyExecutionMode,
-        module_transport_runtime_status: coprocessorOrchestrationModuleTransportRuntimeStatus,
-        stage_by_module: Object.assign({}, coprocessorOrchestrationStageByModule),
-        prompt_labels_by_module: {
-          entity_coprocessor: coprocessorOrchestrationPromptLabelsByModule.entity_coprocessor.slice(),
-          world_coprocessor: coprocessorOrchestrationPromptLabelsByModule.world_coprocessor.slice(),
-          narrative_quality_coprocessor: coprocessorOrchestrationPromptLabelsByModule.narrative_quality_coprocessor.slice(),
-        },
-        call_allowed_before_truth_stack: false,
-      },
-      step13_governor: {
-        owner: "step13.governor",
-        status: "governor_contract_fixed",
-        policy_version: step13GovernorPolicyVersion,
-        cache_keeper_policy_version: step13CacheKeeperPolicyVersion,
-        failure_budget_policy_version: step13GovernorFailureBudgetPolicyVersion,
-        run_ledger_policy_version: step13GovernorRunLedgerPolicyVersion,
-        bypass_policy_version: step13GovernorBypassPolicyVersion,
-        governed_modules: step13GovernorManagedModules.slice(),
-        approval_states: step13GovernorApprovalStates.slice(),
-        cooldown_turns_by_module: Object.assign({}, step13GovernorCooldownTurnsByModule),
-        dirty_severity_order: step13GovernorDirtySeverityOrder.slice(),
-        min_dirty_severity_by_module: Object.assign({}, step13GovernorMinDirtySeverityByModule),
-        max_parallelism: step13GovernorMaxParallelism,
-        runtime_mode: step13GovernorRuntimeMode,
-        failure_bucket_mode: step13GovernorFailureBucketMode,
-        tracked_failure_classes: step13GovernorTrackedFailureClasses.slice(),
-        failure_window_turns: step13GovernorFailureWindowTurns,
-        consecutive_failure_threshold: step13GovernorConsecutiveFailureThreshold,
-        resume_success_turns_required: step13GovernorResumeSuccessTurnsRequired,
-        failure_runtime_action: step13GovernorFailureRuntimeAction,
-        failure_fail_open_behavior: step13GovernorFailureFailOpenBehavior,
-        cache_unit: coprocessorOrchestrationCacheUnit,
-        reuse_scope: coprocessorOrchestrationCacheReuseScope,
-        reuse_route: "cached_result",
-        forced_refresh_signals: step13CacheKeeperForcedRefreshSignals.slice(),
-        stale_discard_reasons: step13CacheKeeperStaleDiscardReasons.slice(),
-        no_serve_conditions: step13CacheKeeperNoServeConditions.slice(),
-        bypass_blocked_routes: step13GovernorBypassBlockedRoutes.slice(),
-        bypass_protected_prompt_targets: step13GovernorBypassProtectedPromptTargets.slice(),
-        bypass_required_entry_gate: coprocessorOrchestrationCallEntryGate,
-        bypass_required_single_flight_scope: coprocessorOrchestrationCacheReuseScope,
-        bypass_required_runtime_stage: "residual_guidance",
-        bypass_action: step13GovernorBypassAction,
-        bypass_runtime_status: step13GovernorBypassRuntimeStatus,
-      },
-      step13_token_budget: {
-        owner: "step13.token_budget",
-        status: "token_estimator_contract_fixed",
-        estimator_policy_version: step13TokenEstimatorPolicyVersion,
-        fallback_policy_version: step13TokenBudgetFallbackPolicyVersion,
-        truth_floor_policy_version: step13TokenTruthFloorPolicyVersion,
-        estimator_mode: step13TokenEstimatorMode,
-        model_mode: step13TokenEstimatorModelMode,
-        model_overrides: Object.assign({}, step13TokenEstimatorModelOverrides),
-        supported_profiles: step13TokenEstimatorProfiles.slice(),
-        profile_source_order: step13TokenEstimatorProfileSourceOrder.slice(),
-        runtime_token_thresholds: Object.assign({}, step13TokenEstimatorRuntimeThresholds),
-        budget_limit_by_profile: Object.assign({}, step13TokenEstimatorBudgetLimitByProfile),
-        low_confidence_runtime_sources: step13TokenEstimatorLowConfidenceSources.slice(),
-        runtime_token_smoothing_window: runtimeTokenSmoothingWindow,
-        drift_telemetry_fields: step13TokenEstimatorDriftTelemetryFields.slice(),
-        fallback_rules: Object.assign({}, step13TokenBudgetFallbackRules),
-        truth_floor_mode: step13TokenTruthFloorMode,
-        truth_floor_projection_status: step13TokenTruthFloorProjectionStatus,
-        truth_floor_reference_chars_per_token: step13TokenTruthFloorReferenceCharsPerToken,
-        truth_floor_core_labels: step13TokenTruthFloorCoreLabels.slice(),
-        truth_floor_continuity_labels: step13TokenTruthFloorContinuityLabels.slice(),
-        truth_floor_reliability_guard_labels: step13TokenTruthFloorReliabilityGuardLabels.slice(),
-        density_profile_policy_version: step13TokenDensityProfilePolicyVersion,
-        density_profile_levels: step13TokenDensityProfileLevels.slice(),
-        density_profile_thresholds: Object.assign({}, step13TokenDensityProfileThresholds),
-        density_profile_labels: {
-          ledger: step13TokenDensityLedgerLabels.slice(),
-          world: step13TokenDensityWorldLabels.slice(),
-          guidance: step13TokenDensityGuidanceLabels.slice(),
-        },
-        density_profile_lane_by_family: {
-          ledger: truthFloorBudgetLane,
-          world: coprocessorHintBudgetLane,
-          guidance: coprocessorHintBudgetLane,
-        },
-      },
-      step13_planning: {
-        owner: "step13.planning",
-        status: "planning_schema_contract_fixed",
-        runtime_mode: step13PlanningRuntimeMode,
-        rollout_stage: step13PlanningRolloutStage,
-        default_takeover_gate: step13PlanningTakeoverGate,
-        truth_write_allowed: step13PlanningTruthWriteAllowed,
-        reducer_reentry_allowed: step13PlanningReducerReentryAllowed,
-        beat_planner: {
-          policy_version: step13BeatPlannerSchemaPolicyVersion,
-          source_policy_version: narrativeQualityCoprocessorPlannerSplitPolicyVersion,
-          role: narrativeQualityCoprocessorPlannerRole,
-          draft_required_fields: step13BeatPlannerDraftRequiredFields.slice(),
-          draft_optional_fields: step13BeatPlannerDraftOptionalFields.slice(),
-          runtime_backing_fields: narrativeQualityCoprocessorPlannerFields.slice(),
-          hint_types: narrativeQualityCoprocessorPlannerHintTypes.slice(),
-          input_surfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-          delivery_surface: narrativeQualityCoprocessorOutputMode,
-          authority_promotion_allowed: narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed,
-          truth_borrow_allowed: narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed,
-        },
-        scene_pilot: {
-          policy_version: step13ScenePilotSchemaPolicyVersion,
-          source_policy_version: narrativeQualityCoprocessorPlannerSplitPolicyVersion,
-          role: narrativeQualityCoprocessorExecutionRole,
-          draft_required_fields: step13ScenePilotDraftRequiredFields.slice(),
-          draft_optional_fields: step13ScenePilotDraftOptionalFields.slice(),
-          runtime_backing_fields: narrativeQualityCoprocessorExecutionFields.slice(),
-          hint_types: narrativeQualityCoprocessorExecutionHintTypes.slice(),
-          input_surfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-          delivery_surface: narrativeQualityCoprocessorOutputMode,
-          authority_promotion_allowed: narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed,
-          truth_borrow_allowed: narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed,
-        },
-        setting_frame: {
-          policy_version: step13SettingFrameSchemaPolicyVersion,
-          source_policy_version: worldCoprocessorSceneSlicePolicyVersion,
-          vocabulary_policy_version: worldCoprocessorSceneSliceVocabularyPolicyVersion,
-          input_labels: worldCoprocessorSceneSliceInputLabels.slice(),
-          selector_signal: worldCoprocessorSceneSliceSelectorSignal,
-          extraction_mode: worldCoprocessorSceneSliceExtractionMode,
-          output_type: worldCoprocessorSceneSliceOutputType,
-          draft_required_fields: worldCoprocessorSceneSliceRequiredFields.slice(),
-          draft_optional_fields: step13SettingFrameDraftOptionalFields.slice(),
-          trace_lane: worldCoprocessorSceneSliceTraceLane,
-          budget_lane: worldCoprocessorSceneSliceBudgetLane,
-          delivery_surface: worldCoprocessorSceneSliceDeliverySurface,
-          truth_alias_blocked: worldCoprocessorSceneSliceTruthAliasBlocked,
-          truth_borrow_allowed: worldCoprocessorSceneSliceTruthBorrowAllowed,
-        },
-        keep_drop_conflict: {
-          policy_version: step13PlanningKeepDropConflictPolicyVersion,
-          source_policy_versions: step13PlanningConflictSourcePolicyVersions.slice(),
-          evaluation_order: step13PlanningConflictEvaluationOrder.slice(),
-          blocked_targets: step13PlanningConflictBlockedTargets.slice(),
-          beat_planner_conflict_action: step13PlanningBeatPlannerConflictAction,
-          scene_pilot_conflict_action: step13PlanningScenePilotConflictAction,
-          setting_frame_conflict_action: step13PlanningSettingFrameConflictAction,
-          truth_floor_fallback: step13PlanningConflictTruthFloorFallback,
-          allowed_delivery_surfaces: step13PlanningConflictAllowedDeliverySurfaces.slice(),
-        },
-        anti_monolith_guard: {
-          policy_version: step13PlanningMonolithGuardPolicyVersion,
-          guard_mode: step13PlanningMonolithGuardMode,
-          lane_names: step13PlanningMonolithGuardLaneNames.slice(),
-          forbidden_shapes: step13PlanningMonolithGuardForbiddenShapes.slice(),
-          required_delivery_surfaces: step13PlanningMonolithGuardRequiredDeliverySurfaces.slice(),
-          default_action: step13PlanningMonolithGuardDefaultAction,
-          truth_write_allowed: step13PlanningTruthWriteAllowed,
-          reducer_reentry_allowed: step13PlanningReducerReentryAllowed,
-        },
-      },
-      step13_naming: {
-        owner: "step13.naming",
-        status: "local_naming_gate_fixed",
-        policy_version: step13NamingGatePolicyVersion,
-        gate_mode: step13NamingGateMode,
-        legacy_rename_scope: step13NamingGateLegacyRenameScope,
-        review_scope: step13NamingGateReviewScope.slice(),
-        source_draft: step13NamingGateSourceDraft,
-        approved_labels_by_phase: {
-          planning: step13NamingGateApprovedLabelsByPhase.planning.slice(),
-          governor: step13NamingGateApprovedLabelsByPhase.governor.slice(),
-          portability: step13NamingGateApprovedLabelsByPhase.portability.slice(),
-        },
-        reviewed_function_names: step13NamingGateReviewedFunctionNames.slice(),
-        reviewed_helper_names: step13NamingGateReviewedHelperNames.slice(),
-        blocked_legacy_values: step13NamingGateBlockedLegacyValues.slice(),
-        approval_rule: step13NamingGateApprovalRule,
-        runtime_action: step13NamingGateRuntimeAction,
-      },
-      step13_validation_gate: {
-        owner: "step13.validation_gate",
-        status: "default_takeover_gate_fixed",
-        policy_version: step13ValidationGatePolicyVersion,
-        gate_mode: step13ValidationGateMode,
-        inherited_module_takeover_policy_version: step13ValidationGateInheritedModuleTakeoverPolicyVersion,
-        required_signals: step13ValidationGateRequiredSignals.slice(),
-        slice_order: step13ValidationGateSliceOrder.slice(),
-        default_state: step13ValidationGateDefaultState,
-        runtime_action: step13ValidationGateRuntimeAction,
-        slices: {
-          portability: {
-            policy_versions: step13PortabilityValidationPolicyVersions.slice(),
-            default_state: step13ValidationGateDefaultsBySlice.portability.default_state,
-            takeover_allowed_by_default: step13ValidationGateDefaultsBySlice.portability.takeover_allowed_by_default,
-            default_action: step13ValidationGateDefaultsBySlice.portability.default_action,
-            rollout_stage: step13ValidationGateDefaultsBySlice.portability.rollout_stage,
-          },
-          reembed: {
-            policy_versions: step13ReembedValidationPolicyVersions.slice(),
-            default_state: step13ValidationGateDefaultsBySlice.reembed.default_state,
-            takeover_allowed_by_default: step13ValidationGateDefaultsBySlice.reembed.takeover_allowed_by_default,
-            default_action: step13ValidationGateDefaultsBySlice.reembed.default_action,
-            rollout_stage: step13ValidationGateDefaultsBySlice.reembed.rollout_stage,
-          },
-          governor: {
-            policy_versions: step13GovernorValidationPolicyVersions.slice(),
-            default_state: step13ValidationGateDefaultsBySlice.governor.default_state,
-            takeover_allowed_by_default: step13ValidationGateDefaultsBySlice.governor.takeover_allowed_by_default,
-            default_action: step13ValidationGateDefaultsBySlice.governor.default_action,
-            rollout_stage: step13ValidationGateDefaultsBySlice.governor.rollout_stage,
-          },
-          token_budget: {
-            policy_versions: step13TokenValidationPolicyVersions.slice(),
-            default_state: step13ValidationGateDefaultsBySlice.token_budget.default_state,
-            takeover_allowed_by_default: step13ValidationGateDefaultsBySlice.token_budget.takeover_allowed_by_default,
-            default_action: step13ValidationGateDefaultsBySlice.token_budget.default_action,
-            rollout_stage: step13ValidationGateDefaultsBySlice.token_budget.rollout_stage,
-          },
-          planning: {
-            policy_versions: step13PlanningValidationPolicyVersions.slice(),
-            default_state: step13ValidationGateDefaultsBySlice.planning.default_state,
-            takeover_allowed_by_default: step13ValidationGateDefaultsBySlice.planning.takeover_allowed_by_default,
-            default_action: step13ValidationGateDefaultsBySlice.planning.default_action,
-            rollout_stage: step13ValidationGateDefaultsBySlice.planning.rollout_stage,
-          },
-        },
-      },
-    };
-
-    // Phase 4-1: directive 예산을 author + director로 분할 (각 10%)
-    const baseAuthorRatio = 0.10;
-    const baseDirectorRatio = 0.10;
-    // 재분배: active state가 비어 있으면 기본은 memory/author/director에 1/3씩,
-    // T-1f 관계 우선 모드에서는 character/continuity_hook 쪽으로 보너스를 더 보낸다.
-    const bonusRatio = hasActiveState ? 0 : asRatio;
-    const baseMemoryRatio = settings.memoryBudgetRatio || 0.35;
-    const memoryRatioBias = relationshipFirstEnabled ? -0.15 : 0;
-    const memoryBonusShare = relationshipFirstEnabled ? 0.18 : 0.34;
-    const memRatioRaw = (baseMemoryRatio + memoryRatioBias) + bonusRatio * memoryBonusShare;
-    const memRatio = relationshipFirstEnabled
-      ? Math.min(0.30, Math.max(0.10, memRatioRaw))
-      : Math.max(0.05, memRatioRaw);
-    const authorRatio = baseAuthorRatio + bonusRatio * 0.33;
-    const directorRatio = baseDirectorRatio + bonusRatio * 0.33;
-
-    const baseCharacterRatio = relationshipFirstEnabled ? 0.13 : 0.08;
-    const characterBonusShare = relationshipFirstEnabled ? 0.44 : 0.00;
-    const characterRatio = baseCharacterRatio + bonusRatio * characterBonusShare;
-
-    const basePendingThreadRatio = relationshipFirstEnabled ? 0.08 : 0.03;
-    const pendingThreadBonusShare = relationshipFirstEnabled ? 0.38 : 0.00;
-    const pendingThreadRatio = basePendingThreadRatio + bonusRatio * pendingThreadBonusShare;
-
-    // helper: 항목(라인) 단위로만 예산 선택한다. 문장 중간 절단은 피한다.
-    function addBlock(label, text, maxRatio, options) {
-      const opts = options || {};
-      const reserveChars = Math.max(0, Number(opts.reserveChars || 0));
-      const policyTag = typeof opts.policyTag === "string" ? opts.policyTag : "";
-      const governorState = opts.governorState && typeof opts.governorState === "object" ? opts.governorState : null;
-      const governorRemaining = governorState ? Math.max(0, Number(governorState.remaining || 0)) : Number.POSITIVE_INFINITY;
-      if (!text || !text.trim()) return;
-      const hardCap = Math.floor(budgetLimit * maxRatio);
-      const cap = Math.min(hardCap, Math.max(0, remaining - reserveChars), governorRemaining);
-      if (cap <= 20) {
-        const trimEntry = { label, reason: "budget_exhausted", originalChars: text.length, keptChars: 0 };
-        if (reserveChars > 0) trimEntry.reserveChars = reserveChars;
-        if (governorState) trimEntry.governorRemainingChars = governorRemaining;
-        if (policyTag) trimEntry.policyTag = policyTag;
-        trimmed.push(trimEntry);
-        return;
-      }
-
-      const source = String(text || "").trim();
-      const lines = source.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(Boolean);
-      const units = lines.length > 1 ? lines : [source];
-
-      let used = "";
-      let usedCount = 0;
-      for (const unit of units) {
-        const next = used.length + (used ? 1 : 0) + unit.length;
-        if (next > cap) break;
-        used += (used ? "\n" : "") + unit;
-        usedCount += 1;
-      }
-
-      if (!used) {
-        // 개행 없는 비정형 단일 항목은 하드캡 안전 절단으로 완전 누락을 방지한다.
-        if (lines.length <= 1) {
-          used = source.slice(0, cap).trim();
-          const trimEntry = {
-            label,
-            reason: "hard_cap_unstructured",
-            originalChars: source.length,
-            keptChars: used.length,
-            cap,
-          };
-          if (reserveChars > 0 && cap < hardCap) trimEntry.reserveChars = reserveChars;
-          if (policyTag) trimEntry.policyTag = policyTag;
-          trimmed.push(trimEntry);
-        } else {
-          const trimEntry = { label, reason: "budget_exhausted", originalChars: source.length, keptChars: 0, originalItems: units.length, keptItems: 0 };
-          if (reserveChars > 0 && cap < hardCap) trimEntry.reserveChars = reserveChars;
-          if (policyTag) trimEntry.policyTag = policyTag;
-          trimmed.push(trimEntry);
-          return;
-        }
-      } else if (used.length < source.length) {
-        const trimEntry = {
-          label,
-          reason: "item_truncated",
-          originalChars: source.length,
-          keptChars: used.length,
-          originalItems: units.length,
-          keptItems: usedCount,
-        };
-        if (reserveChars > 0 && cap < hardCap) trimEntry.reserveChars = reserveChars;
-        if (policyTag) trimEntry.policyTag = policyTag;
-        trimmed.push(trimEntry);
-      }
-
-      const blockEntry = { label, text: used, chars: used.length };
-      if (policyTag) blockEntry.policyTag = policyTag;
-      blocks.push(blockEntry);
-      remaining -= used.length;
-      if (governorState) {
-        governorState.remaining = Math.max(0, governorRemaining - used.length);
-      }
-    }
-
-    // Phase 4-3: section_world 예산 (5%)
-    const sectionWorldRatio = 0.05;
-
-    // Phase 4-1 우선순위 순서
-    const fallbackRatio = settings.fallbackBudgetRatio || 0.10;
-    const hasEpisode = !!(episodeText && episodeText.trim());
-    const hasChapter = !!(chapterText && chapterText.trim());
-    const hasArc = !!(arcText && arcText.trim());
-    const hasSaga = !!(sagaText && sagaText.trim());
-    const denseSummarySlotPolicyVersion = "ds1e.v1";
-    const denseSummarySlotProfile = (function resolveDenseSummarySlotProfile() {
-      if (isExtreme) return "extreme_long_2m_plus";
-      if (isUltraOrExtreme) return "ultra_long_1m_plus";
-      if (contextProfile === "wide_context_500k") return "wide_context_500k";
-      return "mid_context_300k";
-    })();
-    const denseSummarySlotRatios = (function resolveDenseSummarySlotRatios() {
-      if (denseSummarySlotProfile === "extreme_long_2m_plus") {
-        return { episode: 0.045, chapter: 0.04, arc: 0.035, saga: 0.03 };
-      }
-      if (denseSummarySlotProfile === "ultra_long_1m_plus") {
-        return { episode: 0.04, chapter: 0.035, arc: 0.03, saga: 0.025 };
-      }
-      if (denseSummarySlotProfile === "wide_context_500k") {
-        return { episode: 0.03, chapter: 0.025, arc: 0.0, saga: 0.0 };
-      }
-      return { episode: 0.02, chapter: 0.018, arc: 0.0, saga: 0.0 };
-    })();
-    const episodeRatio = hasEpisode ? fallbackRatio * 0.67 : 0;  // episode 있으면 fallback 예산의 2/3
-    const chapterRatio = hasChapter ? (hasEpisode ? 0.03 : 0.05) : 0;
-    const actualFallbackRatio = hasEpisode ? fallbackRatio * 0.33 : (hasChapter ? fallbackRatio * 0.5 : fallbackRatio);
-    // V-0d: ultra/extreme에서 saga와 episode/chapter 충돌 시 saga floor를 예약한다.
-    const sagaCollisionProtectionEnabled = isUltraOrExtreme && !!(sagaText && sagaText.trim()) && (hasEpisode || hasChapter);
-    const sagaReserveChars = sagaCollisionProtectionEnabled ? Math.max(24, Math.floor(budgetLimit * sagaRatio)) : 0;
-    const sagaCollisionPolicyTag = "v0d_saga_floor_reserve";
-
-    // 요청된 조건부 게이트만 적용:
-    // 1) Story Author/Director 확장, 2) Memories 확장, 3) Past Summaries, 4) Arc/Saga
-    function limitLines(text, maxLines) {
-      const src = String(text || "").trim();
-      const n = Math.max(1, Math.floor(Number(maxLines || 1)));
-      if (!src) return "";
-      const lines = src.split(/\r?\n/).filter(Boolean);
-      if (lines.length <= n) return src;
-      return lines.slice(0, n).join("\n");
-    }
-    function limitMemoryItems(text, maxItems) {
-      const src = String(text || "").trim();
-      const n = sanitizeTopKSetting(maxItems, 1);
-      if (!src) return "";
-      const lines = src.split(/\r?\n/).map(function(line) { return line.trim(); }).filter(Boolean);
-      const kept = [];
-      let itemCount = 0;
-      for (const line of lines) {
-        const isHeader = /^\[[^\]]+\]\s*$/.test(line) || /^━━/.test(line);
-        const isItem = /^[-*]\s+/.test(line) || /^\[\s*(?:memory|recent|relevant|deep)\b/i.test(line);
-        if (isHeader) {
-          kept.push(line);
-          continue;
-        }
-        if (isItem) {
-          if (itemCount >= n) continue;
-          kept.push(line);
-          itemCount += 1;
-          continue;
-        }
-        if (itemCount >= n) continue;
-        kept.push(line);
-        itemCount += 1;
-      }
-      return kept.join("\n");
-    }
-    const storyAuthorExpanded = isUltraOrExtreme;
-    const directorExpanded = isUltraOrExtreme;
-    const memoriesExpanded = isUltraOrExtreme;
-    const topKSemanticMemoryTarget = sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK);
-    const pastSummariesEnabled = isUltraOrExtreme || !memoryText;
-    const authorTextForGuide = storyAuthorExpanded ? authorText : limitLines(authorText, 4);
-    const directorTextForGuide = directorExpanded ? directorText : limitLines(directorText, 5);
-    const memoryTextForInjection = memoriesExpanded ? memoryText : limitMemoryItems(memoryText, topKSemanticMemoryTarget);
-    const memoryTextForInjectionGuarded = _guardRetrievalTextHs1d("memories", memoryTextForInjection);
-    const hasRelationshipInActiveState = !!(activeStateText && String(activeStateText).indexOf("━━ Relationship Changes ━━") >= 0);
-    const narrativeGuideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";
-    let storylineTextForInjection = narrativeGuideDisabled ? "" : _guardSupportingGuidanceRg1h("storylines", storylineText);
-    const characterTextForInjection = _guardRetrievalTextHs1d("characters", characterText);
-    let pendingThreadTextForInjection = _guardRetrievalTextHs1d("pending_threads", pendingThreadText);
-    const locationContextTextForInjection = _guardRetrievalTextHs1d("location_context", locationContextText);
-    const narrativeGuideText = narrativeGuideDisabled ? "" : _buildNarrativeGuideBlock(authorTextForGuide, directorTextForGuide);
-    const narrativeGuideTextForInjection = _guardSupportingGuidanceRg1h("narrative_guide", narrativeGuideText);
-    const worldContextText = _buildWorldContextBlock(sectionWorldText, worldRulesText);
-    const worldContextTextForInjection = _guardRetrievalTextHs1d("world_context", worldContextText);
-    const worldContextTextForInjectionCapped = _guardSupportingGuidanceRg1h("world_context", worldContextTextForInjection);
-    const personaRecollectionTextForInjection = _guardRetrievalTextHs1d("persona_recollection", personaRecollectionText);
-    const characterPrivateRecollectionTextForInjection = _guardRetrievalTextHs1d("character_private_recollection", characterPrivateRecollectionText);
-    const fallbackTextForInjection = _guardRetrievalTextHs1d("fallback", fallbackText);
-    let kgTextForInjection = _guardRetrievalTextHs1d("kg_relations", kgText);
-    const helperGovernorPolicyVersion = "s16.5-hg.v1";
-    const helperGovernorTrimOrder = ["duplicate_suppression", "source_conflict_guard", "reliability_guard", "budget_ceiling"];
-    const helperGovernorLaneOrder = ["characters", "character_private_recollection", "persona_recollection", "pending_threads", "location_context", "memories", "kg_relations", "narrative_guide", "world_context", "fallback"];
-    const helperGovernorRawInput = helperGovernorContext ? String(helperGovernorContext.userInput || "").trim() : "";
-    const helperGovernorContinuity = helperGovernorContext && helperGovernorContext.continuity && typeof helperGovernorContext.continuity === "object"
-      ? helperGovernorContext.continuity
-      : null;
-    const helperGovernorTriggerMode = String((helperGovernorContext && helperGovernorContext.triggerMode) || (helperGovernorContinuity && helperGovernorContinuity.triggerMode) || "").trim();
-    const helperGovernorWeakInput = !!(helperGovernorRawInput && (
-      helperGovernorRawInput.length <= 24 ||
-      /^(continue|go on|next|more|resume|keep going|계속|계속해|이어서|이어가|다음|다음 장면|다음으로|응|ㅇㅇ|좋아|그래|좋아 계속)$/i.test(helperGovernorRawInput)
-    ));
-    const helperGovernorTemporalQuery = isTemporalQueryInput(helperGovernorRawInput);
-    const helperGovernorSceneTransition = /(scene|장면|장소|where|어디|이번 장면|다음 장면|장면 전환|장소 이동)/i.test(helperGovernorRawInput);
-    const helperGovernorRelationPivot = /(relationship|relation|between|trust|betray|feel about|chemistry|bond|관계|사이|감정|신뢰|배신|화해|대립)/i.test(helperGovernorRawInput);
-    const helperGovernorExplicitRedirection = /(instead|not that|ignore previous|leave that|move on|new scene|different topic|새로|다른 쪽|말고|이제는|이번 장면|지금 장면|새 갈등|딴 이야기|전 장면 말고)/i.test(helperGovernorRawInput);
-    const helperGovernorStrongUserIntent = helperGovernorRawInput.length >= 48 || helperGovernorRawInput.split(/\s+/).filter(Boolean).length >= 10;
-    let helperGovernorRelationshipCount = 0;
-    try {
-      const relationshipStates = helperGovernorContext && helperGovernorContext.activeStatesResult && Array.isArray(helperGovernorContext.activeStatesResult.states)
-        ? helperGovernorContext.activeStatesResult.states
-        : [];
-      const relationshipState = relationshipStates.find(function(state) { return state && state.state_type === "relationship_state"; });
-      if (relationshipState && relationshipState.content) {
-        const raw = typeof relationshipState.content === "string"
-          ? JSON.parse(relationshipState.content)
-          : relationshipState.content;
-        helperGovernorRelationshipCount = Array.isArray(raw) ? raw.length : 0;
-      }
-    } catch {
-      helperGovernorRelationshipCount = 0;
-    }
-    const helperGovernorCharacterCount = helperGovernorContext && helperGovernorContext.characterResult
-      ? Number(helperGovernorContext.characterResult.count || ((Array.isArray(helperGovernorContext.characterResult.items) && helperGovernorContext.characterResult.items.length) || 0))
-      : 0;
-    const helperGovernorKgCount = helperGovernorContext && helperGovernorContext.kgRecallResult && Array.isArray(helperGovernorContext.kgRecallResult.items)
-      ? helperGovernorContext.kgRecallResult.items.length
-      : 0;
-    const helperGovernorEntityPressureCount = Math.max(helperGovernorRelationshipCount, helperGovernorCharacterCount, helperGovernorKgCount);
-    const helperGovernorPendingThreadCount = helperGovernorContext && helperGovernorContext.pendingThreadsResult
-      ? Number(helperGovernorContext.pendingThreadsResult.count || ((Array.isArray(helperGovernorContext.pendingThreadsResult.items) && helperGovernorContext.pendingThreadsResult.items.length) || 0))
-      : 0;
-    const helperGovernorStorylineItems = helperGovernorContext && helperGovernorContext.storylineResult && Array.isArray(helperGovernorContext.storylineResult.items)
-      ? helperGovernorContext.storylineResult.items
-      : [];
-    const helperGovernorActiveStorylineCount = helperGovernorStorylineItems.filter(function(item) {
-      return item && String(item.status || "active").toLowerCase() === "active";
-    }).length;
-    const helperGovernorResolvedStorylineCount = helperGovernorStorylineItems.filter(function(item) {
-      return item && /(resolved|complete|completed|closed|done|settled|ended|cooldown|afterglow|epilogue)/i.test(String(item.status || ""));
-    }).length;
-    function _tokenizeHelperGovernorStoryline(value) {
-      return String(value || "")
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .map(function(token) { return token.trim(); })
-        .filter(function(token) { return token.length >= 3; });
-    }
-    const helperGovernorStorylineTitleMiss = !!(
-      helperGovernorRawInput &&
-      helperGovernorActiveStorylineCount > 0 &&
-      !helperGovernorStorylineItems.some(function(item) {
-        const titleTokens = _tokenizeHelperGovernorStoryline(item && (item.name || item.title || item.arc || item.label));
-        return titleTokens.some(function(token) { return helperGovernorRawInput.toLowerCase().indexOf(token) >= 0; });
-      })
-    );
-    const helperGovernorSearchItems = helperGovernorContext && helperGovernorContext.searchResult && Array.isArray(helperGovernorContext.searchResult.items)
-      ? helperGovernorContext.searchResult.items
-      : [];
-    const helperGovernorMemoryCount = helperGovernorSearchItems.filter(function(item) { return item && item.source === "memory"; }).length;
-    const helperGovernorFallbackCount = helperGovernorSearchItems.filter(function(item) { return item && item.source === "chat_log"; }).length;
-    const helperGovernorNeedSignals = [];
-    if (helperGovernorWeakInput) helperGovernorNeedSignals.push("weak_input");
-    if (helperGovernorTemporalQuery) helperGovernorNeedSignals.push("temporal_query");
-    if (helperGovernorTriggerMode === "idle_reentry") helperGovernorNeedSignals.push("long_gap_resume");
-    if (helperGovernorEntityPressureCount > 1) helperGovernorNeedSignals.push("multi_entity_pressure");
-    if (helperGovernorPendingThreadCount > 0) helperGovernorNeedSignals.push("unresolved_thread_pressure");
-    if (helperGovernorSceneTransition) helperGovernorNeedSignals.push("scene_transition_pressure");
-    if (helperGovernorRelationPivot) helperGovernorNeedSignals.push("relation_pivot_pressure");
-    const helperGovernorDedupeSuppressedLabels = [];
-    if (hasRelationshipInActiveState && kgTextForInjection) {
-      helperGovernorDedupeSuppressedLabels.push("kg_relations");
-      trimmed.push({
-        label: "kg_relations",
-        reason: "dedupe_first_active_state_coverage",
-        originalChars: String(kgTextForInjection).trim().length,
-        keptChars: 0,
-        policyTag: helperGovernorPolicyVersion,
-      });
-      kgTextForInjection = "";
-    }
-    const helperGovernorStorylineLowConfidence = !!(helperGovernorContext && helperGovernorContext.storylineResult && (
-      helperGovernorContext.storylineResult.fetched === false || helperGovernorContext.storylineResult.continuityPackFallback === true
-    ));
-    const helperGovernorWorldLowConfidence = !!(helperGovernorContext && helperGovernorContext.worldRulesResult && (
-      helperGovernorContext.worldRulesResult.fetched === false || helperGovernorContext.worldRulesResult.continuityPackFallback === true
-    ));
-    const helperGovernorPendingPartialFailure = !!(
-      helperGovernorContext && helperGovernorContext.pendingThreadsResult &&
-      helperGovernorContext.pendingThreadsResult.fetched === false &&
-      !String(pendingThreadTextForInjection || "").trim() &&
-      (helperGovernorWeakInput || helperGovernorTemporalQuery || helperGovernorRelationPivot || helperGovernorSceneTransition)
-    );
-    const helperGovernorActiveStatePartialFailure = !!(
-      helperGovernorContext && helperGovernorContext.activeStatesResult &&
-      helperGovernorContext.activeStatesResult.fetched === false &&
-      !String(activeStateText || "").trim() &&
-      (helperGovernorWeakInput || helperGovernorTemporalQuery || helperGovernorRelationPivot || helperGovernorSceneTransition)
-    );
-    const helperGovernorLowConfidenceRetrieval = !!(
-      helperGovernorStorylineLowConfidence ||
-      helperGovernorWorldLowConfidence ||
-      (helperGovernorMemoryCount === 0 && helperGovernorFallbackCount > 0) ||
-      (helperGovernorKgCount === 0 && helperGovernorRelationPivot)
-    );
-    const helperGovernorSubsystemPartialFailure = !!(
-      helperGovernorPendingPartialFailure ||
-      helperGovernorActiveStatePartialFailure ||
-      (helperGovernorStorylineLowConfidence && (helperGovernorWeakInput || helperGovernorTemporalQuery || helperGovernorSceneTransition)) ||
-      (helperGovernorWorldLowConfidence && helperGovernorSceneTransition)
-    );
-    const helperGovernorCrossLaneDuplication = helperGovernorDedupeSuppressedLabels.length > 0;
-    const helperGovernorSourceConflict = conflictGuardSuppressedBlockSet.size > 0 || supportingGuidanceBlockedSet.size > 0;
-    const helperGovernorStaleArcPressure = !!(
-      !helperGovernorTemporalQuery &&
-      helperGovernorNeedSignals.indexOf("long_gap_resume") < 0 &&
-      !helperGovernorSceneTransition &&
-      !helperGovernorRelationPivot &&
-      !helperGovernorExplicitRedirection &&
-      (helperGovernorActiveStorylineCount > 0 || helperGovernorPendingThreadCount > 0 || helperGovernorMemoryCount > 0)
-    );
-    const helperGovernorDominantArcSaturation = !!(
-      helperGovernorActiveStorylineCount === 1 &&
-      helperGovernorStorylineTitleMiss &&
-      !helperGovernorSceneTransition &&
-      !helperGovernorRelationPivot
-    );
-    const helperGovernorResolvedAfterglowPressure = !!(
-      helperGovernorResolvedStorylineCount > 0 &&
-      !helperGovernorSceneTransition &&
-      !helperGovernorExplicitRedirection
-    );
-    const helperGovernorRiskSignals = [];
-    if (helperGovernorStaleArcPressure) helperGovernorRiskSignals.push("stale_arc_pressure");
-    if (helperGovernorCrossLaneDuplication) helperGovernorRiskSignals.push("cross_lane_duplication");
-    if (helperGovernorSourceConflict) helperGovernorRiskSignals.push("source_conflict");
-    if (helperGovernorLowConfidenceRetrieval) helperGovernorRiskSignals.push("low_confidence_retrieval");
-    if (helperGovernorSubsystemPartialFailure) helperGovernorRiskSignals.push("subsystem_partial_failure");
-    if (helperGovernorDominantArcSaturation) helperGovernorRiskSignals.push("dominant_arc_saturation");
-    if (helperGovernorResolvedAfterglowPressure) helperGovernorRiskSignals.push("resolved_afterglow_pressure");
-    if (helperGovernorExplicitRedirection) helperGovernorRiskSignals.push("explicit_user_redirection");
-    const oldArcForegroundPolicyVersion = "s16.8-scis.v1";
-    const oldArcForegroundMode = "stale_rescue_ceiling_with_reason_lane";
-    const oldArcForegroundDecisionVocabulary = {
-      actions: ["keep", "demote", "suppress", "drop"],
-      reasons: ["explicit_query_alignment", "current_scene_evidence", "no_alignment_rescue_ceiling", "explicit_user_redirection"],
-    };
-    const oldArcForegroundCeilingChars = {
-      storylines: 48,
-      pending_threads: 40,
-    };
-    const oldArcForegroundDecisions = [];
-    const oldArcForegroundByLabel = {};
-
-    function _tokenizeOldArcForeground(value) {
-      return String(value || "")
-        .toLowerCase()
-        .replace(/[^\p{L}\p{N}\s]/gu, " ")
-        .split(/\s+/)
-        .map(function(token) { return token.trim(); })
-        .filter(function(token) {
-          return token.length >= 2 && (/[^\u0000-\u007f]/.test(token) || token.length >= 4);
-        });
-    }
-
-    function _collectOldArcForegroundTokens(label, fallbackText) {
-      const out = new Set();
-      if (label === "storylines") {
-        helperGovernorStorylineItems.forEach(function(item) {
-          [item && item.name, item && item.title, item && item.arc, item && item.current_context].forEach(function(value) {
-            _tokenizeOldArcForeground(value).forEach(function(token) { out.add(token); });
-          });
-        });
-      } else if (label === "pending_threads") {
-        const pendingItems = helperGovernorContext && helperGovernorContext.pendingThreadsResult && Array.isArray(helperGovernorContext.pendingThreadsResult.items)
-          ? helperGovernorContext.pendingThreadsResult.items
-          : [];
-        pendingItems.forEach(function(item) {
-          [item && item.title, item && item.owner].forEach(function(value) {
-            _tokenizeOldArcForeground(value).forEach(function(token) { out.add(token); });
-          });
-        });
-      }
-      if (out.size === 0) {
-        _tokenizeOldArcForeground(fallbackText).forEach(function(token) { out.add(token); });
-      }
-      return Array.from(out).slice(0, 24);
-    }
-
-    function _hasOldArcForegroundTokenMatch(tokens, probeText) {
-      const normalizedProbe = String(probeText || "").toLowerCase();
-      if (!normalizedProbe || !Array.isArray(tokens) || tokens.length === 0) return false;
-      return tokens.some(function(token) {
-        return token && normalizedProbe.indexOf(token) >= 0;
-      });
-    }
-
-    function _applyOldArcForegroundGuard(label, text) {
-      const originalText = String(text || "").trim();
-      if (!originalText) return "";
-
-      const tokens = _collectOldArcForegroundTokens(label, originalText);
-      const sceneEvidenceText = [activeStateText, latestDirectEvidenceText, recentRawTurnText].filter(Boolean).join("\n");
-      const explicitAlignment = _hasOldArcForegroundTokenMatch(tokens, helperGovernorRawInput);
-      const currentSceneEvidence = !explicitAlignment && _hasOldArcForegroundTokenMatch(tokens, sceneEvidenceText);
-      let action = "keep";
-      let reason = explicitAlignment ? "explicit_query_alignment" : (currentSceneEvidence ? "current_scene_evidence" : "no_alignment_rescue_ceiling");
-      let guardedText = originalText;
-      let ceilingChars = 0;
-
-      if (helperGovernorExplicitRedirection && !explicitAlignment) {
-        action = "suppress";
-        reason = "explicit_user_redirection";
-        guardedText = "";
-        trimmed.push({
-          label: label,
-          reason: reason,
-          originalChars: originalText.length,
-          keptChars: 0,
-          policyTag: oldArcForegroundPolicyVersion,
-        });
-      } else if (!explicitAlignment && !currentSceneEvidence) {
-        action = "demote";
-        reason = "no_alignment_rescue_ceiling";
-        ceilingChars = Math.max(24, Number(oldArcForegroundCeilingChars[label] || 0));
-        guardedText = limitLines(originalText, 1);
-        if (guardedText.length > ceilingChars) {
-          guardedText = guardedText.slice(0, Math.max(0, ceilingChars - 1)).trim() + "…";
-        }
-        if (guardedText.length < originalText.length) {
-          trimmed.push({
-            label: label,
-            reason: reason,
-            originalChars: originalText.length,
-            keptChars: guardedText.length,
-            policyTag: oldArcForegroundPolicyVersion,
-          });
-        }
-      }
-
-      const decision = {
-        label: label,
-        action: action,
-        reason: reason,
-        explicitAlignment: explicitAlignment,
-        currentSceneEvidence: currentSceneEvidence,
-        suppressionTrigger: !!helperGovernorExplicitRedirection,
-        originalChars: originalText.length,
-        keptChars: guardedText.length,
-        tokenMatches: tokens.slice(0, 8),
-      };
-      if (ceilingChars > 0) decision.ceilingChars = ceilingChars;
-      oldArcForegroundDecisions.push(decision);
-      oldArcForegroundByLabel[label] = decision;
-      return guardedText;
-    }
-
-    storylineTextForInjection = _applyOldArcForegroundGuard("storylines", storylineTextForInjection);
-    pendingThreadTextForInjection = _applyOldArcForegroundGuard("pending_threads", pendingThreadTextForInjection);
-
-    function _collectRetrievalPromotionCandidatesRg1b() {
-      const candidates = [];
-      const seen = new Set();
-      const sources = [
-        { label: "memories", text: memoryTextForInjectionGuarded, target: "dense_summary" },
-        { label: "fallback", text: fallbackText, target: "dense_summary" },
-        { label: "world_context", text: sectionWorldText, target: "dense_summary" },
-        { label: "pending_threads", text: pendingThreadText, target: "canonical_state" },
-        { label: "characters", text: characterText, target: "canonical_state" },
-        { label: "kg_relations", text: kgText, target: "canonical_state" },
-      ];
-
-      for (const src of sources) {
-        const raw = String(src.text || "").trim();
-        if (!raw) continue;
-        const lines = raw.split(/\r?\n/).map(function(line) { return String(line || "").trim(); }).filter(Boolean);
-        for (const line of lines) {
-          const lowered = line.toLowerCase();
-          let matchedToken = "";
-          for (const token of retrievalPromotionImportanceTokens) {
-            if (token && lowered.indexOf(String(token).toLowerCase()) >= 0) {
-              matchedToken = token;
-              break;
-            }
-          }
-          if (!matchedToken) continue;
-          const preview = line.slice(0, 160);
-          const dedupKey = src.label + "::" + src.target + "::" + preview.toLowerCase();
-          if (seen.has(dedupKey)) continue;
-          seen.add(dedupKey);
-          candidates.push({
-            source_label: src.label,
-            target_tier: src.target,
-            reason: "important_non_similar_memory",
-            importance_token: matchedToken,
-            preview: preview,
-          });
-          if (candidates.length >= 10) return candidates;
-        }
-      }
-      return candidates;
-    }
-
-    const retrievalPromotionCandidatesRaw = _collectRetrievalPromotionCandidatesRg1b();
-    let retrievalPromotionCandidates = retrievalPromotionCandidatesRaw.slice();
-    let retrievalPromotionCandidateCount = retrievalPromotionCandidates.length;
-    let retrievalPromotionCanonicalCount = retrievalPromotionCandidates.filter(function(item) { return item && item.target_tier === "canonical_state"; }).length;
-    let retrievalPromotionDenseSummaryCount = retrievalPromotionCandidates.filter(function(item) { return item && item.target_tier === "dense_summary"; }).length;
-
-    const storylineRatio = 0.05;
-    const hybridPolicyVersion = "ea1f.v1";
-    const allocationStrategy = "priority_then_residual_ratio";
-    const highAuthorityLabels = truthFloorBudgetLabels.slice();
-    const hardFloorShareCap = 0.55;
-    const hardFloorRawRatios = {
-      latest_direct_evidence: hasLatestDirectEvidence ? 0.07 : 0,
-      recent_raw_turn: hasRecentRawTurn ? 0.06 : 0,
-      active_state: hasActiveState ? 0.12 : 0,
-      canonical_state_layer: hasCanonicalStateLayer ? 0.08 : 0,
-      storylines: (storylineTextForInjection && String(storylineTextForInjection).trim()) ? 0.04 : 0,
-      episode: (!sagaCollisionProtectionEnabled && pastSummariesEnabled && hasEpisode) ? denseSummarySlotRatios.episode : 0,
-      chapter: (!sagaCollisionProtectionEnabled && pastSummariesEnabled && hasChapter) ? denseSummarySlotRatios.chapter : 0,
-      arc: (isUltraOrExtreme && hasArc) ? denseSummarySlotRatios.arc : 0,
-      saga: (isUltraOrExtreme && hasSaga) ? denseSummarySlotRatios.saga : 0,
-    };
-    const hardFloorRawTotal = Object.keys(hardFloorRawRatios).reduce(function(acc, key) {
-      const n = Number(hardFloorRawRatios[key] || 0);
-      return acc + (Number.isFinite(n) ? n : 0);
-    }, 0);
-    const hardFloorScale = hardFloorRawTotal > hardFloorShareCap ? (hardFloorShareCap / hardFloorRawTotal) : 1;
-    const hardFloorRatios = {};
-    const hardFloorTargetChars = {};
-    let hardFloorReserveTotalChars = 0;
-    for (const key of Object.keys(hardFloorRawRatios)) {
-      const scaledRatio = Math.max(0, Number(hardFloorRawRatios[key] || 0) * hardFloorScale);
-      hardFloorRatios[key] = scaledRatio;
-      if (scaledRatio <= 0) {
-        hardFloorTargetChars[key] = 0;
-        continue;
-      }
-      const target = Math.max(24, Math.floor(budgetLimit * scaledRatio));
-      hardFloorTargetChars[key] = target;
-      hardFloorReserveTotalChars += target;
-    }
-    let hardFloorRemainingChars = hardFloorReserveTotalChars;
-    const step13TokenTruthFloorMinTokensByLabel = {};
-    let step13TokenTruthFloorTotalMinTokens = 0;
-    function _projectTruthFloorTokensTb1b(charCount) {
-      const normalized = Number(charCount);
-      if (!Number.isFinite(normalized) || normalized <= 0) return 0;
-      return Math.max(1, Math.ceil(normalized / step13TokenTruthFloorReferenceCharsPerToken));
-    }
-    for (const label of truthFloorBudgetLabels) {
-      const projectedTokens = _projectTruthFloorTokensTb1b(hardFloorTargetChars[label] || 0);
-      step13TokenTruthFloorMinTokensByLabel[label] = projectedTokens;
-      step13TokenTruthFloorTotalMinTokens += projectedTokens;
-    }
-    const step13TokenTruthFloorCoreMinTokens = step13TokenTruthFloorCoreLabels.reduce(function(acc, label) {
-      return acc + Number(step13TokenTruthFloorMinTokensByLabel[label] || 0);
-    }, 0);
-    const step13TokenTruthFloorContinuityMinTokens = step13TokenTruthFloorContinuityLabels.reduce(function(acc, label) {
-      return acc + Number(step13TokenTruthFloorMinTokensByLabel[label] || 0);
-    }, 0);
-    const step13TokenTruthFloorReliabilityGuardMinTokens = step13TokenTruthFloorReliabilityGuardLabels.reduce(function(acc, label) {
-      return acc + Number(step13TokenTruthFloorMinTokensByLabel[label] || 0);
-    }, 0);
-    function _resolveTokenDensityLevelTb1c(totalRatio) {
-      const normalized = Math.max(0, Number(totalRatio || 0));
-      if (normalized <= step13TokenDensityProfileThresholds.light_max_ratio) return "light";
-      if (normalized <= step13TokenDensityProfileThresholds.balanced_max_ratio) return "balanced";
-      return "heavy";
-    }
-    function _sumTokenDensityRatiosTb1c(ratioByLabel) {
-      return Object.keys(ratioByLabel || {}).reduce(function(acc, key) {
-        const value = Number(ratioByLabel[key] || 0);
-        return acc + (Number.isFinite(value) ? value : 0);
-      }, 0);
-    }
-    const hasWorldContextDensityInput = !!(
-      (sectionWorldText && String(sectionWorldText).trim()) ||
-      (worldRulesText && String(worldRulesText).trim())
-    );
-    const hasGuidanceDensityInput = !narrativeGuideDisabled && !!(
-      String(authorTextForGuide || "").trim() ||
-      String(directorTextForGuide || "").trim()
-    );
-    const step13TokenDensityRatioByFamily = {
-      ledger: {
-        storylines: Number((hardFloorRatios.storylines || 0).toFixed(4)),
-        episode: Number((hardFloorRatios.episode || 0).toFixed(4)),
-        chapter: Number((hardFloorRatios.chapter || 0).toFixed(4)),
-        arc: Number((hardFloorRatios.arc || 0).toFixed(4)),
-        saga: Number((hardFloorRatios.saga || 0).toFixed(4)),
-      },
-      world: {
-        world_context: hasWorldContextDensityInput ? Number((sectionWorldRatio + 0.05).toFixed(4)) : 0,
-        location_context: (locationContextText && String(locationContextText).trim()) ? 0.04 : 0,
-        kg_relations: (!hasRelationshipInActiveState && kgText && String(kgText).trim()) ? Number((settings.kgBudgetRatio || 0.10).toFixed(4)) : 0,
-      },
-      guidance: {
-        narrative_guide: hasGuidanceDensityInput ? Number((Math.max(0.08, authorRatio + directorRatio)).toFixed(4)) : 0,
-      },
-    };
-    const step13TokenDensityFamilies = {
-      ledger: {
-        lane: truthFloorBudgetLane,
-        basis: "scaled_hard_floor_ratio",
-        labels: step13TokenDensityLedgerLabels.slice(),
-        ratioByLabel: Object.assign({}, step13TokenDensityRatioByFamily.ledger),
-      },
-      world: {
-        lane: coprocessorHintBudgetLane,
-        basis: "delivery_ratio",
-        labels: step13TokenDensityWorldLabels.slice(),
-        ratioByLabel: Object.assign({}, step13TokenDensityRatioByFamily.world),
-      },
-      guidance: {
-        lane: coprocessorHintBudgetLane,
-        basis: "delivery_ratio",
-        labels: step13TokenDensityGuidanceLabels.slice(),
-        ratioByLabel: Object.assign({}, step13TokenDensityRatioByFamily.guidance),
-      },
-    };
-    for (const familyKey of Object.keys(step13TokenDensityFamilies)) {
-      const family = step13TokenDensityFamilies[familyKey];
-      const totalRatio = Number(_sumTokenDensityRatiosTb1c(family.ratioByLabel).toFixed(4));
-      family.ratioTotal = totalRatio;
-      family.profile = _resolveTokenDensityLevelTb1c(totalRatio);
-      family.activeLabels = Object.keys(family.ratioByLabel).filter(function(label) {
-        return Number(family.ratioByLabel[label] || 0) > 0;
-      });
-    }
-    if (precedenceSurface.step13_token_budget && typeof precedenceSurface.step13_token_budget === "object") {
-      Object.assign(precedenceSurface.step13_token_budget, {
-        truth_floor_budget_lane: truthFloorBudgetLane,
-        truth_floor_hint_lane_claim_allowed: false,
-        truth_floor_reserved_chars: hardFloorReserveTotalChars,
-        truth_floor_min_tokens_by_label: Object.assign({}, step13TokenTruthFloorMinTokensByLabel),
-        truth_floor_core_min_tokens: step13TokenTruthFloorCoreMinTokens,
-        truth_floor_continuity_min_tokens: step13TokenTruthFloorContinuityMinTokens,
-        truth_floor_reliability_guard_min_tokens: step13TokenTruthFloorReliabilityGuardMinTokens,
-        truth_floor_total_min_tokens: step13TokenTruthFloorTotalMinTokens,
-        density_profile_status: "density_contract_fixed",
-        density_profile_families: step13TokenDensityFamilies,
-      });
-    }
-
-    function _clampHelperGovernorRatio(value, min, max) {
-      return Math.max(min, Math.min(max, Number(value || 0)));
-    }
-
-    const helperGovernorEnabled = !!helperGovernorContext;
-    const helperGovernorHighNeedCount = helperGovernorNeedSignals.length;
-    const helperGovernorHighRiskCount = helperGovernorRiskSignals.length;
-    const helperGovernorResidualBudgetChars = Math.max(0, budgetLimit - hardFloorReserveTotalChars);
-    const helperGovernorSupportTexts = {
-      characters: characterTextForInjection,
-      character_private_recollection: characterPrivateRecollectionTextForInjection,
-      persona_recollection: personaRecollectionTextForInjection,
-      pending_threads: pendingThreadTextForInjection,
-      location_context: locationContextTextForInjection,
-      memories: memoryTextForInjectionGuarded,
-      kg_relations: kgTextForInjection,
-      narrative_guide: narrativeGuideTextForInjection,
-      world_context: worldContextTextForInjectionCapped,
-      fallback: fallbackTextForInjection,
-    };
-    const helperGovernorBaseShare = helperGovernorEnabled ? 0.72 : 1;
-    const helperGovernorFloorShare = helperGovernorEnabled
-      ? (helperGovernorLaneOrder.some(function(label) { return !!String(helperGovernorSupportTexts[label] || "").trim(); }) ? 0.42 : 0)
-      : (helperGovernorLaneOrder.some(function(label) { return !!String(helperGovernorSupportTexts[label] || "").trim(); }) ? 1 : 0);
-    let helperGovernorTargetShare = helperGovernorBaseShare;
-    if (helperGovernorWeakInput) helperGovernorTargetShare += 0.06;
-    if (helperGovernorTemporalQuery) helperGovernorTargetShare += 0.06;
-    if (helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0) helperGovernorTargetShare += 0.10;
-    if (helperGovernorNeedSignals.indexOf("multi_entity_pressure") >= 0) helperGovernorTargetShare += 0.05;
-    if (helperGovernorNeedSignals.indexOf("unresolved_thread_pressure") >= 0) helperGovernorTargetShare += 0.05;
-    if (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0) helperGovernorTargetShare += 0.04;
-    if (helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0) helperGovernorTargetShare += 0.05;
-    if (helperGovernorStaleArcPressure) helperGovernorTargetShare -= 0.08;
-    if (helperGovernorCrossLaneDuplication) helperGovernorTargetShare -= 0.08;
-    if (helperGovernorSourceConflict) helperGovernorTargetShare -= 0.10;
-    if (helperGovernorLowConfidenceRetrieval) helperGovernorTargetShare -= 0.06;
-    if (helperGovernorSubsystemPartialFailure) helperGovernorTargetShare -= 0.08;
-    if (helperGovernorDominantArcSaturation) helperGovernorTargetShare -= 0.10;
-    if (helperGovernorResolvedAfterglowPressure) helperGovernorTargetShare -= 0.08;
-    let helperGovernorConservativeShrinkApplied = false;
-    if (helperGovernorEnabled && helperGovernorHighNeedCount >= 2 && helperGovernorHighRiskCount >= 2) {
-      helperGovernorTargetShare -= 0.12;
-      helperGovernorConservativeShrinkApplied = true;
-    }
-    const helperGovernorFloorBudgetChars = helperGovernorResidualBudgetChars > 0
-      ? Math.min(helperGovernorResidualBudgetChars, Math.max(0, Math.floor(helperGovernorResidualBudgetChars * helperGovernorFloorShare)))
-      : 0;
-    const helperGovernorCeilingBudgetChars = helperGovernorResidualBudgetChars;
-    const helperGovernorBaseBudgetChars = helperGovernorResidualBudgetChars > 0
-      ? Math.min(helperGovernorResidualBudgetChars, Math.max(helperGovernorFloorBudgetChars, Math.floor(helperGovernorResidualBudgetChars * helperGovernorBaseShare)))
-      : 0;
-    let helperGovernorTargetBudgetChars = helperGovernorResidualBudgetChars > 0
-      ? Math.floor(helperGovernorResidualBudgetChars * Math.max(helperGovernorFloorShare, Math.min(1, helperGovernorTargetShare)))
-      : 0;
-    if (helperGovernorEnabled) {
-      helperGovernorTargetBudgetChars = Math.min(helperGovernorCeilingBudgetChars, Math.max(helperGovernorFloorBudgetChars, helperGovernorTargetBudgetChars));
-    } else {
-      helperGovernorTargetBudgetChars = helperGovernorCeilingBudgetChars;
-    }
-    let helperGovernorProfile = helperGovernorEnabled ? "balanced_support" : "legacy_static_ratio";
-    if (helperGovernorConservativeShrinkApplied) helperGovernorProfile = "high_need_high_risk_conservative";
-    else if (helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0 || helperGovernorTemporalQuery || helperGovernorWeakInput) helperGovernorProfile = "continuity_recall";
-    else if (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0 || helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0) helperGovernorProfile = "scene_relation_reanchor";
-    else if (helperGovernorHighRiskCount >= 3) helperGovernorProfile = "stale_conflict_guarded";
-    const helperGovernorSupportCeilingRatios = {
-      characters: String(characterTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(characterRatio + (helperGovernorNeedSignals.indexOf("multi_entity_pressure") >= 0 ? 0.04 : 0) + (helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0 ? 0.04 : 0) - (helperGovernorDominantArcSaturation ? 0.02 : 0), 0.04, 0.24)
-        : 0,
-      character_private_recollection: String(characterPrivateRecollectionTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(0.08 + (helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0 ? 0.03 : 0), 0.04, 0.16)
-        : 0,
-      persona_recollection: String(personaRecollectionTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(0.06 + ((helperGovernorWeakInput || helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0) ? 0.02 : 0), 0.03, 0.12)
-        : 0,
-      pending_threads: String(pendingThreadTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(pendingThreadRatio + (helperGovernorNeedSignals.indexOf("unresolved_thread_pressure") >= 0 ? 0.05 : 0) + (helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0 ? 0.02 : 0), 0.03, 0.18)
-        : 0,
-      location_context: String(locationContextTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(0.04 + (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0 ? 0.05 : 0), 0.02, 0.12)
-        : 0,
-      memories: String(memoryTextForInjectionGuarded || "").trim()
-        ? _clampHelperGovernorRatio(memRatio + ((helperGovernorWeakInput || helperGovernorTemporalQuery) ? 0.05 : 0) + (helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0 ? 0.06 : 0) - (helperGovernorDominantArcSaturation ? 0.03 : 0) - (helperGovernorResolvedAfterglowPressure ? 0.02 : 0), 0.08, 0.34)
-        : 0,
-      kg_relations: String(kgTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio((settings.kgBudgetRatio || 0.10) + ((helperGovernorNeedSignals.indexOf("multi_entity_pressure") >= 0 || helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0) ? 0.04 : 0), 0.03, 0.18)
-        : 0,
-      narrative_guide: String(narrativeGuideTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(Math.max(0.08, authorRatio + directorRatio) - (helperGovernorExplicitRedirection ? 0.04 : 0) - (helperGovernorStrongUserIntent ? 0.02 : 0), 0.05, 0.20)
-        : 0,
-      world_context: String(worldContextTextForInjectionCapped || "").trim()
-        ? _clampHelperGovernorRatio((sectionWorldRatio + 0.05) + (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0 ? 0.03 : 0) - (helperGovernorDominantArcSaturation ? 0.02 : 0), 0.05, 0.16)
-        : 0,
-      fallback: String(fallbackTextForInjection || "").trim()
-        ? _clampHelperGovernorRatio(actualFallbackRatio + ((!memoryTextForInjectionGuarded && helperGovernorSubsystemPartialFailure) ? 0.04 : 0) - (memoryTextForInjectionGuarded ? 0.02 : 0), 0.02, 0.10)
-        : 0,
-    };
-    const helperGovernorSupportFloorWeights = {
-      characters: String(characterTextForInjection || "").trim()
-        ? ((helperGovernorNeedSignals.indexOf("multi_entity_pressure") >= 0 || helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0) ? 2.5 : 1)
-        : 0,
-      character_private_recollection: String(characterPrivateRecollectionTextForInjection || "").trim()
-        ? (helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0 ? 1.5 : 0.8)
-        : 0,
-      persona_recollection: String(personaRecollectionTextForInjection || "").trim()
-        ? ((helperGovernorWeakInput || helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0) ? 1.2 : 0.6)
-        : 0,
-      pending_threads: String(pendingThreadTextForInjection || "").trim()
-        ? (helperGovernorNeedSignals.indexOf("unresolved_thread_pressure") >= 0 ? 2 : 0.5)
-        : 0,
-      location_context: String(locationContextTextForInjection || "").trim()
-        ? (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0 ? 1.5 : 0.4)
-        : 0,
-      memories: String(memoryTextForInjectionGuarded || "").trim()
-        ? ((helperGovernorWeakInput || helperGovernorTemporalQuery || helperGovernorNeedSignals.indexOf("long_gap_resume") >= 0) ? 3 : 1)
-        : 0,
-      kg_relations: String(kgTextForInjection || "").trim()
-        ? ((helperGovernorNeedSignals.indexOf("multi_entity_pressure") >= 0 || helperGovernorNeedSignals.indexOf("relation_pivot_pressure") >= 0) ? 1.5 : 0)
-        : 0,
-      narrative_guide: String(narrativeGuideTextForInjection || "").trim()
-        ? (helperGovernorExplicitRedirection ? 0.5 : 1)
-        : 0,
-      world_context: String(worldContextTextForInjectionCapped || "").trim()
-        ? (helperGovernorNeedSignals.indexOf("scene_transition_pressure") >= 0 ? 1.5 : 0.5)
-        : 0,
-      fallback: String(fallbackTextForInjection || "").trim()
-        ? ((!memoryTextForInjectionGuarded && helperGovernorSubsystemPartialFailure) ? 1 : 0)
-        : 0,
-    };
-    const helperGovernorSupportState = { remaining: helperGovernorTargetBudgetChars };
-    const helperGovernorSupportFloorBudgetCapChars = helperGovernorTargetBudgetChars > 0
-      ? Math.min(helperGovernorTargetBudgetChars, Math.floor(helperGovernorTargetBudgetChars * 0.55))
-      : 0;
-    const helperGovernorSupportFloorWeightTotal = helperGovernorLaneOrder.reduce(function(acc, label) {
-      return acc + Number(helperGovernorSupportFloorWeights[label] || 0);
-    }, 0);
-    const helperGovernorLaneConfigs = {};
-    let helperGovernorSupportFloorRemainingChars = 0;
-    for (const label of helperGovernorLaneOrder) {
-      const ceilingRatio = Number(helperGovernorSupportCeilingRatios[label] || 0);
-      const ceilingChars = ceilingRatio > 0 ? Math.max(18, Math.floor(budgetLimit * ceilingRatio)) : 0;
-      const weight = Number(helperGovernorSupportFloorWeights[label] || 0);
-      const floorChars = (helperGovernorSupportFloorWeightTotal > 0 && weight > 0 && helperGovernorSupportFloorBudgetCapChars > 0)
-        ? Math.min(ceilingChars, Math.max(18, Math.floor(helperGovernorSupportFloorBudgetCapChars * (weight / helperGovernorSupportFloorWeightTotal))))
-        : 0;
-      helperGovernorLaneConfigs[label] = {
-        active: !!String(helperGovernorSupportTexts[label] || "").trim(),
-        floorChars: floorChars,
-        floorRatio: budgetLimit > 0 ? Number((floorChars / budgetLimit).toFixed(4)) : 0,
-        ceilingChars: ceilingChars,
-        ceilingRatio: Number(ceilingRatio.toFixed(4)),
-      };
-      helperGovernorSupportFloorRemainingChars += floorChars;
-    }
-
-    function addHybridBlock(label, text, maxRatio, options) {
-      const opts = options ? Object.assign({}, options) : {};
-      const floorChars = Math.max(0, Number(hardFloorTargetChars[label] || 0));
-      const isHighAuthority = highAuthorityLabels.indexOf(label) >= 0;
-      const floorRatio = Math.max(0, Number(hardFloorRatios[label] || 0));
-      const ratioForAdd = Math.max(Number(maxRatio || 0), floorRatio);
-
-      if (hardFloorRemainingChars > 0) {
-        if (isHighAuthority && floorChars > 0) {
-          const reserveForRemainingHigh = Math.max(0, hardFloorRemainingChars - floorChars);
-          if (reserveForRemainingHigh > 0) {
-            opts.reserveChars = Math.max(0, Number(opts.reserveChars || 0)) + reserveForRemainingHigh;
-          }
-        } else if (!isHighAuthority) {
-          opts.reserveChars = Math.max(0, Number(opts.reserveChars || 0)) + hardFloorRemainingChars;
-        }
-      }
-
-      addBlock(label, text, ratioForAdd, opts);
-
-      if (isHighAuthority && floorChars > 0) {
-        hardFloorRemainingChars = Math.max(0, hardFloorRemainingChars - floorChars);
-      }
-    }
-
-    function addSupportGovernorBlock(label, text, legacyMaxRatio, options) {
-      const laneConfig = helperGovernorLaneConfigs[label] || null;
-      if (!laneConfig) {
-        addHybridBlock(label, text, legacyMaxRatio, options);
-        return;
-      }
-      const opts = options ? Object.assign({}, options) : {};
-      if (laneConfig.active && helperGovernorSupportState.remaining > 0) {
-        const reserveForRemainingSupport = Math.max(0, helperGovernorSupportFloorRemainingChars - Number(laneConfig.floorChars || 0));
-        if (reserveForRemainingSupport > 0) {
-          opts.reserveChars = Math.max(0, Number(opts.reserveChars || 0)) + reserveForRemainingSupport;
-        }
-        opts.governorState = helperGovernorSupportState;
-      }
-      addHybridBlock(label, text, laneConfig.ceilingRatio > 0 ? laneConfig.ceilingRatio : legacyMaxRatio, opts);
-      if (laneConfig.active && laneConfig.floorChars > 0) {
-        helperGovernorSupportFloorRemainingChars = Math.max(0, helperGovernorSupportFloorRemainingChars - Number(laneConfig.floorChars || 0));
-      }
-    }
-
-    addHybridBlock("latest_direct_evidence", latestDirectEvidenceText, 0.08, recentPriorityTag ? { policyTag: recentPriorityTag } : null);
-    addHybridBlock("recent_raw_turn", recentRawTurnText, 0.06, recentPriorityTag ? { policyTag: recentPriorityTag } : null);
-    addHybridBlock("active_state", activeStateText, asRatio);
-    addHybridBlock("canonical_state_layer", canonicalStateLayerBlockText, 0.08, { policyTag: canonicalStateHardFloorPolicyVersion });
-    // E-1e: storyline 블록 — active_state 예산 내에서 분배 (5%)
-    addHybridBlock("storylines", storylineTextForInjection, storylineRatio, { policyTag: supportingGuidanceGuardPolicyTag });
-    const retrievalPolicyTag = verifiedCurrentStatePolicyTag || retrievalRolePolicyTag;
-    addSupportGovernorBlock("characters", characterTextForInjection, characterRatio, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-    addSupportGovernorBlock("character_private_recollection", characterPrivateRecollectionTextForInjection, 0.08, { policyTag: "support_only_private_recollection" });
-    addSupportGovernorBlock("persona_recollection", personaRecollectionTextForInjection, 0.06, { policyTag: "support_only_persona_recollection" });
-    if (relationshipFirstEnabled) {
-      addSupportGovernorBlock("pending_threads", pendingThreadTextForInjection, pendingThreadRatio, { policyTag: retrievalPolicyTag || relationshipPolicy });
-    }
-    // 장소 컨텍스트 블록 (4%) — 언급된 장소만 선택적 recall
-    addSupportGovernorBlock("location_context", locationContextTextForInjection, 0.04, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-    addSupportGovernorBlock("memories", memoryTextForInjectionGuarded, memRatio, { policyTag: retrievalPolicyTag || (relationshipFirstEnabled ? relationshipPolicy : "") });
-    addSupportGovernorBlock("kg_relations", kgTextForInjection, settings.kgBudgetRatio || 0.10, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-    addSupportGovernorBlock("narrative_guide", narrativeGuideTextForInjection, Math.max(0.08, authorRatio + directorRatio), { policyTag: supportingGuidanceGuardPolicyTag });
-    addSupportGovernorBlock("world_context", worldContextTextForInjectionCapped, sectionWorldRatio + 0.05, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-    // H-5d / T-1f: legacy profile에서는 기존 위치를 유지한다.
-    if (!relationshipFirstEnabled) {
-      addSupportGovernorBlock("pending_threads", pendingThreadTextForInjection, pendingThreadRatio, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-    }
-    if (sagaCollisionProtectionEnabled) {
-      if (pastSummariesEnabled && episodeText && episodeText.trim()) {
-        trimmed.push({
-          label: "episode",
-          reason: "budget_collision_saga_reserve",
-          originalChars: String(episodeText).trim().length,
-          reserveChars: sagaReserveChars,
-          policyTag: sagaCollisionPolicyTag,
-        });
-      }
-      if (pastSummariesEnabled && chapterText && chapterText.trim()) {
-        trimmed.push({
-          label: "chapter",
-          reason: "budget_collision_saga_reserve",
-          originalChars: String(chapterText).trim().length,
-          reserveChars: sagaReserveChars,
-          policyTag: sagaCollisionPolicyTag,
-        });
-      }
-    } else {
-      addHybridBlock(
-        "episode",
-        pastSummariesEnabled ? episodeText : "",
-        episodeRatio,
-        denseSummarySlotRatios.episode > 0 ? { policyTag: denseSummarySlotPolicyVersion } : null,
-      );
-      addHybridBlock(
-        "chapter",
-        pastSummariesEnabled ? chapterText : "",
-        chapterRatio,
-        denseSummarySlotRatios.chapter > 0 ? { policyTag: denseSummarySlotPolicyVersion } : null,
-      );
-    }
-    // V-0a: arc/saga block (ultra/extreme profile only) + 명시적 조건부 게이트
-    addHybridBlock("arc", isUltraOrExtreme ? arcText : "", arcRatio, denseSummarySlotRatios.arc > 0 ? { policyTag: denseSummarySlotPolicyVersion } : null);
-    addHybridBlock("saga", isUltraOrExtreme ? sagaText : "", sagaRatio, denseSummarySlotRatios.saga > 0 ? { policyTag: denseSummarySlotPolicyVersion } : null);
-    addSupportGovernorBlock("fallback", fallbackTextForInjection, actualFallbackRatio, retrievalPolicyTag ? { policyTag: retrievalPolicyTag } : null);
-
-    if (hypaLoreAlwaysOnDetected) {
-      trimmed.push({
-        label: "wake_up",
-        reason: "ingest_only_not_injected",
-        originalChars: wakeUpTextSource.length,
-        keptChars: 0,
-        policyTag: hypaLorePolicyTag,
-      });
-    }
-
-    const reliabilityEvidenceStackPresent = !!(
-      hasLatestDirectEvidence ||
-      hasRecentRawTurn ||
-      hasActiveState ||
-      hasCanonicalStateLayer
-    );
-    const reliabilityConflictDetected = conflictGuardSuppressedBlockSet.size > 0;
-    const reliabilityGuardReasons = [];
-    if (!reliabilityEvidenceStackPresent) reliabilityGuardReasons.push("evidence_stack_empty");
-    if (reliabilityConflictDetected) reliabilityGuardReasons.push("canonical_conflict_detected");
-    const reliabilityGuardTriggered = reliabilityGuardReasons.length > 0;
-
-    if (reliabilityGuardTriggered) {
-      if (retrievalPromotionCandidatesRaw.length > 0) {
-        trimmed.push({
-          label: "retrieval_promotion",
-          reason: "reliability_guard_hold",
-          originalItems: retrievalPromotionCandidatesRaw.length,
-          keptItems: 0,
-          policyTag: reliabilityGuardPolicyTag,
-        });
-      }
-      _recordRetrievalDecisionRg1c("retrieval_promotion", "drop", "reliability_guard_conservative_hold", reliabilityGuardReasons, null);
-      retrievalPromotionCandidates = [];
-      retrievalPromotionCandidateCount = 0;
-      retrievalPromotionCanonicalCount = 0;
-      retrievalPromotionDenseSummaryCount = 0;
-    }
-
-    function _normalizeReasonTraceCode(reason) {
-      const normalized = String(reason || "").trim();
-      if (!normalized) return "";
-      if (normalized === "reliability_guard_conservative_hold") return "reliability_guard_hold";
-      return normalized;
-    }
-
-    const hardFloorLabelSet = new Set(Object.keys(hardFloorTargetChars).filter(function(label) {
-      return Number(hardFloorTargetChars[label] || 0) > 0;
-    }));
-    const entityCoprocessorStaleSceneGuardSuppressedLabels = Array.from(conflictGuardSuppressedBlockSet).filter(function(label) {
-      return entityCoprocessorStaleSceneGuardInputLabels.indexOf(label) >= 0;
-    });
-    const entityCoprocessorStaleSceneGuardSuppressedAnchors = Array.from(new Set(
-      conflictGuardSuppressedDetails
-        .filter(function(entry) {
-          return entry && entityCoprocessorStaleSceneGuardInputLabels.indexOf(String(entry.label || "")) >= 0;
-        })
-        .flatMap(function(entry) {
-          return Array.isArray(entry.anchors) ? entry.anchors : [];
-        })
-    ));
-    const entityCoprocessorStaleSceneGuardTriggered = entityCoprocessorStaleSceneGuardSuppressedLabels.length > 0;
-    const coprocessorReasonTrace = (function buildCoprocessorReasonTrace() {
-      const blockByLabel = {};
-      const trimByLabel = {};
-      const retrievalDecisionByLabel = {};
-
-      for (const entry of blocks) {
-        if (entry && entry.label) blockByLabel[entry.label] = entry;
-      }
-      for (const entry of trimmed) {
-        if (entry && entry.label && !trimByLabel[entry.label]) trimByLabel[entry.label] = entry;
-      }
-      for (const entry of retrievalKeepDropTrace) {
-        if (entry && entry.label) retrievalDecisionByLabel[entry.label] = entry;
-      }
-
-      const labelSet = new Set(
-        Object.keys(blockByLabel)
-          .concat(Object.keys(trimByLabel))
-          .concat(Object.keys(retrievalDecisionByLabel))
-      );
-      const out = [];
-
-      for (const label of labelSet) {
-        const blockEntry = blockByLabel[label] || null;
-        const trimEntry = trimByLabel[label] || null;
-        const retrievalEntry = retrievalDecisionByLabel[label] || null;
-        const lane = coprocessorBudgetLaneByLabel[label]
-          || (label === "wake_up" ? "ingest_only" : (label === "retrieval_promotion" ? "promotion_trace" : "non_prompt"));
-        let action = "";
-        let reason = "";
-
-        if (trimEntry && (trimEntry.reason === "item_truncated" || trimEntry.reason === "hard_cap_unstructured" || trimEntry.reason === "no_alignment_rescue_ceiling")) {
-          action = "degrade";
-          reason = _normalizeReasonTraceCode(trimEntry.reason);
-        } else if (trimEntry && trimEntry.reason) {
-          action = "drop";
-          reason = _normalizeReasonTraceCode(trimEntry.reason);
-        } else if (blockEntry) {
-          action = "keep";
-          if (retrievalEntry && (retrievalEntry.reason === "no_canonical_conflict" || retrievalEntry.reason === "canonical_guard_disabled")) {
-            reason = _normalizeReasonTraceCode(retrievalEntry.reason);
-          } else if (lane === truthFloorBudgetLane && hardFloorLabelSet.has(label)) {
-            reason = "truth_floor_reserved";
-          } else if (lane === coprocessorHintBudgetLane) {
-            reason = "hint_budget_delivered";
-          } else {
-            reason = "delivered_full";
-          }
-        } else if (retrievalEntry) {
-          action = retrievalEntry.action === "drop" ? "drop" : "keep";
-          reason = _normalizeReasonTraceCode(retrievalEntry.reason) || (action === "drop" ? "budget_exhausted" : "delivered_full");
-        } else {
-          continue;
-        }
-
-        const traceEntry = {
-          label: label,
-          action: action,
-          reason: reason,
-          lane: lane,
-        };
-        if (blockEntry) traceEntry.keptChars = Number(blockEntry.chars || 0);
-        if (trimEntry && Number.isFinite(Number(trimEntry.originalChars))) traceEntry.originalChars = Number(trimEntry.originalChars || 0);
-        if (trimEntry && Number.isFinite(Number(trimEntry.keptChars))) traceEntry.keptChars = Number(trimEntry.keptChars || 0);
-        if (trimEntry && Number.isFinite(Number(trimEntry.reserveChars))) traceEntry.reserveChars = Number(trimEntry.reserveChars || 0);
-        if (trimEntry && Number.isFinite(Number(trimEntry.originalItems))) traceEntry.originalItems = Number(trimEntry.originalItems || 0);
-        if (trimEntry && Number.isFinite(Number(trimEntry.keptItems))) traceEntry.keptItems = Number(trimEntry.keptItems || 0);
-        const policyTag = (trimEntry && trimEntry.policyTag) || (blockEntry && blockEntry.policyTag) || "";
-        if (policyTag) traceEntry.policyTag = policyTag;
-        if (retrievalEntry && retrievalEntry.reason) traceEntry.guardReason = String(retrievalEntry.reason);
-        if (retrievalEntry && Array.isArray(retrievalEntry.anchors) && retrievalEntry.anchors.length > 0) {
-          traceEntry.anchors = retrievalEntry.anchors.slice();
-        }
-        if (retrievalEntry && retrievalEntry.detail) traceEntry.detail = String(retrievalEntry.detail);
-        out.push(traceEntry);
-      }
-
-      return out.sort(function(a, b) {
-        return String(a.label || "").localeCompare(String(b.label || ""));
-      });
-    })();
-    const coprocessorReasonTraceByAction = { keep: [], drop: [], degrade: [] };
-    const coprocessorReasonTraceByLane = {};
-    const coprocessorReasonTraceByLabel = {};
-    for (const entry of coprocessorReasonTrace) {
-      if (coprocessorReasonTraceByAction[entry.action]) {
-        coprocessorReasonTraceByAction[entry.action].push(entry.label);
-      }
-      if (!coprocessorReasonTraceByLane[entry.lane]) {
-        coprocessorReasonTraceByLane[entry.lane] = [];
-      }
-      coprocessorReasonTraceByLane[entry.lane].push(entry.label);
-      coprocessorReasonTraceByLabel[entry.label] = entry;
-    }
-    const coprocessorReasonTraceCounts = {
-      keep: coprocessorReasonTraceByAction.keep.length,
-      drop: coprocessorReasonTraceByAction.drop.length,
-      degrade: coprocessorReasonTraceByAction.degrade.length,
-      total: coprocessorReasonTrace.length,
-    };
-
-    const budgetPolicy = {
-      version: "v0d.v1",
-      hybridPolicyVersion: hybridPolicyVersion,
-      allocationStrategy: allocationStrategy,
-      recentPriorityPolicyVersion: recentPriorityPolicyVersion,
-      recentPriorityTag: recentPriorityTag || null,
-      latestDirectEvidencePriorityEnabled: hasLatestDirectEvidence,
-      recentRawTurnPriorityEnabled: hasRecentRawTurn,
-      latestDirectEvidenceFloorRatio: Number((hardFloorRatios.latest_direct_evidence || 0).toFixed(4)),
-      recentRawTurnFloorRatio: Number((hardFloorRatios.recent_raw_turn || 0).toFixed(4)),
-      precedencePolicyVersion: precedencePolicyVersion,
-      precedenceOrder: precedenceOrder.slice(),
-      precedenceSurface: precedenceSurface,
-      canonicalStateHardFloorPolicyVersion: canonicalStateHardFloorPolicyVersion,
-      canonicalStateLayerPresent: hasCanonicalStateLayer,
-      canonicalStateLayerHardFloorEnabled: hasCanonicalStateLayer,
-      canonicalStateLayerHardFloorRatio: Number((hardFloorRatios.canonical_state_layer || 0).toFixed(4)),
-      canonicalStateLayerHardFloorChars: Number(hardFloorTargetChars.canonical_state_layer || 0),
-      canonicalConflictGuardPolicyVersion: canonicalConflictGuardPolicyVersion,
-      canonicalConflictGuardEnabled: canonicalConflictGuardEnabled,
-      canonicalConflictGuardCheckedBlocks: conflictGuardCheckedLabels.slice(),
-      canonicalConflictGuardSuppressedCount: conflictGuardSuppressedBlockSet.size,
-      canonicalConflictGuardSuppressedBlocks: Array.from(conflictGuardSuppressedBlockSet),
-      canonicalConflictGuardSuppressedAnchors: Array.from(conflictGuardSuppressedAnchorSet),
-      canonicalConflictGuardSuppressedDetails: conflictGuardSuppressedDetails.slice(0, 8),
-      relationshipPolicyVersion: relationshipPolicyVersion,
-      relationshipPolicy: relationshipPolicy,
-      relationshipFirstEnabled: relationshipFirstEnabled,
-      denseSummarySlotPolicyVersion: denseSummarySlotPolicyVersion,
-      denseSummarySlotProfile: denseSummarySlotProfile,
-      denseSummarySlotRatios: {
-        episode: Number(denseSummarySlotRatios.episode.toFixed(4)),
-        chapter: Number(denseSummarySlotRatios.chapter.toFixed(4)),
-        arc: Number(denseSummarySlotRatios.arc.toFixed(4)),
-        saga: Number(denseSummarySlotRatios.saga.toFixed(4)),
-      },
-      denseSummaryHardFloorChars: {
-        episode: Number(hardFloorTargetChars.episode || 0),
-        chapter: Number(hardFloorTargetChars.chapter || 0),
-        arc: Number(hardFloorTargetChars.arc || 0),
-        saga: Number(hardFloorTargetChars.saga || 0),
-      },
-      verifiedCurrentStatePolicyVersion: verifiedCurrentStatePolicyVersion,
-      verifiedCurrentStatePrecedenceEnabled: verifiedCurrentStatePrecedenceEnabled,
-      verifiedCurrentStatePolicyTag: verifiedCurrentStatePolicyTag || null,
-      retrievalRolePolicyVersion: retrievalRolePolicyVersion,
-      retrievalRolePolicyTag: retrievalRolePolicyTag,
-      retrievalRoleMode: "detail_recall_audit_only",
-      retrievalAuditOnlyEnabled: true,
-      retrievalAllowedUsage: retrievalAllowedUsage.slice(),
-      retrievalDisallowedUsage: retrievalDisallowedUsage.slice(),
-      retrievalSupportingLabels: retrievalSupportingLabels.slice(),
-      coprocessorAuthorityMatrixPolicyVersion: coprocessorAuthorityMatrixPolicyVersion,
-      coprocessorBoundaryPolicyVersion: coprocessorBoundaryPolicyVersion,
-      coprocessorFeatureControlPolicyVersion: coprocessorFeatureControlPolicyVersion,
-      coprocessorBudgetIsolationPolicyVersion: coprocessorBudgetIsolationPolicyVersion,
-      coprocessorReasonTracePolicyVersion: coprocessorReasonTracePolicyVersion,
-      coprocessorAntiCopyReviewPolicyVersion: coprocessorAntiCopyReviewPolicyVersion,
-      coprocessorProposalReentryPolicyVersion: coprocessorProposalReentryPolicyVersion,
-      coprocessorAnalysisProviderPolicyVersion: coprocessorAnalysisProviderPolicyVersion,
-      coprocessorOrchestrationPolicyVersion: coprocessorOrchestrationPolicyVersion,
-      coprocessorAuthorityModes: coprocessorAuthorityModes.slice(),
-      coprocessorFeatureFlagModes: coprocessorFeatureFlagModes.slice(),
-      coprocessorRolloutStages: coprocessorRolloutStages.slice(),
-      coprocessorKillSwitchStates: coprocessorKillSwitchStates.slice(),
-      coprocessorAuthorityMatrix: coprocessorAuthorityMatrix.slice(),
-      coprocessorAuthorityMatrixByMode: coprocessorAuthorityMatrixByMode,
-      coprocessorAuthorityTruthWriterCount: coprocessorAuthorityTruthWriterModules.length,
-      coprocessorAuthoritySidecarCount: coprocessorAuthoritySidecarModules.length,
-      coprocessorFeatureControlMatrix: coprocessorFeatureControlMatrix.slice(),
-      coprocessorFeatureControlByMode: coprocessorFeatureControlByMode,
-      coprocessorFeatureControlByRolloutStage: coprocessorFeatureControlByRolloutStage,
-      coprocessorFeatureAlwaysOnModules: coprocessorFeatureAlwaysOnModules.slice(),
-      coprocessorFeatureConservativeModules: coprocessorFeatureConservativeModules.slice(),
-      coprocessorFeatureExperimentalModules: coprocessorFeatureExperimentalModules.slice(),
-      coprocessorFeatureOffModules: coprocessorFeatureOffModules.slice(),
-      coprocessorKillSwitchableModules: coprocessorKillSwitchableModules.slice(),
-      coprocessorTraceContractOnlyModules: coprocessorTraceContractOnlyModules.slice(),
-      coprocessorRuntimeActiveModules: coprocessorRuntimeActiveModules.slice(),
-      budgetIsolationStrategy: "truth_floor_reserved_then_hint_residual",
-      truthFloorBudgetLane: truthFloorBudgetLane,
-      truthFloorBudgetLabels: truthFloorBudgetLabels.slice(),
-      truthFloorBudgetOwnerModules: coprocessorAuthorityTruthWriterModules.slice(),
-      truthFloorBudgetReservedChars: hardFloorReserveTotalChars,
-      coprocessorHintBudgetLane: coprocessorHintBudgetLane,
-      coprocessorHintBudgetModules: coprocessorAuthoritySidecarModules.slice(),
-      coprocessorHintBudgetPromptModules: coprocessorHintBudgetPromptModules.slice(),
-      coprocessorHintBudgetNonPromptModules: coprocessorHintBudgetNonPromptModules.slice(),
-      coprocessorHintBudgetPromptLabels: coprocessorHintBudgetPromptLabels.slice(),
-      coprocessorHintBudgetResidualChars: Math.max(0, budgetLimit - hardFloorReserveTotalChars),
-      coprocessorHintBudgetHardFloorAllowed: false,
-      coprocessorBudgetLaneByLabel: Object.assign({}, coprocessorBudgetLaneByLabel),
-      coprocessorReasonTraceEnabled: true,
-      coprocessorReasonTraceActions: coprocessorReasonTraceActions.slice(),
-      coprocessorReasonTraceReasonCodes: coprocessorReasonTraceReasonCodes.slice(),
-      coprocessorReasonTraceKeepReasonCodes: coprocessorReasonTraceKeepReasonCodes.slice(),
-      coprocessorReasonTraceDropReasonCodes: coprocessorReasonTraceDropReasonCodes.slice(),
-      coprocessorReasonTraceDegradeReasonCodes: coprocessorReasonTraceDegradeReasonCodes.slice(),
-      coprocessorReasonTraceBudgetReasonCodes: coprocessorReasonTraceBudgetReasonCodes.slice(),
-      coprocessorReasonTraceCounts: Object.assign({}, coprocessorReasonTraceCounts),
-      coprocessorReasonTraceByAction: coprocessorReasonTraceByAction,
-      coprocessorReasonTraceByLane: coprocessorReasonTraceByLane,
-      coprocessorReasonTraceByLabel: coprocessorReasonTraceByLabel,
-      coprocessorReasonTrace: coprocessorReasonTrace.slice(),
-      coprocessorAntiCopyReviewScope: coprocessorAntiCopyReviewScope,
-      coprocessorAntiCopyAllowedReferenceMode: coprocessorAntiCopyAllowedReferenceMode,
-      coprocessorAntiCopyReviewEvidenceFields: coprocessorAntiCopyReviewEvidenceFields.slice(),
-      coprocessorAntiCopyReviewCheckIds: coprocessorAntiCopyReviewCheckIds.slice(),
-      coprocessorAntiCopyReviewBlockingChecks: coprocessorAntiCopyReviewBlockingChecks.slice(),
-      coprocessorAntiCopyForbiddenCarryoverClasses: coprocessorAntiCopyForbiddenCarryoverClasses.slice(),
-      coprocessorAntiCopyReviewChecklist: coprocessorAntiCopyReviewChecklist.slice(),
-      coprocessorProposalTraceModules: coprocessorProposalTraceModules.slice(),
-      coprocessorProposalTraceRequiredFields: coprocessorProposalTraceRequiredFields.slice(),
-      coprocessorProposalReducerReentryRequiredModules: coprocessorProposalReentryRequiredModules.slice(),
-      coprocessorProposalTruthPathBlockedWithoutRequiredFields: true,
-      coprocessorProposalCanonicalWriteBeforeReducerReentry: false,
-      coprocessorProposalCanonicalWriteAuthority: "step11_truth_core_only",
-      coprocessorProposalAdoptionPath: coprocessorProposalAdoptionPath.slice(),
-      entityCoprocessorContractPolicyVersion: entityCoprocessorContractPolicyVersion,
-      entityCoprocessorEvidenceContractPolicyVersion: entityCoprocessorEvidenceContractPolicyVersion,
-      entityCoprocessorInputSurfaces: entityCoprocessorInputSurfaces.slice(),
-      entityCoprocessorInputFocusSignals: entityCoprocessorInputFocusSignals.slice(),
-      entityCoprocessorOutputProposalTypes: entityCoprocessorOutputProposalTypes.slice(),
-      entityCoprocessorOutputRequiredFields: entityCoprocessorOutputRequiredFields.slice(),
-      entityCoprocessorOutputOptionalFields: entityCoprocessorOutputOptionalFields.slice(),
-      entityCoprocessorOutputMode: entityCoprocessorOutputMode,
-      entityCoprocessorPatchApplicationMode: entityCoprocessorPatchApplicationMode,
-      entityCoprocessorEvidenceBindingMode: entityCoprocessorEvidenceBindingMode,
-      entityCoprocessorPatchDirectWriteGuardPolicyVersion: entityCoprocessorPatchDirectWriteGuardPolicyVersion,
-      entityCoprocessorPatchDirectWriteBlockedTarget: entityCoprocessorPatchDirectWriteBlockedTarget,
-      entityCoprocessorPatchDirectWriteAllowedRoute: entityCoprocessorPatchDirectWriteAllowedRoute,
-      entityCoprocessorPatchDirectWriteAuthorityCeiling: entityCoprocessorPatchDirectWriteAuthorityCeiling,
-      entityCoprocessorTraceDisplayPolicyVersion: entityCoprocessorTraceDisplayPolicyVersion,
-      entityCoprocessorTraceDisplayMode: entityCoprocessorTraceDisplayMode,
-      entityCoprocessorTraceDisplayHintLane: entityCoprocessorTraceDisplayHintLane,
-      entityCoprocessorTraceDisplayTruthLane: entityCoprocessorTraceDisplayTruthLane,
-      entityCoprocessorTraceDisplayHintTypes: entityCoprocessorTraceDisplayHintTypes.slice(),
-      entityCoprocessorTraceDisplayTruthTargets: entityCoprocessorTraceDisplayTruthTargets.slice(),
-      entityCoprocessorTraceDisplayTruthOwner: entityCoprocessorTraceDisplayTruthOwner,
-      entityCoprocessorTraceDisplayDisallowedAliases: entityCoprocessorTraceDisplayDisallowedAliases.slice(),
-      entityCoprocessorTraceDisplayLabelPrefixes: Object.assign({}, entityCoprocessorTraceDisplayLabelPrefixes),
-      entityCoprocessorStaleSceneGuardPolicyVersion: entityCoprocessorStaleSceneGuardPolicyVersion,
-      entityCoprocessorStaleSceneGuardMode: entityCoprocessorStaleSceneGuardMode,
-      entityCoprocessorStaleSceneGuardInputLabels: entityCoprocessorStaleSceneGuardInputLabels.slice(),
-      entityCoprocessorStaleSceneGuardAnchorSource: entityCoprocessorStaleSceneGuardAnchorSource,
-      entityCoprocessorStaleSceneGuardConflictReason: entityCoprocessorStaleSceneGuardConflictReason,
-      entityCoprocessorStaleSceneGuardSuppressionTarget: entityCoprocessorStaleSceneGuardSuppressionTarget,
-      entityCoprocessorStaleSceneGuardSuppressionRoute: entityCoprocessorStaleSceneGuardSuppressionRoute,
-      entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical: entityCoprocessorStaleSceneGuardFailOpenWithoutCanonical,
-      entityCoprocessorStaleSceneGuardDelegatedPolicyVersion: entityCoprocessorStaleSceneGuardDelegatedPolicyVersion,
-      entityCoprocessorStaleSceneGuardTriggered: entityCoprocessorStaleSceneGuardTriggered,
-      entityCoprocessorStaleSceneGuardSuppressedLabels: entityCoprocessorStaleSceneGuardSuppressedLabels.slice(),
-      entityCoprocessorStaleSceneGuardSuppressedAnchors: entityCoprocessorStaleSceneGuardSuppressedAnchors.slice(),
-      entityCoprocessorBranchRegistryPolicyVersion: entityCoprocessorBranchRegistryPolicyVersion,
-      entityCoprocessorBranchRegistryVocabularyPolicyVersion: entityCoprocessorBranchRegistryVocabularyPolicyVersion,
-      entityCoprocessorBranchRegistryCanonicalSource: entityCoprocessorBranchRegistryCanonicalSource,
-      entityCoprocessorBranchRegistrySignalKeys: entityCoprocessorBranchRegistrySignalKeys.slice(),
-      entityCoprocessorBranchRegistrySignalClass: entityCoprocessorBranchRegistrySignalClass,
-      entityCoprocessorBranchRegistryProposalScope: entityCoprocessorBranchRegistryProposalScope,
-      entityCoprocessorBranchRegistryTraceTarget: entityCoprocessorBranchRegistryTraceTarget,
-      entityCoprocessorBranchRegistryTruthPathAllowed: entityCoprocessorBranchRegistryTruthPathAllowed,
-      entityCoprocessorBranchRegistryReducerReentryAllowed: entityCoprocessorBranchRegistryReducerReentryAllowed,
-      entityCoprocessorBranchRegistryCanonicalWriteAllowed: entityCoprocessorBranchRegistryCanonicalWriteAllowed,
-      worldCoprocessorContractPolicyVersion: worldCoprocessorContractPolicyVersion,
-      worldCoprocessorSchemaPolicyVersion: worldCoprocessorSchemaPolicyVersion,
-      worldCoprocessorCanonicalCurrentStatePolicyVersion: worldCoprocessorCanonicalCurrentStatePolicyVersion,
-      worldCoprocessorInputSurfaces: worldCoprocessorInputSurfaces.slice(),
-      worldCoprocessorInputFocusSignals: worldCoprocessorInputFocusSignals.slice(),
-      worldCoprocessorOutputProposalTypes: worldCoprocessorOutputProposalTypes.slice(),
-      worldCoprocessorOutputRequiredFields: worldCoprocessorOutputRequiredFields.slice(),
-      worldCoprocessorOutputOptionalFields: worldCoprocessorOutputOptionalFields.slice(),
-      worldCoprocessorOutputMode: worldCoprocessorOutputMode,
-      worldCoprocessorPatchApplicationMode: worldCoprocessorPatchApplicationMode,
-      worldCoprocessorEvidenceBindingMode: worldCoprocessorEvidenceBindingMode,
-      worldCoprocessorWriteGuardPolicyVersion: worldCoprocessorWriteGuardPolicyVersion,
-      worldCoprocessorWriteGuardScope: worldCoprocessorWriteGuardScope,
-      worldCoprocessorWriteGuardBlockedTargets: worldCoprocessorWriteGuardBlockedTargets.slice(),
-      worldCoprocessorWriteGuardAllowedRoute: worldCoprocessorWriteGuardAllowedRoute,
-      worldCoprocessorWriteGuardAuthorityCeiling: worldCoprocessorWriteGuardAuthorityCeiling,
-      worldCoprocessorTraceDisplayPolicyVersion: worldCoprocessorTraceDisplayPolicyVersion,
-      worldCoprocessorTraceDisplayTruthPolicyVersion: worldCoprocessorCanonicalCurrentStatePolicyVersion,
-      worldCoprocessorTraceDisplayMode: worldCoprocessorTraceDisplayMode,
-      worldCoprocessorTraceDisplayHintLane: worldCoprocessorTraceDisplayHintLane,
-      worldCoprocessorTraceDisplayTruthLane: worldCoprocessorTraceDisplayTruthLane,
-      worldCoprocessorTraceDisplayHintTypes: worldCoprocessorTraceDisplayHintTypes.slice(),
-      worldCoprocessorTraceDisplayTruthTargets: worldCoprocessorTraceDisplayTruthTargets.slice(),
-      worldCoprocessorTraceDisplayTruthOwner: worldCoprocessorTraceDisplayTruthOwner,
-      worldCoprocessorTraceDisplayDisallowedAliases: worldCoprocessorTraceDisplayDisallowedAliases.slice(),
-      worldCoprocessorTraceDisplayLabelPrefixes: Object.assign({}, worldCoprocessorTraceDisplayLabelPrefixes),
-      worldCoprocessorGuidanceBudgetPolicyVersion: worldCoprocessorGuidanceBudgetPolicyVersion,
-      worldCoprocessorGuidanceBudgetMode: worldCoprocessorGuidanceBudgetMode,
-      worldCoprocessorGuidanceBudgetLane: worldCoprocessorGuidanceBudgetLane,
-      worldCoprocessorGuidanceBudgetSource: worldCoprocessorGuidanceBudgetSource,
-      worldCoprocessorGuidanceBudgetCompetitionScope: worldCoprocessorGuidanceBudgetCompetitionScope,
-      worldCoprocessorGuidanceBudgetCompetitionModules: worldCoprocessorGuidanceBudgetCompetitionModules.slice(),
-      worldCoprocessorGuidanceBudgetPromptLabels: worldCoprocessorGuidanceBudgetPromptLabels.slice(),
-      worldCoprocessorGuidanceBudgetProtectedTruthLabels: worldCoprocessorGuidanceBudgetProtectedTruthLabels.slice(),
-      worldCoprocessorGuidanceBudgetHintTypes: worldCoprocessorGuidanceBudgetHintTypes.slice(),
-      worldCoprocessorConservativeDegradePolicyVersion: worldCoprocessorConservativeDegradePolicyVersion,
-      worldCoprocessorConservativeDegradeMode: worldCoprocessorConservativeDegradeMode,
-      worldCoprocessorConservativeDegradeRequiredFields: worldCoprocessorConservativeDegradeRequiredFields.slice(),
-      worldCoprocessorConservativeDegradeReasonCodes: worldCoprocessorConservativeDegradeReasonCodes.slice(),
-      worldCoprocessorConservativeDegradeMissingEvidenceAction: worldCoprocessorConservativeDegradeMissingEvidenceAction,
-      worldCoprocessorConservativeDegradeLowConfidenceAction: worldCoprocessorConservativeDegradeLowConfidenceAction,
-      worldCoprocessorConservativeDegradeTruthFloorFallback: worldCoprocessorConservativeDegradeTruthFloorFallback,
-      worldCoprocessorConservativeDegradeFailOpenWithoutCanonical: worldCoprocessorConservativeDegradeFailOpenWithoutCanonical,
-      worldCoprocessorSceneSlicePolicyVersion: worldCoprocessorSceneSlicePolicyVersion,
-      worldCoprocessorSceneSliceVocabularyPolicyVersion: worldCoprocessorSceneSliceVocabularyPolicyVersion,
-      worldCoprocessorSceneSliceInputLabels: worldCoprocessorSceneSliceInputLabels.slice(),
-      worldCoprocessorSceneSliceSelectorSignal: worldCoprocessorSceneSliceSelectorSignal,
-      worldCoprocessorSceneSliceExtractionMode: worldCoprocessorSceneSliceExtractionMode,
-      worldCoprocessorSceneSliceOutputType: worldCoprocessorSceneSliceOutputType,
-      worldCoprocessorSceneSliceRequiredFields: worldCoprocessorSceneSliceRequiredFields.slice(),
-      worldCoprocessorSceneSliceTraceLane: worldCoprocessorSceneSliceTraceLane,
-      worldCoprocessorSceneSliceBudgetLane: worldCoprocessorSceneSliceBudgetLane,
-      worldCoprocessorSceneSliceDeliverySurface: worldCoprocessorSceneSliceDeliverySurface,
-      worldCoprocessorSceneSliceTruthAliasBlocked: worldCoprocessorSceneSliceTruthAliasBlocked,
-      worldCoprocessorSceneSliceTruthBorrowAllowed: worldCoprocessorSceneSliceTruthBorrowAllowed,
-      coprocessorAnalysisProviderModules: coprocessorAnalysisProviderModules.slice(),
-      coprocessorAnalysisProviderRawOutputMode: coprocessorAnalysisProviderRawOutputMode,
-      coprocessorAnalysisProviderTraceTargets: Object.assign({}, coprocessorAnalysisProviderTraceTargets),
-      coprocessorAnalysisProviderNormalizationModes: Object.assign({}, coprocessorAnalysisProviderNormalizationModes),
-      coprocessorAnalysisProviderAutonomousTruthWriteAllowed: false,
-      coprocessorAnalysisProviderDisallowedUsage: coprocessorAnalysisProviderDisallowedUsage.slice(),
-      coprocessorAnalysisProviderCanonicalWriteAuthority: "step11_truth_core_only",
-      coprocessorAnalysisProviderCallFrequencyOwner: coprocessorAnalysisProviderCallFrequencyOwner,
-      coprocessorAnalysisProviderCallFrequencyPolicyVersion: step13GovernorPolicyVersion,
-      coprocessorAnalysisProviderCallFrequencyPolicyStatus: "governor_contract_fixed",
-      coprocessorGovernorPolicyVersion: step13GovernorPolicyVersion,
-      coprocessorCacheKeeperPolicyVersion: step13CacheKeeperPolicyVersion,
-      coprocessorGovernorFailureBudgetPolicyVersion: step13GovernorFailureBudgetPolicyVersion,
-      coprocessorGovernorRunLedgerPolicyVersion: step13GovernorRunLedgerPolicyVersion,
-      coprocessorGovernorBypassPolicyVersion: step13GovernorBypassPolicyVersion,
-      coprocessorGovernorManagedModules: step13GovernorManagedModules.slice(),
-      coprocessorGovernorApprovalStates: step13GovernorApprovalStates.slice(),
-      coprocessorGovernorCooldownTurnsByModule: Object.assign({}, step13GovernorCooldownTurnsByModule),
-      coprocessorGovernorDirtySeverityOrder: step13GovernorDirtySeverityOrder.slice(),
-      coprocessorGovernorMinDirtySeverityByModule: Object.assign({}, step13GovernorMinDirtySeverityByModule),
-      coprocessorGovernorMaxParallelism: step13GovernorMaxParallelism,
-      coprocessorGovernorRuntimeMode: step13GovernorRuntimeMode,
-      coprocessorGovernorFailureBucketMode: step13GovernorFailureBucketMode,
-      coprocessorGovernorTrackedFailureClasses: step13GovernorTrackedFailureClasses.slice(),
-      coprocessorGovernorFailureWindowTurns: step13GovernorFailureWindowTurns,
-      coprocessorGovernorConsecutiveFailureThreshold: step13GovernorConsecutiveFailureThreshold,
-      coprocessorGovernorResumeSuccessTurnsRequired: step13GovernorResumeSuccessTurnsRequired,
-      coprocessorGovernorFailureRuntimeAction: step13GovernorFailureRuntimeAction,
-      coprocessorGovernorFailureFailOpenBehavior: step13GovernorFailureFailOpenBehavior,
-      coprocessorCacheKeeperCacheUnit: coprocessorOrchestrationCacheUnit,
-      coprocessorCacheKeeperReuseScope: coprocessorOrchestrationCacheReuseScope,
-      coprocessorCacheKeeperReuseRoute: "cached_result",
-      coprocessorCacheKeeperForcedRefreshSignals: step13CacheKeeperForcedRefreshSignals.slice(),
-      coprocessorCacheKeeperStaleDiscardReasons: step13CacheKeeperStaleDiscardReasons.slice(),
-      coprocessorCacheKeeperNoServeConditions: step13CacheKeeperNoServeConditions.slice(),
-      coprocessorGovernorBypassBlockedRoutes: step13GovernorBypassBlockedRoutes.slice(),
-      coprocessorGovernorBypassProtectedPromptTargets: step13GovernorBypassProtectedPromptTargets.slice(),
-      coprocessorGovernorBypassRequiredEntryGate: coprocessorOrchestrationCallEntryGate,
-      coprocessorGovernorBypassRequiredSingleFlightScope: coprocessorOrchestrationCacheReuseScope,
-      coprocessorGovernorBypassRequiredRuntimeStage: "residual_guidance",
-      coprocessorGovernorBypassAction: step13GovernorBypassAction,
-      coprocessorGovernorBypassRuntimeStatus: step13GovernorBypassRuntimeStatus,
-      coprocessorOrchestrationRuntimeStages: coprocessorOrchestrationRuntimeStages.slice(),
-      coprocessorOrchestrationTruthStackOwner: coprocessorOrchestrationTruthStackOwner,
-      coprocessorOrchestrationTruthStackLabels: truthFloorBudgetLabels.slice(),
-      coprocessorOrchestrationCallEntryGate: coprocessorOrchestrationCallEntryGate,
-      coprocessorOrchestrationDirtySignalPolicyVersion: coprocessorOrchestrationDirtySignalPolicyVersion,
-      coprocessorOrchestrationDirtySignalEvaluationMode: coprocessorOrchestrationDirtySignalEvaluationMode,
-      coprocessorOrchestrationDirtySignals: coprocessorOrchestrationDirtySignals.slice(),
-      coprocessorOrchestrationDirtyRecomputeSignals: coprocessorOrchestrationDirtyRecomputeSignals.slice(),
-      coprocessorOrchestrationDirtyStableSignals: coprocessorOrchestrationDirtyStableSignals.slice(),
-      coprocessorOrchestrationDirtySnapshotFields: coprocessorOrchestrationDirtySnapshotFields.slice(),
-      coprocessorOrchestrationDirtyStableReuseRoute: "cached_result",
-      coprocessorOrchestrationCachePolicyVersion: coprocessorOrchestrationCachePolicyVersion,
-      coprocessorOrchestrationCacheUnit: coprocessorOrchestrationCacheUnit,
-      coprocessorOrchestrationCacheReuseScope: coprocessorOrchestrationCacheReuseScope,
-      coprocessorOrchestrationCacheKeyFields: coprocessorOrchestrationCacheKeyFields.slice(),
-      coprocessorOrchestrationCacheInvalidationSignals: coprocessorOrchestrationCacheInvalidationSignals.slice(),
-      coprocessorOrchestrationCacheInvalidationTokens: coprocessorOrchestrationCacheInvalidationTokens.slice(),
-      coprocessorOrchestrationCacheStaleGuard: coprocessorOrchestrationCacheStaleGuard,
-      coprocessorOrchestrationCacheAdvancedPolicyStatus: "deferred_to_step13",
-      coprocessorOrchestrationRollbackDetectionPolicyVersion: coprocessorOrchestrationRollbackDetectionPolicyVersion,
-      coprocessorOrchestrationRollbackDetectionSources: coprocessorOrchestrationRollbackDetectionSources.slice(),
-      coprocessorOrchestrationRollbackDetectionHistoryDiffMode: coprocessorOrchestrationRollbackDetectionHistoryDiffMode,
-      coprocessorOrchestrationRollbackDetectionPrimaryResolver: coprocessorOrchestrationRollbackDetectionPrimaryResolver,
-      coprocessorOrchestrationRollbackDetectionFallbackResolver: coprocessorOrchestrationRollbackDetectionFallbackResolver,
-      coprocessorOrchestrationRollbackDetectionSupportedShapes: coprocessorOrchestrationRollbackDetectionSupportedShapes.slice(),
-      coprocessorOrchestrationRollbackDetectionDuplicateGuard: coprocessorOrchestrationRollbackDetectionDuplicateGuard,
-      coprocessorOrchestrationRollbackDetectionLedgerStorage: coprocessorOrchestrationRollbackDetectionLedgerStorage,
-      coprocessorOrchestrationRollbackInvalidationPolicyVersion: coprocessorOrchestrationRollbackInvalidationPolicyVersion,
-      coprocessorOrchestrationRollbackInvalidationRoute: coprocessorOrchestrationRollbackInvalidationRoute,
-      coprocessorOrchestrationRollbackInvalidationTriggerSources: coprocessorOrchestrationRollbackInvalidationTriggerSources.slice(),
-      coprocessorOrchestrationRollbackInvalidationLocalTargets: coprocessorOrchestrationRollbackInvalidationLocalTargets.slice(),
-      coprocessorOrchestrationRollbackInvalidationCleanupSurfaces: coprocessorOrchestrationRollbackInvalidationCleanupSurfaces.slice(),
-      coprocessorOrchestrationRollbackInvalidationGuidanceMode: coprocessorOrchestrationRollbackInvalidationGuidanceMode,
-      coprocessorOrchestrationRollbackInvalidationCacheGuard: coprocessorOrchestrationRollbackInvalidationCacheGuard,
-      coprocessorOrchestrationRollbackInvalidationStaleSidecarGuard: coprocessorOrchestrationRollbackInvalidationStaleSidecarGuard,
-      coprocessorOrchestrationDirtyMatrixPolicyVersion: coprocessorOrchestrationDirtyMatrixPolicyVersion,
-      coprocessorOrchestrationDirtyMatrixTargets: coprocessorOrchestrationDirtyMatrixTargets.slice(),
-      coprocessorOrchestrationDirtyMatrixRuntimeEventTypes: coprocessorOrchestrationDirtyMatrixRuntimeEventTypes.slice(),
-      coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix: {
-        user_correction: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.user_correction.slice(),
-        canonical_update: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.canonical_update.slice(),
-        world_state_update: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.world_state_update.slice(),
-        turn_deletion: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.turn_deletion.slice(),
-        backfill_import: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.backfill_import.slice(),
-        schema_migration: coprocessorOrchestrationDirtyMatrixRuntimeEventTargetMatrix.schema_migration.slice(),
-      },
-      coprocessorOrchestrationDirtyMatrixDelegatedEventMatrixVersions: Object.assign({}, coprocessorOrchestrationDirtyMatrixDelegatedEventMatrixVersions),
-      coprocessorOrchestrationDirtyMatrixDeferredObservedEventTypes: coprocessorOrchestrationDirtyMatrixDeferredObservedEventTypes.slice(),
-      coprocessorOrchestrationRebuildPolicyVersion: coprocessorOrchestrationRebuildPolicyVersion,
-      coprocessorOrchestrationRebuildStaleServingPolicy: coprocessorOrchestrationRebuildStaleServingPolicy,
-      coprocessorOrchestrationRebuildPendingTriggerStates: coprocessorOrchestrationRebuildPendingTriggerStates.slice(),
-      coprocessorOrchestrationRebuildStaleDropTargets: coprocessorOrchestrationRebuildStaleDropTargets.slice(),
-      coprocessorOrchestrationRebuildHardResetTargets: coprocessorOrchestrationRebuildHardResetTargets.slice(),
-      coprocessorOrchestrationRebuildStartPointPrecedence: coprocessorOrchestrationRebuildStartPointPrecedence.slice(),
-      coprocessorOrchestrationRebuildEventModes: Object.assign({}, coprocessorOrchestrationRebuildEventModes),
-      coprocessorOrchestrationRebuildStartPointsByEvent: Object.assign({}, coprocessorOrchestrationRebuildStartPointsByEvent),
-      coprocessorOrchestrationStaleProposalPolicyVersion: coprocessorOrchestrationStaleProposalPolicyVersion,
-      coprocessorOrchestrationStaleProposalBlockedPromptTargets: coprocessorOrchestrationStaleProposalBlockedPromptTargets.slice(),
-      coprocessorOrchestrationStaleProposalBlockedCacheReasons: coprocessorOrchestrationStaleProposalBlockedCacheReasons.slice(),
-      coprocessorOrchestrationStaleProposalEvidenceMismatchSignals: coprocessorOrchestrationStaleProposalEvidenceMismatchSignals.slice(),
-      coprocessorOrchestrationStaleProposalRuntimeEnforcement: coprocessorOrchestrationStaleProposalRuntimeEnforcement,
-      coprocessorOrchestrationStaleProposalAction: coprocessorOrchestrationStaleProposalAction,
-      coprocessorOrchestrationModuleTransportPolicyVersion: coprocessorOrchestrationModuleTransportPolicyVersion,
-      coprocessorOrchestrationBackendRequiredModules: coprocessorOrchestrationBackendRequiredModules.slice(),
-      coprocessorOrchestrationBackendBundleAssistedSurfaces: coprocessorOrchestrationBackendBundleAssistedSurfaces.slice(),
-      coprocessorOrchestrationBackendProxyAssistedModules: coprocessorOrchestrationBackendProxyAssistedModules.slice(),
-      coprocessorOrchestrationPluginOnlyModules: coprocessorOrchestrationPluginOnlyModules.slice(),
-      coprocessorOrchestrationBackendBundleEntryPoint: coprocessorOrchestrationBackendBundleEntryPoint,
-      coprocessorOrchestrationBackendProxyRoute: coprocessorOrchestrationBackendProxyRoute,
-      coprocessorOrchestrationBackendOfflineGuard: coprocessorOrchestrationBackendOfflineGuard,
-      coprocessorOrchestrationPluginOnlyExecutionMode: coprocessorOrchestrationPluginOnlyExecutionMode,
-      coprocessorOrchestrationModuleTransportRuntimeStatus: coprocessorOrchestrationModuleTransportRuntimeStatus,
-      coprocessorOrchestrationResidualGuidanceStage: "residual_guidance",
-      coprocessorOrchestrationResidualBudgetSource: coprocessorOrchestrationResidualBudgetSource,
-      coprocessorOrchestrationProviderCallOrder: coprocessorOrchestrationProviderCallOrder.slice(),
-      coprocessorOrchestrationStageByModule: Object.assign({}, coprocessorOrchestrationStageByModule),
-      coprocessorOrchestrationPromptLabelsByModule: {
-        entity_coprocessor: coprocessorOrchestrationPromptLabelsByModule.entity_coprocessor.slice(),
-        world_coprocessor: coprocessorOrchestrationPromptLabelsByModule.world_coprocessor.slice(),
-        narrative_quality_coprocessor: coprocessorOrchestrationPromptLabelsByModule.narrative_quality_coprocessor.slice(),
-      },
-      coprocessorOrchestrationCallAllowedBeforeTruthStack: false,
-      coprocessorTruthWriteTargets: coprocessorTruthWriteTargets.slice(),
-      coprocessorSidecarWritableTargets: coprocessorSidecarWritableTargets.slice(),
-      coprocessorSidecarDeniedTruthTargets: coprocessorTruthWriteTargets.slice(),
-      coprocessorReadBoundaryBySurface: coprocessorReadBoundaryBySurface,
-      coprocessorWriteBoundaryByTarget: coprocessorWriteBoundaryByTarget,
-      coprocessorBoundaryReadableSurfaces: coprocessorBoundaryReadableSurfaces.slice(),
-      coprocessorBoundaryWritableTargets: coprocessorBoundaryWritableTargets.slice(),
-      coprocessorBoundaryReadableSurfaceCount: coprocessorBoundaryReadableSurfaces.length,
-      coprocessorBoundaryWritableTargetCount: coprocessorBoundaryWritableTargets.length,
-      retrievalPromotionPolicyVersion: retrievalPromotionPolicyVersion,
-      retrievalPromotionTargets: retrievalPromotionTargets.slice(),
-      retrievalPromotionImportanceTokens: retrievalPromotionImportanceTokens.slice(),
-      retrievalPromotionEnabled: true,
-      supportingGuidanceGuardPolicyVersion: supportingGuidanceGuardPolicyVersion,
-      supportingGuidanceGuardPolicyTag: supportingGuidanceGuardPolicyTag,
-      supportingGuidanceEvidenceCeilingEnabled: supportingGuidanceEvidenceCeilingEnabled,
-      supportingGuidanceBlockedCount: supportingGuidanceBlockedSet.size,
-      supportingGuidanceBlockedLabels: Array.from(supportingGuidanceBlockedSet),
-      supportingGuidanceBlockedDetails: supportingGuidanceBlockedDetails.slice(0, 8),
-      narrativeQualityLayerPolicyVersion: narrativeQualityLayerPolicyVersion,
-      narrativeQualityLayerMode: narrativeQualityLayerMode,
-      narrativeQualityLayerLabels: narrativeQualityLayerLabels.slice(),
-      narrativeQualityLayerDisallowedUsage: narrativeQualityLayerDisallowedUsage.slice(),
-      narrativeQualityLayerEnabled: true,
-      narrativeQualityLayerTruthArbitrationAllowed: false,
-      narrativeQualityLayerCanonicalOverwriteAllowed: false,
-      narrativeQualityCoprocessorContractPolicyVersion: narrativeQualityCoprocessorContractPolicyVersion,
-      narrativeQualityCoprocessorOutputPolicyVersion: narrativeQualityCoprocessorOutputPolicyVersion,
-      narrativeQualityCoprocessorConflictGuardPolicyVersion: narrativeQualityCoprocessorConflictGuardPolicyVersion,
-      narrativeQualityCoprocessorTraceDisplayPolicyVersion: narrativeQualityCoprocessorTraceDisplayPolicyVersion,
-      narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion: narrativeQualityCoprocessorTraceDisplayTruthPolicyVersion,
-      narrativeQualityCoprocessorAblationPolicyVersion: narrativeQualityCoprocessorAblationPolicyVersion,
-      narrativeQualityCoprocessorPlannerSplitPolicyVersion: narrativeQualityCoprocessorPlannerSplitPolicyVersion,
-      narrativeQualityCoprocessorInputSurfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-      narrativeQualityCoprocessorSourceRoles: narrativeQualityCoprocessorSourceRoles.slice(),
-      narrativeQualityCoprocessorOutputMode: narrativeQualityCoprocessorOutputMode,
-      narrativeQualityCoprocessorOutputHintTypes: narrativeQualityCoprocessorOutputHintTypes.slice(),
-      narrativeQualityCoprocessorOutputRequiredFields: narrativeQualityCoprocessorOutputRequiredFields.slice(),
-      narrativeQualityCoprocessorOutputOptionalFields: narrativeQualityCoprocessorOutputOptionalFields.slice(),
-      narrativeQualityCoprocessorAblationProfiles: narrativeQualityCoprocessorAblationProfiles.slice(),
-      narrativeQualityCoprocessorAblationBaselineMode: narrativeQualityCoprocessorAblationBaselineMode,
-      narrativeQualityCoprocessorAblationEvaluationWindowByProfile: Object.assign({}, narrativeQualityCoprocessorAblationEvaluationWindowByProfile),
-      narrativeQualityCoprocessorAblationPrimaryMetrics: narrativeQualityCoprocessorAblationPrimaryMetrics.slice(),
-      narrativeQualityCoprocessorAblationDecisionGate: narrativeQualityCoprocessorAblationDecisionGate,
-      narrativeQualityCoprocessorAblationTruthLeakBudget: narrativeQualityCoprocessorAblationTruthLeakBudget,
-      narrativeQualityCoprocessorAblationProtectedTruthLabels: narrativeQualityCoprocessorAblationProtectedTruthLabels.slice(),
-      narrativeQualityCoprocessorPlannerSplitMode: narrativeQualityCoprocessorPlannerSplitMode,
-      narrativeQualityCoprocessorPlannerRole: narrativeQualityCoprocessorPlannerRole,
-      narrativeQualityCoprocessorPlannerFields: narrativeQualityCoprocessorPlannerFields.slice(),
-      narrativeQualityCoprocessorPlannerHintTypes: narrativeQualityCoprocessorPlannerHintTypes.slice(),
-      narrativeQualityCoprocessorExecutionRole: narrativeQualityCoprocessorExecutionRole,
-      narrativeQualityCoprocessorExecutionFields: narrativeQualityCoprocessorExecutionFields.slice(),
-      narrativeQualityCoprocessorExecutionHintTypes: narrativeQualityCoprocessorExecutionHintTypes.slice(),
-      narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed: narrativeQualityCoprocessorPlannerAuthorityPromotionAllowed,
-      narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed: narrativeQualityCoprocessorExecutionAuthorityPromotionAllowed,
-      narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed: narrativeQualityCoprocessorCrossRoleTruthBorrowAllowed,
-      narrativeQualityCoprocessorConflictGuardMode: narrativeQualityCoprocessorConflictGuardMode,
-      narrativeQualityCoprocessorConflictGuardAnchorSource: narrativeQualityCoprocessorConflictGuardAnchorSource,
-      narrativeQualityCoprocessorConflictGuardConflictReason: narrativeQualityCoprocessorConflictGuardConflictReason,
-      narrativeQualityCoprocessorConflictGuardDropAction: narrativeQualityCoprocessorConflictGuardDropAction,
-      narrativeQualityCoprocessorConflictGuardDegradeAction: narrativeQualityCoprocessorConflictGuardDegradeAction,
-      narrativeQualityCoprocessorConflictGuardTruthFloorFallback: narrativeQualityCoprocessorConflictGuardTruthFloorFallback,
-      narrativeQualityCoprocessorConflictGuardDisallowedTargets: narrativeQualityCoprocessorConflictGuardDisallowedTargets.slice(),
-      narrativeQualityCoprocessorConflictGuardFailOpenWithoutFactualState: narrativeQualityCoprocessorConflictGuardFailOpenWithoutFactualState,
-      narrativeQualityCoprocessorTraceDisplayMode: narrativeQualityCoprocessorTraceDisplayMode,
-      narrativeQualityCoprocessorTraceDisplayHintLane: narrativeQualityCoprocessorTraceDisplayHintLane,
-      narrativeQualityCoprocessorTraceDisplayTruthLane: narrativeQualityCoprocessorTraceDisplayTruthLane,
-      narrativeQualityCoprocessorTraceDisplayTruthTargets: narrativeQualityCoprocessorTraceDisplayTruthTargets.slice(),
-      narrativeQualityCoprocessorTraceDisplayTruthOwner: narrativeQualityCoprocessorTraceDisplayTruthOwner,
-      narrativeQualityCoprocessorTraceDisplayDisallowedAliases: narrativeQualityCoprocessorTraceDisplayDisallowedAliases.slice(),
-      narrativeQualityCoprocessorTraceDisplayLabelPrefixes: Object.assign({}, narrativeQualityCoprocessorTraceDisplayLabelPrefixes),
-      reliabilityGuardPolicyVersion: reliabilityGuardPolicyVersion,
-      reliabilityGuardPolicyTag: reliabilityGuardPolicyTag,
-      reliabilityGuardMode: reliabilityGuardTriggered ? "conservative_hold" : "normal",
-      reliabilityGuardTriggered: reliabilityGuardTriggered,
-      reliabilityGuardReasons: reliabilityGuardReasons.slice(),
-      reliabilityEvidenceStackPresent: reliabilityEvidenceStackPresent,
-      reliabilityConflictDetected: reliabilityConflictDetected,
-      retrievalPromotionHeldByReliabilityGuard: reliabilityGuardTriggered,
-      retrievalPromotionCandidateCount: retrievalPromotionCandidateCount,
-      retrievalPromotionCanonicalCount: retrievalPromotionCanonicalCount,
-      retrievalPromotionDenseSummaryCount: retrievalPromotionDenseSummaryCount,
-      retrievalPromotionCandidates: retrievalPromotionCandidates.slice(),
-      retrievalConflictPolicyVersion: retrievalConflictPolicyVersion,
-      retrievalKeepDropTraceEnabled: true,
-      retrievalKeepDropCheckedCount: retrievalKeepDropTrace.length,
-      retrievalKeepDropKeepCount: retrievalKeepDropTrace.filter(function(item) { return item && item.action === "keep"; }).length,
-      retrievalKeepDropDropCount: retrievalKeepDropTrace.filter(function(item) { return item && item.action === "drop"; }).length,
-      retrievalKeepDropTrace: retrievalKeepDropTrace.slice(0, 20),
-      hypaLoreIngestPolicyVersion: hypaLoreIngestPolicyVersion,
-      hypaLoreIngestOnlyEnabled: true,
-      hypaLoreAlwaysOnMode: "discouraged",
-      hypaLoreAlwaysOnDetected: hypaLoreAlwaysOnDetected,
-      hypaLoreAlwaysOnSuppressedCount: hypaLoreAlwaysOnDetected ? 1 : 0,
-      hypaLoreAlwaysOnSourceLabels: legacyAlwaysOnSourceLabels.slice(),
-      hypaLorePolicyTag: hypaLorePolicyTag,
-      step13TokenEstimatorPolicyVersion: step13TokenEstimatorPolicyVersion,
-      step13TokenBudgetFallbackPolicyVersion: step13TokenBudgetFallbackPolicyVersion,
-      step13TokenEstimatorMode: step13TokenEstimatorMode,
-      step13TokenEstimatorModelMode: step13TokenEstimatorModelMode,
-      step13TokenEstimatorModelOverrides: Object.assign({}, step13TokenEstimatorModelOverrides),
-      step13TokenEstimatorProfiles: step13TokenEstimatorProfiles.slice(),
-      step13TokenEstimatorProfileSourceOrder: step13TokenEstimatorProfileSourceOrder.slice(),
-      step13TokenEstimatorRuntimeThresholds: Object.assign({}, step13TokenEstimatorRuntimeThresholds),
-      step13TokenEstimatorBudgetLimitByProfile: Object.assign({}, step13TokenEstimatorBudgetLimitByProfile),
-      step13TokenEstimatorLowConfidenceSources: step13TokenEstimatorLowConfidenceSources.slice(),
-      step13TokenEstimatorDriftTelemetryFields: step13TokenEstimatorDriftTelemetryFields.slice(),
-      step13TokenBudgetFallbackRules: Object.assign({}, step13TokenBudgetFallbackRules),
-      step13TokenBudgetFallbackDecision: step13TokenBudgetFallbackDecision,
-      step13TokenTruthFloorPolicyVersion: step13TokenTruthFloorPolicyVersion,
-      step13TokenTruthFloorMode: step13TokenTruthFloorMode,
-      step13TokenTruthFloorProjectionStatus: step13TokenTruthFloorProjectionStatus,
-      step13TokenTruthFloorReferenceCharsPerToken: step13TokenTruthFloorReferenceCharsPerToken,
-      step13TokenTruthFloorCoreLabels: step13TokenTruthFloorCoreLabels.slice(),
-      step13TokenTruthFloorContinuityLabels: step13TokenTruthFloorContinuityLabels.slice(),
-      step13TokenTruthFloorReliabilityGuardLabels: step13TokenTruthFloorReliabilityGuardLabels.slice(),
-      step13TokenTruthFloorMinTokensByLabel: Object.assign({}, step13TokenTruthFloorMinTokensByLabel),
-      step13TokenTruthFloorCoreMinTokens: step13TokenTruthFloorCoreMinTokens,
-      step13TokenTruthFloorContinuityMinTokens: step13TokenTruthFloorContinuityMinTokens,
-      step13TokenTruthFloorReliabilityGuardMinTokens: step13TokenTruthFloorReliabilityGuardMinTokens,
-      step13TokenTruthFloorTotalMinTokens: step13TokenTruthFloorTotalMinTokens,
-      step13TokenDensityProfilePolicyVersion: step13TokenDensityProfilePolicyVersion,
-      step13TokenDensityProfileLevels: step13TokenDensityProfileLevels.slice(),
-      step13TokenDensityProfileThresholds: Object.assign({}, step13TokenDensityProfileThresholds),
-      step13TokenDensityFamilyLabels: {
-        ledger: step13TokenDensityLedgerLabels.slice(),
-        world: step13TokenDensityWorldLabels.slice(),
-        guidance: step13TokenDensityGuidanceLabels.slice(),
-      },
-      step13TokenDensityFamilies: step13TokenDensityFamilies,
-      step13TokenDensityProfileByFamily: {
-        ledger: step13TokenDensityFamilies.ledger.profile,
-        world: step13TokenDensityFamilies.world.profile,
-        guidance: step13TokenDensityFamilies.guidance.profile,
-      },
-      step13PlanningBeatPlannerSchemaPolicyVersion: step13BeatPlannerSchemaPolicyVersion,
-      step13PlanningScenePilotSchemaPolicyVersion: step13ScenePilotSchemaPolicyVersion,
-      step13PlanningSettingFrameSchemaPolicyVersion: step13SettingFrameSchemaPolicyVersion,
-      step13PlanningRuntimeMode: step13PlanningRuntimeMode,
-      step13PlanningRolloutStage: step13PlanningRolloutStage,
-      step13PlanningTakeoverGate: step13PlanningTakeoverGate,
-      step13PlanningTruthWriteAllowed: step13PlanningTruthWriteAllowed,
-      step13PlanningReducerReentryAllowed: step13PlanningReducerReentryAllowed,
-      step13BeatPlannerDraftRequiredFields: step13BeatPlannerDraftRequiredFields.slice(),
-      step13BeatPlannerDraftOptionalFields: step13BeatPlannerDraftOptionalFields.slice(),
-      step13BeatPlannerRuntimeBackingFields: narrativeQualityCoprocessorPlannerFields.slice(),
-      step13BeatPlannerHintTypes: narrativeQualityCoprocessorPlannerHintTypes.slice(),
-      step13BeatPlannerInputSurfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-      step13ScenePilotDraftRequiredFields: step13ScenePilotDraftRequiredFields.slice(),
-      step13ScenePilotDraftOptionalFields: step13ScenePilotDraftOptionalFields.slice(),
-      step13ScenePilotRuntimeBackingFields: narrativeQualityCoprocessorExecutionFields.slice(),
-      step13ScenePilotHintTypes: narrativeQualityCoprocessorExecutionHintTypes.slice(),
-      step13ScenePilotInputSurfaces: narrativeQualityCoprocessorInputSurfaces.slice(),
-      step13SettingFrameInputLabels: worldCoprocessorSceneSliceInputLabels.slice(),
-      step13SettingFrameDraftRequiredFields: worldCoprocessorSceneSliceRequiredFields.slice(),
-      step13SettingFrameDraftOptionalFields: step13SettingFrameDraftOptionalFields.slice(),
-      step13SettingFrameSelectorSignal: worldCoprocessorSceneSliceSelectorSignal,
-      step13SettingFrameExtractionMode: worldCoprocessorSceneSliceExtractionMode,
-      step13SettingFrameDeliverySurface: worldCoprocessorSceneSliceDeliverySurface,
-      step13SettingFrameTruthAliasBlocked: worldCoprocessorSceneSliceTruthAliasBlocked,
-      step13SettingFrameTruthBorrowAllowed: worldCoprocessorSceneSliceTruthBorrowAllowed,
-      step13PlanningKeepDropConflictPolicyVersion: step13PlanningKeepDropConflictPolicyVersion,
-      step13PlanningConflictSourcePolicyVersions: step13PlanningConflictSourcePolicyVersions.slice(),
-      step13PlanningConflictEvaluationOrder: step13PlanningConflictEvaluationOrder.slice(),
-      step13PlanningConflictBlockedTargets: step13PlanningConflictBlockedTargets.slice(),
-      step13PlanningBeatPlannerConflictAction: step13PlanningBeatPlannerConflictAction,
-      step13PlanningScenePilotConflictAction: step13PlanningScenePilotConflictAction,
-      step13PlanningSettingFrameConflictAction: step13PlanningSettingFrameConflictAction,
-      step13PlanningConflictTruthFloorFallback: step13PlanningConflictTruthFloorFallback,
-      step13PlanningConflictAllowedDeliverySurfaces: step13PlanningConflictAllowedDeliverySurfaces.slice(),
-      step13PlanningMonolithGuardPolicyVersion: step13PlanningMonolithGuardPolicyVersion,
-      step13PlanningMonolithGuardMode: step13PlanningMonolithGuardMode,
-      step13PlanningMonolithGuardLaneNames: step13PlanningMonolithGuardLaneNames.slice(),
-      step13PlanningMonolithGuardForbiddenShapes: step13PlanningMonolithGuardForbiddenShapes.slice(),
-      step13PlanningMonolithGuardRequiredDeliverySurfaces: step13PlanningMonolithGuardRequiredDeliverySurfaces.slice(),
-      step13PlanningMonolithGuardDefaultAction: step13PlanningMonolithGuardDefaultAction,
-      step13NamingGatePolicyVersion: step13NamingGatePolicyVersion,
-      step13NamingGateMode: step13NamingGateMode,
-      step13NamingGateLegacyRenameScope: step13NamingGateLegacyRenameScope,
-      step13NamingGateReviewScope: step13NamingGateReviewScope.slice(),
-      step13NamingGateSourceDraft: step13NamingGateSourceDraft,
-      step13NamingGateApprovedLabelsByPhase: {
-        planning: step13NamingGateApprovedLabelsByPhase.planning.slice(),
-        governor: step13NamingGateApprovedLabelsByPhase.governor.slice(),
-        portability: step13NamingGateApprovedLabelsByPhase.portability.slice(),
-      },
-      step13NamingGateReviewedFunctionNames: step13NamingGateReviewedFunctionNames.slice(),
-      step13NamingGateReviewedHelperNames: step13NamingGateReviewedHelperNames.slice(),
-      step13NamingGateBlockedLegacyValues: step13NamingGateBlockedLegacyValues.slice(),
-      step13NamingGateApprovalRule: step13NamingGateApprovalRule,
-      step13NamingGateRuntimeAction: step13NamingGateRuntimeAction,
-      step13ValidationGatePolicyVersion: step13ValidationGatePolicyVersion,
-      step13ValidationGateMode: step13ValidationGateMode,
-      step13ValidationGateInheritedModuleTakeoverPolicyVersion: step13ValidationGateInheritedModuleTakeoverPolicyVersion,
-      step13ValidationGateRequiredSignals: step13ValidationGateRequiredSignals.slice(),
-      step13ValidationGateSliceOrder: step13ValidationGateSliceOrder.slice(),
-      step13ValidationGateDefaultState: step13ValidationGateDefaultState,
-      step13ValidationGateRuntimeAction: step13ValidationGateRuntimeAction,
-      step13ValidationGatePolicyVersionsBySlice: {
-        portability: step13PortabilityValidationPolicyVersions.slice(),
-        reembed: step13ReembedValidationPolicyVersions.slice(),
-        governor: step13GovernorValidationPolicyVersions.slice(),
-        token_budget: step13TokenValidationPolicyVersions.slice(),
-        planning: step13PlanningValidationPolicyVersions.slice(),
-      },
-      step13ValidationGateDefaultsBySlice: {
-        portability: Object.assign({}, step13ValidationGateDefaultsBySlice.portability),
-        reembed: Object.assign({}, step13ValidationGateDefaultsBySlice.reembed),
-        governor: Object.assign({}, step13ValidationGateDefaultsBySlice.governor),
-        token_budget: Object.assign({}, step13ValidationGateDefaultsBySlice.token_budget),
-        planning: Object.assign({}, step13ValidationGateDefaultsBySlice.planning),
-      },
-      budgetLimit: budgetLimit,
-      budgetLimitSource: budgetLimitSource,
-      manualBudgetLimit: manualBudgetLimit,
-      automaticBudgetLimit: automaticBudgetLimit,
-      automaticBudgetCap: automaticBudgetCap,
-      userExtraBudgetChars: userExtraBudgetChars,
-      userBudgetCeilingChars: budgetLimit,
-      runtimeAdaptiveBudgetApplied: runtimeBudgetAdaptiveEligible,
-      runtimeTokenSmoothingApplied: runtimeTokenSmoothingApplied,
-      runtimeTokenSmoothingWindow: runtimeTokenSmoothingWindow,
-      hardFloorApplied: hardFloorReserveTotalChars > 0,
-      hardFloorShareCap: hardFloorShareCap,
-      hardFloorScale: Number(hardFloorScale.toFixed(4)),
-      hardFloorReserveTotalChars: hardFloorReserveTotalChars,
-      hardFloorRemainingChars: hardFloorRemainingChars,
-      residualSupportBudgetChars: Math.max(0, budgetLimit - hardFloorReserveTotalChars),
-      truthFloorBudgetReservedTokens: step13TokenTruthFloorTotalMinTokens,
-      hardFloorLabels: Object.keys(hardFloorTargetChars)
-        .filter(function(label) { return Number(hardFloorTargetChars[label] || 0) > 0; })
-        .map(function(label) {
-          return {
-            label: label,
-            ratio: Number((hardFloorRatios[label] || 0).toFixed(4)),
-            chars: Number(hardFloorTargetChars[label] || 0),
-            tokens: Number(step13TokenTruthFloorMinTokensByLabel[label] || 0),
-          };
-        }),
-      collisionPolicy: sagaCollisionProtectionEnabled ? "saga_floor_reserve_v0d" : "none",
-      contextProfile: contextProfile,
-      contextProfileSource: contextProfileSource,
-      runtimeCurrentChatTokens: Number.isFinite(Number(runtimeTokenHint)) ? Math.max(0, Math.floor(Number(runtimeTokenHint))) : 0,
-      runtimeCurrentChatTokensEffective: runtimeBudgetAdaptiveEligible ? runtimeTokensForTiering : 0,
-      runtimeTokenSource: runtimeTokenSourceHint || null,
-      memoryRatioApplied: Number(memRatio.toFixed(4)),
-      characterRatioApplied: Number(characterRatio.toFixed(4)),
-      pendingThreadRatioApplied: Number(pendingThreadRatio.toFixed(4)),
-      helperGovernor: {
-        policyVersion: helperGovernorPolicyVersion,
-        mode: helperGovernorEnabled ? "turn_need_risk_residual_governor" : "legacy_static_ratio_fallback",
-        profile: helperGovernorProfile,
-        needSignals: helperGovernorNeedSignals.slice(),
-        riskSignals: helperGovernorRiskSignals.slice(),
-        highNeedCount: helperGovernorHighNeedCount,
-        highRiskCount: helperGovernorHighRiskCount,
-        baseBudgetChars: helperGovernorBaseBudgetChars,
-        floorBudgetChars: helperGovernorFloorBudgetChars,
-        ceilingBudgetChars: helperGovernorCeilingBudgetChars,
-        targetBudgetChars: helperGovernorTargetBudgetChars,
-        deliveredBudgetChars: Math.max(0, helperGovernorTargetBudgetChars - Number(helperGovernorSupportState.remaining || 0)),
-        unusedBudgetChars: Math.max(0, Number(helperGovernorSupportState.remaining || 0)),
-        residualBudgetChars: helperGovernorResidualBudgetChars,
-        legacyStaticBudgetChars: helperGovernorResidualBudgetChars,
-        adaptiveBudgetDeltaChars: helperGovernorTargetBudgetChars - helperGovernorResidualBudgetChars,
-        conservativeShrinkApplied: helperGovernorConservativeShrinkApplied,
-        dedupeFirstTrimOrder: helperGovernorTrimOrder.slice(),
-        dedupeSuppressedLabels: helperGovernorDedupeSuppressedLabels.slice(),
-        redistributionMode: "unused_support_floor_spills_forward_by_precedence",
-        laneOrder: helperGovernorLaneOrder.slice(),
-        laneConfigs: helperGovernorLaneOrder.reduce(function(acc, label) {
-          if (helperGovernorLaneConfigs[label] && helperGovernorLaneConfigs[label].active) {
-            acc[label] = {
-              floorRatio: helperGovernorLaneConfigs[label].floorRatio,
-              floorChars: helperGovernorLaneConfigs[label].floorChars,
-              ceilingRatio: helperGovernorLaneConfigs[label].ceilingRatio,
-              ceilingChars: helperGovernorLaneConfigs[label].ceilingChars,
-            };
-          }
-          return acc;
-        }, {}),
-      },
-      oldArcForegroundGuard: {
-        policyVersion: oldArcForegroundPolicyVersion,
-        mode: oldArcForegroundMode,
-        decisionVocabulary: {
-          actions: oldArcForegroundDecisionVocabulary.actions.slice(),
-          reasons: oldArcForegroundDecisionVocabulary.reasons.slice(),
-        },
-        suppressionTriggerActive: !!helperGovernorExplicitRedirection,
-        sceneEvidenceSources: [
-          String(activeStateText || "").trim() ? "active_state" : "",
-          String(latestDirectEvidenceText || "").trim() ? "latest_direct_evidence" : "",
-          String(recentRawTurnText || "").trim() ? "recent_raw_turn" : "",
-        ].filter(Boolean),
-        decisionCounts: {
-          keep: oldArcForegroundDecisions.filter(function(entry) { return entry && entry.action === "keep"; }).length,
-          demote: oldArcForegroundDecisions.filter(function(entry) { return entry && entry.action === "demote"; }).length,
-          suppress: oldArcForegroundDecisions.filter(function(entry) { return entry && entry.action === "suppress"; }).length,
-          drop: oldArcForegroundDecisions.filter(function(entry) { return entry && entry.action === "drop"; }).length,
-        },
-        ceilingCharsByLabel: {
-          storylines: oldArcForegroundCeilingChars.storylines,
-          pending_threads: oldArcForegroundCeilingChars.pending_threads,
-        },
-        decisions: oldArcForegroundDecisions.slice(),
-        decisionByLabel: Object.assign({}, oldArcForegroundByLabel),
-      },
-      sagaReserveChars: sagaCollisionProtectionEnabled ? sagaReserveChars : 0,
-      episodeRatio: episodeRatio,
-      chapterRatio: chapterRatio,
-      sagaRatio: sagaRatio,
-    };
-
-    if (blocks.length === 0) {
-      return { finalText: "", blocks: [], trimmed: [], totalChars: 0, budgetLimit, budgetPolicy };
-    }
-
-    // 조립: 읽기 쉬운 auxiliary 텍스트
-    const parts = [];
-    for (const b of blocks) {
-      if (b.label === "latest_direct_evidence") {
-        parts.push("━━ Latest Direct Evidence ━━" + "\n" + b.text);
-      } else if (b.label === "recent_raw_turn") {
-        parts.push("━━ Recent Raw Turn ━━" + "\n" + b.text);
-      } else if (b.label === "active_state") {
-        parts.push(b.text); // 이미 헤더 포함됨 (formatActiveStateBlock에서)
-      } else if (b.label === "canonical_state_layer") {
-        parts.push("━━ Canonical State Layer ━━" + "\n" + b.text);
-      } else if (b.label === "storylines") {
-        parts.push("━━ Ongoing Storylines ━━" + "\n" + b.text);
-      } else if (b.label === "characters") {
-        parts.push("━━ Character States ━━" + "\n" + b.text);
-      } else if (b.label === "character_private_recollection") {
-        parts.push(b.text);
-      } else if (b.label === "persona_recollection") {
-        parts.push(b.text);
-      } else if (b.label === "location_context") {
-        parts.push("━━ Location Info ━━" + "\n" + b.text);
-      } else if (b.label === "narrative_guide") {
-        parts.push("━━ Narrative Guide ━━\n" + b.text);
-      } else if (b.label === "world_context") {
-        parts.push("━━ World Context ━━" + "\n" + b.text);
-      } else if (b.label === "pending_threads") {
-        parts.push("━━ Open Threads ━━" + "\n" + b.text);
-      } else if (b.label === "memories") {
-        parts.push("━━ Related Memories ━━" + "\n" + b.text);
-      } else if (b.label === "kg_relations") {
-        parts.push("━━ Relationship Info ━━" + "\n" + b.text);
-      } else if (b.label === "wake_up") {
-        parts.push("━━ Background Context ━━" + "\n" + b.text);
-      } else if (b.label === "episode") {
-        parts.push("━━ Past Summaries ━━" + "\n" + b.text);
-            } else if (b.label === "chapter") {
-        parts.push("━━ Chapter Recall ━━" + "\n" + b.text);
-      } else if (b.label === "arc") {
-        parts.push("━━ Arc Digest ━━" + "\n" + b.text);
-      } else if (b.label === "saga") {
-        parts.push("━━ Saga Chronicle ━━" + "\n" + b.text);
-      } else if (b.label === "fallback") {
-        parts.push("━━ Past Chat Reference ━━" + "\n" + b.text);
-      }
-    }
-    const finalText = parts.join("\n\n");
-    return { finalText, blocks, trimmed, totalChars: finalText.length, budgetLimit, budgetPolicy };
-  }
-
   /**
    * Sprint 3-B: 실제 payload에 auxiliary block을 주입한다.
    * system 메시지 바로 뒤에 auxiliary 메시지를 삽입하거나,
@@ -36029,40 +30944,6 @@
   }
 
   /**
-   * Sprint 4-B-2: Input Context를 마지막 user 메시지 직전에 삽입한다.
-   * 유저 메시지 자체는 절대 수정하지 않는다.
-   * 실패 시 원본 payload를 그대로 반환한다.
-   */
-  function injectInputContextBeforeUser(payload, inputContextText) {
-    try {
-      if (!inputContextText) return payload;
-      const { messages, rebuild } = extractMessages(payload);
-      if (!messages || messages.length === 0) return payload;
-
-      // 마지막 user 메시지 인덱스 찾기
-      let lastUserIdx = -1;
-      for (let i = messages.length - 1; i >= 0; i--) {
-        if (getPayloadMessageRoleAndText(messages[i]).role === "user") {
-          lastUserIdx = i;
-          break;
-        }
-      }
-      if (lastUserIdx < 0) return payload;
-
-      const icMessage = {
-        role: "system",
-        content: "[Archive Center — Input Context]\n\n" + inputContextText,
-      };
-
-      const newMessages = [...messages];
-      newMessages.splice(lastUserIdx, 0, icMessage);
-      return rebuild(newMessages);
-    } catch {
-      return payload;
-    }
-  }
-
-  /**
    * Sprint 3-B: onBeforeRequest에서 호출할 전체 injection 파이프라인.
    * orchestration 결과를 받아 payload를 수정한다.
    * 반환: { payload, injectionResult } — injectionResult는 trace/transparency용
@@ -36075,7 +30956,7 @@
     emptyResult.primaryCanonBaseConfiguredBudget = Number(settings.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars);
     // 3.4-D/E: Go가 확정한 payload_application_plan.v1만 적용한다.
     // 계획이 없거나 준비되지 않았으면 기존 RisuAI payload를 그대로 통과시키며
-    // JavaScript가 기억·원작·안내·Input Context를 다시 조립하지 않는다.
+    // JavaScript가 기억·원작·안내를 다시 조립하지 않는다.
     return applyGoPayloadApplicationPlan(payload, orchResult, emptyResult);
   }
 
@@ -36201,19 +31082,11 @@
       const messages = Array.isArray(extracted.messages) ? extracted.messages : [];
       const expected = [];
       const auxiliaryText = String(plan && plan.auxiliary_text || "");
-      const inputContextText = String(plan && plan.input_context_text || "");
       if (auxiliaryText) {
         expected.push({
           key: "auxiliary_context",
           text: "[Archive Center — Auxiliary Context]\n\n" + auxiliaryText,
           plannedHash: plan.auxiliary_observation_hash || null,
-        });
-      }
-      if (inputContextText) {
-        expected.push({
-          key: "input_context",
-          text: "[Archive Center — Input Context]\n\n" + inputContextText,
-          plannedHash: plan.input_context_observation_hash || null,
         });
       }
       const blocks = expected.map(function(block) {
@@ -36313,7 +31186,6 @@
       }
 
       const auxiliaryText = String(plan.auxiliary_text || "");
-      const inputContextText = String(plan.input_context_text || "");
       let finalPayload = payload;
       let injected = false;
       let placement = null;
@@ -36323,10 +31195,6 @@
         injected = !!applied.injected;
         placement = applied.placement || null;
       }
-      let inputContextApplied = false;
-      if (inputContextText) {
-        finalPayload = injectInputContextBeforeUser(finalPayload, inputContextText);
-      }
       const payloadApplicationObservation = observeGoPayloadApplication(
         finalPayload,
         plan,
@@ -36335,9 +31203,6 @@
       const observedBlocks = Array.isArray(payloadApplicationObservation.blocks) ? payloadApplicationObservation.blocks : [];
       injected = auxiliaryText
         ? observedBlocks.some(function(block) { return block && block.key === "auxiliary_context" && block.status === "applied"; })
-        : false;
-      inputContextApplied = inputContextText
-        ? observedBlocks.some(function(block) { return block && block.key === "input_context" && block.status === "applied"; })
         : false;
       if (orchResult && typeof orchResult === "object") {
         orchResult._payloadApplicationObservation = payloadApplicationObservation;
@@ -36389,8 +31254,8 @@
         : null;
       const result = {
         ...emptyResult,
-        status: injected || inputContextApplied ? "applied" : "empty",
-        applied: injected || inputContextApplied,
+        status: injected ? "applied" : "empty",
+        applied: injected,
         injectionTextSource: "go_payload_application_plan.v1",
         totalChars: Number(plan.auxiliary_chars || auxiliaryText.length),
         budgetLimit: lanes.reduce(function(total, lane) { return total + Number(lane && lane.budget_chars || 0); }, 0),
@@ -36407,11 +31272,11 @@
         referenceIncluded: !!(laneByKey.original_work && laneByKey.original_work.applied),
         directiveIncluded: !!(laneByKey.output_guidance && laneByKey.output_guidance.applied),
         inputContext: {
-          applied: inputContextApplied,
-          text: inputContextText,
-          chars: Number(plan.input_context_chars || inputContextText.length),
-          source: "go_payload_application_plan.v1",
-          contentHash: plan.input_context_hash || null,
+          applied: false,
+          text: "",
+          chars: 0,
+          source: "risu_host_recent_chat",
+          contentHash: null,
         },
         payloadApplicationPlan: plan,
         guidanceApplicationTrace: guidanceTrace,
@@ -36513,15 +31378,23 @@
     try {
       if (typeof content === "string") return content;
       if (Array.isArray(content)) {
-        return content.map(function(part) {
-          if (typeof part === "string") return part;
-          if (part && typeof part === "object") {
-            return String(part.text || part.content || part.value || JSON.stringify(part));
-          }
-          return String(part || "");
-        }).join("\n");
+		return content.map(function(part) {
+		  if (typeof part === "string") return part;
+		  if (part && typeof part === "object") {
+			for (const value of [part.text, part.content, part.value]) {
+			  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+			}
+			return "";
+		  }
+		  return typeof part === "number" || typeof part === "boolean" ? String(part) : "";
+		}).filter(function(part) { return part !== ""; }).join("\n");
       }
-      if (content && typeof content === "object") return JSON.stringify(content);
+	  if (content && typeof content === "object") {
+		for (const value of [content.text, content.content, content.value]) {
+		  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return String(value);
+		}
+		return "";
+	  }
       return String(content || "");
     } catch {
       return "";
@@ -36839,7 +31712,7 @@
           requestType: "model",
         });
         debugLog("post-output final replacement completed:", result);
-        if (panelOpen) await safeCall(() => renderSettingsPanel(), undefined, "renderPostOutputReplacementCompleted");
+        if (panelOpen) await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "renderPostOutputReplacementCompleted");
       }).catch(function(err) {
         warnLog("post-output final replacement failed:", err && err.message);
         updateRuntimeState("lastSaveStatus", "warn", { detail: "후처리 요청은 새 턴으로 저장하지 않음", reason: "post_output_replace_error" });
@@ -37077,9 +31950,6 @@
     }
   }
 
-  function buildBlockedPayload(payload, blockedReason) {
-    return payload;
-  }
 
   function rewriteLastUserMessage(payload, nextUserInput) {
     try {
@@ -37306,7 +32176,8 @@
           debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
       }
-      await captureAssistantPrefillSeedForSession(orchSessionId, messages);
+
+     await captureAssistantPrefillSeedForSession(orchSessionId, messages);
       await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
@@ -38106,6 +32977,8 @@
               mainInjectionPreview: injectionResult.mainInjectionPreview || "",
               referenceInjectionPreview: injectionResult.referenceInjectionPreview || "",
               guidanceInjectionPreview: injectionResult.guidanceInjectionPreview || "",
+              payloadApplicationPlan: injectionResult.payloadApplicationPlan || null,
+              payloadApplicationObservation: injectionResult.payloadApplicationObservation || null,
               memoryDeliveryPlan: injectionResult.memoryDeliveryPlan || null,
               blocks: injectionResult.blocks || [],
               trimmed: injectionResult.trimmed || [],
@@ -38158,15 +33031,24 @@
         }
       }
 
-      const _finalPayloadParityEffectiveInput = (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency)
-        ? composeEffectiveInputFromTransparency(lastOrchResult._trace._inputTransparency)
+      const _finalPayloadTransparency = lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency
+        ? lastOrchResult._trace._inputTransparency
+        : null;
+      const _finalPayloadBackendPreview = _finalPayloadTransparency && isBackendEffectiveInputPreview(_finalPayloadTransparency.backendEffectiveInputPreview)
+        ? _finalPayloadTransparency.backendEffectiveInputPreview
+        : null;
+      let _finalPayloadEffectiveUserInput = _finalPayloadBackendPreview && typeof _finalPayloadBackendPreview.final_user_text === "string"
+        ? _finalPayloadBackendPreview.final_user_text
+        : "";
+      const _finalPayloadParityEffectiveInput = _finalPayloadTransparency
+        ? composeEffectiveInputFromTransparency(_finalPayloadTransparency)
         : "";
       if (payloadMutated) {
         attachFinalPayloadParityTrace(lastOrchResult && lastOrchResult._trace, payload, outgoingPayload, {
           chatSessionId: orchSessionId,
           requestType: type,
           userInputSource: lastOrchResult && lastOrchResult._userInputSource,
-          effectiveUserInput: lastOrchResult && lastOrchResult._userInput,
+          effectiveUserInput: _finalPayloadEffectiveUserInput,
           payloadMutated: true,
           applyMode: lastOrchResult && lastOrchResult._trace ? lastOrchResult._trace.applyMode : null,
           injectionResult: lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency ? lastOrchResult._trace._inputTransparency.injection : null,
@@ -38199,7 +33081,7 @@
         chatSessionId: orchSessionId,
         requestType: type,
         userInputSource: lastOrchResult && lastOrchResult._userInputSource,
-        effectiveUserInput: lastOrchResult && lastOrchResult._userInput,
+        effectiveUserInput: _finalPayloadEffectiveUserInput,
         payloadMutated: false,
         applyMode: lastOrchResult && lastOrchResult._trace ? lastOrchResult._trace.applyMode : null,
         injectionResult: lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency ? lastOrchResult._trace._inputTransparency.injection : null,
@@ -38404,7 +33286,7 @@
         }
         clearEffectiveInputAwaitingForRequest();
         if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderNonModel");
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderNonModel");
         }
         debugLog("afterRequest: skip save for type:", type);
         return responseReturnContent;
@@ -38568,7 +33450,7 @@
           debugLog("active chat backfill after missing input failed:", err && err.message);
         });
         if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderUserInputMissing");
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderUserInputMissing");
         }
         debugLog("[M-4c] user input missing; skip complete-turn before advancing turn counter");
         return responseReturnContent ?? "";
@@ -38757,7 +33639,7 @@
           clearEffectiveInputAwaitingForRequest();
           lastOrchResult = null;
           if (panelOpen) {
-            await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderStaleAssistantReplay");
+            await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderStaleAssistantReplay");
           }
           debugLog("[M-4c] stale assistant replay blocked before complete-turn save");
             return responseReturnContent ?? "";
@@ -38797,7 +33679,7 @@
           evidence: { capture: "assistant_content_missing" },
         }).catch(function() {});
         if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderAssistantMissing");
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderAssistantMissing");
         }
         debugLog("[M-4c] assistant content missing; skip empty assistant persistence and complete fallback");
         return responseReturnContent ?? "";
@@ -38845,12 +33727,36 @@
         clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderDuplicatePairReplay");
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderDuplicatePairReplay");
         }
         debugLog("[M-4c] duplicate complete-turn pair skipped; existing turn:", duplicateTurnIndex);
         return responseReturnContent ?? "";
       }
-      turnIdx = await reserveAfterRequestPersistenceTurnIndex(chatSessionId, safeSavedUserInput, persistedAssistantContent);
+      turnIdx = await reserveAfterRequestPersistenceTurnIndex(
+        chatSessionId,
+        safeSavedUserInput,
+        persistedAssistantContent,
+        sourceAcceptanceFinality,
+      );
+      if (!Number.isFinite(Number(turnIdx)) || Number(turnIdx) < 1) {
+        const routingSkipReason = "session_routing_turn_ownership_not_admitted";
+        updateRuntimeState("lastSaveStatus", "skipped", { turnIndex: 0, detail: routingSkipReason });
+        updateRuntimeState("lastCompleteStatus", "skipped", { turnIndex: 0, detail: routingSkipReason });
+        updateRuntimeState("lastCompleteTurnStatus", "off", {
+          turnIndex: 0,
+          source: "backend",
+          detail: routingSkipReason,
+          failReasons: [routingSkipReason],
+        });
+        clearPersistencePendingContext();
+        clearEffectiveInputAwaitingForRequest();
+        lastOrchResult = null;
+        if (panelOpen) {
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderRoutingOwnershipSkip");
+        }
+        debugLog("[M-4c] complete-turn skipped by backend turn ownership");
+        return responseReturnContent ?? "";
+      }
       const persistenceGate = buildMainNarrativePersistenceGateDecision(type, {
         assistantContent: persistedAssistantContent,
         displayContent,
@@ -38879,7 +33785,7 @@
         clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
-          await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRenderPersistenceGate");
+          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderPersistenceGate");
         }
         debugLog("[persistence-gate] skip auxiliary/non-main output:", gateDetail, "type:", type);
         return responseReturnContent ?? "";
@@ -39526,7 +34432,7 @@
       fireMaintenancePass(persistedTurnIdx, chatSessionId, persistedAssistantContent, lastTurnTrace, _recentAssistantResponses);
 
       if (panelOpen) {
-        await safeCall(() => renderSettingsPanel(), undefined, "afterRequestRender");
+        await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRender");
       }
       return responseReturnContent;
       }
@@ -39552,7 +34458,7 @@
     sessions: [],
     selectedSessionId: null,  // null = 아직 선택 안 됨 (현재 session 자동 반영)
     activeChatSessionId: null, // Sprint 2-G: 현재 활성 채팅의 session ID (explorer 필터와 별도)
-    activeTab: "chat_logs",   // "chat_logs" | "memories" | "direct_evidence" | "kg_triples" | "episodes" | "trust" | "world" | "entities"
+    activeTab: "chat_logs",   // "chat_logs" | "memories" | "direct_evidence" | "kg_triples" | "episodes" | "trust" | "world" | "entities" | "lorebook"
     hierarchySubTab: "episodes", // "episodes" | "chapters" | "arcs" | "sagas"
     chatLogs: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
     memories: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
@@ -39562,6 +34468,7 @@
     chapters: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
     arcs: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
     sagas: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
+    lorebook: { items: [], total: 0, offset: 0, hasMore: false, loading: false, error: "", scope: null, latestSnapshot: null, requestId: 0 },
     // I-3c: Trust Control tab state
     trust: {
       storylines: [], worldRules: [], hooks: [],
@@ -39722,6 +34629,17 @@
           synthetic_current: true,
         });
       }
+      const inspectionSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || "").trim();
+      if (inspectionSid && !timelineIsPlaceholderSessionId(inspectionSid) && !normalized.some((session) => String(session.chat_session_id || "") === inspectionSid)) {
+        const timelineSession = (_timelineState.sessions || []).find((session) => timelineSessionId(session) === inspectionSid);
+        normalized.unshift(timelineSession || {
+          chat_session_id: inspectionSid,
+          chat_logs_count: 0,
+          memories_count: 0,
+          kg_triples_count: 0,
+          last_activity: "",
+        });
+      }
       _explorer.sessions = normalized;
       normalizeExplorerSelectedSessionForActiveTab();
     } catch (err) {
@@ -39763,9 +34681,11 @@
       const sessions = explorerVisibleSessions();
       const selectedSid = _explorer.selectedSessionId || null;
       const liveSid = _explorer.activeChatSessionId || null;
+      const timelineSelectedSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || "") || null;
       const knownSessionIds = new Set(sessions.map(s => s && s.chat_session_id).filter(Boolean));
 
       if (selectedSid && !knownSessionIds.has(selectedSid)) {
+        if (selectedSid === timelineSelectedSid) return;
         _explorer.selectedSessionId = null;
         return;
       }
@@ -39775,10 +34695,6 @@
         return;
       }
     } catch { /* silent */ }
-  }
-
-  function shouldUseExplorerChatLogsFallback() {
-    return false;
   }
 
   function explorerChatLogsQuerySessionId() {
@@ -39833,8 +34749,15 @@
     const requestSid = explorerSessionId();
     try {
       const sid = requestSid;
+      if (!sid) {
+        state.items = [];
+        state.offset = 0;
+        state.total = 0;
+        state.hasMore = false;
+        return;
+      }
       const params = new URLSearchParams();
-      if (sid) params.set("chat_session_id", sid);
+      params.set("chat_session_id", sid);
       params.set("limit", String(EXPLORER_PAGE_SIZE));
       params.set("offset", String(state.offset));
       const result = await safeCall(
@@ -39871,8 +34794,17 @@
     const requestSid = explorerSessionId();
     try {
       const sid = requestSid;
+      if (!sid) {
+        state.items = [];
+        state.offset = 0;
+        state.total = 0;
+        state.hasMore = false;
+        state.stateCounts = null;
+        state.stateContract = null;
+        return;
+      }
       const params = new URLSearchParams();
-      if (sid) params.set("chat_session_id", sid);
+      params.set("chat_session_id", sid);
       params.set("limit", String(EXPLORER_PAGE_SIZE));
       params.set("offset", String(state.offset));
       const result = await safeCall(
@@ -39904,8 +34836,15 @@
     const requestSid = explorerSessionId();
     try {
       const sid = requestSid;
+      if (!sid) {
+        state.items = [];
+        state.offset = 0;
+        state.total = 0;
+        state.hasMore = false;
+        return;
+      }
       const params = new URLSearchParams();
-      if (sid) params.set("chat_session_id", sid);
+      params.set("chat_session_id", sid);
       params.set("limit", String(EXPLORER_PAGE_SIZE));
       params.set("offset", String(state.offset));
       const result = await safeCall(
@@ -39925,6 +34864,81 @@
     }
   }
 
+  async function explorerResolveLorebookReferenceScope(sessionId) {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return null;
+    const cached = _lorebookReferenceSync.lastScope;
+    if (cached && String(cached.chat_session_id || "") === sid) return cached;
+    let activeSid = String(_explorer.activeChatSessionId || "").trim();
+    if (!activeSid) {
+      const observed = String(await getCurrentChatSessionId() || "").trim();
+      if (observed && observed !== SESSION_FALLBACK) {
+        activeSid = observed;
+        _explorer.activeChatSessionId = observed;
+      }
+    }
+    if (!activeSid || activeSid !== sid) return null;
+    const scope = await observeLorebookReferenceScope(sid);
+    _lorebookReferenceSync.lastScope = scope;
+    return scope;
+  }
+
+  async function explorerFetchLorebook(reset = false) {
+    const state = _explorer.lorebook;
+    if (state.loading && !reset) return;
+    if (reset) {
+      state.items = [];
+      state.total = 0;
+      state.offset = 0;
+      state.hasMore = false;
+      state.error = "";
+      state.scope = null;
+      state.latestSnapshot = null;
+    }
+    const requestId = Number(state.requestId || 0) + 1;
+    state.requestId = requestId;
+    state.loading = true;
+    const requestSid = explorerSessionId() || String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+    try {
+      if (!requestSid) return;
+      const scope = await explorerResolveLorebookReferenceScope(requestSid);
+      if (state.requestId !== requestId || String(explorerSessionId() || _timelineState.selectedSessionId || _timelineState.sessionId || "") !== requestSid) return;
+      if (!scope) {
+        state.error = "scope_unavailable";
+        return;
+      }
+      const params = new URLSearchParams();
+      if (scope.character_index != null) params.set("character_index", String(scope.character_index));
+      if (scope.chat_index != null) params.set("chat_index", String(scope.chat_index));
+      params.set("enabled_modules_observed", scope.enabled_modules_observed === true ? "true" : "false");
+      canonicalLorebookReferenceModuleIds(scope.enabled_module_ids).forEach(function(moduleId) {
+        params.append("enabled_module_id", moduleId);
+      });
+      params.set("limit", String(EXPLORER_PAGE_SIZE));
+      params.set("offset", String(state.offset));
+      const result = await bridgeFetch(
+        "/sessions/" + encodeURIComponent(requestSid) + "/lorebook-reference/current?" + params.toString(),
+        { timeoutMs: getRequestTimeoutSettingMs() },
+      );
+      if (state.requestId !== requestId || String(explorerSessionId() || _timelineState.selectedSessionId || _timelineState.sessionId || "") !== requestSid) return;
+      if (!result || result.status !== "ok" || result.contract_version !== "lorebook_reference_current.viewmodel.v1" || !Array.isArray(result.items)) {
+        state.error = "read_unavailable";
+        return;
+      }
+      state.items = reset ? result.items : state.items.concat(result.items);
+      state.total = Number(result.total || 0);
+      state.offset = state.items.length;
+      state.hasMore = result.has_more === true;
+      state.scope = result.scope || scope;
+      state.latestSnapshot = result.latest_snapshot || null;
+      state.error = "";
+    } catch (err) {
+      if (state.requestId === requestId) state.error = String(err && err.message || "read_unavailable");
+    } finally {
+      if (state.requestId === requestId) state.loading = false;
+    }
+  }
+
   function explorerPagedStateForTab(tab) {
     if (tab === "chat_logs") return _explorer.chatLogs;
     if (tab === "memories") return _explorer.memories;
@@ -39934,6 +34948,7 @@
     if (tab === "chapters") return _explorer.chapters;
     if (tab === "arcs") return _explorer.arcs;
     if (tab === "sagas") return _explorer.sagas;
+    if (tab === "lorebook") return _explorer.lorebook;
     return null;
   }
 
@@ -39959,6 +34974,11 @@
     if (tab === "direct_evidence") {
       state.stateCounts = null;
       state.stateContract = null;
+    }
+    if (tab === "lorebook") {
+      state.error = "";
+      state.scope = null;
+      state.latestSnapshot = null;
     }
   }
 
@@ -40003,6 +35023,9 @@
     else if (tab === "entities") {
       await explorerFetchEntities();
     }
+    else if (tab === "lorebook") {
+      await explorerFetchLorebook(reset);
+    }
   }
 
   // ── Entities tab: fetch ──────────────────────────────────────────────────
@@ -40024,6 +35047,7 @@
 
   async function explorerFetchSelectedEntityMemoryItems() {
     const ent = _explorer.entities;
+    const requestSid = explorerSessionId();
     const bundle = explorerSelectedEntityMemoryBundle();
     if (!bundle) {
       ent.memoryItems = [];
@@ -40043,12 +35067,14 @@
         method: "GET",
         timeoutMs: getRequestTimeoutSettingMs(),
       });
+      if (explorerSessionId() !== requestSid) return;
       ent.memoryItems = data && Array.isArray(data.items) ? data.items : [];
     } catch (e) {
+      if (explorerSessionId() !== requestSid) return;
       ent.memoryItems = [];
       ent.memoryError = e && e.message ? e.message : String(e);
     }
-    ent.memoryLoading = false;
+    if (explorerSessionId() === requestSid) ent.memoryLoading = false;
   }
 
   async function explorerFetchEntities() {
@@ -40072,6 +35098,7 @@
         safeCall(() => bridgeFetch("/explorer/kg_triples?" + kgParams.toString(), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchKg"),
         safeCall(() => bridgeFetch("/subjective-entity-memories/entities?" + bundleParams.toString(), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchSubjectiveMemoryBundles"),
       ]);
+      if (explorerSessionId() !== sid) return;
 
       const rawChars = (charRes && Array.isArray(charRes.characters)) ? charRes.characters : [];
       ent.characters = _deduplicateCharacters(rawChars);
@@ -40111,9 +35138,10 @@
         ent.forceMergeKeys.clear();
       }
     } catch (e) {
+      if (explorerSessionId() !== sid) return;
       ent.error = String(e);
     }
-    ent.loading = false;
+    if (explorerSessionId() === sid) ent.loading = false;
   }
 
   function explorerFormatTemplate(template, values) {
@@ -40326,13 +35354,15 @@
         safeCall(() => bridgeFetch("/world-rules/" + encodeURIComponent(sid), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "trustFetchWorldRules"),
         safeCall(() => bridgeFetch("/pending-threads/" + encodeURIComponent(sid) + "?status=all", { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "trustFetchHooks"),
       ]);
+      if (explorerSessionId() !== sid) return;
       ts.storylines  = (slRes && Array.isArray(slRes.storylines))  ? slRes.storylines  : [];
       ts.worldRules  = (wrRes && Array.isArray(wrRes.items))       ? wrRes.items       : [];
       ts.hooks       = (hkRes && Array.isArray(hkRes.hooks))       ? hkRes.hooks       : [];
     } catch (e) {
+      if (explorerSessionId() !== sid) return;
       ts.error = String(e);
     }
-    ts.loading = false;
+    if (explorerSessionId() === sid) ts.loading = false;
   }
 
   // I-3c: Trust PATCH helper — PATCH /storylines/{id}/trust 등 호출
@@ -40378,6 +35408,7 @@
         () => bridgeFetch("/session/" + encodeURIComponent(sid) + "/active-scope"),
         null, "explorerFetchWorldGraph/scope"
       );
+      if (explorerSessionId() !== sid) return;
       if (scopeResult && scopeResult.status === "ok") {
         wg.activeScope  = scopeResult.active_scope || "root";
         wg.scopeName    = scopeResult.scope_name || null;
@@ -40390,6 +35421,7 @@
         () => bridgeFetch("/world-rules/" + encodeURIComponent(sid) + "/inherited"),
         null, "explorerFetchWorldGraph/rules"
       );
+      if (explorerSessionId() !== sid) return;
       if (rulesResult && rulesResult.status === "ok") {
         wg.rules      = rulesResult.rules || [];
         wg.scopeChain = rulesResult.scope_chain || [wg.activeScope];
@@ -40400,6 +35432,7 @@
         () => bridgeFetch("/world-rules/" + encodeURIComponent(sid), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }),
         null, "explorerFetchWorldGraph/allRules"
       );
+      if (explorerSessionId() !== sid) return;
       if (allRulesResult && Array.isArray(allRulesResult.items)) {
         const appliedIds = new Set((Array.isArray(wg.rules) ? wg.rules : []).map(r => Number(r.id)).filter(n => !Number.isNaN(n)));
         wg.allRules = allRulesResult.items.map(function(rule) {
@@ -40417,10 +35450,13 @@
         });
       }
     } catch (err) {
+      if (explorerSessionId() !== sid) return;
       wg.error = err.message || "불러오기 실패";
     } finally {
-      wg.loading = false;
-      refreshExplorerUI();
+      if (explorerSessionId() === sid) {
+        wg.loading = false;
+        refreshExplorerUI();
+      }
     }
   }
 
@@ -40452,10 +35488,59 @@
     }
   }
 
-  async function explorerChangeSession(sessionId) {
-    _explorer.selectedSessionId = sessionId || null;
-    _explorer.expandedItems.clear();
-    await explorerLoadTab(_explorer.activeTab, true);
+  async function explorerChangeSession(sessionId, reload = true) {
+    const nextSessionId = String(sessionId || "").trim();
+    const changed = String(_explorer.selectedSessionId || "") !== nextSessionId;
+    _explorer.selectedSessionId = nextSessionId || null;
+    if (changed) {
+      [
+        _explorer.chatLogs,
+        _explorer.memories,
+        _explorer.directEvidence,
+        _explorer.kgTriples,
+        _explorer.episodes,
+        _explorer.chapters,
+        _explorer.arcs,
+        _explorer.sagas,
+        _explorer.lorebook,
+      ].forEach((page) => {
+        page.items = [];
+        page.total = 0;
+        page.offset = 0;
+        page.hasMore = false;
+        page.loading = false;
+      });
+      _explorer.directEvidence.stateCounts = null;
+      _explorer.directEvidence.stateContract = null;
+      _explorer.lorebook.error = "";
+      _explorer.lorebook.scope = null;
+      _explorer.lorebook.latestSnapshot = null;
+      _explorer.viewModel = null;
+      _explorer.expandedItems.clear();
+      explorerCancelEdit();
+      explorerResetAllBatchDelete();
+      _explorer.episodeMergeSelection.clear();
+      _explorer.episodeOpStatus = null;
+      _explorer.trust.storylines = [];
+      _explorer.trust.worldRules = [];
+      _explorer.trust.hooks = [];
+      _explorer.trust.loading = false;
+      _explorer.worldGraph.rules = [];
+      _explorer.worldGraph.allRules = [];
+      _explorer.worldGraph.loading = false;
+      _explorer.entities.characters = [];
+      _explorer.entities.locations = [];
+      _explorer.entities.items = [];
+      _explorer.entities.memoryBundles = [];
+      _explorer.entities.selectedMemoryBundleKey = "";
+      _explorer.entities.memoryItems = [];
+      _explorer.entities.memoryLoading = false;
+      _explorer.entities.forceMergeKeys.clear();
+      _explorer.entities.loading = false;
+      _feedback.latest = {};
+      _feedback.status = {};
+    }
+    if (reload) await explorerLoadTab(_explorer.activeTab, true);
   }
 
   function explorerToggleExpand(type, id) {
@@ -40696,6 +35781,7 @@
       _timelineState.selectedSessionId = "";
       _timelineState.sessionId = "";
       _timelineState.detailItem = null;
+      _timelineState.detailLoading = false;
       _timelineState.detailError = "";
       _timelineSelectedDetail = null;
     } catch { /* no-op */ }
@@ -41975,14 +37061,16 @@
         if (!item || Number(item.observation_index) !== index || Number(item.turn_index) < 1) {
           throw new Error("session_routing_turn_resolution_invalid");
         }
+        const turnResolution = String(item.resolution || "normal");
+        if (turnResolution === "skip_pre_route_visible_pair") return null;
         return Object.assign({}, pair, {
           turnIndex: Number(item.turn_index),
           localTurnIndex: Number(item.local_turn_index || 0),
           turnIndexSource: String(item.source || "backend"),
+          turnResolution,
         });
-      });
-    }
-    if (pairs.length === 0 && Array.isArray(messages) && messages.length > 0 && dbRawMap.size > 0) {
+      }).filter(Boolean);
+    } else if (Array.isArray(messages) && messages.length > 0 && dbRawMap.size > 0) {
       const fallbackPairs = buildActiveChatRescanPairsFromDbRawFallback(messages, dbRawMap);
       if (fallbackPairs.length > 0) {
         pairs = fallbackPairs;
@@ -43179,8 +38267,11 @@
       if (fields.archive_room !== undefined) body.archive_room = fields.archive_room;
 
       const result = await bridgeFetch("/explorer/memories/" + memoryId, { method: "PATCH", body });
-      if (result && result.status === "ok") {
+      if (result && (result.status === "ok" || result.status === "partial_error") && Array.isArray(result.updated_fields)) {
         _explorer.editStatus = "success";
+        if (result.status === "partial_error") {
+          debugLog("Memory #" + memoryId + " was updated with a vector-sync warning:", result.vector_sync || result);
+        }
         debugLog("Memory #" + memoryId + " 수정 완료:", result.updated_fields);
         explorerCancelEdit();
         await explorerLoadTab("memories", true);
@@ -44955,30 +40046,6 @@
   // [DB EXPLORER — Sprint 2-E: RENDER]
   // ──────────────────────────────────────────────────────────────
 
-  function renderExplorerSessionsList() {
-    const model = _explorer.viewModel;
-    if (!model) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
-    const visibleSessions = Array.isArray(model.sessions) ? model.sessions : [];
-    if (_explorer.sessionsLoading && visibleSessions.length === 0) return '<div class="mo-note">' + t('explorer.sessions.loading') + '</div>';
-    if (visibleSessions.length === 0) return '<div class="mo-note">' + t('explorer.sessions.empty') + '</div>';
-
-    return visibleSessions.map(s => {
-      const sid = String(s.session_id || "");
-      const isSelected = !!s.selected;
-      const isLive = !!s.current;
-      const visibleLabel = getSessionDisplayLabel(sid, true);
-      const laneCounts = s.counts || {};
-      const counts = "logs:" + Number(laneCounts.chat_logs || 0) + " mem:" + Number(laneCounts.memories || 0) + " kg:" + Number(laneCounts.kg_triples || 0);
-      const cls = "mo-ex-session" + (isSelected ? " mo-ex-session-active" : "") + (isLive ? " mo-ex-session-live" : "");
-      return '<div class="' + cls + '" data-session-id="' + escapeAttr(sid) + '">' +
-        (isLive ? '<span class="mo-ex-live-badge" title="' + t('explorer.sessions.activeChatTooltip') + '">●</span>' : '') +
-        '<span class="mo-ex-session-id" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(visibleLabel) + '</span>' +
-        '<span class="mo-ex-session-counts">' + escapeAttr(counts) + '</span>' +
-        (s.last_activity ? '<span class="mo-ex-session-time">' + escapeAttr(formatDashboardTimestampLocal(s.last_activity)) + '</span>' : '') +
-      '</div>';
-    }).join("");
-  }
-
   function getExplorerTabItems() {
     const tabs = _explorer.viewModel && Array.isArray(_explorer.viewModel.tabs) ? _explorer.viewModel.tabs : [];
     return tabs.map(function(tab) {
@@ -44988,8 +40055,8 @@
 
   function renderExplorerTabs(tabItems) {
     const tabs = Array.isArray(tabItems) ? tabItems : getExplorerTabItems();
-    return '<div class="mo-ex-tabs">' + tabs.map(t =>
-      '<button class="mo-ex-tab' + (t.key === _explorer.activeTab ? " mo-ex-tab-active" : "") + '" data-tab="' + t.key + '">' +
+    return '<div class="mo-ex-tabs" role="tablist">' + tabs.map(t =>
+      '<button type="button" role="tab" aria-selected="' + (t.key === _explorer.activeTab ? "true" : "false") + '" class="mo-ex-tab' + (t.key === _explorer.activeTab ? " mo-ex-tab-active" : "") + '" data-tab="' + t.key + '">' +
       escapeAttr(t.label) + (t.count > 0 ? ' <span class="mo-ex-tab-count">' + t.count + '</span>' : '') +
       '</button>'
     ).join("") + '</div>';
@@ -45586,9 +40653,15 @@
     '</div>';
   }
 
+  function renderExplorerHistoryBadge(item) {
+    if (!item || (item.history_ownership !== "inherited" && item.history_ownership !== "current_branch")) return "";
+    const inherited = item.history_ownership === "inherited";
+    const label = inherited ? t('explorer.history.inherited') : t('explorer.history.currentBranch');
+    return '<span class="mo-ex-history-badge ' + (inherited ? 'is-inherited' : 'is-current') + '">' + escapeAttr(label) + '</span>';
+  }
+
   function renderExplorerChatLogs() {
     const state = _explorer.chatLogs;
-    const runtimeBanner = renderExplorerRuntimeTokenProfileBanner();
     const repairPanel = renderExplorerChatLogRepairPanel(_explorer.selectedSessionId || "");
     const chatLogBatchPlan = explorerIsBatchDeleteMode("chat_logs") ? explorerValidateChatLogBatchDeleteSelection() : { ok: true };
     const batchToolbar = renderExplorerBatchDeleteToolbar("chat_logs", {
@@ -45598,19 +40671,15 @@
       deleteDisabled: explorerIsBatchDeleteMode("chat_logs") && explorerGetBatchDeleteSelection("chat_logs").size > 0 && !chatLogBatchPlan.ok,
     });
     const selectedSid = _explorer.selectedSessionId || null;
-    const showingAllFallback = shouldUseExplorerChatLogsFallback();
-    if (state.loading && state.items.length === 0) return runtimeBanner + repairPanel + batchToolbar + '<div class="mo-note">' + t('explorer.chatLogs.loading') + '</div>';
+    if (state.loading && state.items.length === 0) return repairPanel + batchToolbar + '<div class="mo-note">' + t('explorer.chatLogs.loading') + '</div>';
     if (state.items.length === 0) {
-      return runtimeBanner + repairPanel + batchToolbar + '<div class="mo-note">' + t('explorer.chatLogs.empty') + '</div>';
+      return repairPanel + batchToolbar + '<div class="mo-note">' + t('explorer.chatLogs.empty') + '</div>';
     }
-
-    const fallbackBanner = showingAllFallback
-      ? '<div class="mo-note">현재 선택된 세션에는 chat_logs가 없어 전체 로그를 표시 중입니다. 선택 세션과 일치하는 row에서만 재생성/삭제가 활성화됩니다. <button class="mo-btn-toggle mo-ex-clear-filter">✕ 필터 해제</button></div>'
-      : '';
 
     const rows = state.items.map(item => {
       const expanded = explorerIsExpanded("log", item.id);
-      const sessionMatch = !!selectedSid && item.chat_session_id === selectedSid;
+      const sessionMatch = !!selectedSid && item.chat_session_id === selectedSid && item.mutation_allowed !== false;
+      const historyBadge = renderExplorerHistoryBadge(item);
       const userRow = item.user && typeof item.user === "object" ? item.user : null;
       const assistantRow = item.assistant && typeof item.assistant === "object" ? item.assistant : null;
       const complete = item.completeness === "complete";
@@ -45655,13 +40724,10 @@
         ? renderExplorerBatchDeleteCheckbox('chat_logs', explorerBuildBatchDeleteKey('turn', item.turn_index), 'turn ' + item.turn_index + ' 선택')
         : '';
 
-      const sidMeta = showingAllFallback
-        ? '<div class="mo-ex-item-meta">' + escapeAttr(getSessionDisplayLabel(item.chat_session_id, true)) + '</div>'
-        : '';
-
       return '<div class="mo-ex-item" data-expand-type="log" data-expand-id="' + item.id + '">' +
         '<div class="mo-ex-item-header">' +
           batchCheck +
+          historyBadge +
           '<span class="mo-it-role ' + roleClass + '">' + escapeAttr(statusLabel) + '</span>' +
           '<span class="mo-ex-item-turn">turn ' + (item.turn_index ?? "?") + '</span>' +
           '<span class="mo-ex-item-id">#' + item.id + '</span>' +
@@ -45670,7 +40736,6 @@
           deleteBtn +
           '<span class="mo-ex-expand-btn">' + (expanded ? t('explorer.expand.collapse') : t('explorer.expand.expand')) + '</span>' +
         '</div>' +
-        sidMeta +
         body +
       '</div>';
     }).join("");
@@ -45682,7 +40747,7 @@
       footer = '<div class="mo-note">' + t('explorer.allLoaded').replace('{n}', state.total) + '</div>';
     }
 
-    return runtimeBanner + repairPanel + batchToolbar + fallbackBanner + rows + footer;
+    return repairPanel + batchToolbar + rows + footer;
   }
 
   function renderExplorerMemories() {
@@ -45704,7 +40769,8 @@
       const meta = [impLabel + (boostLabel ? " " + boostLabel : ""), emoLabel, wingRoom, embModel ? "emb:" + embModel : ""].filter(Boolean).join(" · ");
 
       // sessionMatch: 현재 선택된 session과 row의 session이 같아야 편집 허용
-      const sessionMatch = canEdit && item.chat_session_id === _explorer.selectedSessionId;
+      const sessionMatch = canEdit && item.chat_session_id === _explorer.selectedSessionId && item.mutation_allowed !== false;
+      const historyBadge = renderExplorerHistoryBadge(item);
 
       let body;
       if (isEditing) {
@@ -45804,7 +40870,7 @@
       }
 
       const editBtn = sessionMatch && !isEditing
-        ? '<span class="mo-ed-edit-btn" data-edit-type="mem" data-edit-id="' + item.id + '" title="' + t('explorer.btn.editTooltip') + '">✏️</span>'
+        ? '<button type="button" class="mo-ed-edit-btn" data-edit-type="mem" data-edit-id="' + item.id + '" title="' + t('explorer.btn.editTooltip') + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>'
         : '';
 
       const deleteBtn = sessionMatch && !isEditing
@@ -45832,6 +40898,7 @@
       return '<div class="mo-ex-item' + (isEditing ? " mo-ed-editing" : "") + '" data-expand-type="mem" data-expand-id="' + item.id + '">' +
         '<div class="mo-ex-item-header">' +
           batchCheck +
+          historyBadge +
           '<span class="mo-ex-item-turn">turn ' + (item.source_turn ?? "?") + '</span>' +
           (meta ? '<span class="mo-ex-item-meta">' + escapeAttr(meta) + '</span>' : '') +
           '<span class="mo-ex-item-id">#' + item.id + '</span>' +
@@ -45885,13 +40952,14 @@
       const stateLabel = item.normalized_archive_state || item.archive_state || 'unknown';
       const verification = item.normalized_capture_verification || item.capture_verification || 'unknown';
       const gate = item.normalized_committed_gate || item.committed_gate || '-';
-      const sessionMatch = !!_explorer.selectedSessionId && item.chat_session_id === _explorer.selectedSessionId;
+      const sessionMatch = !!_explorer.selectedSessionId && item.chat_session_id === _explorer.selectedSessionId && item.mutation_allowed !== false;
+      const historyBadge = renderExplorerHistoryBadge(item);
       const canRevalidate = !!item.repair_needed || bucket === 'repair_queue' || verification === 'needs_review' || verification === 'rejected' || gate === 'recovery';
       const canManage = sessionMatch && !isEditing;
 
       const actionButtons = canManage
         ? (
-          '<span class="mo-ed-edit-btn" data-edit-type="de" data-edit-id="' + item.id + '" title="' + t('explorer.directEvidence.editTooltip') + '">✏️</span>' +
+          '<button type="button" class="mo-ed-edit-btn" data-edit-type="de" data-edit-id="' + item.id + '" title="' + t('explorer.directEvidence.editTooltip') + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>' +
           '<span class="mo-ed-edit-btn mo-de-action-btn" data-de-action="review_verified" data-de-id="' + item.id + '" title="' + t('explorer.directEvidence.reviewVerifiedTooltip') + '">✅</span>' +
           '<span class="mo-ed-edit-btn mo-de-action-btn" data-de-action="review_needs_review" data-de-id="' + item.id + '" title="' + t('explorer.directEvidence.reviewNeedsReviewTooltip') + '">🛠️</span>' +
           (canRevalidate
@@ -45958,6 +41026,7 @@
       return '<div class="mo-ex-item" data-expand-type="de" data-expand-id="' + item.id + '">' +
         '<div class="mo-ex-item-header">' +
           batchCheck +
+          historyBadge +
           '<span class="mo-ex-item-turn">' + escapeAttr(turnLabel) + '</span>' +
           '<span class="mo-ex-item-meta">' + escapeAttr(item.evidence_kind || 'evidence') + '</span>' +
           '<span class="mo-ex-item-meta">bucket:' + escapeAttr(bucket) + '</span>' +
@@ -45997,7 +41066,8 @@
       const validity = (item.valid_from != null ? "from:" + item.valid_from : "") +
         (item.valid_to != null ? " to:" + item.valid_to : (item.valid_from != null ? " (" + t('explorer.kg.currentlyValid') + ")" : ""));
 
-      const sessionMatch = canEdit && item.chat_session_id === _explorer.selectedSessionId;
+      const sessionMatch = canEdit && item.chat_session_id === _explorer.selectedSessionId && item.mutation_allowed !== false;
+      const historyBadge = renderExplorerHistoryBadge(item);
 
       let body = '';
       if (isEditing) {
@@ -46057,7 +41127,7 @@
       }
 
       const editBtn = sessionMatch && !isEditing
-        ? '<span class="mo-ed-edit-btn" data-edit-type="kg" data-edit-id="' + item.id + '" title="' + t('explorer.btn.editTooltip') + '">✏️</span>'
+        ? '<button type="button" class="mo-ed-edit-btn" data-edit-type="kg" data-edit-id="' + item.id + '" title="' + t('explorer.btn.editTooltip') + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>'
         : '';
 
       const deleteBtn = sessionMatch && !isEditing
@@ -46085,6 +41155,7 @@
       return '<div class="mo-ex-item' + (isEditing ? " mo-ed-editing" : "") + '" data-expand-type="kg" data-expand-id="' + item.id + '">' +
         '<div class="mo-ex-item-header">' +
           batchCheck +
+          historyBadge +
           '<span class="mo-ex-kg-triple">' + escapeAttr(triple) + '</span>' +
           '<span class="mo-ex-item-id">#' + item.id + '</span>' +
           editBtn +
@@ -46264,7 +41335,7 @@
       let editBtn = '';
       let deleteBtn = '';
       if (canManage && !isEditing) {
-        editBtn = '<span class="mo-ep-edit-btn" data-ep-edit-id="' + item.id + '" title="에피소드 수정" style="cursor:pointer">✏️</span>';
+        editBtn = '<button type="button" class="mo-ed-edit-btn mo-ep-edit-btn" data-ep-edit-id="' + item.id + '" title="에피소드 수정">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>';
         deleteBtn = '<span class="mo-ep-del-btn" data-ep-del-id="' + item.id + '" title="에피소드 삭제" style="cursor:pointer">🗑️</span>';
       }
 
@@ -46456,15 +41527,17 @@
     state.loading = true;
     try {
       const result = await bridgeFetch("/episodes/" + encodeURIComponent(sid) + "?limit=30");
+      if (_explorer.selectedSessionId !== sid) return;
       if (result && result.status === "ok") {
         state.items = result.episodes || [];
         state.total = result.count || state.items.length;
         state.hasMore = false;  // 현재 API는 pagination 미지원 — 전체 반환
       }
     } catch (err) {
+      if (_explorer.selectedSessionId !== sid) return;
       debugLog("explorerFetchEpisodes error:", err.message);
     }
-    state.loading = false;
+    if (_explorer.selectedSessionId === sid) state.loading = false;
   }
 
   function explorerHierarchyEndpoint(kind) {
@@ -47374,6 +42447,50 @@
       '</div>';
   }
 
+  function renderExplorerLorebook() {
+    const state = _explorer.lorebook;
+    if (state.loading && state.items.length === 0) {
+      return '<div class="mo-note">' + escapeAttr(t('explorer.lorebook.loading')) + '</div>';
+    }
+    if (state.error && state.items.length === 0) {
+      const errorText = state.error === "scope_unavailable"
+        ? t('explorer.lorebook.scopeUnavailable')
+        : t('explorer.lorebook.readFailed');
+      return '<div class="mo-note">' + escapeAttr(errorText) + '</div>';
+    }
+    if (state.items.length === 0) {
+      return '<div class="mo-note">' + escapeAttr(t('explorer.lorebook.empty')) + '</div>';
+    }
+    const rows = state.items.map(function(item, index) {
+      const ordinal = Number.isInteger(Number(item.entry_ordinal)) ? Number(item.entry_ordinal) : index;
+      const expanded = explorerIsExpanded("lore", ordinal);
+      const title = String(item.comment || item.key || ("#" + ordinal));
+      const content = String(item.content || "");
+      const preview = content.length > 180 ? content.slice(0, 177) + "..." : content;
+      const keywords = [item.key, item.second_key].map(function(value) { return String(value || "").trim(); }).filter(Boolean).join(" · ");
+      const meta = [item.folder, item.mode, item.source_kind].map(function(value) { return String(value || "").trim(); }).filter(Boolean);
+      const body = expanded
+        ? '<div class="mo-ex-item-full">' + escapeAttr(content || t('common.empty')) + '</div>'
+        : '<div class="mo-ex-item-preview">' + escapeAttr(preview || t('common.empty')) + '</div>';
+      return '<div class="mo-ex-item" data-expand-type="lore" data-expand-id="' + ordinal + '">' +
+        '<div class="mo-ex-item-header">' +
+          '<span class="mo-ex-item-turn">#' + ordinal + '</span>' +
+          '<strong>' + escapeAttr(title) + '</strong>' +
+          (keywords ? '<span class="mo-ex-item-meta">' + escapeAttr(keywords) + '</span>' : '') +
+          meta.map(function(value) { return '<span class="mo-ex-item-meta">' + escapeAttr(value) + '</span>'; }).join("") +
+          '<span class="mo-ex-expand-btn">' + (expanded ? t('explorer.expand.collapse') : t('explorer.expand.detail')) + '</span>' +
+        '</div>' + body +
+      '</div>';
+    }).join("");
+    let footer = '';
+    if (state.hasMore) {
+      footer = '<button class="mo-btn mo-btn-info mo-ex-more-btn" data-more-type="lorebook">' + t('explorer.loadMore') + ' (' + state.items.length + '/' + state.total + ')</button>';
+    } else if (state.total > 0) {
+      footer = '<div class="mo-note">' + t('explorer.allLoaded').replace('{n}', state.total) + '</div>';
+    }
+    return rows + footer;
+  }
+
   function renderExplorerContent() {
     if (_explorer.activeTab === "chat_logs") return renderExplorerChatLogs();
     if (_explorer.activeTab === "memories") return renderExplorerMemories();
@@ -47383,16 +42500,71 @@
     if (_explorer.activeTab === "trust") return renderExplorerTrust();
     if (_explorer.activeTab === "world") return renderExplorerWorldGraph();   // I-4d
     if (_explorer.activeTab === "entities") return renderExplorerEntities();
+    if (_explorer.activeTab === "lorebook") return renderExplorerLorebook();
     return '<div class="mo-note">탭을 선택하세요.</div>';
   }
 
-  function renderExplorerSection() {
+  // DOM-only projection of Go-owned session capabilities for the Memory management screen.
+  function renderSessionDatabaseManagement() {
+    const viewModel = _timelineState.viewModel && typeof _timelineState.viewModel === "object"
+      ? _timelineState.viewModel
+      : null;
+    const sessions = viewModel && Array.isArray(viewModel.sessions) ? viewModel.sessions : [];
+    const selectedSessionId = String(_explorer.selectedSessionId || _timelineState.selectedSessionId || _timelineState.sessionId || "");
+    const sessionOptionsHtml = sessions.length > 0 ? sessions.map(function(session) {
+      const sid = String(session.session_id || "");
+      const lifecycle = String(session.label || session.status || "");
+      const label = getSessionDisplayLabel(sid, false) || sid;
+      return '<option value="' + escapeAttr(sid) + '"' + (sid === selectedSessionId ? ' selected' : '') + '>' + escapeAttr(label + (lifecycle ? ' · ' + lifecycle : '')) + '</option>';
+    }).join("") : '<option value="">' + escapeAttr(_explorer.sessionsLoading ? t("timeline.note.loadingSessions") : t("timeline.note.noSessions")) + '</option>';
+    const selectedSession = sessions.find(function(session) { return String(session.session_id || "") === selectedSessionId; })
+      || sessions.find(function(session) { return !!session.selected; })
+      || null;
+    const selectedActionSessionId = String(selectedSession && selectedSession.session_id || selectedSessionId || "");
+    const attachBtn = selectedSession && selectedSession.can_attach
+      ? '<button type="button" class="mo-tl-session-attach" data-timeline-session-attach-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.attachTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.attachCurrent")) + '</button>'
+      : '';
+    const copyBtn = selectedSession && selectedSession.can_copy
+      ? '<button type="button" class="mo-tl-session-copy" data-timeline-session-copy-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.copyTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === selectedActionSessionId ? t("timeline.button.loading") : t("timeline.button.copy")) + '</button>'
+      : '';
+    const migrateBtn = selectedSession && selectedSession.can_migrate
+      ? '<button type="button" class="mo-tl-session-migrate" data-timeline-session-migrate-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.migrateTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === selectedActionSessionId ? t("timeline.button.loading") : t("timeline.button.migrate")) + '</button>'
+      : '';
+    const deleteBtn = selectedActionSessionId
+      ? '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button>'
+      : '';
+    const migrationStatusHtml = _sessionMigrationUi.status && _sessionMigrationUi.status !== "idle" && _sessionMigrationUi.message
+      ? '<div class="mo-status mo-status-' + escapeAttr(_sessionMigrationUi.status === "ok" ? "ok" : _sessionMigrationUi.status === "running" ? "wait" : "fail") + '">' + escapeAttr(_sessionMigrationUi.message) + '</div>'
+      : '';
+    const migrationOpsSourceId = String(_sessionMigrationUi.sourceSessionId || "").trim();
+    const migrationOpsMode = String(_sessionMigrationUi.migrationMode || "");
+    const migrationOpsCleanupHtml = migrationOpsMode === "copy_keep_source" ? "" :
+      '<button type="button" class="mo-tl-session-cleanup" data-timeline-session-cleanup-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.cleanupTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.cleanup")) + '</button>';
+    const migrationOpsHtml = _sessionMigrationUi.migrationId && migrationOpsSourceId
+      ? '<div class="mo-tl-migration-ops">' +
+          '<div><div class="mo-tl-migration-ops-title">' + escapeAttr(t("timeline.label.migrationOps")) + '</div>' +
+          '<div class="mo-tl-migration-ops-note">' + escapeAttr(getSessionDisplayLabel(migrationOpsSourceId, false)) + '</div></div>' +
+          '<div class="mo-tl-migration-ops-actions">' +
+            '<button type="button" class="mo-tl-session-rollback" data-timeline-session-rollback-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.rollbackTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.rollback")) + '</button>' +
+            migrationOpsCleanupHtml +
+          '</div></div>'
+      : '';
+    return '<section class="mo-tl-toolbar mo-memory-session-admin" data-memory-session-management>' +
+      '<label class="mo-tl-session-chooser" for="mo-memory-admin-session-select"><span>' + escapeAttr(t("timeline.label.sessions")) + '</span><select id="mo-memory-admin-session-select">' + sessionOptionsHtml + '</select></label>' +
+      '<div class="mo-tl-session-actions">' + attachBtn + copyBtn + migrateBtn + deleteBtn + '</div>' +
+      migrationStatusHtml + migrationOpsHtml +
+      (_explorer.sessionsError ? '<div class="mo-status mo-status-fail">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
+      '</section>';
+  }
+
+  function renderExplorerSection(mode) {
+    const managementMode = mode === "management";
     const viewModel = _explorer.viewModel;
     if (!viewModel) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
     const selectedSid = _explorer.selectedSessionId;
     const liveSid = _explorer.activeChatSessionId;
-    const debugToolsVisible = !!settings.debug;
-    const sidDisplay = selectedSid ? getSessionDisplayLabel(selectedSid, true) : "(전체)";
+    const debugToolsVisible = managementMode && !!settings.debug;
+    const sidDisplay = selectedSid ? getSessionDisplayLabel(selectedSid, true) : t('explorer.sessions.empty');
 
     // Sprint 2-G: 동기화 상태 표시
     let syncIndicator = '';
@@ -47406,7 +42578,7 @@
     }
 
     let sessionNormalizePanel = '';
-    if (selectedSid) {
+    if (selectedSid && managementMode) {
       let normalizeResultHtml = '';
       if (_sessionNormalizeState.job && (_sessionNormalizeState.loading || String(_sessionNormalizeState.job.status || "") !== "completed")) {
         normalizeResultHtml += renderAdminJobProgressHtml(_sessionNormalizeState.job, "Session Normalize Background Job", "session_normalize");
@@ -47730,7 +42902,7 @@
 
     // 4th-step #3: HypaMemory Import panel (세션 선택 시만 표시)
     let hypaImportPanel = '';
-    if (selectedSid) {
+    if (selectedSid && managementMode) {
       let hypaResultHtml = '';
       if (_hypaImportState.result) {
         hypaResultHtml = '<div class="mo-reindex-result">' +
@@ -47763,35 +42935,104 @@
     }
 
     const tabItems = getExplorerTabItems();
+    const activeTabItem = tabItems.find(function(item) { return item.key === _explorer.activeTab; }) || { label: _explorer.activeTab, count: 0 };
 
-    return '' +
-      '<div class="mo-ex-current">' + t('explorer.filter.current') + ' <strong>' + escapeAttr(sidDisplay) + '</strong> ' + syncIndicator +
-        (selectedSid ? ' <button class="mo-btn-toggle mo-ex-clear-filter">✕ 필터 해제</button>' : '') +
-        (selectedSid ? ' <button class="mo-btn mo-btn-danger-solid mo-ex-routing-reset-btn" id="mo-ex-routing-reset-btn"' +
+    const maintenancePanels = managementMode
+      ? renderExplorerRuntimeTokenProfileBanner() + sessionNormalizePanel + reindexPanel + activeChatRescanDryRunPanel + rescanPanel + hypaImportPanel
+      : '';
+    const contextHtml = '<div class="mo-memory-context">' +
+      '<div class="mo-memory-context-main"><span>' + t('explorer.filter.current') + '</span><strong>' + escapeAttr(sidDisplay) + '</strong></div>' +
+      '<div class="mo-memory-context-actions">' + syncIndicator +
+        (managementMode && selectedSid ? ' <button class="mo-btn mo-btn-danger-solid mo-ex-routing-reset-btn" id="mo-ex-routing-reset-btn"' +
           (_sessionRoutingResetState.loading ? ' disabled' : '') +
           ' title="' + escapeAttr(t('routing.resetState.title')) + '">' +
           (_sessionRoutingResetState.loading ? t('explorer.resetRouting.loading') : t('explorer.resetRouting.btn')) +
           '</button>' : '') +
         (_sessionRoutingResetState.error ? ' <span class="mo-ex-routing-reset-error">❌ ' + escapeAttr(_sessionRoutingResetState.error) + '</span>' : '') +
+      '</div></div>';
+    if (managementMode) {
+      return '<section class="mo-memory-management">' + contextHtml +
+        renderSessionDatabaseManagement() +
+        '<div class="mo-memory-management-stack">' +
+          (maintenancePanels || '<div class="mo-note">' + escapeAttr(t('common.empty')) + '</div>') +
+        '</div></section>';
+    }
+    return '<section class="mo-memory-surface">' + contextHtml +
+      '<div class="mo-memory-layout">' +
+        '<aside class="mo-memory-rail" aria-label="' + escapeAttr(t('settings.tab.explore')) + '">' +
+          '<div class="mo-memory-rail-label">' + escapeAttr(t('settings.tab.explore')) + '</div>' +
+          '<div id="mo-ex-tabs-container">' + renderExplorerTabs(tabItems) + '</div>' +
+        '</aside>' +
+        '<section class="mo-memory-workspace">' +
+          '<header class="mo-memory-workspace-head"><div class="mo-memory-workspace-title">' + escapeAttr(activeTabItem.label) + '</div>' +
+          '<div class="mo-memory-workspace-count">' + formatExplorerNumber(activeTabItem.count) + '</div></header>' +
+          '<div class="mo-ex-content" id="mo-ex-content">' + renderExplorerContent() + '</div>' +
+        '</section>' +
+      '</div></section>';
+  }
+
+  function renderLorebookReferenceManagementSection() {
+    const state = _explorer.lorebook;
+    const runtimeSync = runtimeState.lastLorebookReferenceSync && typeof runtimeState.lastLorebookReferenceSync === "object"
+      ? runtimeState.lastLorebookReferenceSync
+      : null;
+    const syncText = String(runtimeSync && runtimeSync.detail || "-");
+    const snapshotTime = state.latestSnapshot && state.latestSnapshot.observed_at
+      ? formatDashboardTimestampLocal(state.latestSnapshot.observed_at, { includeDate: true })
+      : "-";
+    return '<section class="mo-memory-surface mo-lorebook-management">' +
+      '<div class="mo-memory-context">' +
+        '<div class="mo-memory-context-main"><strong>' + escapeAttr(t('settings.tab.lorebook')) + '</strong></div>' +
+        '<div class="mo-memory-context-actions"><span id="mo-lorebook-reference-current-count">' + formatExplorerNumber(state.total) + '</span></div>' +
       '</div>' +
-      sessionNormalizePanel +
-      reindexPanel +
-      activeChatRescanDryRunPanel +
-      rescanPanel +
-      hypaImportPanel +
-      '<div class="mo-ex-sessions-box">' +
-        '<div class="mo-ex-sessions-header">Sessions (' + (Array.isArray(viewModel.sessions) ? viewModel.sessions.length : 0) + ') <button class="mo-btn-toggle" id="mo-ex-refresh-sessions">↻ 새로고침</button></div>' +
-        (_explorer.sessionsError ? '<div class="mo-status mo-status-warn">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
-        '<div class="mo-ex-sessions-list" id="mo-ex-sessions-list">' + renderExplorerSessionsList() + '</div>' +
+      '<div class="mo-memory-workspace">' +
+        '<div class="mo-row">' +
+          '<label>' + t('settings.label.lorebookReferenceMode') + '</label>' +
+          '<select id="mo-lorebookReferenceMode">' +
+            '<option value="search_only"' + (settings.lorebookReferenceMode === "search_only" ? " selected" : "") + '>' + t('settings.lorebookReferenceMode.search_only') + '</option>' +
+            '<option value="reference_assist"' + (settings.lorebookReferenceMode !== "search_only" ? " selected" : "") + '>' + t('settings.lorebookReferenceMode.reference_assist') + '</option>' +
+          '</select>' +
+          '<button type="button" class="mo-btn" id="mo-refresh-lorebook-reference">' + t('settings.btn.refreshLorebookReference') + '</button>' +
+        '</div>' +
+        '<div class="mo-dash">' +
+          '<div class="mo-dash-row"><span class="mo-dash-label">DB</span><span class="mo-dash-value" id="mo-lorebook-reference-count-value">' + formatExplorerNumber(state.total) + '</span></div>' +
+          '<div class="mo-dash-row"><span class="mo-dash-label">Sync</span><span class="mo-dash-value" id="mo-lorebook-reference-status">' + escapeAttr(syncText) + '</span></div>' +
+          '<div class="mo-dash-row"><span class="mo-dash-label">Observed</span><span class="mo-dash-value" id="mo-lorebook-reference-observed-at">' + escapeAttr(snapshotTime) + '</span></div>' +
+        '</div>' +
       '</div>' +
-      '<div id="mo-ex-tabs-container">' + renderExplorerTabs(tabItems) + '</div>' +
-      '<div class="mo-ex-content" id="mo-ex-content">' + renderExplorerContent() + '</div>';
+    '</section>';
+  }
+
+  function updateLorebookReferenceManagementStatus() {
+    const state = _explorer.lorebook;
+    const runtimeSync = runtimeState.lastLorebookReferenceSync && typeof runtimeState.lastLorebookReferenceSync === "object"
+      ? runtimeState.lastLorebookReferenceSync
+      : null;
+    const status = document.getElementById("mo-lorebook-reference-status");
+    const count = document.getElementById("mo-lorebook-reference-count-value");
+    const compactCount = document.getElementById("mo-lorebook-reference-current-count");
+    const observedAt = document.getElementById("mo-lorebook-reference-observed-at");
+    if (status) status.textContent = state.error ? (state.error === "scope_unavailable" ? t('explorer.lorebook.scopeUnavailable') : t('explorer.lorebook.readFailed')) : String(runtimeSync && runtimeSync.detail || "-");
+    if (count) count.textContent = formatExplorerNumber(state.total);
+    if (compactCount) compactCount.textContent = formatExplorerNumber(state.total);
+    if (observedAt) observedAt.textContent = state.latestSnapshot && state.latestSnapshot.observed_at ? formatDashboardTimestampLocal(state.latestSnapshot.observed_at, { includeDate: true }) : "-";
+  }
+
+  async function loadLorebookReferenceManagementProjection() {
+    const activeSid = String(await getCurrentChatSessionId() || "").trim();
+    if (activeSid && activeSid !== SESSION_FALLBACK) _explorer.activeChatSessionId = activeSid;
+    if (!_explorer.selectedSessionId) {
+      const inspectionSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || activeSid || "");
+      await explorerChangeSession(inspectionSid, false);
+    }
+    await explorerFetchLorebook(true);
+    updateLorebookReferenceManagementStatus();
   }
 
   function captureSettingsViewportScrollState() {
     try {
       const scrollingElement = document.scrollingElement || document.documentElement || document.body;
-      const body = document.querySelector("#mo-settings-overlay .mo-body") || document.querySelector(".mo-body");
+      const body = document.querySelector("#mo-settings-overlay .mo-workspace") || document.querySelector(".mo-workspace");
       return {
         windowScrollX: typeof window !== "undefined" ? (window.scrollX || window.pageXOffset || 0) : 0,
         windowScrollY: typeof window !== "undefined" ? (window.scrollY || window.pageYOffset || 0) : 0,
@@ -47809,7 +43050,7 @@
     const apply = () => {
       try {
         const scrollingElement = document.scrollingElement || document.documentElement || document.body;
-        const body = document.querySelector("#mo-settings-overlay .mo-body") || document.querySelector(".mo-body");
+        const body = document.querySelector("#mo-settings-overlay .mo-workspace") || document.querySelector(".mo-workspace");
         if (scrollingElement && state.documentScrollTop != null) scrollingElement.scrollTop = state.documentScrollTop;
         if (scrollingElement && state.documentScrollLeft != null) scrollingElement.scrollLeft = state.documentScrollLeft;
         if (body && state.bodyScrollTop != null) body.scrollTop = state.bodyScrollTop;
@@ -47831,14 +43072,12 @@
   function captureExplorerScrollState() {
     try {
       const root = document.getElementById("mo-explorer-root");
-      const body = root ? root.closest(".mo-body") : document.querySelector(".mo-body");
+      const body = root ? root.closest(".mo-workspace") : document.querySelector(".mo-workspace");
       const content = document.getElementById("mo-ex-content");
-      const sessions = document.getElementById("mo-ex-sessions-list");
       return {
         viewport: captureSettingsViewportScrollState(),
         bodyScrollTop: body ? body.scrollTop : null,
         contentScrollTop: content ? content.scrollTop : null,
-        sessionsScrollTop: sessions ? sessions.scrollTop : null,
       };
     } catch {
       return null;
@@ -47850,12 +43089,10 @@
     const apply = () => {
       try {
         const root = document.getElementById("mo-explorer-root");
-        const body = root ? root.closest(".mo-body") : document.querySelector(".mo-body");
+        const body = root ? root.closest(".mo-workspace") : document.querySelector(".mo-workspace");
         const content = document.getElementById("mo-ex-content");
-        const sessions = document.getElementById("mo-ex-sessions-list");
         if (body && state.bodyScrollTop != null) body.scrollTop = state.bodyScrollTop;
         if (content && state.contentScrollTop != null) content.scrollTop = state.contentScrollTop;
-        if (sessions && state.sessionsScrollTop != null) sessions.scrollTop = state.sessionsScrollTop;
         restoreSettingsViewportScrollState(state.viewport);
       } catch { /* silent */ }
     };
@@ -47868,15 +43105,16 @@
 
   async function refreshExplorerUI(options = {}) {
     try {
-      const preserveScroll = options && options.preserveScroll !== false;
-      const scrollState = preserveScroll ? captureExplorerScrollState() : null;
-      await loadPresentationViewModels();
-      // Sprint 2-G: 전체 explorer 섹션 재렌더 (sync indicator 포함)
       const explorerRoot = document.getElementById("mo-explorer-root");
-      if (explorerRoot) {
-        explorerSyncBatchDeleteSelection(_explorer.activeTab);
-        explorerRoot.innerHTML = renderExplorerSection();
-      }
+      if (!explorerRoot) return;
+      const preserveScroll = options && options.preserveScroll !== false;
+      const reloadPresentation = !options || options.reloadPresentation !== false;
+      const scrollState = preserveScroll ? captureExplorerScrollState() : null;
+      if (reloadPresentation) await loadPresentationViewModels();
+      if (document.getElementById("mo-explorer-root") !== explorerRoot) return;
+      // Sprint 2-G: 전체 explorer 섹션 재렌더 (sync indicator 포함)
+      explorerSyncBatchDeleteSelection(_explorer.activeTab);
+      explorerRoot.innerHTML = renderExplorerSection(_settingsActiveTab === "memory_admin" ? "management" : "memory");
 
       // Re-attach explorer events
       attachExplorerEvents();
@@ -47886,6 +43124,62 @@
 
   function attachExplorerEvents() {
     try {
+      const managementSessionSelect = document.getElementById("mo-memory-admin-session-select");
+      if (managementSessionSelect) {
+        managementSessionSelect.addEventListener("change", () => {
+          selectWorkspaceSession(String(managementSessionSelect.value || ""), "memory_admin");
+        });
+      }
+      const runMemorySessionAction = async function(action) {
+        try {
+          await action();
+        } finally {
+          if (_settingsActiveTab === "memory_admin") {
+            await explorerFetchSessions();
+            await refreshExplorerUI();
+          }
+        }
+      };
+      document.querySelectorAll("[data-timeline-session-delete-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          const sid = button.getAttribute("data-timeline-session-delete-id") || "";
+          runMemorySessionAction(() => deleteTimelineSessionFromBackend(sid));
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-attach-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          const sid = button.getAttribute("data-timeline-session-attach-id") || "";
+          runMemorySessionAction(() => attachTimelineSessionToCurrentChat(sid));
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-copy-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          const sid = button.getAttribute("data-timeline-session-copy-id") || "";
+          runMemorySessionAction(() => runTimelineSessionCopy(sid));
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-migrate-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          const sid = button.getAttribute("data-timeline-session-migrate-id") || "";
+          runMemorySessionAction(() => runTimelineSessionMigration(sid));
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-rollback-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          runMemorySessionAction(() => runTimelineSessionMigrationRollback());
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-cleanup-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          runMemorySessionAction(() => runTimelineSessionMigrationCleanup());
+        });
+      });
       const sessionNormalizePanel = document.querySelector("[data-session-normalize-panel]");
       if (sessionNormalizePanel) {
         sessionNormalizePanel.addEventListener("toggle", () => {
@@ -47932,53 +43226,21 @@
         });
       });
 
-      // Session selection
-      document.querySelectorAll(".mo-ex-session").forEach(el => {
-        el.addEventListener("click", async () => {
-          const sid = el.dataset.sessionId;
-          explorerResetAllBatchDelete();
-          await explorerChangeSession(sid);
-          await refreshExplorerUI();
-        });
-      });
-
-      // Clear filter
-      document.querySelectorAll(".mo-ex-clear-filter").forEach(el => {
-        el.addEventListener("click", async () => {
-          explorerResetAllBatchDelete();
-          await explorerChangeSession(null);
-          await refreshExplorerUI();
-        });
-      });
-
-      document.querySelectorAll(".mo-ex-show-all-logs").forEach(el => {
-        el.addEventListener("click", async () => {
-          explorerResetAllBatchDelete();
-          await explorerChangeSession(null);
-          await refreshExplorerUI();
-        });
-      });
-
       // Sprint 2-G: "현재 채팅 보기" — 활성 세션으로 필터 전환
       document.querySelectorAll(".mo-ex-goto-live").forEach(el => {
         el.addEventListener("click", async () => {
           if (_explorer.activeChatSessionId) {
             explorerResetAllBatchDelete();
-            await explorerChangeSession(_explorer.activeChatSessionId);
+            await loadTimelineData(true, {
+              sessionId: _explorer.activeChatSessionId,
+              skipRuntimeSessionResolve: true,
+              skipSessionListRefresh: true,
+            });
+            await explorerLoadTab(_explorer.activeTab, true);
             await refreshExplorerUI();
           }
         });
       });
-
-      // Refresh sessions
-      const refreshBtn = document.getElementById("mo-ex-refresh-sessions");
-      if (refreshBtn) {
-        refreshBtn.addEventListener("click", async () => {
-          explorerResetAllBatchDelete();
-          await explorerFetchSessions();
-          await refreshExplorerUI();
-        });
-      }
 
       // Tab switching
       document.querySelectorAll(".mo-ex-tab").forEach(btn => {
@@ -48074,7 +43336,7 @@
             const id = parseInt(el.dataset.expandId, 10);
             if (type && !isNaN(id)) {
               explorerToggleExpand(type, id);
-              refreshExplorerUI();
+              refreshExplorerUI({ preserveScroll: true, reloadPresentation: false });
             }
           });
         }
@@ -48088,6 +43350,7 @@
           else if (type === "memories") await explorerFetchMemories(false);
           else if (type === "direct_evidence") await explorerFetchDirectEvidence(false);
           else if (type === "kg_triples") await explorerFetchKgTriples(false);
+          else if (type === "lorebook") await explorerFetchLorebook(false);
           else if (type === "episodes") await explorerFetchEpisodes(false);
           else if (type === "chapters" || type === "arcs" || type === "sagas") await explorerFetchHierarchyList(type, false);
           await refreshExplorerUI();
@@ -48916,47 +44179,83 @@
 
   const PANEL_CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
-html,body{width:100%;height:100%;overflow:hidden}
-.mo-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.62);z-index:9999;display:flex;align-items:center;justify-content:center;padding:clamp(6px,1.5vw,16px);font-family:system-ui,-apple-system,sans-serif;color:#e0e0e0}
-.mo-panel{width:min(98%,1540px);height:min(92%,900px);max-height:100%;background:#0b1119;border:1px solid #344456;border-radius:14px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 18px 60px rgba(0,0,0,0.55)}
-.mo-hdr{background:linear-gradient(180deg,#1b242e,#131a23);border-bottom:1px solid rgba(255,255,255,0.12);padding:12px 18px;display:flex;align-items:center;justify-content:space-between}
-.mo-hdr-left{display:flex;align-items:center;min-width:0}
-.mo-hdr-actions{display:flex;align-items:center;gap:8px}
-.mo-hdr h2{font-size:15px;font-weight:600;margin:0}
-.mo-hdr-ver{font-size:11px;color:#666;margin-left:8px}
-.mo-debug-toggle{background:#1a2a3a;border:1px solid #2a2a4a;color:#a0a0b0;cursor:pointer;font-size:11px;padding:4px 8px;border-radius:6px;font-weight:600;transition:all 0.15s}
-.mo-debug-toggle:hover{background:#22344b;color:#e0e0e0}
-.mo-debug-toggle.is-on{background:#533483;border-color:#533483;color:#fff}
-.mo-close{background:transparent;border:none;color:#a0a0b0;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:6px}
-.mo-close:hover{background:#e74c3c;color:#fff}
-.mo-body{flex:1;min-height:0;overflow-y:auto;padding:0 16px 16px;display:flex;flex-direction:column;gap:14px}
-.mo-panel,.mo-body,.mo-tab-panel,.mo-tl-main,.mo-tl-session-list,.mo-tl-detail-body,.mo-ex-content,.mo-ex-sessions-list{overflow-anchor:none}
-.mo-tabs{display:flex;align-items:center;gap:6px;position:sticky;top:0;z-index:2;background:#0b1119;padding:12px 0 10px;min-height:46px;overflow-x:auto;scrollbar-width:thin;flex:0 0 auto}
-.mo-tab-btn{background:#11162a;border:1px solid #2a2a4a;color:#a0a0b0;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:600;transition:all 0.15s}
+html,body{width:100%;height:100%;overflow:hidden;background:#0B0D11}
+.mo-overlay{--mo-bg:#0B0D11;--mo-bg-soft:#0F1116;--mo-card:#13161C;--mo-float:#181C24;--mo-line:rgba(255,255,255,.07);--mo-text:#F4F5F7;--mo-muted:#8B909A;--mo-dim:#5C626D;--mo-blue:#5D73E6;--mo-blue-soft:#8FA7FF;--mo-accent:var(--mo-blue);position:fixed;inset:0;background:#0B0D11;z-index:9999;display:flex;align-items:stretch;justify-content:stretch;padding:0;font-family:Inter,Pretendard,system-ui,-apple-system,sans-serif;color:var(--mo-text)}
+.mo-panel{width:100%;height:100%;max-height:none;background:var(--mo-bg);border:0;border-radius:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;overflow:hidden;box-shadow:none}
+.mo-hdr{min-height:72px;background:rgba(15,17,22,.96);border-bottom:1px solid var(--mo-line);padding:12px clamp(16px,3vw,40px);display:flex;align-items:center;justify-content:space-between;gap:18px}
+.mo-hdr-left{display:flex;align-items:center;gap:12px;min-width:0;flex:1 1 auto}
+.mo-brand-mark{display:inline-flex;align-items:center;justify-content:center;width:36px;height:36px;flex:0 0 36px;border:1px solid rgba(143,167,255,.32);border-radius:12px;background:#181E2B;color:#C8D3FF;font-size:11px;font-weight:800;letter-spacing:.08em}
+.mo-brand-copy{display:flex;flex-direction:column;gap:2px;min-width:0}
+.mo-hdr-actions{display:flex;align-items:center;gap:8px;min-width:0;flex-wrap:wrap;justify-content:flex-end}
+.mo-hdr h2{font-size:16px;font-weight:600;letter-spacing:-.02em;margin:0;color:var(--mo-text)}
+.mo-hdr-ver{display:block;max-width:min(52vw,620px);font-size:10px;line-height:1.35;color:var(--mo-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mo-debug-toggle{background:transparent;border:1px solid var(--mo-line);color:var(--mo-muted);cursor:pointer;font-size:11px;padding:7px 10px;border-radius:10px;font-weight:600;transition:background .15s,border-color .15s,color .15s}
+.mo-debug-toggle:hover{background:#1D222C;color:#F4F5F7}
+.mo-debug-toggle.is-on{background:#5D73E6;border-color:#5D73E6;color:#F4F5F7}
+.mo-close{background:transparent;border:1px solid transparent;color:#8B909A;cursor:pointer;font-size:18px;padding:2px 8px;border-radius:12px}
+.mo-close:hover{background:#181C24;border-color:rgba(255,255,255,.07);color:#F4F5F7}
+.mo-body{min-height:0;overflow:hidden;padding:0;display:flex;flex-direction:column;background:var(--mo-bg)}
+.mo-panel,.mo-body,.mo-tab-panel,.mo-tl-main,.mo-tl-session-list,.mo-tl-node-inspector,.mo-ex-content{overflow-anchor:none}
+.mo-app-nav{position:relative;z-index:5;flex:0 0 auto;background:rgba(11,13,17,.94);border-bottom:1px solid var(--mo-line);padding:0 clamp(16px,3vw,40px)}
+.mo-tabs{display:flex;align-items:center;gap:24px;width:min(100%,1440px);margin:0 auto;min-height:54px;overflow-x:auto;scrollbar-width:none;flex:0 0 auto}
+.mo-tabs::-webkit-scrollbar{display:none}
+.mo-tab-btn{position:relative;background:transparent;border:0;color:var(--mo-muted);padding:17px 1px 15px;border-radius:0;cursor:pointer;font-size:13px;font-weight:600;white-space:nowrap;transition:color .15s}
 .mo-tab-btn{flex:0 0 auto}
-.mo-tab-btn:hover{background:#1a2a3a;color:#e0e0e0}
-.mo-tab-btn.is-active{background:#533483;border-color:#533483;color:#fff}
-.mo-tab-panel{display:none;min-height:0;flex-direction:column;gap:14px}
-.mo-tab-panel.is-active{display:flex;flex:1 1 auto}
-.mo-tl-shell{display:grid;grid-template-columns:280px minmax(0,1fr)360px;gap:12px;flex:1 1 auto;height:100%;max-height:100%;min-height:0}
-.mo-tl-side,.mo-tl-main,.mo-tl-detail{min-width:0;min-height:0;background:#101522;border:1px solid #2a2a4a;border-radius:10px;overflow:hidden}
-.mo-tl-side,.mo-tl-detail{display:flex;flex-direction:column}
-.mo-tl-side-head,.mo-tl-detail-head{padding:10px 12px;border-bottom:1px solid #2a2a4a;color:#e0e0e0;font-size:13px;font-weight:700}
-.mo-tl-session-list{display:flex;flex-direction:column;gap:8px;padding:10px;overflow:auto}
-.mo-tl-session{background:#11172b;border:1px solid #2a2a4a;border-radius:8px;padding:9px 10px;display:grid;gap:4px;color:#d8deec;width:100%;min-width:0;overflow:hidden;text-align:left;cursor:pointer;font:inherit;min-height:38px}
-.mo-tl-session:hover{border-color:#3d5872;background:#151f31}
-.mo-tl-session.is-active{border-color:#3498db;background:#13243a}
-.mo-tl-session.is-deleted{border-color:#7a3f3f;background:#22151b}
+.mo-tab-btn:after{content:"";position:absolute;left:0;right:0;bottom:0;height:2px;border-radius:2px;background:transparent}
+.mo-tab-btn:hover{color:var(--mo-text)}
+.mo-tab-btn.is-active{color:var(--mo-text)}
+.mo-tab-btn.is-active:after{background:#F4F5F7}
+.mo-workspace{width:100%;min-height:0;flex:1 1 auto;padding:clamp(14px,2vw,24px) clamp(14px,2.4vw,32px) 32px;overflow:auto}
+.mo-tab-panel{display:none;width:min(100%,1440px);margin:0 auto;min-height:0;flex-direction:column;gap:20px}
+.mo-tab-panel.is-active{display:flex}
+.mo-tl-shell{display:flex;flex-direction:column;gap:12px;flex:1 1 auto;min-width:0;min-height:0}
+.mo-tl-toolbar{display:grid;grid-template-columns:minmax(260px,1fr) auto;align-items:end;gap:10px 16px;padding:12px 14px;background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;color:#F4F5F7;box-shadow:0 14px 36px rgba(0,0,0,.14)}
+.mo-tl-session-chooser{display:flex;flex-direction:column;align-items:flex-start;gap:7px;min-width:0;font-size:10px;font-weight:700;letter-spacing:.06em;color:#8B909A;text-transform:uppercase}
+.mo-tl-session-chooser select{width:100%;min-width:0;max-width:620px;background:#181C24;border:1px solid rgba(255,255,255,.07);border-radius:12px;color:#F4F5F7;padding:10px 12px;font:inherit;text-transform:none;letter-spacing:0}
+.mo-tl-toolbar-meta{grid-column:1/-1;display:flex;align-items:center;gap:8px 12px;min-width:0;padding-top:9px;border-top:1px solid rgba(255,255,255,.07);font-size:10px;color:#8B909A;white-space:nowrap;overflow-x:auto}
+.mo-tl-worldline-state{border:1px solid rgba(255,255,255,.07);border-radius:999px;padding:2px 7px;font-size:10px;color:#8B909A}
+.mo-tl-worldline-state.is-confirmed{border-color:#3b8f68;color:#78e1ad}
+.mo-tl-worldline-state.is-unresolved,.mo-tl-worldline-state.is-conflict{border-color:#a46a30;color:#f0b36e}
+.mo-tl-main{min-width:0;min-height:0;display:flex;flex:1 1 auto;flex-direction:column;gap:8px;padding:10px;background:#0F1116;border:1px solid rgba(255,255,255,.07);border-radius:16px}
+.mo-tl-canvas-tools{display:flex;align-items:center;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.mo-tl-canvas-copy{display:none}
+.mo-tl-canvas-title{color:#F4F5F7;font-size:16px;font-weight:600;letter-spacing:-.015em}
+.mo-tl-canvas-actions{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.mo-tl-canvas-actions .mo-btn{min-width:32px;min-height:30px;padding:4px 8px}
+.mo-tl-canvas-frame{position:relative;width:100%;height:clamp(480px,68vh,820px);min-height:420px;flex:1 1 auto;overflow:hidden;border:1px solid rgba(255,255,255,.07);border-radius:14px;background:#0B0D11;box-shadow:inset 0 1px 0 rgba(255,255,255,.025)}
+.mo-tl-canvas-frame canvas{display:block;width:100%;height:100%;touch-action:none;cursor:grab;user-select:none;-webkit-user-select:none}
+.mo-tl-canvas-frame canvas:active{cursor:grabbing}
+.mo-tl-canvas-empty{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:24px;text-align:center;color:#8B909A;background:rgba(15,17,22,.88);pointer-events:none}
+.mo-tl-canvas-empty strong{font-size:13px;color:#F4F5F7}
+.mo-tl-canvas-empty span{max-width:520px;font-size:10px;color:#5C626D;overflow-wrap:anywhere}
+.mo-tl-canvas-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:20px}
+.mo-tl-canvas-footer>span{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.mo-tl-canvas-status{border:1px solid rgba(255,255,255,.07);border-radius:999px;padding:2px 7px;font-size:9px;color:#8B909A}
+.mo-tl-canvas-status.is-warn{border-color:rgba(199,168,105,.28);color:#C7A869}
+.mo-tl-lineage-detail{min-width:0;background:#0F1116;border:1px solid rgba(255,255,255,.07);border-radius:14px;overflow:hidden}
+.mo-tl-lineage-detail>summary{padding:13px 16px;color:#8B909A;font-size:11px;font-weight:700;cursor:pointer;list-style-position:inside}
+.mo-tl-lineage-detail[open]>summary{border-bottom:1px solid rgba(255,255,255,.07);color:#F4F5F7}
+.mo-tl-lineage-detail>.mo-detail-panel{border:0;border-radius:0;background:#0F1116}
+.mo-tl-node-inspector{position:absolute;z-index:4;inset:16px;display:flex;flex-direction:column;min-width:0;padding:0;background:#181C24;border:1px solid rgba(143,167,255,.32);border-radius:16px;box-shadow:0 0 0 9999px rgba(11,13,17,.58),0 26px 70px rgba(0,0,0,.48);overflow:hidden;pointer-events:auto}
+.mo-tl-node-inspector-head{display:flex;align-items:center;justify-content:space-between;gap:10px;flex:0 0 auto;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-tl-node-inspector-head>div{display:flex;align-items:center;gap:10px;min-width:0}
+.mo-tl-node-inspector-head strong{font-size:13px;color:#F4F5F7}
+.mo-tl-node-inspector-close{flex:0 0 auto;width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center}
+.mo-tl-node-inspector-body{min-height:0;flex:1 1 auto;padding:16px;overflow:auto;overscroll-behavior:contain}
+.mo-tl-session{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:9px 10px;display:grid;gap:4px;color:#F4F5F7;width:100%;min-width:0;overflow:hidden;text-align:left;cursor:pointer;font:inherit;min-height:38px}
+.mo-tl-session:hover{border-color:rgba(143,167,255,.22);background:#181C24}
+.mo-tl-session.is-active{border-color:#5D73E6;background:#151923}
+.mo-tl-session.is-deleted{border-color:rgba(230,133,165,.28);background:#18161C}
 .mo-tl-session-name{display:block;font-size:12px;font-weight:700;min-width:0;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .mo-tl-session-meta{min-width:0;font-size:10px;color:#8a93aa;display:flex;justify-content:space-between;gap:8px}
 .mo-tl-session-meta.is-head{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:7px}
 .mo-tl-session-meta.is-counts span{display:block;min-width:0;max-width:100%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mo-tl-session-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:0}
+.mo-tl-session-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex:1 1 420px;flex-wrap:wrap;margin-top:0}
 .mo-tl-session-head-actions{display:flex;align-items:center;justify-content:flex-end;gap:5px;min-width:max-content}
-.mo-tl-session-delete{flex:0 0 auto;white-space:nowrap;border:1px solid #7a3f3f;background:#21131a;color:#ffaaaa;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
-.mo-tl-session-delete:hover{background:#4a1822;border-color:#e05d5d;color:#fff}
+.mo-tl-session-delete{flex:0 0 auto;white-space:nowrap;border:1px solid rgba(230,133,165,.32);background:transparent;color:#E685A5;border-radius:12px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
+.mo-tl-session-delete:hover{background:rgba(230,133,165,.10);border-color:#E685A5;color:#F4F5F7}
 .mo-tl-session-migrate{flex:0 0 auto;white-space:nowrap;border:1px solid #305b7d;background:#102033;color:#9fd2ff;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
-.mo-tl-session-migrate:hover{background:#153451;border-color:#3498db;color:#fff}
+.mo-tl-session-migrate:hover{background:#181E2B;border-color:#5D73E6;color:#F4F5F7}
 .mo-tl-session-migrate:disabled{opacity:.55;cursor:wait}
 .mo-tl-session-copy{flex:0 0 auto;white-space:nowrap;border:1px solid #6d5b2b;background:#211b0f;color:#ffd889;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
 .mo-tl-session-copy:hover{background:#362913;border-color:#d8a83a;color:#fff}
@@ -48967,18 +44266,18 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-tl-session-rollback{flex:0 0 auto;white-space:nowrap;border:1px solid #8a6a24;background:#221b0d;color:#ffd77a;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
 .mo-tl-session-rollback:hover{background:#3a2a0f;border-color:#f1c24b;color:#fff}
 .mo-tl-session-rollback:disabled{opacity:.55;cursor:wait}
-.mo-tl-session-cleanup{flex:0 0 auto;white-space:nowrap;border:1px solid #7a3f3f;background:#241018;color:#ff9f9f;border-radius:6px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
-.mo-tl-session-cleanup:hover{background:#4a1822;border-color:#e05d5d;color:#fff}
+.mo-tl-session-cleanup{flex:0 0 auto;white-space:nowrap;border:1px solid rgba(230,133,165,.32);background:transparent;color:#E685A5;border-radius:12px;padding:2px 6px;font-size:10px;line-height:1.2;font-weight:800;cursor:pointer}
+.mo-tl-session-cleanup:hover{background:rgba(230,133,165,.10);border-color:#E685A5;color:#F4F5F7}
 .mo-tl-session-cleanup:disabled{opacity:.55;cursor:wait}
 .mo-tl-session-badge{flex:0 0 auto;white-space:nowrap;display:inline-flex;align-items:center;justify-content:center;border:1px solid #344456;border-radius:999px;padding:2px 6px;font-size:9px;font-weight:800;color:#b9c4d6;background:#0c1420}
-.mo-tl-session-badge.is-current{border-color:#3498db;color:#9fd2ff}
-.mo-tl-session-badge.is-live{border-color:#2ecc71;color:#8af0a9}
-.mo-tl-session-badge.is-deleted{border-color:#e05d5d;color:#ff9f9f;background:#2a1016}
+.mo-tl-session-badge.is-current{border-color:#5D73E6;color:#8FA7FF}
+.mo-tl-session-badge.is-live{border-color:rgba(145,201,170,.28);color:#91C9AA}
+.mo-tl-session-badge.is-deleted{border-color:rgba(230,133,165,.32);color:#E685A5;background:#18161C}
 .mo-tl-migration-ops{border:1px solid #3a315a;background:#14142a;border-radius:8px;padding:9px 10px;display:grid;gap:8px}
-.mo-tl-migration-ops-title{color:#e0e0e0;font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mo-tl-migration-ops-title{color:#F4F5F7;font-size:12px;font-weight:800;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mo-tl-migration-ops-note{color:#8a93aa;font-size:10px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mo-tl-migration-ops-actions{display:flex;gap:7px;align-items:center;justify-content:flex-end;flex-wrap:wrap}
-.mo-tl-main{position:relative;overflow:auto;padding:12px 14px}
+.mo-tl-main{position:relative;overflow:hidden}
 .mo-tl-stream{position:relative;display:flex;flex-direction:column;gap:10px;padding:2px 0 12px}
 .mo-tl-stream:before{content:"";position:absolute;left:78px;top:8px;bottom:8px;width:2px;background:#2f3d52}
 .mo-tl-stream.is-empty{align-items:center;justify-content:flex-start;padding-top:14px}
@@ -48988,353 +44287,386 @@ html,body{width:100%;height:100%;overflow:hidden}
 .mo-tl-entry-meta{display:flex;flex-direction:column;align-items:flex-end;gap:2px;padding-top:4px;color:#8a93aa;font-size:11px;line-height:1.25}
 .mo-tl-entry-turn{color:#dfe6f3;font-size:13px;font-weight:800}
 .mo-tl-entry-date,.mo-tl-entry-time{max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mo-tl-entry-time{font-size:10px;color:#aab6c8}
-.mo-tl-node{position:relative;z-index:1;width:18px;height:18px;margin-top:8px;border-radius:50%;background:#3498db;box-shadow:0 0 0 5px #101522;border:1px solid rgba(255,255,255,.25)}
+.mo-tl-entry-time{font-size:10px;color:#8B909A}
+.mo-tl-node{position:relative;z-index:1;width:18px;height:18px;margin-top:8px;border-radius:50%;background:#5D73E6;box-shadow:0 0 0 5px #13161C;border:1px solid rgba(255,255,255,.12)}
 .mo-tl-node-assistant{background:#8d78ff}
-.mo-tl-node-memory{background:#c89c1a}
-.mo-tl-node-episode{background:#2ecc71}
-.mo-tl-node-turn{background:#3498db}
+.mo-tl-node-memory{background:#8A55F7}
+.mo-tl-node-episode{background:#5D73E6}
+.mo-tl-node-turn{background:#5D73E6}
 .mo-tl-card{position:relative;background:#12182a;border:1px solid #28364a;border-radius:8px;padding:10px 12px;cursor:pointer;transition:border-color .15s,background .15s,box-shadow .15s,transform .15s}
-.mo-tl-card:hover{background:#151f31;border-color:#3d5872;box-shadow:0 0 0 1px rgba(52,152,219,.18);transform:translateY(-1px)}
-.mo-tl-card.is-selected{border-color:#3498db}
-.mo-tl-card.is-expanded{border-color:#c89c1a;background:#151b2d;box-shadow:0 0 0 1px rgba(200,156,26,.24)}
+.mo-tl-card:hover{background:#181C24;border-color:rgba(143,167,255,.22);box-shadow:0 10px 24px rgba(0,0,0,.16);transform:none}
+.mo-tl-card.is-selected{border-color:#5D73E6}
+.mo-tl-card.is-expanded{border-color:#5D73E6;background:#151923;box-shadow:none}
 .mo-tl-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px}
-.mo-tl-type{font-size:10px;text-transform:uppercase;letter-spacing:0;font-weight:800;color:#8ea0c0}
+.mo-tl-type{font-size:10px;text-transform:uppercase;letter-spacing:0;font-weight:800;color:#8B909A}
 .mo-tl-card.mo-tl-turn .mo-tl-type{color:#65c7ff}
 .mo-tl-card.mo-tl-user .mo-tl-type{color:#5db0ff}
 .mo-tl-card.mo-tl-assistant .mo-tl-type{color:#9f91ff}
 .mo-tl-card.mo-tl-memory .mo-tl-type{color:#e6bd52}
 .mo-tl-card.mo-tl-episode .mo-tl-type{color:#5ed989}
 .mo-tl-badges{display:flex;gap:6px;flex-wrap:wrap;justify-content:flex-end}
-.mo-tl-badge{border:1px solid #344456;background:#0d1520;color:#aab6c8;border-radius:6px;padding:3px 7px;font-size:10px;white-space:nowrap}
+.mo-tl-badge{border:1px solid rgba(255,255,255,.07);background:#181C24;color:#8B909A;border-radius:12px;padding:3px 7px;font-size:10px;white-space:nowrap}
 .mo-tl-title{margin-top:4px;color:#e9eef8;font-size:13px;font-weight:700;line-height:1.35}
 .mo-tl-summary{margin-top:6px;color:#b8c2d6;font-size:12px;line-height:1.45;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:1;overflow:hidden}
 .mo-tl-expanded{display:none;margin-top:9px;padding-top:9px;border-top:1px solid #2b3a4f}
 .mo-tl-card.is-expanded .mo-tl-expanded{display:block}
-.mo-tl-evidence{font-family:Consolas,Monaco,monospace;background:#0a0f19;border:1px solid #2a2a4a;border-radius:6px;padding:7px 8px;color:#cbd4e6;font-size:11px;line-height:1.45;white-space:pre-wrap}
+.mo-tl-evidence{font-family:Inter,Pretendard,ui-monospace,SFMono-Regular,Consolas,monospace;background:#0B0D11;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:7px 8px;color:#8B909A;font-size:11px;line-height:1.45;white-space:pre-wrap}
 .mo-tl-actions{display:flex;justify-content:flex-end;margin-top:8px}
 .mo-tl-turn-items{display:flex;flex-direction:column;gap:7px}
+.mo-tl-turn-item-wrap{display:flex;flex-direction:column;gap:8px;min-width:0}
 .mo-tl-turn-item{display:grid;grid-template-columns:16px minmax(86px,120px) minmax(0,1fr) auto;gap:8px;align-items:center;width:100%;border:1px solid #27354a;background:#0d1422;border-radius:7px;padding:8px;color:#cbd4e6;cursor:pointer;text-align:left}
-.mo-tl-turn-item:hover{border-color:#3d5872;background:#111c2d}
-.mo-tl-turn-item.is-active{border-color:#3498db;background:#13243a}
-.mo-tl-turn-dot{width:10px;height:10px;border-radius:50%;background:#3498db}
+.mo-tl-turn-item:hover{border-color:rgba(143,167,255,.22);background:#181C24}
+.mo-tl-turn-item.is-active{border-color:#5D73E6;background:#151923}
+.mo-tl-turn-dot{width:10px;height:10px;border-radius:50%;background:#5D73E6}
 .mo-tl-turn-dot.mo-tl-node-assistant{background:#8d78ff}
-.mo-tl-turn-dot.mo-tl-node-memory{background:#c89c1a}
-.mo-tl-turn-dot.mo-tl-node-episode{background:#2ecc71}
-.mo-tl-turn-kind{font-size:10px;text-transform:uppercase;font-weight:800;color:#8ea0c0}
+.mo-tl-turn-dot.mo-tl-node-memory{background:#8A55F7}
+.mo-tl-turn-dot.mo-tl-node-episode{background:#5D73E6}
+.mo-tl-turn-kind{font-size:10px;text-transform:uppercase;font-weight:800;color:#8B909A}
 .mo-tl-turn-item-title{display:block;font-size:12px;font-weight:700;color:#e9eef8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mo-tl-turn-preview{display:block;font-size:11px;color:#aebbd0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .mo-tl-row-actions{display:inline-flex;align-items:center;justify-content:flex-end;gap:6px;min-width:max-content}
 .mo-tl-row-actions .mo-btn{min-height:30px;padding:5px 9px;font-size:11px}
+.mo-tl-inline-detail{margin:0 0 6px 24px;padding-left:12px;border-left:2px solid rgba(145,201,170,.56);min-width:0}
+.mo-tl-inline-detail>.mo-detail-panel{border-color:rgba(145,201,170,.26);background:#151A1B;box-shadow:0 14px 30px rgba(0,0,0,.18)}
+.mo-tl-node-inspector .mo-tl-stream:before{display:none}
+.mo-tl-node-inspector .mo-tl-entry{display:block}
+.mo-tl-node-inspector .mo-tl-entry-meta{display:flex;flex-direction:row;align-items:center;gap:8px;padding:0 0 8px}
+.mo-tl-node-inspector .mo-tl-entry-date,.mo-tl-node-inspector .mo-tl-entry-time{max-width:none}
+.mo-tl-node-inspector .mo-tl-node{display:none}
+.mo-tl-node-inspector .mo-tl-card{cursor:default;border:0;background:transparent;padding:0}
+.mo-tl-node-inspector .mo-tl-card:hover{background:transparent;box-shadow:none}
+.mo-tl-node-inspector .mo-tl-card-head{padding:0 0 10px}
+.mo-tl-node-inspector .mo-tl-summary{margin:0 0 10px}
+.mo-tl-node-inspector .mo-tl-expanded{display:block;margin:0;padding:0;border:0}
 .mo-tl-load-more{display:flex;justify-content:center;padding:8px 0 2px}
 .mo-tl-load-note{text-align:center;color:#8a93aa;font-size:11px;padding:6px 0 2px}
-.mo-tl-detail-body{padding:10px 12px;overflow:auto;display:flex;flex-direction:column;gap:10px;color:#cbd4e6;font-size:12px;line-height:1.45}
 .mo-tl-kv{display:grid;grid-template-columns:90px 1fr;gap:6px 10px}
 .mo-tl-kv span:nth-child(odd){color:#8a93aa}
-.mo-subtabs{display:flex;gap:6px;flex-wrap:wrap;padding:8px 0}
-.mo-subtab-btn{background:#11162a;border:1px solid #2a2a4a;color:#a0a0b0;border-radius:7px;padding:5px 10px;font-size:12px;cursor:pointer}
-.mo-subtab-btn.is-active{background:#533483;border-color:#533483;color:#fff}
-.mo-detail-panel{background:#101522;border:1px solid #2a2a4a;border-radius:10px;padding:12px;display:flex;flex-direction:column;gap:10px}
-.mo-detail-header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #2a2a4a;padding-bottom:8px}
+.mo-subtabs{display:flex;gap:18px;flex-wrap:nowrap;padding:0 0 10px;border-bottom:1px solid rgba(255,255,255,.07);overflow-x:auto;scrollbar-width:none}
+.mo-subtabs::-webkit-scrollbar{display:none}
+.mo-subtab-btn{position:relative;flex:0 0 auto;background:transparent;border:0;color:#8B909A;border-radius:0;padding:8px 0;font-size:12px;cursor:pointer;white-space:nowrap}
+.mo-subtab-btn:after{content:"";position:absolute;left:0;right:0;bottom:-11px;height:2px;background:transparent}
+.mo-subtab-btn.is-active{background:transparent;color:#F4F5F7}
+.mo-subtab-btn.is-active:after{background:#F4F5F7}
+.mo-detail-panel{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:14px}
+.mo-detail-header{display:flex;align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid rgba(255,255,255,.07);padding-bottom:12px}
 .mo-detail-back{width:28px;height:28px;padding:0;display:inline-flex;align-items:center;justify-content:center;flex:0 0 auto}
 .mo-detail-section{display:flex;flex-direction:column;gap:6px}
 .mo-detail-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
 .mo-prompt-toolbar{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.mo-prompt-list{display:flex;flex-direction:column;gap:12px}
-.mo-prompt-card{display:flex;flex-direction:column;gap:10px;background:#11172b;border:1px solid #2a2a4a;border-radius:10px;padding:12px}
+.mo-prompt-list{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:20px}
+.mo-prompt-card{display:flex;flex-direction:column;gap:14px;background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:20px;box-shadow:0 18px 46px rgba(0,0,0,.12)}
 .mo-prompt-card-head{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;flex-wrap:wrap}
-.mo-prompt-card-title{font-size:13px;font-weight:700;color:#e0e0e0}
+.mo-prompt-card-title{font-size:13px;font-weight:700;color:#F4F5F7}
 .mo-prompt-card-desc{font-size:11px;color:#9aa4c6;line-height:1.45}
 .mo-prompt-card-meta{font-size:11px;color:#7f88a6}
-.mo-prompt-card-state{font-size:11px;color:#5dbb5d;font-weight:600}
+.mo-prompt-card-state{font-size:11px;color:#91C9AA;font-weight:600}
 .mo-prompt-card-state.is-dirty{color:#e6a817}
 .mo-prompt-actions{display:flex;gap:8px;flex-wrap:wrap}
-.mo-prompt-textarea{background:#0a0a15;border:1px solid #2a2a4a;color:#e0e0e0;padding:8px 10px;border-radius:6px;font-family:Consolas,Monaco,monospace;font-size:12px;line-height:1.5;resize:vertical;width:100%;min-height:220px}
-.mo-prompt-textarea:focus{border-color:#533483;outline:none}
-.mo-section{font-size:12px;font-weight:600;color:#a0a0b0;text-transform:uppercase;letter-spacing:1px;border-bottom:1px solid #2a2a4a;padding-bottom:4px;margin:0}
-.mo-row{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;min-height:32px;flex-wrap:wrap}
-.mo-row label{font-size:13px;flex-shrink:0}
-.mo-row input[type=text],.mo-row input[type=number],.mo-row input[type=url],.mo-row input[type=search],.mo-row input[type=file]{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:5px 8px;border-radius:6px;font-size:13px;flex:1;min-width:0;max-width:100%}
-.mo-row input:focus,.mo-row select:focus{border-color:#533483;outline:none}
+.mo-prompt-textarea{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:8px 10px;border-radius:12px;font-family:Inter,Pretendard,ui-monospace,SFMono-Regular,Consolas,monospace;font-size:12px;line-height:1.5;resize:vertical;width:100%;min-height:220px}
+.mo-prompt-textarea:focus{border-color:#8FA7FF;outline:none}
+.mo-section{font-size:16px;font-weight:600;color:#F4F5F7;letter-spacing:-.015em;border:0;padding:0;margin:0}
+.mo-row{display:flex;align-items:flex-start;justify-content:space-between;gap:12px 18px;min-height:40px;flex-wrap:wrap;padding:4px 0}
+.mo-row label{font-size:12px;line-height:1.45;color:#8B909A;flex:0 0 min(220px,34%)}
+.mo-row input[type=text],.mo-row input[type=number],.mo-row input[type=url],.mo-row input[type=search],.mo-row input[type=file]{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:9px 11px;border-radius:10px;font-size:13px;flex:1;min-width:0;max-width:100%}
+.mo-row input:focus,.mo-row select:focus{border-color:#8FA7FF;outline:none}
 .mo-chk{display:flex;align-items:center;gap:8px}
-.mo-chk input[type=checkbox]{width:16px;height:16px;accent-color:#533483;cursor:pointer}
+.mo-chk input[type=checkbox]{width:16px;height:16px;accent-color:#5D73E6;cursor:pointer}
 .mo-chk label{cursor:pointer;font-size:13px}
-.mo-footer{background:#16213e;border-top:1px solid #2a2a4a;padding:10px 16px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mo-footer{min-height:64px;background:rgba(19,22,28,.96);border-top:1px solid rgba(255,255,255,.07);padding:10px clamp(16px,3vw,40px);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .mo-footer-language{display:flex;align-items:center;gap:8px;margin-left:8px}
-.mo-footer-language label{font-size:12px;color:#a0a0b0}
-.mo-footer-language select{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:5px 8px;border-radius:6px;font-size:12px}
-.mo-btn{padding:7px 14px;border:none;border-radius:6px;font-size:12px;cursor:pointer;font-weight:500;transition:background 0.15s}
-.mo-btn-primary{background:#533483;color:#fff}.mo-btn-primary:hover{background:#6a44a0}
-.mo-btn-success{background:#2ecc71;color:#fff}.mo-btn-success:hover{background:#27ae60}
-.mo-btn-info{background:#3498db;color:#fff}.mo-btn-info:hover{background:#2980b9}
+.mo-footer-language label{font-size:12px;color:#8B909A}
+.mo-footer-language select{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 9px;border-radius:12px;font-size:12px}
+.mo-btn{min-height:36px;padding:8px 14px;border:1px solid transparent;border-radius:10px;font-size:12px;cursor:pointer;font-weight:600;transition:background .15s,border-color .15s,color .15s,opacity .15s}
+.mo-btn-primary{background:#5D73E6;color:#F4F5F7}.mo-btn-primary:hover{background:#6B82EE}
+.mo-btn-success{background:#181C24;border-color:rgba(143,167,255,.22);color:#8FA7FF}.mo-btn-success:hover{background:#181E2B}
+.mo-btn-info{background:#5D73E6;color:#F4F5F7}.mo-btn-info:hover{background:#6B82EE}
 .mo-btn-warn{background:#e67e22;color:#fff}.mo-btn-warn:hover{background:#d35400}
-.mo-btn-danger{background:transparent;border:1px solid #e74c3c;color:#e74c3c}.mo-btn-danger:hover{background:#e74c3c;color:#fff}
+.mo-btn-danger{background:transparent;border:1px solid rgba(230,133,165,.44);color:#E685A5}.mo-btn-danger:hover{background:rgba(230,133,165,.10);color:#F4F5F7}
 .mo-btn-danger-solid{background:#b63a30;color:#fff}.mo-btn-danger-solid:hover{background:#d14836}.mo-btn-danger-solid:disabled{background:#6b2b26;color:#f2d5d1;cursor:wait}
 .mo-settings-db-reset-btn{font-size:11px;padding:6px 10px;line-height:1.1;font-weight:800;border:1px solid #ff625a;box-shadow:0 0 0 1px rgba(255,72,72,.18) inset}
-.mo-status{font-size:12px;padding:6px 10px;border-radius:6px;margin-top:4px}
-.mo-status-ok{background:#1a3a1a;color:#5dbb5d}
+.mo-status{font-size:12px;line-height:1.45;padding:10px 12px;border:1px solid rgba(255,255,255,.07);border-radius:12px;margin-top:4px}
+.mo-status-ok{background:#13161C;color:#91C9AA}
 .mo-status-notice{background:#18213a;color:#8fa7ff}
-.mo-status-fail{background:#3a1a1a;color:#e74c3c}
-.mo-status-wait{background:#2a2a1a;color:#c89c1a}
-.mo-status-unknown{background:#1a1a2e;color:#666}
+.mo-status-fail{background:#13161C;color:#E685A5}
+.mo-status-wait{background:#13161C;color:#C7A869}
+.mo-status-unknown{background:#13161C;color:#5C626D}
 .mo-model-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .mo-model-grid .mo-field{display:flex;flex-direction:column;gap:2px}
-.mo-model-grid .mo-field label{font-size:11px;color:#a0a0b0}
-.mo-model-grid .mo-field input{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:4px 8px;border-radius:6px;font-size:12px;width:100%}
-.mo-model-grid .mo-field input:focus{border-color:#533483;outline:none}
-.mo-dash{display:flex;flex-direction:column;gap:6px}
-.mo-dash-row{display:flex;align-items:center;gap:8px;font-size:12px}
+.mo-model-grid .mo-field label{font-size:11px;color:#8B909A}
+.mo-model-grid .mo-field input{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 9px;border-radius:12px;font-size:12px;width:100%}
+.mo-model-grid .mo-field input:focus{border-color:#8FA7FF;outline:none}
+.mo-dash{display:flex;flex-direction:column;gap:10px}
+.mo-dash-row{display:flex;align-items:center;gap:10px;min-height:30px;font-size:12px}
 .mo-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
-.mo-dot-ok{background:#5dbb5d}
+.mo-dot-ok{background:#91C9AA}
 .mo-dot-notice{background:#8fa7ff}
 .mo-dot-warn{background:#e6a817}
-.mo-dot-fail{background:#e74c3c}
+.mo-dot-fail{background:#E685A5}
 .mo-dot-unknown{background:#555}
 .mo-dot-skipped{background:#6f7891}
-.mo-dash-label{color:#a0a0b0;min-width:110px}
-.mo-dash-value{color:#e0e0e0;word-break:break-all}
-.mo-note{font-size:11px;color:#666;font-style:italic;padding:4px 0}
-.mo-section-desc{font-size:10px;color:#888;padding:4px 0 8px 0;line-height:1.45}
+.mo-dash-label{color:#8B909A;min-width:110px}
+.mo-dash-value{color:#F4F5F7;word-break:break-all}
+.mo-note{font-size:11px;color:#5C626D;padding:4px 0}
+.mo-section-desc{font-size:12px;color:#8B909A;padding:3px 0 10px;line-height:1.6}
 .mo-row small{flex:1 0 100%;display:block;margin-top:4px;font-size:10px !important;line-height:1.4;color:#7f88a6}
-.mo-common-grid,.mo-test-strip{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
+.mo-common-grid{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:20px;align-items:start}
+.mo-common-grid>*{grid-column:span 6}
+.mo-test-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,240px),1fr));gap:16px;align-items:start}
 .mo-common-card-memory{order:1}
 .mo-common-card-backend{order:2}
-.mo-settings-card{border:1px solid #2a2a4a;border-radius:10px;padding:12px;background:#11172b;display:flex;flex-direction:column;gap:10px}
+.mo-settings-card{border:1px solid rgba(255,255,255,.07);border-radius:16px;padding:20px;background:#13161C;display:flex;flex-direction:column;gap:14px;box-shadow:0 18px 46px rgba(0,0,0,.12)}
 .mo-inline-actions{display:flex;gap:8px;flex-wrap:wrap;padding-top:8px}
-.mo-reference-document{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid #2a2a4a}
+.mo-section-nav{gap:18px;padding:0 0 12px;border-bottom:1px solid rgba(255,255,255,.07);overflow-x:auto;flex-wrap:nowrap;scrollbar-width:none}
+.mo-section-nav::-webkit-scrollbar,.mo-filter-strip::-webkit-scrollbar{display:none}
+.mo-section-nav .mo-btn{flex:0 0 auto;min-height:34px;background:transparent;border-color:transparent;color:#8B909A;padding-left:0;padding-right:0;border-radius:0;white-space:nowrap}
+.mo-section-nav .mo-btn:hover,.mo-section-nav .mo-btn.mo-btn-info,.mo-section-nav .mo-btn.mo-btn-success{background:transparent;border-color:transparent;color:#F4F5F7}
+.mo-filter-strip{flex-wrap:nowrap;overflow-x:auto;padding:2px 0 8px;scrollbar-width:none}
+.mo-filter-strip .mo-btn{flex:0 0 auto;white-space:nowrap}
+.mo-context-card{padding:18px 20px;display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,300px),1fr));gap:14px 20px}
+.mo-reference-document{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:14px;align-items:center;padding:10px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-reference-document:last-child{border-bottom:none}
 .mo-reference-document-main{min-width:0;overflow-wrap:anywhere}
 .mo-reference-document-action{display:flex;align-items:center;justify-content:flex-end}
-.mo-row select{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:5px 8px;border-radius:6px;font-size:13px;flex:1;min-width:0}
+.mo-row select{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 9px;border-radius:12px;font-size:13px;flex:1;min-width:0}
 .mo-range-row input[type=number]{flex:0 0 132px;max-width:150px}
 .mo-range{flex:1 0 100%;width:100%;accent-color:#8d78ff;cursor:pointer}
-.mo-btn-toggle{background:transparent;border:1px solid #2a2a4a;color:#a0a0b0;cursor:pointer;padding:4px 8px;border-radius:6px;font-size:12px;flex-shrink:0;line-height:1}
-.mo-btn-toggle:hover{background:#2a2a4a;color:#e0e0e0}
+.mo-btn-toggle{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;cursor:pointer;padding:5px 9px;border-radius:12px;font-size:12px;flex-shrink:0;line-height:1}
+.mo-btn-toggle:hover{background:#181C24;color:#F4F5F7}
 .mo-llm-section{display:flex;flex-direction:column;gap:8px;padding:4px 0}
 .mo-llm-split{display:grid;grid-template-columns:1fr 1fr;gap:12px;align-items:start}
 .mo-llm-split-single{grid-template-columns:minmax(320px,1fr) minmax(0,.55fr)}
-.mo-llm-panel{border:1px solid #2a2a4a;border-radius:10px;padding:10px;background:#11172b}
+.mo-llm-panel{border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:10px;background:#13161C}
 .mo-embedding-llm-panel{order:2}
 .mo-llm-panel .mo-section{margin-top:0}
-@media (max-width: 1180px){
-  .mo-tl-shell{grid-template-columns:220px minmax(0,1fr);grid-template-rows:minmax(0,1fr) auto}
-  .mo-tl-detail{display:flex;grid-column:1 / -1;max-height:320px}
-}
 @media (max-width: 820px){
-  .mo-llm-split,.mo-common-grid,.mo-test-strip,.mo-tl-shell{grid-template-columns:1fr}
-  .mo-tl-shell{height:auto;max-height:none;min-height:0;grid-template-rows:auto auto auto}
-  .mo-tl-side{min-height:160px;max-height:230px}
-  .mo-tl-session-list{flex:1 1 auto;min-height:112px;max-height:178px}
-  .mo-tl-main{min-height:360px}
-  .mo-tl-detail{grid-column:1;max-height:420px}
+  .mo-llm-split,.mo-common-grid,.mo-test-strip{grid-template-columns:1fr}
+  .mo-common-grid>*{grid-column:1/-1}
+  .mo-tl-toolbar{grid-template-columns:1fr;align-items:stretch}
+  .mo-tl-toolbar-meta{grid-column:1}
+  .mo-tl-canvas-frame{height:clamp(280px,44vh,430px)}
+  .mo-tl-session-actions{justify-content:flex-start;flex-basis:100%}
   .mo-tl-stream:before{left:60px}
   .mo-tl-entry{grid-template-columns:48px 24px minmax(0,1fr);gap:8px}
   .mo-tl-entry-time{max-width:48px}
   .mo-reference-document{grid-template-columns:1fr}
   .mo-reference-document-action{justify-content:flex-start}
 }
-.mo-row input[type=password]{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:5px 8px;border-radius:6px;font-size:13px;flex:1;min-width:0}
-.mo-row input[type=password]:focus{border-color:#533483;outline:none}
-.mo-preview-block{background:#111;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin:4px 0}
-.mo-preview-title{font-size:11px;font-weight:600;color:#a0a0b0;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px}
+.mo-row input[type=password]{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 9px;border-radius:12px;font-size:13px;flex:1;min-width:0}
+.mo-row input[type=password]:focus{border-color:#8FA7FF;outline:none}
+.mo-preview-block{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:8px 10px;margin:4px 0}
+.mo-preview-title{font-size:11px;font-weight:600;color:#8B909A;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px}
 .mo-preview-text{font-size:12px;color:#ccc;line-height:1.5;white-space:pre-wrap;word-break:break-word}
-.mo-preview-debug{font-size:11px;color:#777;background:#0a0a15;border:1px dashed #2a2a4a;border-radius:4px;padding:6px 8px;margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto}
+.mo-preview-debug{font-size:11px;color:#8B909A;background:#0B0D11;border:1px dashed rgba(255,255,255,.07);border-radius:12px;padding:6px 8px;margin-top:6px;white-space:pre-wrap;word-break:break-all;max-height:120px;overflow-y:auto}
 .mo-history-legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:#888;padding:2px 0 4px 0}
 .mo-history-legend span{display:flex;align-items:center;gap:3px}
-.mo-history-item{display:flex;align-items:center;gap:6px;font-size:11px;padding:3px 0;border-bottom:1px solid #1a1a2e}
+.mo-history-item{display:flex;align-items:center;gap:6px;font-size:11px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-history-item:last-child{border-bottom:none}
 .mo-history-dots{display:flex;gap:3px}
 .mo-history-dots .mo-dot{width:6px;height:6px}
-.mo-it-header{font-size:11px;color:#a0a0b0;padding:4px 0;border-bottom:1px dashed #2a2a4a;margin-bottom:6px}
-.mo-it-block{background:#111;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin:4px 0}
-.mo-it-block[open]{background:#0d0d1a}
-.mo-it-title{font-size:11px;font-weight:600;color:#a0a0b0;margin-bottom:4px;cursor:default;letter-spacing:0.3px}
+.mo-it-header{font-size:11px;color:#8B909A;padding:4px 0;border-bottom:1px dashed rgba(255,255,255,.07);margin-bottom:6px}
+.mo-it-block{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:8px 10px;margin:4px 0}
+.mo-it-block[open]{background:#181C24}
+.mo-it-title{font-size:11px;font-weight:600;color:#8B909A;margin-bottom:4px;cursor:default;letter-spacing:0.3px}
 details.mo-it-block > summary.mo-it-title{cursor:pointer;list-style:none;user-select:none}
 details.mo-it-block > summary.mo-it-title::-webkit-details-marker{display:none}
 details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-it-expand{font-size:10px;color:#666;font-weight:400}
 .mo-it-content{font-size:12px;color:#ccc;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
-.mo-it-ctx-msg{display:flex;gap:6px;padding:3px 0;border-bottom:1px solid #1a1a2e;align-items:flex-start}
+.mo-it-ctx-msg{display:flex;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.07);align-items:flex-start}
 .mo-it-ctx-msg:last-child{border-bottom:none}
 .mo-it-role{font-size:10px;font-weight:600;padding:1px 5px;border-radius:3px;flex-shrink:0;text-transform:uppercase}
-.mo-it-role-user{background:#1a3a1a;color:#5dbb5d}
-.mo-it-role-assistant{background:#1a2a3a;color:#5db0e0}
-.mo-it-role-system{background:#2a2a1a;color:#c89c1a}
+.mo-it-role-user{background:#181C24;color:#91C9AA}
+.mo-it-role-assistant{background:#181E2B;color:#8FA7FF}
+.mo-it-role-system{background:#181C24;color:#C7A869}
+.mo-ex-history-badge{font-size:10px;font-weight:650;line-height:1;padding:3px 6px;border-radius:999px;border:1px solid rgba(255,255,255,.08);white-space:nowrap}
+.mo-ex-history-badge.is-inherited{background:#151A25;color:#9AADEB;border-color:rgba(143,167,255,.2)}
+.mo-ex-history-badge.is-current{background:#151B18;color:#91C9AA;border-color:rgba(145,201,170,.18)}
 .mo-it-ctx-content{font-size:11px;color:#bbb;line-height:1.4;word-break:break-word}
-.mo-it-mem-item,.mo-it-fb-item{display:flex;gap:6px;padding:3px 0;border-bottom:1px solid #1a1a2e;align-items:flex-start;flex-wrap:wrap}
+.mo-it-mem-item,.mo-it-fb-item{display:flex;gap:6px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.07);align-items:flex-start;flex-wrap:wrap}
 .mo-it-mem-item:last-child,.mo-it-fb-item:last-child{border-bottom:none}
 .mo-it-mem-idx{font-size:10px;color:#666;flex-shrink:0;min-width:24px}
 .mo-it-mem-summary{font-size:11px;color:#ccc;flex:1;line-height:1.4;word-break:break-word}
-.mo-it-mem-meta{font-size:10px;color:#888;background:#1a1a2e;padding:1px 5px;border-radius:3px;flex-shrink:0}
+.mo-it-mem-meta{font-size:10px;color:#8B909A;background:#181C24;padding:1px 5px;border-radius:12px;flex-shrink:0}
 .mo-it-dir-row{display:flex;gap:8px;padding:2px 0;font-size:11px}
-.mo-it-dir-key{color:#a0a0b0;font-weight:600;min-width:80px;flex-shrink:0}
+.mo-it-dir-key{color:#8B909A;font-weight:600;min-width:80px;flex-shrink:0}
 .mo-it-dir-val{color:#ccc;word-break:break-word}
-.mo-ex-current{font-size:12px;color:#a0a0b0;padding:4px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.mo-ex-current strong{color:#e0e0e0}
-.mo-ex-live-token{background:#101522;border:1px solid #2a2a4a;border-radius:6px;padding:7px 10px;margin:2px 0 6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.mo-ex-live-token-title{font-size:11px;color:#c0d0ff;font-weight:700}
-.mo-ex-live-token-kv{font-size:11px;color:#a8b0c5}
-.mo-ex-live-token-kv b{color:#dfe6ff}
-.mo-ex-live-token-note{font-size:10px;color:#8a93aa;margin-left:auto}
-.mo-ex-live-token-note-warn{color:#f0ad4e}
-.mo-chatlog-repair-panel{background:#101522;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin:2px 0 8px;display:flex;flex-direction:column;gap:6px}
+.mo-ex-current{font-size:12px;color:#8B909A;padding:4px 0;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mo-ex-current strong{color:#F4F5F7}
+.mo-ex-operations{margin-top:10px;border:1px solid rgba(255,255,255,.07);border-radius:14px;background:#0F1116;overflow:hidden}
+.mo-ex-operations>summary{padding:13px 16px;color:#8B909A;font-size:11px;font-weight:700;cursor:pointer}
+.mo-ex-operations[open]>summary{border-bottom:1px solid rgba(255,255,255,.07);color:#F4F5F7}
+.mo-ex-operations-body{display:flex;flex-direction:column;gap:12px;padding:14px}
+.mo-ex-live-token{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:7px 10px;margin:2px 0 6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.mo-ex-live-token-title{font-size:11px;color:#F4F5F7;font-weight:700}
+.mo-ex-live-token-kv{font-size:11px;color:#8B909A}
+.mo-ex-live-token-kv b{color:#F4F5F7}
+.mo-ex-live-token-note{font-size:10px;color:#5C626D;margin-left:auto}
+.mo-ex-live-token-note-warn{color:#C7A869}
+.mo-chatlog-repair-panel{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:8px 10px;margin:2px 0 8px;display:flex;flex-direction:column;gap:6px}
 .mo-chatlog-repair-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap}
-.mo-chatlog-repair-title{font-size:12px;font-weight:700;color:#e6ecff}
-.mo-chatlog-repair-desc{font-size:11px;color:#a8b0c5;line-height:1.45;white-space:pre-wrap}
-.mo-chatlog-repair-meta{font-size:11px;color:#8a93aa}
-.mo-chatlog-repair-status{font-size:11px;line-height:1.45;padding:6px 8px;border-radius:6px;background:#16213e;color:#dfe6ff}
-.mo-chatlog-repair-status-working{background:#2a2a1a;color:#f3d37a}
-.mo-chatlog-repair-status-done{background:#173323;color:#9ddb9d}
-.mo-chatlog-repair-status-error{background:#3a1a1a;color:#f08b84}
-.mo-ex-batch-toolbar{background:#101522;border:1px solid #2a2a4a;border-radius:6px;padding:8px 10px;margin:2px 0 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.mo-ex-batch-select-all-wrap{display:flex;align-items:center;gap:6px;font-size:11px;color:#c7cfdf}
+.mo-chatlog-repair-title{font-size:12px;font-weight:700;color:#F4F5F7}
+.mo-chatlog-repair-desc{font-size:11px;color:#8B909A;line-height:1.45;white-space:pre-wrap}
+.mo-chatlog-repair-meta{font-size:11px;color:#5C626D}
+.mo-chatlog-repair-status{font-size:11px;line-height:1.45;padding:6px 8px;border-radius:12px;background:#181C24;color:#F4F5F7}
+.mo-chatlog-repair-status-working{background:#181C24;color:#C7A869}
+.mo-chatlog-repair-status-done{background:#181C24;color:#91C9AA}
+.mo-chatlog-repair-status-error{background:#18161C;color:#E685A5}
+.mo-ex-batch-toolbar{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:8px 10px;margin:2px 0 8px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.mo-ex-batch-select-all-wrap{display:flex;align-items:center;gap:6px;font-size:11px;color:#F4F5F7}
 .mo-ex-batch-check{width:14px;height:14px;accent-color:#d14836;cursor:pointer;flex-shrink:0}
-.mo-ex-batch-count{font-size:11px;color:#8a93aa}
-.mo-ex-batch-note{flex:1 0 100%;font-size:10px;color:#8ea0c0;line-height:1.45}
-.mo-ex-batch-result{flex:1 0 100%;font-size:11px;color:#9ddb9d;background:#173323;border:1px solid #245137;border-radius:6px;padding:6px 8px}
-.mo-ex-batch-error{flex:1 0 100%;font-size:11px;color:#f08b84;background:#3a1a1a;border:1px solid #5b2525;border-radius:6px;padding:6px 8px}
-.mo-ex-sessions-box{border:1px solid #2a2a4a;border-radius:6px;overflow:hidden;margin:4px 0}
-.mo-ex-sessions-header{font-size:11px;color:#a0a0b0;padding:6px 10px;background:#16213e;display:flex;align-items:center;justify-content:space-between}
-.mo-ex-sessions-list{max-height:140px;overflow-y:auto}
-.mo-ex-session{display:flex;align-items:center;gap:8px;padding:5px 10px;cursor:pointer;font-size:11px;border-bottom:1px solid #1a1a2e;transition:background 0.1s}
-.mo-ex-session:hover{background:#1a2a3a}
-.mo-ex-session:last-child{border-bottom:none}
-.mo-ex-session-active{background:#1a2a3a;border-left:3px solid #533483}
-.mo-ex-session-live{position:relative}
-.mo-ex-live-badge{color:#2ecc71;font-size:8px;flex-shrink:0;line-height:1}
+.mo-ex-batch-count{font-size:11px;color:#8B909A}
+.mo-ex-batch-note{flex:1 0 100%;font-size:10px;color:#5C626D;line-height:1.45}
+.mo-ex-batch-result{flex:1 0 100%;font-size:11px;color:#91C9AA;background:#181C24;border:1px solid rgba(145,201,170,.24);border-radius:12px;padding:6px 8px}
+.mo-ex-batch-error{flex:1 0 100%;font-size:11px;color:#E685A5;background:#18161C;border:1px solid rgba(230,133,165,.28);border-radius:12px;padding:6px 8px}
 .mo-ex-sync{font-size:10px;padding:1px 6px;border-radius:3px;flex-shrink:0;font-weight:500}
-.mo-ex-sync-ok{color:#2ecc71;background:#1a2e1a}
-.mo-ex-sync-diff{color:#f0ad4e;background:#2e2a1a}
+.mo-ex-sync-ok{color:#91C9AA;background:#181C24}
+.mo-ex-sync-diff{color:#C7A869;background:#181C24}
 .mo-ex-goto-live{font-size:10px;padding:2px 6px}
-.mo-ex-session-id{color:#e0e0e0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.mo-ex-session-counts{color:#888;font-size:10px;flex-shrink:0}
-.mo-ex-session-time{color:#555;font-size:10px;flex-shrink:0}
-.mo-ex-tabs{display:flex;gap:4px;padding:6px 0}
-.mo-ex-tab{background:transparent;border:1px solid #2a2a4a;color:#a0a0b0;padding:5px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.15s}
-.mo-ex-tab:hover{background:#1a2a3a;color:#e0e0e0}
-.mo-ex-tab-active{background:#533483;color:#fff;border-color:#533483}
+.mo-memory-context{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:0 0 18px;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-memory-context-main{display:flex;align-items:center;gap:8px;min-width:0;font-size:12px;color:#8B909A}
+.mo-memory-context-main strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#F4F5F7;font-size:13px}
+.mo-memory-layout{display:grid;grid-template-columns:minmax(170px,220px) minmax(0,1fr);gap:32px;padding-top:24px;align-items:start}
+.mo-memory-rail{position:sticky;top:0;min-width:0}
+.mo-memory-rail-label{margin:0 0 10px;color:#5C626D;font-size:10px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+.mo-ex-tabs{display:flex;flex-direction:column;gap:1px;padding:0}
+.mo-ex-tab{display:flex;align-items:center;justify-content:space-between;width:100%;background:transparent;border:0;border-left:2px solid transparent;color:#8B909A;padding:10px 10px 10px 14px;border-radius:0;cursor:pointer;font-size:12px;font-weight:550;text-align:left;transition:color .15s,border-color .15s,background .15s}
+.mo-ex-tab:hover{background:rgba(255,255,255,.025);color:#F4F5F7}
+.mo-ex-tab-active{background:rgba(255,255,255,.035);color:#F4F5F7;border-left-color:#F4F5F7}
 .mo-ex-tab-count{font-size:10px;color:inherit;opacity:0.7;margin-left:2px}
-.mo-hierarchy-subtabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 8px 0;padding:4px 0;border-bottom:1px solid #24243f}
-.mo-hierarchy-subtab{background:#111827;border:1px solid #2a3550;color:#b8c0d8;padding:4px 10px;border-radius:6px;cursor:pointer;font-size:11px;font-weight:600}
-.mo-hierarchy-subtab:hover{background:#1a2a3a;color:#fff}
-.mo-hierarchy-subtab-active{background:#274060;color:#fff;border-color:#5b7aa5}
+.mo-memory-workspace{min-width:0}
+.mo-memory-workspace-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding:0 0 12px;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-memory-workspace-title{font-size:18px;line-height:1.25;font-weight:500;color:#F4F5F7;letter-spacing:-.02em}
+.mo-memory-workspace-count{font-size:11px;color:#5C626D}
+.mo-memory-management{display:flex;flex-direction:column;gap:18px}
+.mo-memory-management-stack{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.mo-hierarchy-subtabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 8px 0;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-hierarchy-subtab{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:600}
+.mo-hierarchy-subtab:hover{background:#181C24;color:#F4F5F7}
+.mo-hierarchy-subtab-active{background:#181E2B;color:#F4F5F7;border-color:rgba(143,167,255,.32)}
 .mo-hierarchy-details{margin-top:6px}
 .mo-ex-detail-row{margin-top:6px}
-.mo-ex-detail-label{display:block;color:#9fb0d0;font-size:10px;font-weight:700;margin-bottom:2px}
+.mo-ex-detail-label{display:block;color:#8B909A;font-size:10px;font-weight:700;margin-bottom:2px}
 .mo-ent-container{display:flex;flex-direction:column;gap:14px}
 .mo-ent-section{display:flex;flex-direction:column;gap:6px}
 .mo-entity-memory-tools-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;margin:10px 0 12px 0;align-items:stretch}
 .mo-entity-memory-tool-card{min-width:0;gap:8px}
 .mo-entity-memory-tool-card .mo-section-desc{font-size:11px;line-height:1.45}
 @media (max-width: 760px){.mo-entity-memory-tools-grid{grid-template-columns:1fr}}
-.mo-ent-heading{font-size:12px;font-weight:700;color:#a0a0b0;text-transform:uppercase;letter-spacing:0.8px;margin:0;padding-bottom:4px;border-bottom:1px solid #2a2a4a}
-.mo-ent-subtab-bar{display:flex;gap:4px;padding-bottom:8px;border-bottom:1px solid #2a2a4a;margin-bottom:4px}
-.mo-ent-subtab-btn{background:transparent;border:1px solid #2a2a4a;color:#a0a0b0;padding:4px 12px;border-radius:6px;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.15s}
-.mo-ent-subtab-btn:hover{background:#1a2a3a;color:#e0e0e0}
-.mo-ent-subtab-active{background:#533483;color:#fff!important;border-color:#533483}
+.mo-ent-heading{font-size:12px;font-weight:700;color:#8B909A;text-transform:uppercase;letter-spacing:0.8px;margin:0;padding-bottom:4px;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-ent-subtab-bar{display:flex;gap:4px;padding-bottom:8px;border-bottom:1px solid rgba(255,255,255,.07);margin-bottom:4px}
+.mo-ent-subtab-btn{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:4px 12px;border-radius:12px;cursor:pointer;font-size:12px;font-weight:500;transition:all 0.15s}
+.mo-ent-subtab-btn:hover{background:#181C24;color:#F4F5F7}
+.mo-ent-subtab-active{background:#181E2B;color:#F4F5F7!important;border-color:rgba(143,167,255,.32)}
 .mo-ent-subtab-count{font-size:10px;opacity:0.7}
-.mo-ent-card{background:#16213e;border:1px solid #2a2a4a;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}
+.mo-ent-card{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:8px 10px;display:flex;flex-direction:column;gap:3px}
 .mo-ent-card-header{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.mo-ent-name{font-size:13px;font-weight:600;color:#c0c0e0}
-.mo-ent-turn{font-size:10px;color:#7070a0;margin-left:auto}
-.mo-ent-scope{font-size:10px;background:#2a2a4a;color:#9090b0;padding:1px 5px;border-radius:4px}
-.mo-ent-alias{font-size:10px;color:#6080a0;font-style:italic}
-.mo-ent-detail{font-size:11px;color:#9090b0;display:flex;flex-wrap:wrap;gap:6px}
-.mo-ent-detail.mo-ent-empty{color:#606080;font-style:italic}
-.mo-ent-kv b{color:#b0b0d0;font-weight:600}
-.mo-ent-rel{font-size:11px;color:#70a0d0}
-.mo-ent-speech{font-size:11px;color:#bda76a}
-.mo-ent-speech-btn{background:#1a2a3a;border:1px solid #2a4a66;color:#9fc8e8;cursor:pointer;font-size:11px;padding:2px 7px;border-radius:5px;line-height:1.2}
-.mo-ent-speech-btn:hover{background:#20344a;color:#d8f0ff}
+.mo-ent-name{font-size:13px;font-weight:600;color:#F4F5F7}
+.mo-ent-turn{font-size:10px;color:#5C626D;margin-left:auto}
+.mo-ent-scope{font-size:10px;background:#181C24;color:#8B909A;padding:1px 5px;border-radius:12px}
+.mo-ent-alias{font-size:10px;color:#8B909A;font-style:italic}
+.mo-ent-detail{font-size:11px;color:#8B909A;display:flex;flex-wrap:wrap;gap:6px}
+.mo-ent-detail.mo-ent-empty{color:#5C626D;font-style:italic}
+.mo-ent-kv b{color:#F4F5F7;font-weight:600}
+.mo-ent-rel{font-size:11px;color:#8FA7FF}
+.mo-ent-speech{font-size:11px;color:#C7A869}
+.mo-ent-speech-btn{background:#181C24;border:1px solid rgba(143,167,255,.22);color:#8FA7FF;cursor:pointer;font-size:11px;padding:2px 7px;border-radius:12px;line-height:1.2}
+.mo-ent-speech-btn:hover{background:#181E2B;color:#F4F5F7}
 .mo-ent-speech-form{margin-top:6px}
 .mo-ent-del-btn{background:transparent;border:none;color:#805050;cursor:pointer;font-size:12px;padding:0 2px;margin-left:auto;opacity:0.6;transition:opacity 0.15s;line-height:1}
 .mo-ent-del-btn:hover{opacity:1;color:#e06060}
-.mo-ex-content{max-height:350px;overflow-y:auto;display:flex;flex-direction:column;gap:4px;padding:4px 0}
-.mo-ex-item{background:#111;border:1px solid #2a2a4a;border-radius:6px;padding:6px 10px;transition:background 0.1s}
-.mo-ex-item:hover{background:#0d0d1a}
+.mo-ex-content{max-height:none;overflow:visible;display:flex;flex-direction:column;gap:0;padding:0}
+.mo-ex-item{background:transparent;border:0;border-bottom:1px solid rgba(255,255,255,.07);border-radius:0;padding:14px 4px;transition:background .1s}
+.mo-ex-item:hover{background:rgba(255,255,255,.018)}
+.mo-ex-item.mo-ed-editing{background:#0F1116;border-bottom-color:rgba(255,255,255,.12);padding:18px}
+.mo-memory-workspace .mo-ex-item-header{min-height:24px}
+.mo-memory-workspace .mo-ex-item-preview{font-size:12px;line-height:1.6;color:#8B909A}
+.mo-memory-workspace .mo-ex-item-full{max-height:none;overflow:visible;font-size:12px;line-height:1.65}
+.mo-memory-workspace .mo-ent-card,.mo-memory-workspace .mo-trust-group,.mo-memory-workspace .mo-world-rule-group{background:transparent;border:0;border-bottom:1px solid rgba(255,255,255,.07);border-radius:0;box-shadow:none;padding:14px 4px;margin:0}
+.mo-memory-workspace .mo-ed-edit-btn{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 9px;border:1px solid rgba(255,255,255,.10);border-radius:8px;color:#F4F5F7;font-size:10px;font-weight:650;cursor:pointer}
+.mo-memory-workspace .mo-ed-edit-btn:hover{background:#181C24;border-color:rgba(255,255,255,.18)}
 /* I-3c: Trust tab */
 .mo-trust-tab{display:flex;flex-direction:column;gap:6px}
-.mo-trust-legend{font-size:10px;color:#888;padding:2px 0 4px}
+.mo-trust-legend{font-size:10px;color:#8B909A;padding:2px 0 4px}
 .mo-trust-reload{margin-bottom:4px}
-.mo-trust-group{background:#111;border:1px solid #2a2a4a;border-radius:6px;padding:6px 8px}
-.mo-trust-group-title{font-size:11px;font-weight:600;color:#a0b0ff;margin-bottom:4px}
-.mo-trust-row{display:flex;flex-direction:column;gap:6px;padding:5px 0;border-bottom:1px solid #1a1a2e}
+.mo-trust-group{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:6px 8px}
+.mo-trust-group-title{font-size:11px;font-weight:600;color:#8FA7FF;margin-bottom:4px}
+.mo-trust-row{display:flex;flex-direction:column;gap:6px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-trust-row-main{display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%}
 .mo-trust-row:last-child{border-bottom:none}
 .mo-trust-row-suppressed{opacity:0.45}
-.mo-trust-name{font-size:12px;color:#c0c0d0;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}
-.mo-trust-badge{font-size:9px;color:#888;background:#1a1a2e;border-radius:3px;padding:1px 4px;margin-left:4px}
+.mo-trust-name{font-size:12px;color:#F4F5F7;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;padding-right:8px}
+.mo-trust-badge{font-size:9px;color:#8B909A;background:#181C24;border-radius:12px;padding:1px 4px;margin-left:4px}
 .mo-trust-actions{display:flex;gap:3px;align-items:center;flex-shrink:0}
-.mo-trust-btn{background:#1a1a2e;border:1px solid #3a3a5a;color:#888;padding:2px 6px;border-radius:4px;cursor:pointer;font-size:11px;transition:all 0.1s}
-.mo-trust-btn:hover{background:#2a2a4a;color:#e0e0e0}
-.mo-trust-btn-on{background:#2a1a4a;border-color:#7b50cc;color:#c080ff}
+.mo-trust-btn{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:2px 6px;border-radius:12px;cursor:pointer;font-size:11px;transition:all 0.1s}
+.mo-trust-btn:hover{background:#181C24;color:#F4F5F7}
+.mo-trust-btn-on{background:#181E2B;border-color:rgba(143,167,255,.32);color:#8FA7FF}
 .mo-trust-btn-busy{opacity:0.5;cursor:not-allowed}
-.mo-trust-status{font-size:10px;color:#888;margin-left:3px}
+.mo-trust-status{font-size:10px;color:#8B909A;margin-left:3px}
 /* I-4d: World Graph tab */
 .mo-world-tab{display:flex;flex-direction:column;gap:6px}
 .mo-world-scope-bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 0}
 .mo-world-scope-view-bar{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 0}
-.mo-world-scope-label{font-size:11px;color:#888;margin-right:4px}
-.mo-world-scope-btn{background:#1a1a2e;border:1px solid #3a3a5a;color:#888;padding:3px 8px;border-radius:12px;cursor:pointer;font-size:11px;transition:all 0.15s}
-.mo-world-scope-btn:hover{background:#2a2a4a;color:#e0e0e0}
-.mo-world-scope-view-btn{background:#111827;border:1px solid #2a3a5a;color:#9ca3af;padding:3px 8px;border-radius:12px;cursor:pointer;font-size:11px;transition:all 0.15s}
-.mo-world-scope-view-btn:hover{background:#1f2937;color:#e5e7eb}
-.mo-world-scope-view-active{background:#312e81;border-color:#7c3aed;color:#f5f3ff;font-weight:600}
+.mo-world-scope-label{font-size:11px;color:#8B909A;margin-right:4px}
+.mo-world-scope-btn{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:3px 8px;border-radius:12px;cursor:pointer;font-size:11px;transition:all 0.15s}
+.mo-world-scope-btn:hover{background:#181C24;color:#F4F5F7}
+.mo-world-scope-view-btn{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:3px 8px;border-radius:12px;cursor:pointer;font-size:11px;transition:all 0.15s}
+.mo-world-scope-view-btn:hover{background:#181C24;color:#F4F5F7}
+.mo-world-scope-view-active{background:#181E2B;border-color:rgba(143,167,255,.32);color:#F4F5F7;font-weight:600}
 .mo-world-scope-active{background:#1a3a2a;border-color:#3cb371;color:#7fff9a;font-weight:600}  /* 선택=저장 */
 .mo-world-scope-pending{background:#2a2a12;border-color:#8a8a30;color:#e0e060;font-weight:600} /* 선택≠저장 (미저장) */
 .mo-world-scope-saved{background:#121a12;border-color:#2a5a30;color:#5a9a5a}                  /* 저장됐지만 다른 곳 선택 중 */
 .mo-world-scope-name-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:2px 0}
 .mo-world-scope-name-row-root{color:#666;font-size:11px}
-.mo-world-saved-info{font-size:10px;color:#4a8a4a;margin-left:auto;padding:1px 6px;background:#111;border-radius:8px;white-space:nowrap}
-.mo-world-scope-apply-dirty{border-color:#e0d040 !important;color:#e0d040 !important}
-.mo-world-scope-name-label{font-size:11px;color:#888;flex-shrink:0}
-.mo-world-scope-name-input{background:#111;border:1px solid #3a3a5a;color:#c0c0d0;padding:3px 8px;border-radius:4px;font-size:12px;flex:1;min-width:100px;max-width:240px}
+.mo-world-saved-info{font-size:10px;color:#91C9AA;margin-left:auto;padding:1px 6px;background:#13161C;border-radius:12px;white-space:nowrap}
+.mo-world-scope-apply-dirty{border-color:#C7A869 !important;color:#C7A869 !important}
+.mo-world-scope-name-label{font-size:11px;color:#8B909A;flex-shrink:0}
+.mo-world-scope-name-input{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:3px 8px;border-radius:12px;font-size:12px;flex:1;min-width:100px;max-width:240px}
 .mo-world-scope-apply{margin-left:4px}
 .mo-world-scope-status{font-size:11px;margin-left:4px}
-.mo-world-chain{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 0;font-size:11px;color:#888}
-.mo-world-chain-badge{background:#1a1a2e;border:1px solid #3a3a5a;border-radius:10px;padding:1px 7px;color:#a0b0ff;font-size:10px}
-.mo-world-chain-sep{color:#555;font-size:10px}
-.mo-world-rule-group{background:#111;border:1px solid #2a2a4a;border-radius:6px;padding:6px 8px;margin-top:4px}
-.mo-world-rule-group-active{border-color:#3cb371}
-.mo-world-rule-group-inherited{border-color:#2a3a5a;opacity:0.8}
-.mo-world-rule-group-scope{border-color:#334155}
-.mo-world-rule-group-title{font-size:11px;font-weight:600;color:#a0d0a0;margin-bottom:4px}
-.mo-world-rule-group-inherited .mo-world-rule-group-title{color:#7090b0}
-.mo-world-rule-group-empty{font-size:11px;color:#555;padding:2px 4px}
-.mo-world-rule-row{padding:3px 0;border-bottom:1px solid #1a1a2e}
+.mo-world-chain{display:flex;align-items:center;gap:4px;flex-wrap:wrap;padding:4px 0;font-size:11px;color:#8B909A}
+.mo-world-chain-badge{background:#181C24;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:1px 7px;color:#8FA7FF;font-size:10px}
+.mo-world-chain-sep{color:#5C626D;font-size:10px}
+.mo-world-rule-group{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:6px 8px;margin-top:4px}
+.mo-world-rule-group-active{border-color:rgba(145,201,170,.28)}
+.mo-world-rule-group-inherited{border-color:rgba(143,167,255,.20);opacity:0.8}
+.mo-world-rule-group-scope{border-color:rgba(255,255,255,.10)}
+.mo-world-rule-group-title{font-size:11px;font-weight:600;color:#91C9AA;margin-bottom:4px}
+.mo-world-rule-group-inherited .mo-world-rule-group-title{color:#8B909A}
+.mo-world-rule-group-empty{font-size:11px;color:#5C626D;padding:2px 4px}
+.mo-world-rule-row{padding:3px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-world-rule-row:last-child{border-bottom:none}
 .mo-world-rule-suppressed{opacity:0.45}
-.mo-world-rule-name{font-size:12px;color:#c0c0d0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
+.mo-world-rule-name{font-size:12px;color:#F4F5F7;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center;gap:6px}
 .mo-world-rule-meta{display:flex;gap:4px;align-items:center;flex-wrap:wrap;margin-top:1px}
 .mo-world-rule-actions{display:flex;gap:4px;justify-content:flex-end;margin-top:4px}
 .mo-world-rule-edit-wrap{margin-top:6px}
-.mo-world-rule-scope{font-size:9px;color:#7090b0;background:#1a1a2e;border-radius:3px;padding:1px 4px}
-.mo-world-rule-raw-scope{font-size:9px;color:#9ca3af;background:#111827;border:1px solid #293548;border-radius:3px;padding:1px 4px}
-.mo-world-rule-applied{font-size:9px;color:#7fff9a;background:#12301f;border:1px solid #265c3b;border-radius:3px;padding:1px 4px}
-.mo-world-rule-cat{font-size:9px;color:#777;background:#111;border:1px solid #2a2a3a;border-radius:3px;padding:1px 4px}
+.mo-world-rule-scope{font-size:9px;color:#8B909A;background:#181C24;border-radius:12px;padding:1px 4px}
+.mo-world-rule-raw-scope{font-size:9px;color:#8B909A;background:#181C24;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:1px 4px}
+.mo-world-rule-applied{font-size:9px;color:#91C9AA;background:#181C24;border:1px solid rgba(145,201,170,.24);border-radius:12px;padding:1px 4px}
+.mo-world-rule-cat{font-size:9px;color:#5C626D;background:#181C24;border:1px solid rgba(255,255,255,.07);border-radius:12px;padding:1px 4px}
 .mo-world-reload{margin-top:2px}
 .mo-ex-item-header{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:11px}
-.mo-ex-item-turn{color:#a0a0b0;font-size:10px}
-.mo-ex-item-id{color:#555;font-size:10px}
-.mo-ex-item-time{color:#555;font-size:10px}
-.mo-ex-item-meta{color:#888;font-size:10px;background:#1a1a2e;padding:1px 5px;border-radius:3px}
-.mo-ex-expand-btn{color:#3498db;font-size:10px;cursor:pointer;margin-left:auto;flex-shrink:0;user-select:none}
-.mo-ex-expand-btn:hover{color:#5dbbe0}
-.mo-ex-item-preview{font-size:11px;color:#bbb;padding:3px 0;line-height:1.4;word-break:break-word}
-.mo-ex-item-full{font-size:11px;color:#ccc;padding:4px 0;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
+.mo-ex-item-turn{color:#8B909A;font-size:10px}
+.mo-ex-item-id{color:#5C626D;font-size:10px}
+.mo-ex-item-time{color:#5C626D;font-size:10px}
+.mo-ex-item-meta{color:#8B909A;font-size:10px;background:#181C24;padding:1px 5px;border-radius:12px}
+.mo-ex-expand-btn{color:#8FA7FF;font-size:10px;cursor:pointer;margin-left:auto;flex-shrink:0;user-select:none}
+.mo-ex-expand-btn:hover{color:#F4F5F7}
+.mo-ex-item-preview{font-size:11px;color:#8B909A;padding:3px 0;line-height:1.4;word-break:break-word}
+.mo-ex-item-full{font-size:11px;color:#F4F5F7;padding:4px 0;line-height:1.5;white-space:pre-wrap;word-break:break-word;max-height:300px;overflow-y:auto}
 .mo-chat-turn-panes{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:6px;margin-top:4px}
-.mo-chat-turn-pane{min-width:0;border:1px solid #2a2a46;border-radius:5px;background:#10101d;padding:5px 7px}
-.mo-chat-turn-pane-label{font-size:10px;font-weight:700;color:#8e9fc7;margin-bottom:2px}
+.mo-chat-turn-pane{min-width:0;border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#13161C;padding:5px 7px}
+.mo-chat-turn-pane-label{font-size:10px;font-weight:700;color:#8FA7FF;margin-bottom:2px}
 .mo-chat-turn-pane .mo-ex-item-preview{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;padding:0}
-.mo-chat-turn-pane .mo-ex-item-full{padding:0;max-height:360px}
+.mo-chat-turn-pane .mo-ex-item-full{padding:0;max-height:none;overflow:visible}
 .mo-chat-turn-pane-missing{border-style:dashed;opacity:.68}
 .mo-chat-turn-pane-missing .mo-ex-item-preview,.mo-chat-turn-pane-missing .mo-ex-item-full{color:#777;font-style:italic}
 @media(max-width:620px){.mo-chat-turn-panes{grid-template-columns:1fr}}
-.mo-ex-json{font-family:monospace;font-size:11px;background:#0a0a15;padding:6px 8px;border-radius:4px;border:1px dashed #2a2a4a}
-.mo-ex-kg-triple{color:#e0e0e0;font-size:11px;flex:1;min-width:0;word-break:break-word}
-.mo-ex-kg-meta{display:flex;gap:8px;font-size:10px;color:#888;padding:2px 0;flex-wrap:wrap}
+.mo-ex-json{font-family:monospace;font-size:11px;background:#0B0D11;padding:6px 8px;border-radius:12px;border:1px dashed rgba(255,255,255,.07)}
+.mo-ex-kg-triple{color:#F4F5F7;font-size:11px;flex:1;min-width:0;word-break:break-word}
+.mo-ex-kg-meta{display:flex;gap:8px;font-size:10px;color:#8B909A;padding:2px 0;flex-wrap:wrap}
 .mo-ex-more-btn{margin-top:6px;align-self:center}
-.mo-ex-clear-filter{font-size:10px;padding:2px 6px}
 .mo-ed-edit-btn{cursor:pointer;font-size:12px;margin-left:4px;flex-shrink:0;user-select:none;opacity:0.7;transition:opacity 0.15s}
 .mo-ed-edit-btn:hover{opacity:1}
 .mo-del-btn{cursor:pointer;font-size:12px;margin-left:2px;flex-shrink:0;user-select:none;opacity:0.5;transition:opacity 0.15s}
@@ -49342,10 +44674,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-fb-group{display:inline-flex;gap:1px;margin-left:4px;flex-shrink:0;user-select:none}
 .mo-fb-btn{cursor:pointer;font-size:11px;opacity:0.4;transition:opacity 0.15s,transform 0.1s;padding:0 1px}
 .mo-fb-btn:hover{opacity:0.9;transform:scale(1.15)}
-.mo-fb-active-up{opacity:1!important;filter:drop-shadow(0 0 3px #4caf50)}
-.mo-fb-active-down{opacity:1!important;filter:drop-shadow(0 0 3px #f44336)}
+.mo-fb-active-up{opacity:1!important;color:#91C9AA}
+.mo-fb-active-down{opacity:1!important;color:#E685A5}
 .mo-fb-saving{opacity:0.3;pointer-events:none}
-.mo-ed-editing{border-color:#533483;background:#111122}
+.mo-ed-editing{border-color:#8FA7FF;background:#151923}
 .mo-ed-form{display:flex;flex-direction:column;gap:8px;padding:6px 0}
 .mo-regen-btn{cursor:pointer;font-size:12px;margin-left:2px;flex-shrink:0;user-select:none;opacity:0.6;transition:opacity 0.15s}
 .mo-regen-btn:hover{opacity:1}
@@ -49354,30 +44686,30 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-regen-error{opacity:0.8}
 @keyframes mo-pulse{0%,100%{opacity:0.4}50%{opacity:1}}
 .mo-ed-field{display:flex;flex-direction:column;gap:2px}
-.mo-ed-field label{font-size:10px;color:#a0a0b0;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
+.mo-ed-field label{font-size:10px;color:#8B909A;font-weight:600;text-transform:uppercase;letter-spacing:0.5px}
 .mo-ed-field-sm{flex:1;min-width:0}
 .mo-ed-row{display:flex;gap:8px;flex-wrap:wrap}
-.mo-ed-input{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:4px 6px;border-radius:4px;font-size:12px;width:100%}
-.mo-ed-input:focus{border-color:#533483;outline:none}
-.mo-ed-textarea{background:#0a0a15;border:1px solid #2a2a4a;color:#e0e0e0;padding:6px 8px;border-radius:4px;font-family:monospace;font-size:11px;resize:vertical;width:100%;min-height:80px}
-.mo-ed-textarea:focus{border-color:#533483;outline:none}
-.mo-ed-hint{font-size:9px;color:#666;font-style:italic}
+.mo-ed-input{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:4px 6px;border-radius:12px;font-size:12px;width:100%}
+.mo-ed-input:focus{border-color:#8FA7FF;outline:none}
+.mo-ed-textarea{background:#0B0D11;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 8px;border-radius:12px;font-family:monospace;font-size:11px;resize:vertical;width:100%;min-height:80px}
+.mo-ed-textarea:focus{border-color:#8FA7FF;outline:none}
+.mo-ed-hint{font-size:9px;color:#5C626D;font-style:italic}
 .mo-ed-actions{display:flex;align-items:center;gap:8px;padding:4px 0}
 .mo-ed-status{font-size:11px;margin-left:8px}
-.mo-ed-saving{color:#f0ad4e}
-.mo-ed-success{color:#5dbb5d}
-.mo-ed-error{color:#e74c3c}
+.mo-ed-saving{color:#C7A869}
+.mo-ed-success{color:#91C9AA}
+.mo-ed-error{color:#E685A5}
 .mo-ex-export-btn,.mo-ex-routing-reset-btn{font-size:11px;padding:2px 10px;margin-left:6px;vertical-align:middle}
-.mo-ex-export-error,.mo-ex-routing-reset-error{font-size:11px;color:#e74c3c;margin-left:6px}
+.mo-ex-export-error,.mo-ex-routing-reset-error{font-size:11px;color:#E685A5;margin-left:6px}
 .mo-hdr-danger-btn{font-size:11px;padding:5px 9px;line-height:1.15;font-weight:700}
-.mo-reindex-panel{margin:6px 0;border:1px solid #2a2a4a;border-radius:6px;background:#12122a}
-.mo-reindex-summary{padding:6px 10px;cursor:pointer;font-size:12px;color:#e0e0e0;user-select:none}
+.mo-reindex-panel{margin:6px 0;border:1px solid rgba(255,255,255,.07);border-radius:14px;background:#13161C}
+.mo-reindex-summary{padding:6px 10px;cursor:pointer;font-size:12px;color:#F4F5F7;user-select:none}
 .mo-reindex-body{padding:6px 10px 10px}
 .mo-reindex-row{margin:4px 0;font-size:12px;display:flex;align-items:center;gap:8px}
-.mo-reindex-row input[type=number]{background:#16213e;border:1px solid #2a2a4a;color:#e0e0e0;padding:2px 4px;border-radius:4px;font-size:12px}
-.mo-reindex-row input[type=checkbox]{accent-color:#533483}
-.mo-reindex-result{margin-top:6px;padding:6px 8px;background:#1c3a1c;border:1px solid #2a5a2a;border-radius:4px;font-size:11px;color:#9ddb9d;line-height:1.5}
-.mo-reindex-error{margin-top:6px;padding:6px 8px;background:#3a1c1c;border:1px solid #5a2a2a;border-radius:4px;font-size:11px;color:#e74c3c;line-height:1.5}
+.mo-reindex-row input[type=number]{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:2px 4px;border-radius:12px;font-size:12px}
+.mo-reindex-row input[type=checkbox]{accent-color:#5D73E6}
+.mo-reindex-result{margin-top:6px;padding:6px 8px;background:#181C24;border:1px solid rgba(145,201,170,.24);border-radius:12px;font-size:11px;color:#91C9AA;line-height:1.5}
+.mo-reindex-error{margin-top:6px;padding:6px 8px;background:#18161C;border:1px solid rgba(230,133,165,.28);border-radius:12px;font-size:11px;color:#E685A5;line-height:1.5}
 .mo-session-normalize-status,.mo-session-normalize-result{margin-top:8px;padding:10px 12px;background:#151a24;border:1px solid #354158;border-radius:8px;color:#d8dfeb;font-size:11px;line-height:1.45;box-shadow:0 8px 22px rgba(0,0,0,.18)}
 .mo-session-normalize-status-fail,.mo-session-normalize-result.is-fail{background:#271218;border-color:#8e3344;color:#f2d5dc}
 .mo-session-normalize-status-head,.mo-session-normalize-result-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:7px}
@@ -49390,7 +44722,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-session-normalize-counts .is-fail,.mo-session-normalize-result-summary .is-fail{color:#ff879b}
 .mo-session-normalize-counts .is-fail strong,.mo-session-normalize-result-summary .is-fail strong{color:#ff9aac}
 .mo-session-normalize-progress{height:5px;margin-top:8px;overflow:hidden;border-radius:999px;background:#252d3a}
-.mo-session-normalize-progress span{display:block;height:100%;border-radius:999px;background:linear-gradient(90deg,#6476bd,#8a6ac8)}
+.mo-session-normalize-progress span{display:block;height:100%;border-radius:999px;background:#5D73E6}
 .mo-session-normalize-status-fail .mo-session-normalize-progress span{background:#d65068}
 .mo-session-normalize-note{margin-top:7px;color:#778293;font-size:10px}
 .mo-session-normalize-failures{display:grid;gap:6px;margin-top:8px}
@@ -49407,40 +44739,64 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-session-normalize-dismiss{border:1px solid #46536a;background:#1b2230;color:#cbd5e4;border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer}
 .mo-session-normalize-dismiss:hover{border-color:#71809a;color:#fff}
 .mo-session-normalize-result.is-fail .mo-session-normalize-dismiss{border-color:#8e3344;background:#35151d;color:#ffd4dc}
-.mo-export-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.7);z-index:10001;display:flex;align-items:center;justify-content:center;font-family:system-ui,-apple-system,sans-serif;color:#e0e0e0}
-.mo-export-panel{width:min(95%,700px);max-height:88vh;background:#1a1a2e;border:1px solid #533483;border-radius:10px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 8px 32px rgba(83,52,131,0.3)}
-.mo-export-hdr{background:#16213e;border-bottom:1px solid #2a2a4a;padding:10px 16px;display:flex;align-items:center;justify-content:space-between}
-.mo-export-hdr h3{font-size:15px;color:#fff;font-weight:600}
-.mo-export-info{padding:10px 16px;font-size:12px;line-height:1.6;border-bottom:1px solid #2a2a4a;background:#12122a}
-.mo-export-actions{padding:8px 16px;display:flex;gap:8px;border-bottom:1px solid #2a2a4a}
+.mo-export-overlay{position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(11,13,17,.94);z-index:10001;display:flex;align-items:center;justify-content:center;font-family:Inter,Pretendard,system-ui,sans-serif;color:#F4F5F7}
+.mo-export-panel{width:min(95%,700px);max-height:88vh;background:#0F1116;border:1px solid rgba(255,255,255,.07);border-radius:16px;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 64px rgba(0,0,0,.38)}
+.mo-export-hdr{background:#13161C;border-bottom:1px solid rgba(255,255,255,.07);padding:10px 16px;display:flex;align-items:center;justify-content:space-between}
+.mo-export-hdr h3{font-size:15px;color:#F4F5F7;font-weight:600}
+.mo-export-info{padding:10px 16px;font-size:12px;line-height:1.6;border-bottom:1px solid rgba(255,255,255,.07);background:#13161C;color:#8B909A}
+.mo-export-actions{padding:8px 16px;display:flex;gap:8px;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-export-json-wrap{flex:1;overflow:auto;padding:8px 16px 12px}
-.mo-export-json{width:100%;min-height:300px;max-height:55vh;background:#0a0a15;border:1px solid #2a2a4a;color:#c0c0c0;padding:8px;border-radius:4px;font-family:monospace;font-size:11px;resize:vertical;white-space:pre;overflow:auto}
+.mo-export-json{width:100%;min-height:300px;max-height:55vh;background:#0B0D11;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:8px;border-radius:12px;font-family:monospace;font-size:11px;resize:vertical;white-space:pre;overflow:auto}
 /* ── UI Redesign: Dashboard card groups ── */
-.mo-dash-card{background:#101a28;border:1px solid #2a3a4a;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
-.mo-dash-card.has-notice{border-color:#40558f;background:#10182a}
-.mo-dash-card.has-warn{border-color:#8a6a10;background:#161205}
-.mo-dash-card.has-fail{border-color:#6a2020;background:#160a0a}
-.mo-dash-card-head{display:flex;align-items:center;gap:8px;padding-bottom:6px;border-bottom:1px solid #1e2d42;margin-bottom:2px}
+.mo-dash-card{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:10px 12px;display:flex;flex-direction:column;gap:6px}
+.mo-dash-card.has-notice{border-color:rgba(143,167,255,.24);background:#151923}
+.mo-dash-card.has-warn{border-color:rgba(199,168,105,.24);background:#181C24}
+.mo-dash-card.has-fail{border-color:rgba(230,133,165,.26);background:#18161C}
+.mo-dash-card-head{display:flex;align-items:center;gap:8px;padding-bottom:6px;border-bottom:1px solid rgba(255,255,255,.07);margin-bottom:2px}
 .mo-dash-card-icon{font-size:14px;line-height:1;flex-shrink:0}
-.mo-dash-card-title{font-size:11px;font-weight:700;color:#c0cce0;text-transform:uppercase;letter-spacing:0.6px;flex:1}
+.mo-dash-card-title{font-size:11px;font-weight:700;color:#F4F5F7;text-transform:uppercase;letter-spacing:0.6px;flex:1}
 .mo-dash-card-summary{display:flex;gap:4px;align-items:center}
 .mo-dash-chip{font-size:10px;font-weight:700;padding:1px 6px;border-radius:8px}
-.mo-dash-chip-ok{background:#1a2e1a;color:#5dbb5d;border:1px solid #2a4a2a}
-.mo-dash-chip-notice{background:#18213a;color:#8fa7ff;border:1px solid #40558f}
-.mo-dash-chip-warn{background:#2e2a10;color:#e6a817;border:1px solid #4a3a10}
-.mo-dash-chip-fail{background:#2e1010;color:#e74c3c;border:1px solid #4a1a1a}
-.mo-dash-chip-num{background:#11162a;color:#8a9ab0;border:1px solid #2a2a4a}
+.mo-dash-chip-ok{background:#181C24;color:#91C9AA;border:1px solid rgba(145,201,170,.24)}
+.mo-dash-chip-notice{background:#181E2B;color:#8FA7FF;border:1px solid rgba(143,167,255,.24)}
+.mo-dash-chip-warn{background:#181C24;color:#C7A869;border:1px solid rgba(199,168,105,.24)}
+.mo-dash-chip-fail{background:#18161C;color:#E685A5;border:1px solid rgba(230,133,165,.26)}
+.mo-dash-chip-num{background:#181C24;color:#8B909A;border:1px solid rgba(255,255,255,.07)}
 /* ── UI Redesign: Header health badges ── */
 .mo-hdr-health{display:flex;align-items:center;gap:5px;margin-right:4px}
 .mo-hdr-health-badge{font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;line-height:1.4;white-space:nowrap}
-.mo-hdr-health-badge-ok{color:#5dbb5d;background:#1a2e1a}
-.mo-hdr-health-badge-notice{color:#8fa7ff;background:#18213a}
-.mo-hdr-health-badge-warn{color:#e6a817;background:#2a2a10}
-.mo-hdr-health-badge-fail{color:#e74c3c;background:#2a1010}
-@media(max-width:600px){.mo-overlay{padding:0;align-items:stretch}.mo-panel{width:100%;height:100%;max-height:100%;border-radius:0;border-left:0;border-right:0}.mo-body{padding:0 10px 12px}.mo-hdr{padding:10px 12px}.mo-hdr-left{min-width:0}.mo-hdr h2{font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tabs{padding:10px 0 8px}.mo-tab-btn{padding:7px 9px}.mo-model-grid{grid-template-columns:1fr}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
-@media(max-width:600px){.mo-tl-main{padding:10px 8px}.mo-tl-stream{gap:8px}.mo-tl-stream:before{left:44px}.mo-tl-entry{grid-template-columns:32px 20px minmax(0,1fr);gap:7px}.mo-tl-entry-meta{align-items:center;font-size:10px}.mo-tl-entry-time{display:none}.mo-tl-node{width:16px;height:16px;box-shadow:0 0 0 4px #101522}.mo-tl-card{padding:9px 10px;border-radius:10px}.mo-tl-card-head{flex-direction:column;align-items:stretch;gap:6px}.mo-tl-badges{justify-content:flex-start}.mo-tl-title{font-size:13px;line-height:1.4}.mo-tl-summary{font-size:12px;line-height:1.5}.mo-tl-turn-item{grid-template-columns:14px minmax(0,1fr);grid-template-areas:"dot kind" "dot text" "dot action";align-items:start;gap:5px 8px;padding:9px}.mo-tl-turn-item .mo-tl-turn-dot{grid-area:dot;margin-top:4px}.mo-tl-turn-kind{grid-area:kind;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tl-turn-item>span:nth-child(3){grid-area:text;min-width:0}.mo-tl-turn-item-title,.mo-tl-turn-preview{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}.mo-tl-turn-item-title{-webkit-line-clamp:2}.mo-tl-turn-preview{-webkit-line-clamp:2}.mo-tl-row-actions{grid-area:action;justify-self:start;flex-wrap:wrap}.mo-tl-row-actions .mo-btn{min-height:34px;padding:6px 12px}.mo-tl-detail{max-height:360px}.mo-detail-header{align-items:flex-start}.mo-detail-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis}.mo-detail-header .mo-note{font-size:10px}}
-@media(max-width:600px){.mo-tabs{margin-top:6px;padding:12px 0 12px;min-height:48px;align-items:center}.mo-tab-btn{min-height:36px;display:inline-flex;align-items:center;justify-content:center}.mo-tl-main{min-height:300px;max-height:clamp(310px,48vh,430px);overflow:auto}.mo-tl-detail{min-height:240px;max-height:clamp(280px,40vh,390px)}.mo-tl-detail-body{min-height:190px}.mo-tl-stream:before{left:36px}.mo-tl-entry{grid-template-columns:24px 18px minmax(0,1fr);gap:6px}.mo-tl-entry-turn{font-size:12px}.mo-tl-node{width:15px;height:15px}.mo-tl-card{padding:12px}.mo-tl-title{font-size:14px;line-height:1.45}.mo-tl-summary{font-size:12px;line-height:1.55}}
-@media(max-width:600px){.mo-tl-shell{grid-template-rows:auto auto auto}.mo-tl-side{min-height:160px;max-height:230px}.mo-tl-session-list{min-height:112px;max-height:180px}.mo-tl-main{min-height:220px;max-height:clamp(240px,38vh,320px)}.mo-tl-detail{min-height:270px;max-height:clamp(310px,44vh,430px)}.mo-tl-detail-body{min-height:220px}.mo-tl-card{padding:10px 11px}.mo-tl-title{font-size:13px}.mo-tl-summary{font-size:11px;line-height:1.4;-webkit-line-clamp:1}}
+.mo-hdr-health-badge-ok{color:#91C9AA;background:#181C24}
+.mo-hdr-health-badge-notice{color:#8FA7FF;background:#181E2B}
+.mo-hdr-health-badge-warn{color:#C7A869;background:#181C24}
+.mo-hdr-health-badge-fail{color:#E685A5;background:#18161C}
+/* Premium near-black surface consolidation */
+.mo-body{background:#0B0D11;color:#F4F5F7}
+.mo-dash-label,.mo-note,.mo-section-desc,.mo-row small,.mo-ex-current,.mo-ex-item-turn,.mo-ex-item-id,.mo-ex-item-time,.mo-ex-item-meta,.mo-ed-hint,.mo-tl-entry-meta,.mo-tl-summary,.mo-tl-turn-preview,.mo-tl-kv span:nth-child(odd){color:#8B909A}
+.mo-note,.mo-ed-hint{color:#5C626D}
+.mo-tl-session,.mo-tl-card,.mo-tl-turn-item,.mo-detail-panel,.mo-prompt-card,.mo-settings-card,.mo-llm-panel,.mo-preview-block,.mo-it-block,.mo-chatlog-repair-panel,.mo-ex-batch-toolbar,.mo-ent-card,.mo-trust-group,.mo-world-rule-group,.mo-reindex-panel,.mo-dash-card{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:16px;color:#F4F5F7;box-shadow:0 12px 30px rgba(0,0,0,.12)}
+.mo-tl-session:hover,.mo-tl-card:hover,.mo-tl-turn-item:hover{background:#181C24;border-color:rgba(143,167,255,.22);box-shadow:0 10px 24px rgba(0,0,0,.16);transform:none}
+.mo-tl-session.is-active,.mo-tl-card.is-selected,.mo-tl-turn-item.is-active,.mo-tl-card.is-expanded{background:#151923;border-color:#5D73E6;box-shadow:none}
+.mo-tl-stream:before{background:#353B46}.mo-tl-node,.mo-tl-turn-dot{background:#5D73E6;box-shadow:0 0 0 4px #13161C;border-color:rgba(255,255,255,.12)}
+.mo-tl-node-assistant,.mo-tl-turn-dot.mo-tl-node-assistant{background:#8FA7FF}.mo-tl-node-memory,.mo-tl-turn-dot.mo-tl-node-memory{background:#8A55F7}.mo-tl-node-episode,.mo-tl-turn-dot.mo-tl-node-episode{background:#5D73E6}
+.mo-tl-title,.mo-tl-turn-item-title,.mo-tl-entry-turn,.mo-prompt-card-title,.mo-dash-value,.mo-ex-current strong,.mo-ent-name,.mo-ex-kg-triple{color:#F4F5F7}
+.mo-tl-badge,.mo-tl-session-badge,.mo-world-chain-badge,.mo-ex-item-meta,.mo-trust-badge,.mo-world-rule-scope,.mo-world-rule-raw-scope,.mo-world-rule-cat{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#8B909A;border-radius:12px}
+.mo-subtab-btn:hover{background:transparent;color:#F4F5F7}
+.mo-ex-tabs{min-width:0;max-width:100%}
+.mo-ex-tab{flex:0 0 auto}
+.mo-row input[type=text],.mo-row input[type=number],.mo-row input[type=url],.mo-row input[type=search],.mo-row input[type=file],.mo-row input[type=password],.mo-row select,.mo-row textarea,.mo-model-grid .mo-field input,.mo-footer-language select,.mo-ed-input,.mo-ed-textarea,.mo-prompt-textarea,.mo-world-scope-name-input,.mo-reindex-row input[type=number],.mo-export-json{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;border-radius:12px}
+textarea,.mo-ed-textarea,.mo-prompt-textarea,.mo-export-json{font-family:Inter,Pretendard,ui-monospace,SFMono-Regular,Consolas,monospace;line-height:1.5;resize:vertical}
+.mo-btn{min-height:36px;padding:8px 14px;background:#181C24;border:1px solid rgba(255,255,255,.07);border-radius:10px;color:#F4F5F7;font-weight:600;transition:background .15s,border-color .15s,color .15s}
+.mo-btn:hover{background:#1D222C;border-color:rgba(255,255,255,.12)}
+.mo-btn-primary,.mo-btn-info{background:#5D73E6;border-color:#5D73E6;color:#F4F5F7}.mo-btn-primary:hover,.mo-btn-info:hover{background:#6B82EE;border-color:#6B82EE}
+.mo-btn-success,.mo-btn-warn{background:#181C24;border-color:rgba(143,167,255,.22);color:#8FA7FF}.mo-btn-success:hover,.mo-btn-warn:hover{background:#181E2B}
+.mo-btn-ghost{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A}.mo-btn-ghost:hover{background:#181C24;color:#F4F5F7;border-color:rgba(143,167,255,.24)}
+.mo-btn-danger,.mo-btn-danger-solid{background:transparent;border:1px solid rgba(230,133,165,.44);color:#E685A5}.mo-btn-danger:hover,.mo-btn-danger-solid:hover{background:rgba(230,133,165,.10);color:#F4F5F7}
+button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-visible,[tabindex]:focus-visible{outline:2px solid #8FA7FF;outline-offset:2px;border-color:#8FA7FF}
+button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cursor:not-allowed;filter:none}
+.mo-status{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:12px;color:#8B909A}.mo-status-ok{border-color:rgba(110,190,145,.28);color:#91C9AA}.mo-status-notice{border-color:rgba(143,167,255,.30);color:#8FA7FF}.mo-status-wait{border-color:rgba(199,168,105,.28);color:#C7A869}.mo-status-fail{border-color:rgba(230,133,165,.32);color:#E685A5}
+.mo-session-normalize-status,.mo-session-normalize-result{background:#13161C;border-color:rgba(255,255,255,.07);border-radius:14px;color:#F4F5F7;box-shadow:0 12px 28px rgba(0,0,0,.18)}
+@media(max-width:600px){.mo-hdr{min-height:60px;padding:10px 14px;align-items:center}.mo-brand-mark{width:32px;height:32px;flex-basis:32px}.mo-hdr-left{min-width:0;flex:1 1 auto}.mo-hdr-ver{display:none}.mo-hdr-actions{min-width:0;flex-wrap:nowrap;gap:5px}.mo-hdr-actions>.mo-dash-header-card,.mo-hdr-actions>.mo-hdr-danger-btn{display:none}.mo-debug-toggle{padding:6px 8px}.mo-app-nav{padding:0 14px}.mo-tabs{gap:20px;min-height:48px}.mo-tab-btn{padding:15px 0 13px;font-size:12px}.mo-workspace{padding:20px 14px 56px}.mo-memory-context{align-items:flex-start;flex-direction:column;gap:8px}.mo-memory-layout{display:block;padding-top:18px}.mo-memory-rail{position:static;margin-bottom:18px}.mo-memory-rail-label{display:none}.mo-ex-tabs{flex-direction:row;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid rgba(255,255,255,.07)}.mo-ex-tab{width:auto;flex:0 0 auto;border-left:0;border-bottom:2px solid transparent;padding:10px 8px}.mo-ex-tab-active{border-bottom-color:#F4F5F7;background:transparent}.mo-memory-workspace-head{padding-bottom:10px}.mo-memory-management-stack{grid-template-columns:1fr}.mo-model-grid{grid-template-columns:1fr}.mo-row{display:block}.mo-row label{display:block;margin-bottom:7px}.mo-row input,.mo-row select,.mo-row textarea{width:100%}.mo-common-grid>*{grid-column:1/-1}.mo-settings-card,.mo-prompt-card{padding:16px}.mo-footer{padding:10px 14px}.mo-footer-language{margin-left:0}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
+@media(max-width:600px){.mo-tl-toolbar{grid-template-columns:1fr;align-items:stretch;padding:12px}.mo-tl-session-chooser{min-width:100%}.mo-tl-session-actions{justify-content:flex-start;gap:5px}.mo-tl-toolbar-meta{grid-column:1;gap:6px 10px}.mo-tl-main{padding:8px}.mo-tl-canvas-tools{align-items:flex-start}.mo-tl-canvas-actions{width:100%}.mo-tl-canvas-actions .mo-btn{flex:1 1 auto}.mo-tl-canvas-frame{height:clamp(480px,72vh,680px);min-height:420px}.mo-tl-node-inspector{inset:8px}.mo-tl-node-inspector-body{padding:12px}.mo-tl-stream{gap:8px}.mo-tl-stream:before{left:36px}.mo-tl-entry{grid-template-columns:24px 18px minmax(0,1fr);gap:6px}.mo-tl-entry-meta{align-items:center;font-size:10px}.mo-tl-entry-time{display:none}.mo-tl-node{width:15px;height:15px;box-shadow:0 0 0 4px #13161C}.mo-tl-card{padding:10px 11px;border-radius:12px}.mo-tl-card-head{flex-direction:column;align-items:stretch;gap:6px}.mo-tl-badges{justify-content:flex-start}.mo-tl-title{font-size:13px;line-height:1.4}.mo-tl-summary{font-size:11px;line-height:1.4;-webkit-line-clamp:1}.mo-tl-turn-item{grid-template-columns:14px minmax(0,1fr);grid-template-areas:"dot kind" "dot text" "dot action";align-items:start;gap:5px 8px;padding:10px}.mo-tl-turn-item .mo-tl-turn-dot{grid-area:dot;margin-top:4px}.mo-tl-turn-kind{grid-area:kind;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tl-turn-item>span:nth-child(3){grid-area:text;min-width:0}.mo-tl-turn-item-title,.mo-tl-turn-preview{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}.mo-tl-turn-item-title{-webkit-line-clamp:2}.mo-tl-turn-preview{-webkit-line-clamp:2}.mo-tl-row-actions{grid-area:action;justify-self:start;flex-wrap:wrap}.mo-tl-row-actions .mo-btn{min-height:34px;padding:6px 12px}.mo-detail-header{align-items:flex-start}.mo-detail-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis}.mo-detail-header .mo-note{font-size:10px}.mo-tl-node-inspector-head>div{align-items:flex-start;flex-direction:column;gap:2px}.mo-tl-inline-detail{margin-left:0;padding-left:8px}}
 `;
 
   // ──────────────────────────────────────────────────────────────
@@ -49593,14 +44949,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     return (table[lang] && table[lang][key]) || (table.en && table.en[key]) || key;
   }
 
-  function tWithVars(key, vars) {
-    let out = t(key);
-    if (!vars || typeof vars !== "object") return out;
-    Object.keys(vars).forEach((k) => {
-      out = String(out).split("{" + k + "}").join(String(vars[k]));
-    });
-    return out;
-  }
 
   function timelineItemKey(item) {
     if (!item || typeof item !== "object") return "";
@@ -49645,16 +44993,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
   }
 
-  function timelineIsStartupMessageItem(item) {
-    try {
-      return !!(item
-        && String(item.type || "").toLowerCase() === "chat_log"
-        && String(item.role || "").toLowerCase() === "assistant"
-        && String(timelineItemTurnText(item)) === String(STARTUP_MESSAGE_TURN_INDEX));
-    } catch {
-      return false;
-    }
-  }
 
   function timelineTurnKey(item) {
     const turnText = timelineItemTurnText(item);
@@ -49937,19 +45275,26 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       Number((session || {}).kg_triples_count || 0);
   }
 
-  function timelineSessionLastActivity(session) {
-    return String((session || {}).last_activity || (session || {}).updated_at || "");
-  }
 
-  async function loadTimelineSessions(currentSid, force = false) {
+  async function loadTimelineSessions(currentSid, force = false, timelineDataRequestId = 0) {
     if (_timelineState.sessionsLoading && !force) return;
     if (_timelineState.sessions.length > 0 && !force) return;
+    const sessionsRequestId = Number(_timelineState.sessionsRequestId || 0) + 1;
+    _timelineState.sessionsRequestId = sessionsRequestId;
+    const requestOwnsLoading = function() {
+      return Number(_timelineState.sessionsRequestId || 0) === sessionsRequestId;
+    };
+    const requestIsCurrent = function() {
+      return requestOwnsLoading() && (!timelineDataRequestId || Number(_timelineState.requestId || 0) === Number(timelineDataRequestId));
+    };
     _timelineState.sessionsLoading = true;
     _timelineState.sessionsError = "";
     refreshTimelineUI();
     try {
       await refreshSessionDisplayLookupFromRuntime();
+      if (!requestIsCurrent()) return;
       const data = await bridgeFetch("/sessions", { method: "GET", timeoutMs: getRequestTimeoutSettingMs() });
+      if (!requestIsCurrent()) return;
       const sessions = Array.isArray(data && data.sessions)
         ? data.sessions
         : Array.isArray(data && data.items)
@@ -49972,6 +45317,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         debugLog("timeline session delete reconcile failed:", err && err.message);
       });
     } catch (err) {
+      if (!requestIsCurrent()) return;
       _timelineState.sessions = currentSid ? [{
         chat_session_id: currentSid,
         chat_logs_count: 0,
@@ -49981,13 +45327,58 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }] : [];
       _timelineState.sessionsError = err && err.message ? err.message : "Session list load failed.";
     } finally {
+      if (!requestOwnsLoading()) return;
       _timelineState.sessionsLoading = false;
       refreshTimelineUI();
     }
   }
 
+  function syncSessionScopedInspectionSelection(sessionId) {
+    const sid = String(sessionId || "").trim();
+    explorerChangeSession(sid, false);
+    if (String(_referenceLibraryState.sessionId || "") !== sid) {
+      _referenceLibraryState.bindingRequestId = Number(_referenceLibraryState.bindingRequestId || 0) + 1;
+      _referenceLibraryState.sessionId = sid;
+      _referenceLibraryState.bindings = [];
+      _referenceLibraryState.bindingDraft = null;
+      _referenceLibraryState.bindingDraftDirty = false;
+      _referenceLibraryState.bindingPreview = null;
+      _referenceLibraryState.bindingLoading = false;
+      _referenceLibraryState.bindingMessage = "";
+      _referenceLibraryState.bindingError = "";
+    }
+  }
+
+  async function selectWorkspaceSession(sessionId, surface) {
+    const sid = String(sessionId || "").trim();
+    if (!sid || (sid === _timelineState.selectedSessionId && !_timelineState.error)) return;
+    _timelineState.selectedSessionId = sid;
+    _timelineState.sessionId = sid;
+    _timelineState.items = [];
+    _timelineState.meta = null;
+    _timelineState.viewModel = null;
+    _timelineState.hasMore = false;
+    _timelineState.nextBeforeTurn = 0;
+    _timelineState.error = "";
+    syncSessionScopedInspectionSelection(sid);
+    _timelineState.worldlineViewport.selectedNodeId = "";
+    _timelineState.worldlineViewport.scale = 1;
+    _timelineState.worldlineViewport.translationX = null;
+    _timelineState.worldlineViewport.translationY = null;
+    _timelineSelectedDetail = null;
+    _timelineState.detailItem = null;
+    _timelineState.detailLoading = false;
+    _timelineState.detailError = "";
+    if (surface === "memory_admin") {
+      await refreshExplorerUI();
+      return;
+    }
+    await loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true });
+  }
+
   async function loadTimelineData(force = false, options = {}) {
     const append = !!options.append;
+    const focusTurn = append ? 0 : Math.max(0, Math.floor(Number(options.focusTurn || 0)));
     const hasExplicitSessionId = Object.prototype.hasOwnProperty.call(options, "sessionId");
     const explicitSessionId = hasExplicitSessionId ? String(options.sessionId || "") : "";
     const skipRuntimeSessionResolve = !!(options.skipRuntimeSessionResolve && explicitSessionId);
@@ -49999,26 +45390,32 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     } else {
       if (_timelineState.loading && !force) return;
       _timelineState.loading = true;
+      _timelineState.loadingMore = false;
       _timelineState.nextBeforeTurn = 0;
       _timelineState.hasMore = false;
       _timelineState.error = "";
       if (!preserveExpandedTurnKey) _timelineState.expandedTurnKey = "";
     }
+    const requestId = Number(_timelineState.requestId || 0) + 1;
+    _timelineState.requestId = requestId;
     if (!append) _timelineState.error = "";
-    refreshTimelineUI();
+    refreshTimelineUI({ reloadPresentation: false });
     try {
       if (!append && !options.skipRollbackPreflight) {
         await safeCall(() => reconcileRollbackFromHostSignal(), false, "timelineRollbackPreflight");
+        if (_timelineState.requestId !== requestId) return;
       }
       const sid = skipRuntimeSessionResolve
         ? String(_timelineState.currentSessionId || "")
         : await getCurrentChatSessionId();
+      if (_timelineState.requestId !== requestId) return;
       const runtimeSid = timelineIsPlaceholderSessionId(sid) ? "" : sid;
       const previousSessionId = String(_timelineState.sessionId || _timelineState.selectedSessionId || "");
       const sessionsNeedRefresh = !!(runtimeSid && !_timelineState.sessions.some((session) => timelineSessionId(session) === runtimeSid));
       _timelineState.currentSessionId = runtimeSid;
       if (!skipSessionListRefresh || sessionsNeedRefresh) {
-        await loadTimelineSessions(runtimeSid, force || sessionsNeedRefresh);
+        await loadTimelineSessions(runtimeSid, force || sessionsNeedRefresh, requestId);
+        if (_timelineState.requestId !== requestId) return;
       }
       let requestedSessionId = hasExplicitSessionId
         ? explicitSessionId
@@ -50028,21 +45425,27 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }
       _timelineState.selectedSessionId = requestedSessionId;
       _timelineState.sessionId = requestedSessionId;
+      syncSessionScopedInspectionSelection(requestedSessionId);
       if (!append && previousSessionId && requestedSessionId && previousSessionId !== requestedSessionId) {
         _timelineSelectedDetail = null;
         _timelineState.detailItem = null;
+        _timelineState.detailLoading = false;
         _timelineState.detailError = "";
+        timelineResetEditState();
       }
       if (!append && requestedSessionId && runtimeSid && requestedSessionId === runtimeSid) {
         await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh" });
+        if (_timelineState.requestId !== requestId) return;
       }
       const params = new URLSearchParams();
       if (requestedSessionId) params.set("sessionId", requestedSessionId);
-      params.set("limit", "80");
+      params.set("limit", focusTurn > 0 ? "200" : "80");
+      if (focusTurn > 0) params.set("turn", String(focusTurn));
       if (append && _timelineState.nextBeforeTurn > 0) {
         params.set("beforeTurn", String(_timelineState.nextBeforeTurn));
       }
       const data = await bridgeFetch("/timeline?" + params.toString(), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() });
+      if (_timelineState.requestId !== requestId) return;
       if (!data || data.status !== "ok" || !Array.isArray(data.items)) {
         throw new Error(t("timeline.error.backendNoItems"));
       }
@@ -50060,13 +45463,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }
       pruneTimelinePendingArtifacts(requestedSessionId, _timelineState.items);
       _timelineState.meta = data.meta || null;
-      _timelineState.nextBeforeTurn = Number((data.meta || {}).next_before_turn || 0);
-      _timelineState.hasMore = _timelineState.nextBeforeTurn > 0 && data.items.length > 0;
+      _timelineState.nextBeforeTurn = focusTurn > 0 ? 0 : Number((data.meta || {}).next_before_turn || 0);
+      _timelineState.hasMore = focusTurn <= 0 && _timelineState.nextBeforeTurn > 0 && data.items.length > 0;
       _timelineState.error = "";
-      if (!append && data.items.length > 0) {
-        _timelineSelectedDetail = data.items[0];
-      }
     } catch (err) {
+      if (_timelineState.requestId !== requestId) return;
       if (!append) {
         _timelineState.items = [];
         _timelineState.meta = null;
@@ -50075,6 +45476,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }
       _timelineState.error = err && err.message ? err.message : t("timeline.error.backendLoadFailed");
     } finally {
+      if (_timelineState.requestId !== requestId) return;
       if (append) {
         _timelineState.loadingMore = false;
       } else {
@@ -50090,18 +45492,24 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     _timelineState.sessions = (Array.isArray(_timelineState.sessions) ? _timelineState.sessions : [])
       .filter(function(session) { return timelineSessionId(session) !== sid; });
     const wasSelected = sid === String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+    const currentSessionId = String(_timelineState.currentSessionId || "");
+    const currentSessionRemains = currentSessionId && _timelineState.sessions.some(function(session) {
+      return timelineSessionId(session) === currentSessionId;
+    });
     const nextSessionId = wasSelected && _timelineState.sessions.length > 0
-      ? timelineSessionId(_timelineState.sessions[0])
+      ? (currentSessionRemains ? currentSessionId : timelineSessionId(_timelineState.sessions[0]))
       : "";
     if (wasSelected) {
       _timelineState.selectedSessionId = nextSessionId;
       _timelineState.sessionId = nextSessionId;
+      syncSessionScopedInspectionSelection(nextSessionId);
       _timelineState.items = [];
       _timelineState.meta = null;
       _timelineState.hasMore = false;
       _timelineState.nextBeforeTurn = 0;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      _timelineState.detailLoading = false;
       _timelineState.detailError = "";
     }
     return nextSessionId;
@@ -50212,7 +45620,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (meta.targetSessionId !== undefined) _sessionMigrationUi.targetSessionId = String(meta.targetSessionId || "");
     if (meta.migrationId !== undefined) _sessionMigrationUi.migrationId = Number(meta.migrationId || 0);
     if (meta.migrationMode !== undefined) _sessionMigrationUi.migrationMode = String(meta.migrationMode || "");
-    refreshTimelineUI();
+    if (_settingsActiveTab === "memory_admin") refreshExplorerUI({ reloadPresentation: false });
+    else refreshTimelineUI();
   }
 
   async function attachTimelineSessionToCurrentChat(sourceSessionId) {
@@ -50273,6 +45682,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineState.sessionId = attachedSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      _timelineState.detailLoading = false;
       const routingBaseline = await establishSessionRoutingTurnBaseline(attachedSid, "timeline_attach");
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "manual attach current chat -> " + shortenSessionIdForDisplay(attachedSid),
@@ -50399,6 +45809,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineState.sessionId = targetSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      _timelineState.detailLoading = false;
       const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_copy");
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "timeline copy target -> " + shortenSessionIdForDisplay(targetSid),
@@ -50535,6 +45946,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _timelineState.sessionId = routedTargetSid;
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
+      _timelineState.detailLoading = false;
       const routingBaseline = await establishSessionRoutingTurnBaseline(routedTargetSid, "timeline_migrate");
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "timeline migration target -> " + shortenSessionIdForDisplay(routedTargetSid),
@@ -50695,10 +46107,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   function captureTimelineScrollState() {
     try {
       const timelinePanel = document.querySelector('[data-tab-panel="timeline"]');
-      const body = timelinePanel ? timelinePanel.closest(".mo-body") : document.querySelector(".mo-body");
+      const body = timelinePanel ? timelinePanel.closest(".mo-workspace") : document.querySelector(".mo-workspace");
       const sessions = timelinePanel ? timelinePanel.querySelector(".mo-tl-session-list") : null;
       const main = timelinePanel ? timelinePanel.querySelector(".mo-tl-main") : null;
-      const detail = timelinePanel ? timelinePanel.querySelector(".mo-tl-detail-body") : null;
+      const detail = timelinePanel ? timelinePanel.querySelector(".mo-tl-node-inspector-body") : null;
       return {
         viewport: captureSettingsViewportScrollState(),
         bodyScrollTop: body ? body.scrollTop : null,
@@ -50716,10 +46128,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const apply = () => {
       try {
         const timelinePanel = document.querySelector('[data-tab-panel="timeline"]');
-        const body = timelinePanel ? timelinePanel.closest(".mo-body") : document.querySelector(".mo-body");
+        const body = timelinePanel ? timelinePanel.closest(".mo-workspace") : document.querySelector(".mo-workspace");
         const sessions = timelinePanel ? timelinePanel.querySelector(".mo-tl-session-list") : null;
         const main = timelinePanel ? timelinePanel.querySelector(".mo-tl-main") : null;
-        const detail = timelinePanel ? timelinePanel.querySelector(".mo-tl-detail-body") : null;
+        const detail = timelinePanel ? timelinePanel.querySelector(".mo-tl-node-inspector-body") : null;
         if (body && state.bodyScrollTop != null) body.scrollTop = state.bodyScrollTop;
         if (sessions && state.sessionsScrollTop != null) sessions.scrollTop = state.sessionsScrollTop;
         if (main && state.mainScrollTop != null) main.scrollTop = state.mainScrollTop;
@@ -50734,15 +46146,41 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }
   }
 
-  async function refreshTimelineUI(options = {}) {
+  async function refreshTimelineUI(options) {
+    options = options || {};
+    const timelinePanel = document.querySelector('[data-tab-panel="timeline"]');
+    if (!timelinePanel) return;
     const preserveScroll = options && options.preserveScroll !== false;
     const scrollState = preserveScroll ? captureTimelineScrollState() : null;
-    await loadPresentationViewModels();
-    const timelinePanel = document.querySelector('[data-tab-panel="timeline"]');
-    if (timelinePanel) {
-      timelinePanel.innerHTML = renderTimelinePanel();
-      attachTimelineEvents();
-      if (preserveScroll) restoreTimelineScrollState(scrollState);
+    if (options && options.reloadPresentation !== false) {
+      await loadPresentationViewModels();
+    }
+    if (document.querySelector('[data-tab-panel="timeline"]') !== timelinePanel) return;
+    const priorCanvas = timelinePanel.querySelector("#mo-timeline-worldline-canvas");
+    if (priorCanvas) unmountTimelineWorldlineCanvas(priorCanvas);
+    timelinePanel.innerHTML = renderTimelinePanel();
+    attachTimelineEvents();
+    if (preserveScroll) restoreTimelineScrollState(scrollState);
+  }
+
+  async function refreshOpenArchiveCenterUI() {
+    if (!panelOpen) return;
+    if (_settingsActiveTab === "timeline") {
+      const selectedSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+      await loadTimelineData(true, selectedSessionId ? { sessionId: selectedSessionId, skipRuntimeSessionResolve: true } : undefined);
+      return;
+    }
+    if (_settingsActiveTab === "archive") {
+      await explorerLoadTab(_explorer.activeTab, true);
+      await refreshExplorerUI();
+      return;
+    }
+    if (_settingsActiveTab === "reference") {
+      referenceLibraryRefreshUI();
+      return;
+    }
+    if (_settingsActiveTab === "dashboard" || _settingsActiveTab === "debug") {
+      await renderSettingsPanel({ recompose: true });
     }
   }
 
@@ -50762,7 +46200,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (!path) throw new Error(t("timeline.error.noDetailRef"));
     const data = await bridgeFetch(path, { method: "GET", timeoutMs: getRequestTimeoutSettingMs() });
     if (!data || data.status !== "ok" || !data.item) {
-      throw new Error("Timeline detail backend returned no usable item.");
+      throw new Error(t("timeline.error.backendNoItems"));
     }
     return data.item;
   }
@@ -50843,23 +46281,35 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   async function timelineStartEdit(item) {
     if (!timelineCanEditItem(item)) return;
+    const requestSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+    const requestItemKey = timelineItemKey(item);
     _timelineSelectedDetail = item;
     _timelineState.detailLoading = true;
     _timelineState.detailError = "";
     timelinePopulateEditState(item);
-    refreshTimelineUI();
+    refreshTimelineUI({ reloadPresentation: false });
     try {
       const detail = await fetchTimelineItemDetail(item);
+      if (requestSessionId !== String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        || !_timelineSelectedDetail
+        || timelineItemKey(_timelineSelectedDetail) !== requestItemKey) return;
       _timelineState.detailItem = detail;
       _timelineSelectedDetail = detail;
       timelinePopulateEditState(detail);
     } catch (err) {
+      if (requestSessionId !== String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        || !_timelineSelectedDetail
+        || timelineItemKey(_timelineSelectedDetail) !== requestItemKey) return;
       _timelineEditState.status = "error";
       _timelineEditState.error = err && err.message ? err.message : t("timeline.error.editLoadFailed");
       _timelineState.detailError = _timelineEditState.error;
     } finally {
-      _timelineState.detailLoading = false;
-      refreshTimelineUI();
+      if (requestSessionId === String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        && _timelineSelectedDetail
+        && timelineItemKey(_timelineSelectedDetail) === requestItemKey) {
+        _timelineState.detailLoading = false;
+        refreshTimelineUI({ reloadPresentation: false });
+      }
     }
   }
 
@@ -50979,20 +46429,33 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   async function loadTimelineItemDetail(item) {
     if (!item) return;
+    const requestSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+    const requestItemKey = timelineItemKey(item);
     timelineResetEditState();
     _timelineSelectedDetail = item;
     _timelineState.detailLoading = true;
     _timelineState.detailError = "";
     _timelineState.detailItem = null;
-    refreshTimelineUI();
+    refreshTimelineUI({ reloadPresentation: false });
     try {
-      _timelineState.detailItem = await fetchTimelineItemDetail(item);
+      const detail = await fetchTimelineItemDetail(item);
+      if (requestSessionId !== String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        || !_timelineSelectedDetail
+        || timelineItemKey(_timelineSelectedDetail) !== requestItemKey) return;
+      _timelineState.detailItem = detail;
       _timelineState.detailError = "";
     } catch (err) {
+      if (requestSessionId !== String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        || !_timelineSelectedDetail
+        || timelineItemKey(_timelineSelectedDetail) !== requestItemKey) return;
       _timelineState.detailError = err && err.message ? err.message : t("timeline.error.detailLoadFailed");
     } finally {
-      _timelineState.detailLoading = false;
-      refreshTimelineUI();
+      if (requestSessionId === String(_timelineState.selectedSessionId || _timelineState.sessionId || "")
+        && _timelineSelectedDetail
+        && timelineItemKey(_timelineSelectedDetail) === requestItemKey) {
+        _timelineState.detailLoading = false;
+        refreshTimelineUI({ reloadPresentation: false });
+      }
     }
   }
 
@@ -51005,26 +46468,582 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const preview = escapeAttr(String(view.preview || ""));
     const detailRef = String(item.detail_ref || "");
     const isSelected = _timelineSelectedDetail && timelineItemKey(_timelineSelectedDetail) === key;
+    const loadedDetail = _timelineState.detailItem && timelineItemKey(_timelineState.detailItem) === key
+      ? _timelineState.detailItem
+      : item;
     const sourceId = view.source_id ?? item.id ?? item.source_id ?? "";
     const sourceBadge = sourceId !== "" ? " #" + String(sourceId) : "";
     const editButton = view.can_edit
       ? '<button type="button" class="mo-btn mo-btn-ghost" data-timeline-edit-key="' + escapeAttr(key) + '">' + escapeAttr(t("explorer.btn.editTooltip")) + '</button>'
       : '';
-    return '<div class="mo-tl-turn-item mo-tl-' + safeType + (isSelected ? ' is-active' : '') + '" data-timeline-inline-key="' + escapeAttr(key) + '">' +
-      '<span class="mo-tl-turn-dot mo-tl-node-' + safeType + '"></span>' +
-      '<span class="mo-tl-turn-kind">' + escapeAttr(timelineTypeDisplay(item) + sourceBadge) + '</span>' +
-      '<span><span class="mo-tl-turn-item-title">' + title + '</span><span class="mo-tl-turn-preview">' + preview + '</span></span>' +
-      '<span class="mo-tl-row-actions">' + editButton + '<button type="button" class="mo-btn mo-btn-info" data-timeline-detail-key="' + escapeAttr(key) + '" data-timeline-detail-ref="' + escapeAttr(detailRef) + '">' + escapeAttr(t("timeline.button.detail")) + '</button></span>' +
+    return '<div class="mo-tl-turn-item-wrap' + (isSelected ? ' is-expanded' : '') + '">' +
+      '<div class="mo-tl-turn-item mo-tl-' + safeType + (isSelected ? ' is-active' : '') + '" data-timeline-inline-key="' + escapeAttr(key) + '">' +
+        '<span class="mo-tl-turn-dot mo-tl-node-' + safeType + '"></span>' +
+        '<span class="mo-tl-turn-kind">' + escapeAttr(timelineTypeDisplay(item) + sourceBadge) + '</span>' +
+        '<span><span class="mo-tl-turn-item-title">' + title + '</span><span class="mo-tl-turn-preview">' + preview + '</span></span>' +
+        '<span class="mo-tl-row-actions">' + editButton + '<button type="button" class="mo-btn mo-btn-info" data-timeline-detail-key="' + escapeAttr(key) + '" data-timeline-detail-ref="' + escapeAttr(detailRef) + '">' + escapeAttr(t("timeline.button.detail")) + '</button></span>' +
+      '</div>' +
+      (isSelected ? '<div class="mo-tl-inline-detail">' + renderDetailPanel(loadedDetail) + '</div>' : '') +
+    '</div>';
+  }
+
+  function timelineWorldlineNodeDisplayId(node) {
+    return String(node && node.node_id || "");
+  }
+
+  function timelineWorldlineNodeBox(node) {
+    const x = Number(node && node.x);
+    const y = Number(node && node.y);
+    if (![x, y].every(Number.isFinite)) return null;
+    return { x: x * 220, y: y * 76, width: 176, height: 48 };
+  }
+
+  function timelineWorldlineBoundsBox(topology) {
+    if (!topology || !Array.isArray(topology.nodes) || topology.nodes.length === 0) return null;
+    const bounds = topology && topology.bounds && typeof topology.bounds === "object" ? topology.bounds : null;
+    if (!bounds) return null;
+    const minX = Number(bounds.min_x);
+    const minY = Number(bounds.min_y);
+    const maxX = Number(bounds.max_x);
+    const maxY = Number(bounds.max_y);
+    if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX < minX || maxY < minY) return null;
+    return { minX: minX * 220, minY: minY * 76, maxX: maxX * 220 + 176, maxY: maxY * 76 + 48 };
+  }
+
+  function timelineViewportClampScale(value) {
+    const scale = Number(value);
+    if (!Number.isFinite(scale)) return 1;
+    return Math.min(5, Math.max(0.08, scale));
+  }
+
+  function timelineViewportZoomAt(viewport, factor, x, y) {
+    if (!viewport) return false;
+    const oldScale = timelineViewportClampScale(viewport.scale);
+    const nextScale = timelineViewportClampScale(oldScale * Number(factor || 1));
+    const anchorX = Number.isFinite(Number(x)) ? Number(x) : 0;
+    const anchorY = Number.isFinite(Number(y)) ? Number(y) : 0;
+    const translationX = Number.isFinite(viewport.translationX) ? viewport.translationX : 0;
+    const translationY = Number.isFinite(viewport.translationY) ? viewport.translationY : 0;
+    const logicalX = (anchorX - translationX) / oldScale;
+    const logicalY = (anchorY - translationY) / oldScale;
+    viewport.scale = nextScale;
+    viewport.translationX = anchorX - logicalX * nextScale;
+    viewport.translationY = anchorY - logicalY * nextScale;
+    return nextScale !== oldScale;
+  }
+
+  function timelineViewportPinch(viewport, previousMidpoint, nextMidpoint, factor) {
+    if (!viewport || !previousMidpoint || !nextMidpoint) return false;
+    timelineViewportZoomAt(viewport, factor, previousMidpoint.x, previousMidpoint.y);
+    viewport.translationX = (Number.isFinite(viewport.translationX) ? viewport.translationX : 0) + Number(nextMidpoint.x - previousMidpoint.x || 0);
+    viewport.translationY = (Number.isFinite(viewport.translationY) ? viewport.translationY : 0) + Number(nextMidpoint.y - previousMidpoint.y || 0);
+    return true;
+  }
+
+  function timelineWorldlineCanvasPoint(canvas, event) {
+    const rect = canvas && typeof canvas.getBoundingClientRect === "function"
+      ? canvas.getBoundingClientRect()
+      : { left: 0, top: 0 };
+    return {
+      x: Number(event && event.clientX || 0) - Number(rect.left || 0),
+      y: Number(event && event.clientY || 0) - Number(rect.top || 0),
+    };
+  }
+
+  function timelineWorldlinePointerPair(viewport) {
+    if (!viewport || !(viewport.pointers instanceof Map)) return [];
+    return Array.from(viewport.pointers.values()).slice(0, 2);
+  }
+
+  function timelineWorldlineGesturePointerDown(canvas, viewport, callbacks, event) {
+    if (!canvas || !viewport || !event) return;
+    if (event.pointerType === "mouse" && Number(event.button || 0) !== 0) return;
+    if (!(viewport.pointers instanceof Map)) viewport.pointers = new Map();
+    if (event.cancelable && typeof event.preventDefault === "function") event.preventDefault();
+    const point = timelineWorldlineCanvasPoint(canvas, event);
+    viewport.pointers.set(event.pointerId, {
+      pointerId: event.pointerId,
+      startX: point.x,
+      startY: point.y,
+      lastX: point.x,
+      lastY: point.y,
+      moved: false,
+    });
+    if (typeof canvas.setPointerCapture === "function") {
+      try { canvas.setPointerCapture(event.pointerId); } catch { /* unsupported capture */ }
+    }
+    if (callbacks && typeof callbacks.redraw === "function") callbacks.redraw();
+  }
+
+  function timelineWorldlineGesturePointerMove(canvas, viewport, callbacks, event) {
+    if (!canvas || !viewport || !(viewport.pointers instanceof Map) || !viewport.pointers.has(event.pointerId)) return;
+    if (event.cancelable && typeof event.preventDefault === "function") event.preventDefault();
+    const entry = viewport.pointers.get(event.pointerId);
+    const point = timelineWorldlineCanvasPoint(canvas, event);
+    if (viewport.pointers.size >= 2) {
+      const pairBefore = timelineWorldlinePointerPair(viewport);
+      if (!pairBefore.includes(entry)) {
+        entry.lastX = point.x;
+        entry.lastY = point.y;
+        entry.moved = true;
+        return;
+      }
+      const previousMidpoint = {
+        x: (pairBefore[0].lastX + pairBefore[1].lastX) / 2,
+        y: (pairBefore[0].lastY + pairBefore[1].lastY) / 2,
+      };
+      const previousDistance = Math.hypot(pairBefore[0].lastX - pairBefore[1].lastX, pairBefore[0].lastY - pairBefore[1].lastY);
+      entry.lastX = point.x;
+      entry.lastY = point.y;
+      pairBefore.forEach(function(pointer) { pointer.moved = true; });
+      const pairAfter = timelineWorldlinePointerPair(viewport);
+      const nextMidpoint = {
+        x: (pairAfter[0].lastX + pairAfter[1].lastX) / 2,
+        y: (pairAfter[0].lastY + pairAfter[1].lastY) / 2,
+      };
+      const nextDistance = Math.hypot(pairAfter[0].lastX - pairAfter[1].lastX, pairAfter[0].lastY - pairAfter[1].lastY);
+      if (previousDistance > 0 && nextDistance > 0) {
+        timelineViewportPinch(viewport, previousMidpoint, nextMidpoint, nextDistance / previousDistance);
+      }
+      if (callbacks && typeof callbacks.redraw === "function") callbacks.redraw();
+      return;
+    }
+    const threshold = Math.max(0, Number(viewport.dragThreshold || 0));
+    const totalDistance = Math.hypot(point.x - entry.startX, point.y - entry.startY);
+    let deltaX = 0;
+    let deltaY = 0;
+    if (entry.moved) {
+      deltaX = point.x - entry.lastX;
+      deltaY = point.y - entry.lastY;
+    } else if (totalDistance > threshold) {
+      entry.moved = true;
+      deltaX = point.x - entry.startX;
+      deltaY = point.y - entry.startY;
+    }
+    entry.lastX = point.x;
+    entry.lastY = point.y;
+    if (deltaX || deltaY) {
+      viewport.translationX = (Number.isFinite(viewport.translationX) ? viewport.translationX : 0) + deltaX;
+      viewport.translationY = (Number.isFinite(viewport.translationY) ? viewport.translationY : 0) + deltaY;
+      if (callbacks && typeof callbacks.redraw === "function") callbacks.redraw();
+    }
+  }
+
+  function timelineWorldlineGesturePointerEnd(canvas, viewport, callbacks, event, cancelled) {
+    if (!canvas || !viewport || !(viewport.pointers instanceof Map) || !viewport.pointers.has(event.pointerId)) return;
+    if (event.cancelable && typeof event.preventDefault === "function") event.preventDefault();
+    const entry = viewport.pointers.get(event.pointerId);
+    const point = timelineWorldlineCanvasPoint(canvas, event);
+    const beforeCount = viewport.pointers.size;
+    viewport.pointers.delete(event.pointerId);
+    if (typeof canvas.releasePointerCapture === "function") {
+      try { canvas.releasePointerCapture(event.pointerId); } catch { /* unsupported capture */ }
+    }
+    if (beforeCount >= 2 && viewport.pointers.size === 1) {
+      const remaining = viewport.pointers.values().next().value;
+      remaining.startX = remaining.lastX;
+      remaining.startY = remaining.lastY;
+      remaining.moved = true;
+      return;
+    }
+    if (cancelled || beforeCount !== 1 || entry.moved) return;
+    const releaseDistance = Math.hypot(point.x - entry.startX, point.y - entry.startY);
+    if (releaseDistance > Math.max(0, Number(viewport.dragThreshold || 0))) {
+      viewport.translationX = (Number.isFinite(viewport.translationX) ? viewport.translationX : 0) + point.x - entry.startX;
+      viewport.translationY = (Number.isFinite(viewport.translationY) ? viewport.translationY : 0) + point.y - entry.startY;
+      if (callbacks && typeof callbacks.redraw === "function") callbacks.redraw();
+      return;
+    }
+    const hit = callbacks && typeof callbacks.hitTest === "function" ? callbacks.hitTest(point.x, point.y) : null;
+    const nodeId = String(hit && hit.id || "");
+    if (!nodeId) {
+      viewport.lastTap = { nodeId: "", at: 0, x: 0, y: 0 };
+      return;
+    }
+    const now = Number.isFinite(Number(event.timeStamp)) && Number(event.timeStamp) > 0 ? Number(event.timeStamp) : Date.now();
+    const lastTap = viewport.lastTap || {};
+    const isDoubleTap = lastTap.nodeId === nodeId
+      && now - Number(lastTap.at || 0) >= 0
+      && now - Number(lastTap.at || 0) <= 360
+      && Math.hypot(point.x - Number(lastTap.x || 0), point.y - Number(lastTap.y || 0)) <= 28;
+    viewport.lastTap = isDoubleTap
+      ? { nodeId: "", at: 0, x: 0, y: 0 }
+      : { nodeId, at: now, x: point.x, y: point.y };
+    if (isDoubleTap && callbacks && typeof callbacks.focus === "function") callbacks.focus(hit);
+    if (callbacks && typeof callbacks.select === "function") callbacks.select(hit, { doubleTap: isDoubleTap });
+  }
+
+  function timelineWorldlineGestureWheel(canvas, viewport, callbacks, event) {
+    if (!canvas || !viewport || !event) return;
+    if (event.cancelable && typeof event.preventDefault === "function") event.preventDefault();
+    const point = timelineWorldlineCanvasPoint(canvas, event);
+    const factor = Math.exp(-Number(event.deltaY || 0) * 0.0015);
+    if (callbacks && typeof callbacks.zoomAt === "function") {
+      callbacks.zoomAt(factor, point.x, point.y);
+    } else {
+      timelineViewportZoomAt(viewport, factor, point.x, point.y);
+      if (callbacks && typeof callbacks.redraw === "function") callbacks.redraw();
+    }
+  }
+
+  function attachTimelineWorldlineGestures(canvas, viewport, callbacks) {
+    if (!canvas || typeof canvas.addEventListener !== "function") return function() {};
+    const pointerDown = function(event) { timelineWorldlineGesturePointerDown(canvas, viewport, callbacks, event); };
+    const pointerMove = function(event) { timelineWorldlineGesturePointerMove(canvas, viewport, callbacks, event); };
+    const pointerUp = function(event) { timelineWorldlineGesturePointerEnd(canvas, viewport, callbacks, event, false); };
+    const pointerCancel = function(event) { timelineWorldlineGesturePointerEnd(canvas, viewport, callbacks, event, true); };
+    const wheel = function(event) { timelineWorldlineGestureWheel(canvas, viewport, callbacks, event); };
+    canvas.addEventListener("pointerdown", pointerDown);
+    canvas.addEventListener("pointermove", pointerMove);
+    canvas.addEventListener("pointerup", pointerUp);
+    canvas.addEventListener("pointercancel", pointerCancel);
+    canvas.addEventListener("wheel", wheel, { passive: false });
+    return function() {
+      canvas.removeEventListener("pointerdown", pointerDown);
+      canvas.removeEventListener("pointermove", pointerMove);
+      canvas.removeEventListener("pointerup", pointerUp);
+      canvas.removeEventListener("pointercancel", pointerCancel);
+      canvas.removeEventListener("wheel", wheel);
+    };
+  }
+
+  function timelineWorldlineRoundedRect(ctx, x, y, width, height, radius) {
+    const r = Math.min(Math.max(0, radius), width / 2, height / 2);
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.lineTo(x + width - r, y);
+    ctx.quadraticCurveTo(x + width, y, x + width, y + r);
+    ctx.lineTo(x + width, y + height - r);
+    ctx.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
+    ctx.lineTo(x + r, y + height);
+    ctx.quadraticCurveTo(x, y + height, x, y + height - r);
+    ctx.lineTo(x, y + r);
+    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.closePath();
+  }
+
+  function timelineWorldlineTrimLabel(ctx, value, maxWidth) {
+    const text = String(value || "");
+    if (!ctx || typeof ctx.measureText !== "function" || ctx.measureText(text).width <= maxWidth) return text;
+    let output = text;
+    while (output.length > 1 && ctx.measureText(output + "…").width > maxWidth) output = output.slice(0, -1);
+    return output + "…";
+  }
+
+  function timelineWorldlineResizeCanvas(canvas) {
+    const rect = canvas.getBoundingClientRect();
+    const width = Math.max(1, Number(rect.width || canvas.clientWidth || 1));
+    const height = Math.max(1, Number(rect.height || canvas.clientHeight || 1));
+    const ratio = Math.max(1, Math.min(3, Number(globalThis.devicePixelRatio || 1)));
+    const pixelWidth = Math.max(1, Math.round(width * ratio));
+    const pixelHeight = Math.max(1, Math.round(height * ratio));
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
+    return { width, height, ratio };
+  }
+
+  function drawTimelineWorldlineCanvas(canvas, topology) {
+    if (!canvas || typeof canvas.getContext !== "function") return [];
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return [];
+    const size = timelineWorldlineResizeCanvas(canvas);
+    const viewport = _timelineState.worldlineViewport;
+    const scale = timelineViewportClampScale(viewport.scale);
+    const translationX = Number.isFinite(viewport.translationX) ? viewport.translationX : 0;
+    const translationY = Number.isFinite(viewport.translationY) ? viewport.translationY : 0;
+    ctx.setTransform(size.ratio, 0, 0, size.ratio, 0, 0);
+    ctx.clearRect(0, 0, size.width, size.height);
+    ctx.fillStyle = "#0F1116";
+    ctx.fillRect(0, 0, size.width, size.height);
+    const gridStep = Math.max(24, 48 * scale);
+    const gridX = ((translationX % gridStep) + gridStep) % gridStep;
+    const gridY = ((translationY % gridStep) + gridStep) % gridStep;
+    ctx.strokeStyle = "rgba(255,255,255,.035)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+    for (let x = gridX; x < size.width; x += gridStep) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, size.height); ctx.stroke(); }
+    for (let y = gridY; y < size.height; y += gridStep) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size.width, y); ctx.stroke(); }
+    const nodes = topology && Array.isArray(topology.nodes) ? topology.nodes : [];
+    const nodeBoxesById = new Map();
+    nodes.forEach(function(node) {
+      const id = timelineWorldlineNodeDisplayId(node);
+      const box = timelineWorldlineNodeBox(node);
+      if (id && box) nodeBoxesById.set(id, box);
+    });
+    const edges = topology && Array.isArray(topology.edges) ? topology.edges : [];
+    edges.forEach(function(edge) {
+      const parentId = String(edge && edge.parent_node_id || "");
+      const childId = String(edge && edge.child_node_id || "");
+      const parentBox = nodeBoxesById.get(parentId);
+      const childBox = nodeBoxesById.get(childId);
+      if (!parentBox || !childBox) return;
+      const fromX = parentBox.x + parentBox.width;
+      const fromY = parentBox.y + parentBox.height / 2;
+      const toX = childBox.x;
+      const toY = childBox.y + childBox.height / 2;
+      const x1 = fromX * scale + translationX;
+      const y1 = fromY * scale + translationY;
+      const x2 = toX * scale + translationX;
+      const y2 = toY * scale + translationY;
+      const bend = Math.max(18, Math.abs(x2 - x1) * 0.42);
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.bezierCurveTo(x1 + bend, y1, x2 - bend, y2, x2, y2);
+      const onActivePath = !!(edge && edge.active_ancestor_path);
+      ctx.setLineDash(String(edge && edge.kind || "") === "fork" ? [7, 5] : []);
+      ctx.strokeStyle = onActivePath ? "#5D73E6" : "#353B46";
+      ctx.lineWidth = onActivePath ? 2.5 : 1.5;
+      ctx.stroke();
+    });
+    ctx.setLineDash([]);
+    const topologyCurrentId = String(topology && topology.current_node_id || "");
+    const topologySelectedId = String(topology && topology.selected_node_id || "");
+    const transientSelectedNodeId = String(viewport.selectedNodeId || "");
+    const selectedNodeId = transientSelectedNodeId && nodeBoxesById.has(transientSelectedNodeId) ? transientSelectedNodeId : topologySelectedId;
+    const displayRects = [];
+    nodes.forEach(function(node) {
+      const box = timelineWorldlineNodeBox(node);
+      if (!box) return;
+      const left = box.x * scale + translationX;
+      const top = box.y * scale + translationY;
+      const width = box.width * scale;
+      const height = box.height * scale;
+      const id = timelineWorldlineNodeDisplayId(node);
+      const isCurrent = !!(topologyCurrentId && id === topologyCurrentId);
+      const isSelected = !!(selectedNodeId && id === selectedNodeId);
+      const onActivePath = node.active_ancestor_path === true;
+      timelineWorldlineRoundedRect(ctx, left, top, width, height, Math.min(12, 8 * scale));
+      ctx.fillStyle = isCurrent ? "#181E2B" : onActivePath ? "#151923" : "#13161C";
+      ctx.fill();
+      ctx.strokeStyle = isSelected ? "#8FA7FF" : isCurrent || onActivePath ? "#5D73E6" : "#353B46";
+      ctx.lineWidth = isSelected ? 3 : isCurrent ? 2.5 : 1.5;
+      ctx.stroke();
+      const sessionId = String(node.session_id || "");
+      const turnText = String(node.turn_text || "-");
+      const sessionDiscriminator = sessionId.length > 12 ? "…" + sessionId.slice(-8) : sessionId || "-";
+      const labelParts = [];
+      labelParts.push(sessionDiscriminator);
+      if (isCurrent) labelParts.push(t("timeline.session.current"));
+      if (isSelected) labelParts.push(t("timeline.label.selected"));
+      if (width >= 30 && height >= 18) {
+        const fontSize = Math.max(9, Math.min(14, 12 * scale));
+        ctx.font = "700 " + fontSize + "px Inter,Pretendard,system-ui,sans-serif";
+        ctx.textBaseline = "middle";
+        ctx.fillStyle = "#F4F5F7";
+        const hasStateLine = labelParts.length > 0 && height >= 30;
+        const lineOffset = hasStateLine ? Math.max(5, Math.min(8, 8 * scale)) : 0;
+        const primaryLabel = t("timeline.turn.kind.turn") + " " + turnText + (hasStateLine ? "" : " · " + sessionDiscriminator);
+        ctx.fillText(timelineWorldlineTrimLabel(ctx, primaryLabel, Math.max(8, width - 18)), left + 9, top + height / 2 - lineOffset);
+        if (hasStateLine) {
+          ctx.font = "600 " + Math.max(8, Math.min(11, 9 * scale)) + "px Inter,Pretendard,system-ui,sans-serif";
+          ctx.fillStyle = isSelected ? "#8FA7FF" : "#8B909A";
+          ctx.fillText(timelineWorldlineTrimLabel(ctx, labelParts.join(" · "), Math.max(8, width - 18)), left + 9, top + height / 2 + lineOffset);
+        }
+      }
+      displayRects.push({
+        id,
+        sessionId: String(node.session_id || ""),
+        node,
+        left,
+        top,
+        right: left + width,
+        bottom: top + height,
+        centerX: left + width / 2,
+        centerY: top + height / 2,
+      });
+    });
+    canvas._moTimelineNodeRects = displayRects;
+    return displayRects;
+  }
+
+  function timelineWorldlineHitTest(canvas, x, y) {
+    const rects = canvas && Array.isArray(canvas._moTimelineNodeRects) ? canvas._moTimelineNodeRects : [];
+    for (let index = rects.length - 1; index >= 0; index--) {
+      const rect = rects[index];
+      if (x >= rect.left && x <= rect.right && y >= rect.top && y <= rect.bottom) return rect;
+    }
+    return null;
+  }
+
+  function timelineWorldlineFocusNode(canvas, node) {
+    if (!canvas || !node) return false;
+    const box = timelineWorldlineNodeBox(node);
+    if (!box) return false;
+    const rect = canvas.getBoundingClientRect();
+    const viewport = _timelineState.worldlineViewport;
+    const scale = timelineViewportClampScale(viewport.scale);
+    viewport.translationX = Number(rect.width || 0) / 2 - (box.x + box.width / 2) * scale;
+    viewport.translationY = Number(rect.height || 0) / 2 - (box.y + box.height / 2) * scale;
+    drawTimelineWorldlineCanvas(canvas, canvas._moTimelineTopology);
+    return true;
+  }
+
+  function timelineWorldlineFitAll(canvas, topology) {
+    const bounds = timelineWorldlineBoundsBox(topology);
+    if (!canvas || !bounds) return false;
+    const minX = Number(bounds.minX);
+    const minY = Number(bounds.minY);
+    const maxX = Number(bounds.maxX);
+    const maxY = Number(bounds.maxY);
+    if (![minX, minY, maxX, maxY].every(Number.isFinite) || maxX <= minX || maxY <= minY) return false;
+    const rect = canvas.getBoundingClientRect();
+    const padding = 42;
+    const rectWidth = Number(rect.width || 0);
+    const rectHeight = Number(rect.height || 0);
+    const availableWidth = rectWidth - padding * 2;
+    const availableHeight = rectHeight - padding * 2;
+    if (!(availableWidth > 0) || !(availableHeight > 0)) return false;
+    const viewport = _timelineState.worldlineViewport;
+    viewport.scale = timelineViewportClampScale(Math.min(availableWidth / (maxX - minX), availableHeight / (maxY - minY)));
+    viewport.translationX = rectWidth / 2 - ((minX + maxX) / 2) * viewport.scale;
+    viewport.translationY = rectHeight / 2 - ((minY + maxY) / 2) * viewport.scale;
+    drawTimelineWorldlineCanvas(canvas, topology);
+    return true;
+  }
+
+  function timelineWorldlineCurrentNode(topology) {
+    const nodes = topology && Array.isArray(topology.nodes) ? topology.nodes : [];
+    const currentNodeId = String(topology && topology.current_node_id || "");
+    if (!currentNodeId) return null;
+    return nodes.find(function(node) { return timelineWorldlineNodeDisplayId(node) === currentNodeId; }) || null;
+  }
+
+  function timelineWorldlineSelectedNode(topology) {
+    const nodes = topology && Array.isArray(topology.nodes) ? topology.nodes : [];
+    const transientSelectedNodeId = String(_timelineState.worldlineViewport.selectedNodeId || "");
+    if (transientSelectedNodeId) {
+      const transientNode = nodes.find(function(node) { return timelineWorldlineNodeDisplayId(node) === transientSelectedNodeId; });
+      if (transientNode) return transientNode;
+    }
+    const selectedNodeId = String(topology && topology.selected_node_id || "");
+    if (!selectedNodeId) return null;
+    return nodes.find(function(node) { return timelineWorldlineNodeDisplayId(node) === selectedNodeId; }) || null;
+  }
+
+  function timelineWorldlineZoomBy(canvas, factor, x, y) {
+    if (!canvas) return false;
+    const rect = canvas.getBoundingClientRect();
+    const anchorX = Number.isFinite(Number(x)) ? Number(x) : Number(rect.width || 0) / 2;
+    const anchorY = Number.isFinite(Number(y)) ? Number(y) : Number(rect.height || 0) / 2;
+    const changed = timelineViewportZoomAt(_timelineState.worldlineViewport, factor, anchorX, anchorY);
+    drawTimelineWorldlineCanvas(canvas, canvas._moTimelineTopology);
+    return changed;
+  }
+
+  function timelineWorldlineSelectNode(node) {
+    const nodeId = timelineWorldlineNodeDisplayId(node);
+    const sessionId = String(node && node.session_id || "");
+    const turnKey = String(node && node.turn_key || "");
+    const turnIndex = Math.max(0, Math.floor(Number(node && node.turn_index || 0)));
+    if (!nodeId || !sessionId || !turnKey || turnIndex <= 0) return;
+    const alreadySelected = sessionId === _timelineState.selectedSessionId;
+    const inspectorWasOpen = String(_timelineState.worldlineViewport.selectedNodeId || "") === nodeId
+      && String(_timelineState.expandedTurnKey || "") === turnKey;
+    _timelineState.worldlineViewport.selectedNodeId = nodeId;
+    _timelineState.expandedTurnKey = inspectorWasOpen ? "" : turnKey;
+    _timelineSelectedDetail = null;
+    _timelineState.detailItem = null;
+    _timelineState.detailLoading = false;
+    _timelineState.detailError = "";
+    if (sessionId && !alreadySelected) {
+      _timelineState.selectedSessionId = sessionId;
+      _timelineState.sessionId = sessionId;
+      _timelineState.items = [];
+      _timelineState.meta = null;
+      _timelineState.viewModel = null;
+      _timelineState.hasMore = false;
+      _timelineState.nextBeforeTurn = 0;
+      _timelineState.error = "";
+      syncSessionScopedInspectionSelection(sessionId);
+      loadTimelineData(true, { sessionId, focusTurn: turnIndex, skipRuntimeSessionResolve: true, skipSessionListRefresh: true, preserveExpandedTurnKey: true });
+    } else if (!inspectorWasOpen) {
+      loadTimelineData(true, { sessionId, focusTurn: turnIndex, skipRuntimeSessionResolve: true, skipSessionListRefresh: true, preserveExpandedTurnKey: true });
+    } else {
+      refreshTimelineUI({ reloadPresentation: false });
+    }
+  }
+
+  function unmountTimelineWorldlineCanvas(canvas) {
+    if (!canvas) return;
+    if (typeof canvas._moTimelineGestureCleanup === "function") canvas._moTimelineGestureCleanup();
+    if (canvas._moTimelineResizeObserver && typeof canvas._moTimelineResizeObserver.disconnect === "function") canvas._moTimelineResizeObserver.disconnect();
+    canvas._moTimelineGestureCleanup = null;
+    canvas._moTimelineResizeObserver = null;
+  }
+
+  function mountTimelineWorldlineCanvas() {
+    const canvas = document.getElementById("mo-timeline-worldline-canvas");
+    if (!canvas) return;
+    unmountTimelineWorldlineCanvas(canvas);
+    const suppliedTopology = _timelineState.viewModel && _timelineState.viewModel.worldline_topology && typeof _timelineState.viewModel.worldline_topology === "object"
+      ? _timelineState.viewModel.worldline_topology
+      : null;
+    const topology = suppliedTopology && suppliedTopology.contract_version === "worldline_topology.viewmodel.v2" ? suppliedTopology : null;
+    const viewport = _timelineState.worldlineViewport;
+    canvas._moTimelineTopology = topology;
+    if (!(viewport.pointers instanceof Map)) viewport.pointers = new Map();
+    viewport.pointers.clear();
+    if (!topology || !Array.isArray(topology.nodes) || topology.nodes.length === 0) {
+      drawTimelineWorldlineCanvas(canvas, topology);
+      return;
+    }
+    const fitted = (!Number.isFinite(viewport.translationX) || !Number.isFinite(viewport.translationY))
+      && timelineWorldlineFitAll(canvas, topology);
+    if (!fitted) drawTimelineWorldlineCanvas(canvas, topology);
+    const callbacks = {
+      redraw: function() { drawTimelineWorldlineCanvas(canvas, topology); },
+      zoomAt: function(factor, x, y) { timelineWorldlineZoomBy(canvas, factor, x, y); },
+      hitTest: function(x, y) { return timelineWorldlineHitTest(canvas, x, y); },
+      focus: function(hit) { if (hit && hit.node) timelineWorldlineFocusNode(canvas, hit.node); },
+      select: function(hit) { if (hit && hit.node) timelineWorldlineSelectNode(hit.node); },
+    };
+    canvas._moTimelineGestureCleanup = attachTimelineWorldlineGestures(canvas, viewport, callbacks);
+    if (typeof ResizeObserver === "function") {
+      canvas._moTimelineResizeObserver = new ResizeObserver(function() {
+        if (!canvas.isConnected) {
+          unmountTimelineWorldlineCanvas(canvas);
+          return;
+        }
+        const refitted = (!Number.isFinite(viewport.translationX) || !Number.isFinite(viewport.translationY))
+          && timelineWorldlineFitAll(canvas, topology);
+        if (!refitted) drawTimelineWorldlineCanvas(canvas, topology);
+      });
+      canvas._moTimelineResizeObserver.observe(canvas);
+    }
+  }
+
+  function renderTimelineWorldlineDetail(worldline, topology) {
+    const state = String(worldline && worldline.state || "not_applicable");
+    const currentSession = String(worldline && worldline.current_session_id || "");
+    const parentSession = String(worldline && worldline.parent_session_id || "");
+    const forkTurn = Math.max(0, Math.floor(Number(worldline && worldline.fork_turn || 0)));
+    const reason = String(worldline && worldline.reason || "");
+    const selectedNode = timelineWorldlineSelectedNode(topology);
+    const selectedNodeHtml = selectedNode
+      ? '<div class="mo-tl-kv">' +
+          '<span>' + escapeAttr(t("timeline.label.selected")) + '</span><strong>' + escapeAttr(String(selectedNode.session_id || "-")) + '</strong>' +
+          '<span>' + escapeAttr(t("timeline.turn.turnNumber")) + '</span><strong>' + escapeAttr(String(selectedNode.turn_text || "-")) + '</strong>' +
+        '</div>'
+      : '';
+    return '<div class="mo-detail-panel mo-tl-worldline-detail">' +
+      '<div class="mo-detail-header"><strong>' + escapeAttr(t("timeline.worldline.detail")) + '</strong><span class="mo-note">' + escapeAttr(t("timeline.worldline.state." + state)) + '</span></div>' +
+      selectedNodeHtml +
+      '<div class="mo-tl-kv">' +
+        '<span>' + escapeAttr(t("timeline.worldline.session")) + '</span><strong>' + escapeAttr(currentSession || "-") + '</strong>' +
+        '<span>' + escapeAttr(t("timeline.worldline.parent")) + '</span><strong>' + escapeAttr(parentSession || "-") + '</strong>' +
+        '<span>' + escapeAttr(t("timeline.worldline.forkTurn")) + '</span><strong>' + (forkTurn > 0 ? '#' + escapeAttr(String(forkTurn)) : '-') + '</strong>' +
+        '<span>' + escapeAttr(t("timeline.worldline.reason")) + '</span><strong>' + escapeAttr(reason || "-") + '</strong>' +
+      '</div>' +
     '</div>';
   }
 
   function renderTimelineTurnGroup(group) {
-    const selectedTurnKey = timelineSelectedTurnKey();
-    const isExpanded = _timelineState.expandedTurnKey === group.key;
+    const selectedTurnKey = String(_timelineState.expandedTurnKey || timelineSelectedTurnKey());
+    const isExpanded = true;
     const isSelected = selectedTurnKey === group.key;
     const groupKind = String(group.kind || "turn");
-    const turnText = group.turnText || "-";
-    const createdText = String(group.createdText || "");
+    const turnText = group.turn_text || "-";
+    const createdText = String(group.created_text || "");
     const summary = escapeAttr(String(group.preview || ""));
     const itemCount = Number(group.item_count || 0);
     const badges = timelineTurnBadgeHtml(group) + '<span class="mo-tl-badge">' + escapeAttr(tf("timeline.badge.items", { n: String(itemCount) })) + '</span>';
@@ -51049,9 +47068,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   function renderTimelinePanel() {
     const viewModel = _timelineState.viewModel;
-    if (!viewModel) return '<div class="mo-note">Presentation ViewModel unavailable</div>';
+    if (!viewModel) {
+      return '<div class="mo-note">' + escapeAttr(_timelineState.loading ? t("timeline.button.loading") : "Presentation ViewModel unavailable") + '</div>';
+    }
     const items = Array.isArray(viewModel.items) ? viewModel.items : [];
-    const activeItem = _timelineState.detailItem || _timelineSelectedDetail || items[0] || null;
     const turnGroups = Array.isArray(viewModel.groups) ? viewModel.groups : [];
     const summary = viewModel.summary || {};
     const sourceCounts = summary.source_counts || {};
@@ -51060,80 +47080,93 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       items: Number(summary.items || 0),
       total: Number(summary.total || 0),
     });
-    const selectedSessionId = String(viewModel.selected_session_id || "");
+    const selectedSessionId = String(_timelineState.selectedSessionId || viewModel.selected_session_id || "");
     const sessions = Array.isArray(viewModel.sessions) ? viewModel.sessions : [];
-    const detailMode = sanitizeEnumValue(settings.uiDetailMode, DEFAULT_SETTINGS.uiDetailMode, UI_DETAIL_MODE_OPTIONS);
-    const activeDetailHtml = activeItem ? renderDetailPanel(activeItem) : '<div class="mo-note">' + escapeAttr(t("timeline.note.selectItem")) + '</div>';
-    const migrationStatusHtml = _sessionMigrationUi.status && _sessionMigrationUi.status !== "idle" && _sessionMigrationUi.message
-      ? '<div class="mo-status mo-status-' + escapeAttr(_sessionMigrationUi.status === "ok" ? "ok" : _sessionMigrationUi.status === "running" ? "wait" : "fail") + '">' + escapeAttr(_sessionMigrationUi.message) + '</div>'
-      : '';
-    const migrationOpsSourceId = String(_sessionMigrationUi.sourceSessionId || "").trim();
-    const migrationOpsMode = String(_sessionMigrationUi.migrationMode || "");
-    const migrationOpsCleanupHtml = migrationOpsMode === "copy_keep_source" ? "" :
-            '<button type="button" class="mo-tl-session-cleanup" data-timeline-session-cleanup-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.cleanupTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.cleanup")) + '</button>';
-    const migrationOpsHtml = _sessionMigrationUi.migrationId && migrationOpsSourceId
-      ? '<div class="mo-tl-migration-ops">' +
-          '<div>' +
-            '<div class="mo-tl-migration-ops-title">' + escapeAttr(t("timeline.label.migrationOps")) + '</div>' +
-            '<div class="mo-tl-migration-ops-note">' + escapeAttr(getSessionDisplayLabel(migrationOpsSourceId, false)) + '</div>' +
-          '</div>' +
-          '<div class="mo-tl-migration-ops-actions">' +
-            '<button type="button" class="mo-tl-session-rollback" data-timeline-session-rollback-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.rollbackTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.rollback")) + '</button>' +
-            migrationOpsCleanupHtml +
-          '</div>' +
-        '</div>'
-      : '';
-    const sessionListHtml = sessions.length > 0 ? sessions.map((session) => {
+    const worldline = viewModel.worldline && typeof viewModel.worldline === "object" ? viewModel.worldline : {};
+    const suppliedTopology = viewModel.worldline_topology && typeof viewModel.worldline_topology === "object" ? viewModel.worldline_topology : null;
+    const topology = suppliedTopology && suppliedTopology.contract_version === "worldline_topology.viewmodel.v2" ? suppliedTopology : null;
+    const topologyNodes = topology && Array.isArray(topology.nodes) ? topology.nodes : [];
+    const selectedNode = timelineWorldlineSelectedNode(topology);
+    const selectedNodeId = timelineWorldlineNodeDisplayId(selectedNode);
+    const selectedTurnKey = String(_timelineState.expandedTurnKey || "");
+    const selectedTurnGroup = turnGroups.find(function(group) { return String(group && group.key || "") === selectedTurnKey; }) || null;
+    const selectedTurnText = String(selectedTurnGroup && selectedTurnGroup.turn_text || selectedNode && selectedNode.turn_text || "");
+    const sessionOptionsHtml = sessions.length > 0 ? sessions.map(function(session) {
       const sid = String(session.session_id || "");
-      const active = !!session.selected;
-      const lifecycle = { deleted: !!session.deleted, status: String(session.status || "active"), label: String(session.label || session.status || "active") };
-      const sessionLabel = getSessionDisplayLabel(sid, false);
-      const canAttach = !!session.can_attach;
-      const canCopy = !!session.can_copy;
-      const canMigrate = !!session.can_migrate;
-      const attachBtn = canAttach
-        ? '<button type="button" class="mo-tl-session-attach" data-timeline-session-attach-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.attachTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.attachCurrent")) + '</button>'
-        : '';
-      const copyBtn = canCopy
-        ? '<button type="button" class="mo-tl-session-copy" data-timeline-session-copy-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.copyTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === sid ? t("timeline.button.loading") : t("timeline.button.copy")) + '</button>'
-        : '';
-      const migrateBtn = canMigrate
-        ? '<button type="button" class="mo-tl-session-migrate" data-timeline-session-migrate-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.migrateTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(_sessionMigrationUi.running && _sessionMigrationUi.sourceSessionId === sid ? t("timeline.button.loading") : t("timeline.button.migrate")) + '</button>'
-        : '';
-      return '<div role="button" tabindex="0" class="mo-tl-session' + (active ? ' is-active' : '') + (lifecycle.deleted ? ' is-deleted' : '') + '" data-timeline-session-id="' + escapeAttr(sid) + '">' +
-        '<div class="mo-tl-session-meta is-head"><span class="mo-tl-session-name" title="' + escapeAttr(buildSessionDisplayTitle(sid)) + '">' + escapeAttr(sessionLabel) + '</span><span class="mo-tl-session-head-actions"><span class="mo-tl-session-badge is-' + escapeAttr(lifecycle.status) + '">' + escapeAttr(lifecycle.label) + '</span>' + attachBtn + copyBtn + migrateBtn + '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(sid) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button></span></div>' +
-      '</div>';
-    }).join("") : '<div class="mo-note">' + (_timelineState.sessionsLoading ? escapeAttr(t("timeline.note.loadingSessions")) : escapeAttr(t("timeline.note.noSessions"))) + '</div>';
-    const streamHtml = items.length > 0 ? turnGroups.map(renderTimelineTurnGroup).join("")
-      : viewModel.empty_state === "loading" ? '<div class="mo-note">' + escapeAttr(t("timeline.button.loading")) + '</div>'
+      const lifecycle = String(session.label || session.status || "");
+      const label = getSessionDisplayLabel(sid, false) || sid;
+      return '<option value="' + escapeAttr(sid) + '"' + (sid === selectedSessionId ? ' selected' : '') + '>' + escapeAttr(label + (lifecycle ? ' · ' + lifecycle : '')) + '</option>';
+    }).join("") : '<option value="">' + escapeAttr(_timelineState.sessionsLoading ? t("timeline.note.loadingSessions") : t("timeline.note.noSessions")) + '</option>';
+    const streamHtml = selectedTurnGroup ? renderTimelineTurnGroup(selectedTurnGroup)
+      : _timelineState.loading || viewModel.empty_state === "loading" ? '<div class="mo-note">' + escapeAttr(t("timeline.button.loading")) + '</div>'
       : viewModel.empty_state === "error" ? '<div class="mo-status mo-status-fail">' + escapeAttr(_timelineState.error) + '</div>'
-      : '<div class="mo-note">' + escapeAttr(t("timeline.empty.noItems")) + '</div>';
+      : items.length > 0 && selectedTurnKey
+        ? '<div class="mo-note">' + escapeAttr(t("timeline.records.notLoaded")) + '</div>'
+        : '<div class="mo-note">' + escapeAttr(t("timeline.records.selectTurn")) + '</div>';
     const loadMoreHtml = items.length > 0
       ? (viewModel.load_more_state === "available" || viewModel.load_more_state === "loading"
         ? '<div class="mo-tl-load-more"><button class="mo-btn mo-btn-info" id="mo-timeline-load-more-btn"' + (viewModel.load_more_state === "loading" ? ' disabled' : '') + '>' + escapeAttr(viewModel.load_more_state === "loading" ? t("timeline.button.loading") : t("timeline.button.loadMore")) + '</button></div>'
         : '<div class="mo-tl-load-note">' + escapeAttr(t("timeline.note.noMore")) + '</div>')
       : '';
+    const suppliedTopologyState = String(topology && topology.state || "");
+    const topologySurfaceState = !topology || suppliedTopologyState === "unavailable"
+      ? "unavailable"
+      : topologyNodes.length === 0 ? "empty" : suppliedTopologyState === "partial" ? "partial" : "ready";
+    const topologyStatusHtml = topologySurfaceState !== "unavailable" && topologySurfaceState !== "empty" ? ''
+      : '<div class="mo-tl-canvas-empty"><strong>' + escapeAttr(t(topologySurfaceState === "unavailable" ? "timeline.canvas.unavailable" : "timeline.canvas.empty")) + '</strong>' +
+          (topology && topology.reason ? '<span>' + escapeAttr(String(topology.reason)) + '</span>' : '') +
+        '</div>';
+    const topologyPartialHtml = topologySurfaceState === "partial"
+      ? '<span class="mo-tl-canvas-status is-warn">' + escapeAttr(t("timeline.canvas.partial")) + (topology && topology.reason ? ' · ' + escapeAttr(String(topology.reason)) : '') + '</span>'
+      : '';
+    const topologyTruncatedHtml = topology && topology.truncated
+      ? '<span class="mo-tl-canvas-status is-warn">' + escapeAttr(t("timeline.canvas.truncated")) + '</span>'
+      : '';
+    const scalarState = String(worldline.state || "not_applicable");
+    const scalarReason = String(worldline.reason || "");
+    const selectedTurnRecordCount = Number(selectedTurnGroup && selectedTurnGroup.item_count || 0);
+    const selectedTurnHeading = selectedTurnText
+      ? t("timeline.drawer.records") + ' · #' + selectedTurnText
+      : t("timeline.drawer.records");
+    const inspectorHtml = selectedNodeId && selectedTurnKey && String(selectedNode && selectedNode.turn_key || "") === selectedTurnKey
+      ? '<aside class="mo-tl-node-inspector" data-selected-node-id="' + escapeAttr(selectedNodeId) + '" data-selected-turn-key="' + escapeAttr(selectedTurnKey) + '">' +
+          '<div class="mo-tl-node-inspector-head"><div><strong>' + escapeAttr(selectedTurnHeading) + '</strong><span class="mo-note">' + escapeAttr(tf("timeline.badge.items", { n: String(selectedTurnRecordCount) })) + '</span></div>' +
+            '<button type="button" class="mo-btn mo-btn-ghost mo-tl-node-inspector-close" data-worldline-inspector-close aria-label="' + escapeAttr(t("sessionNormalize.close")) + '">✕</button>' +
+          '</div>' +
+          '<div class="mo-tl-node-inspector-body">' +
+            '<div class="mo-tl-stream' + (selectedTurnGroup ? '' : ' is-empty') + '">' + streamHtml + '</div>' +
+            loadMoreHtml +
+          '</div>' +
+        '</aside>'
+      : '';
     return '<div class="mo-tl-shell">' +
-      '<aside class="mo-tl-side">' +
-        '<div class="mo-tl-side-head">' + escapeAttr(t("timeline.label.sessions")) + '</div>' +
-        '<div class="mo-tl-session-list">' +
-          migrationStatusHtml +
-          migrationOpsHtml +
-          sessionListHtml +
-          (_timelineState.sessionsError ? '<div class="mo-status mo-status-fail">' + escapeAttr(_timelineState.sessionsError) + '</div>' : '') +
-          '<div class="mo-tl-session"><div class="mo-tl-session-name">' + escapeAttr(t("timeline.label.selectedSources")) + '</div><div class="mo-tl-session-meta"><span>' + escapeAttr(t("timeline.label.visible")) + '</span><span>' + escapeAttr(countText) + '</span></div><div class="mo-tl-session-meta"><span>' + escapeAttr(t("timeline.label.logs")) + ' ' + escapeAttr(String(sourceCounts.chat_logs || 0)) + '</span><span>' + escapeAttr(t("timeline.label.mem")) + ' ' + escapeAttr(String(sourceCounts.memories || 0)) + '</span></div><div class="mo-tl-session-meta"><span>' + escapeAttr(t("timeline.label.kg")) + ' ' + escapeAttr(String(sourceCounts.kg_triples || 0)) + '</span><span>' + escapeAttr(t("timeline.label.episodes")) + ' ' + escapeAttr(String(sourceCounts.episodes || 0)) + '</span></div></div>' +
-          '<button class="mo-btn mo-btn-info" id="mo-timeline-reload-btn">' + escapeAttr(t("timeline.button.reload")) + '</button>' +
-          '<div class="mo-note">' + escapeAttr(t("timeline.note.readOnly")) + '</div>' +
+      '<div class="mo-tl-toolbar">' +
+        '<label class="mo-tl-session-chooser" for="mo-timeline-session-select"><span>' + escapeAttr(t("timeline.label.sessions")) + '</span><select id="mo-timeline-session-select" data-timeline-session-id="' + escapeAttr(selectedSessionId) + '">' + sessionOptionsHtml + '</select></label>' +
+        '<div class="mo-tl-session-actions"><button type="button" class="mo-btn mo-btn-info" id="mo-timeline-reload-btn">' + escapeAttr(t("timeline.button.reload")) + '</button></div>' +
+        '<div class="mo-tl-toolbar-meta">' +
+          '<span class="mo-tl-worldline-state is-' + escapeAttr(scalarState) + '" title="' + escapeAttr(scalarReason) + '">' + escapeAttr(t("timeline.worldline.state." + scalarState)) + '</span>' +
+          '<span>' + escapeAttr(countText) + '</span>' +
+          '<span>' + escapeAttr(t("timeline.label.logs")) + ' ' + escapeAttr(String(sourceCounts.chat_logs || 0)) + ' · ' + escapeAttr(t("timeline.label.mem")) + ' ' + escapeAttr(String(sourceCounts.memories || 0)) + ' · ' + escapeAttr(t("timeline.label.kg")) + ' ' + escapeAttr(String(sourceCounts.kg_triples || 0)) + ' · ' + escapeAttr(t("timeline.label.episodes")) + ' ' + escapeAttr(String(sourceCounts.episodes || 0)) + '</span>' +
         '</div>' +
-      '</aside>' +
+        (_timelineState.sessionsError ? '<div class="mo-status mo-status-fail">' + escapeAttr(_timelineState.sessionsError) + '</div>' : '') +
+      '</div>' +
       '<section class="mo-tl-main">' +
-        '<div class="mo-tl-stream' + (items.length > 0 ? '' : ' is-empty') + '">' + streamHtml + '</div>' +
-        loadMoreHtml +
+        '<div class="mo-tl-canvas-tools">' +
+          '<span>' + topologyPartialHtml + topologyTruncatedHtml + '</span>' +
+          '<span class="mo-tl-canvas-actions">' +
+            '<button type="button" class="mo-btn mo-btn-ghost" data-worldline-canvas-action="zoom-out" title="' + escapeAttr(t("timeline.canvas.zoomOut")) + '"' + (topologyNodes.length ? '' : ' disabled') + '>−</button>' +
+            '<button type="button" class="mo-btn mo-btn-ghost" data-worldline-canvas-action="zoom-in" title="' + escapeAttr(t("timeline.canvas.zoomIn")) + '"' + (topologyNodes.length ? '' : ' disabled') + '>+</button>' +
+            '<button type="button" class="mo-btn mo-btn-ghost" data-worldline-canvas-action="recenter"' + (topologyNodes.length ? '' : ' disabled') + '>' + escapeAttr(t("timeline.canvas.recenter")) + '</button>' +
+            '<button type="button" class="mo-btn mo-btn-ghost" data-worldline-canvas-action="fit-all"' + (topologyNodes.length ? '' : ' disabled') + '>' + escapeAttr(t("timeline.canvas.fitAll")) + '</button>' +
+          '</span>' +
+        '</div>' +
+        '<div class="mo-tl-canvas-frame" data-worldline-topology-state="' + escapeAttr(topologySurfaceState) + '">' +
+          '<canvas id="mo-timeline-worldline-canvas" aria-label="' + escapeAttr(t("timeline.canvas.title")) + '"></canvas>' +
+          topologyStatusHtml +
+          inspectorHtml +
+        '</div>' +
       '</section>' +
-      '<aside class="mo-tl-detail">' +
-        '<div class="mo-tl-detail-head">' + escapeAttr(t("timeline.label.selected")) + '</div>' +
-        '<div class="mo-tl-detail-body">' + activeDetailHtml + '</div>' +
-      '</aside>' +
+      '<details class="mo-tl-lineage-detail"><summary>' + escapeAttr(t("timeline.worldline.detail")) + '</summary>' + renderTimelineWorldlineDetail(worldline, topology) + '</details>' +
     '</div>';
   }
 
@@ -51222,13 +47255,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     '</div>';
   }
 
-  function criticLedgerProbeCardClass(state) {
-    const status = String((state && state.status) || "idle").toLowerCase();
-    if (status === "fail" || status === "error") return "mo-dash-card has-fail";
-    if (status === "warn") return "mo-dash-card has-warn";
-    if (status === "notice") return "mo-dash-card has-notice";
-    return "mo-dash-card";
-  }
 
   function buildDashboardQueueObservations(rs) {
     const observations = [];
@@ -51335,6 +47361,14 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   }
 
   async function loadPresentationViewModels() {
+    const requestId = ++_presentationViewModelRequestId;
+    const timelineSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || "");
+    const explorerSelectedSessionId = String(_explorer.selectedSessionId || "");
+    const requestIsCurrent = function() {
+      return requestId === _presentationViewModelRequestId
+        && timelineSessionId === String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || "")
+        && explorerSelectedSessionId === String(_explorer.selectedSessionId || "");
+    };
     try {
       const lifecycleById = {};
       (Array.isArray(_timelineState.sessions) ? _timelineState.sessions : []).forEach(function(session) {
@@ -51373,6 +47407,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
               chapters: Number(_explorer.chapters.total || 0),
               arcs: Number(_explorer.arcs.total || 0),
               sagas: Number(_explorer.sagas.total || 0),
+              lorebook: Number(_explorer.lorebook.total || 0),
             },
             trust: {
               storylines: Array.isArray(_explorer.trust.storylines) ? _explorer.trust.storylines : [],
@@ -51392,6 +47427,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           },
         },
       });
+      if (!requestIsCurrent()) return null;
       if (!result || result.status !== "ok" || result.contract_version !== "presentation.viewmodel.v1") {
         _timelineState.viewModel = null;
         _explorer.viewModel = null;
@@ -51401,6 +47437,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       _explorer.viewModel = result.explorer || null;
       return result;
     } catch (err) {
+      if (!requestIsCurrent()) return null;
       _timelineState.viewModel = null;
       _explorer.viewModel = null;
       warnLog("presentation ViewModel unavailable:", err?.message || err);
@@ -51448,7 +47485,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       rerollReplacement: dashLabel.rerollReplacement,
       streamingHook: dashLabel.streamingHook,
       sessionRouting: dashLabel.sessionRouting,
-      forkCopyCapture: dashLabel.forkCopyCapture,
       sessionDeleteSync: dashLabel.sessionDeleteSync,
       activeChatBackfill: dashLabel.activeChatBackfill,
       lastError: dashLabel.lastError,
@@ -51533,17 +47569,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     }).join("");
   }
 
-  function renderDashboardViewModelHeader(vm, s) {
-    if (!s || !s.enabled) return '<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">OFF</span>';
-    if (!vm || !vm.summary) return '<div class="mo-hdr-health"><span class="mo-hdr-health-badge mo-hdr-health-badge-warn">Dashboard unavailable</span></div>';
-    const parts = [];
-    const noticeCount = Number(vm.summary.notice || 0);
-    if (Number(vm.summary.fail) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-fail">✕ ' + Number(vm.summary.fail) + ' FAIL</span>');
-    if (Number(vm.summary.warn) > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-warn">⚠ ' + Number(vm.summary.warn) + ' WARN</span>');
-    if (noticeCount > 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-notice">ⓘ ' + noticeCount + ' ' + escapeAttr(t("dash.status.state.notice")) + '</span>');
-    if (Number(vm.summary.fail) === 0 && Number(vm.summary.warn) === 0 && noticeCount === 0) parts.push('<span class="mo-hdr-health-badge mo-hdr-health-badge-ok">✓ ' + escapeAttr(t("header.health.allOk")) + '</span>');
-    return '<div class="mo-hdr-health">' + parts.join("") + '</div>';
-  }
 
   function formatStateRow(label, stateObj) {
     try {
@@ -51923,8 +47948,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     if (root) {
       root.innerHTML = renderPersonaCapsuleSection();
       attachPersonaCapsuleEvents();
-    } else if (panelOpen) {
-      renderSettingsPanel();
     }
   }
 
@@ -52998,27 +49021,35 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     });
   }
 
-  async function renderSettingsPanel() {
+  async function renderSettingsPanel(options) {
     try {
+      options = options || {};
+      const recompose = options.recompose === true;
+      const renderRequestId = ++_settingsPanelRenderRequestId;
       console.log(LOG_PREFIX, "renderSettingsPanel called, panelOpen:", panelOpen);
 
       // 토글: 이미 열려 있으면 닫기
-      if (panelOpen) {
+      if (panelOpen && !recompose) {
         await closeSettingsPanel();
         return;
       }
 
       // 기존 오버레이 정리
       const existing = document.getElementById("mo-settings-overlay");
-      if (existing) existing.remove();
+      if (existing) {
+        const canvas = existing.querySelector("#mo-timeline-worldline-canvas");
+        if (canvas) unmountTimelineWorldlineCanvas(canvas);
+        existing.remove();
+      }
 
-      // CSS 주입 (한 번만)
-      if (!document.getElementById("mo-panel-style")) {
-        const style = document.createElement("style");
+      // 같은 iframe에서 플러그인을 다시 불러와도 현재 빌드의 CSS를 사용한다.
+      let style = document.getElementById("mo-panel-style");
+      if (!style) {
+        style = document.createElement("style");
         style.id = "mo-panel-style";
-        style.textContent = PANEL_CSS;
         document.head.appendChild(style);
       }
+      style.textContent = PANEL_CSS;
 
       const s = getSettings();
       const memoryBudgets = s.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
@@ -53050,7 +49081,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         autoRollback: t("dash.status.autoRollback"),
         rerollReplacement: t("dash.status.rerollReplacement"),
         sessionRouting: t("dash.status.sessionRouting"),
-        forkCopyCapture: "Fork/Copy Capture",
         sessionDeleteSync: t("dash.status.sessionDeleteSync"),
         activeChatBackfill: t("dash.status.activeChatBackfill"),
         personaCapsule: t("persona.tab"),
@@ -53063,8 +49093,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       const guideModeDashboardState = lastGuideSupervisor && lastGuideSupervisor.guideMode
         ? { status: "ok", detail: String(lastGuideSupervisor.guideMode) + (lastGuideSupervisor.guideModeBasis ? " / " + String(lastGuideSupervisor.guideModeBasis) : "") }
         : { status: "unknown", detail: t("dash.status.value.notYet") };
-      const dashboardViewModel = await loadDashboardViewModel(rs, s, guideModeDashboardState);
-      await loadPresentationViewModels();
+      const settingsFamilyActive = ["settings", "review", "prompt", "dashboard", "debug"].includes(_settingsActiveTab);
+      const extensionsFamilyActive = ["reference", "persona", "lorebook"].includes(_settingsActiveTab);
+      const dashboardViewModel = settingsFamilyActive
+        ? await loadDashboardViewModel(rs, s, guideModeDashboardState)
+        : null;
       if (_settingsActiveTab === "persona") {
         await personaCapsuleResolveSessionDefaults();
       }
@@ -53074,50 +49107,72 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           ["settings", t('settings.tab.general')],
           ["review", t('settings.tab.review')],
           ["prompt", t('settings.tab.prompt')],
-          ["persona", t("persona.tab")],
+          ["dashboard", t('settings.tab.dashboard')],
+          ["debug", t('settings.tab.debug')],
         ];
         const tabButtons = tabs.map(([id, label]) => {
-          return '<button type="button" class="mo-subtab-btn' + (activeTab === id ? ' is-active' : '') + '" data-tab-jump="' + id + '">' + escapeAttr(label) + '</button>';
+          const debugAttrs = id === "debug" ? ' style="' + (s.debug ? '' : 'display:none') + '"' : '';
+          return '<button type="button" role="tab" aria-selected="' + (activeTab === id ? 'true' : 'false') + '" tabindex="' + (activeTab === id ? '0' : '-1') + '" class="mo-subtab-btn' + (activeTab === id ? ' is-active' : '') + '" data-tab-jump="' + id + '"' + debugAttrs + '>' + escapeAttr(label) + '</button>';
         }).join("");
-        const resetButton = s.debug
-          ? '<button type="button" class="mo-btn mo-btn-danger-solid mo-settings-db-reset-btn" id="mo-admin-db-reset-btn" title="' + escapeAttr(t("databaseReset.title")) + '">' + escapeAttr(t("databaseReset.button")) + '</button>'
-          : "";
-        return '<div class="mo-subtabs mo-settings-subtabs">' + tabButtons + resetButton + '</div>';
+        return '<div class="mo-subtabs mo-settings-subtabs" role="tablist">' + tabButtons + '</div>';
       };
-      const settingsTopActive = _settingsActiveTab === "settings" || _settingsActiveTab === "review" || _settingsActiveTab === "prompt" || _settingsActiveTab === "persona";
+      const extensionsSubtabsHtml = (activeTab) => {
+        const tabs = [
+          ["reference", t('settings.tab.reference')],
+          ["persona", t('persona.tab')],
+          ["lorebook", t('settings.tab.lorebook')],
+        ];
+        return '<div class="mo-subtabs mo-settings-subtabs mo-extension-subtabs" role="tablist">' + tabs.map(([id, label]) =>
+          '<button type="button" role="tab" aria-selected="' + (activeTab === id ? 'true' : 'false') + '" tabindex="' + (activeTab === id ? '0' : '-1') + '" class="mo-subtab-btn' + (activeTab === id ? ' is-active' : '') + '" data-tab-jump="' + id + '">' + escapeAttr(label) + '</button>'
+        ).join('') + '</div>';
+      };
+      const settingsDatabaseResetButtonHtml = s.debug
+        ? '<button type="button" class="mo-btn mo-btn-danger-solid mo-settings-db-reset-btn" id="mo-admin-db-reset-btn" title="' + escapeAttr(t("databaseReset.title")) + '">' + escapeAttr(t("databaseReset.button")) + '</button>'
+        : "";
+      const settingsTopActive = settingsFamilyActive;
+      const activePrimaryTab = settingsTopActive ? "settings" : (extensionsFamilyActive ? "extensions" : _settingsActiveTab);
 
       const html = `
-<div class="mo-panel">
+<div class="mo-panel mo-app-shell">
   <div class="mo-hdr">
     <div class="mo-hdr-left">
-      <h2>${t('settings.title')}</h2>
-      <span class="mo-hdr-ver">${VERSION}</span>
+      <span class="mo-brand-mark" aria-hidden="true">AC</span>
+      <div class="mo-brand-copy">
+        <h2>Archive Center</h2>
+        <span class="mo-hdr-ver">${VERSION}</span>
+      </div>
     </div>
     <div class="mo-hdr-actions">
-      ${renderDashboardViewModelHeader(dashboardViewModel, s)}
-      <button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-debug-hard-reset-btn" style="${s.debug ? "" : "display:none"}" title="${escapeAttr(t('routing.hardReset.title'))}">${t('settings.btn.hardResetCurrentSessionMapping')}</button>
-      <button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-admin-db-reset-header-btn" style="${s.debug ? "" : "display:none"}" title="${escapeAttr(t('databaseReset.title'))}">${escapeAttr(t('databaseReset.button'))}</button>
-      <button class="mo-debug-toggle${s.debug ? " is-on" : ""}" id="mo-debug-header-btn" aria-pressed="${s.debug ? "true" : "false"}">${t('settings.label.debug')}</button>
-      <button class="mo-close" id="mo-close-btn">✕</button>
+      ${settingsTopActive ? '<button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-debug-hard-reset-btn" style="' + (s.debug ? '' : 'display:none') + '" title="' + escapeAttr(t('routing.hardReset.title')) + '">' + t('settings.btn.hardResetCurrentSessionMapping') + '</button>' : ''}
+      ${settingsTopActive ? '<button class="mo-btn mo-btn-danger-solid mo-hdr-danger-btn" id="mo-admin-db-reset-header-btn" style="' + (s.debug ? '' : 'display:none') + '" title="' + escapeAttr(t('databaseReset.title')) + '">' + escapeAttr(t('databaseReset.button')) + '</button>' : ''}
+      ${settingsTopActive ? '<button class="mo-debug-toggle' + (s.debug ? ' is-on' : '') + '" id="mo-debug-header-btn" aria-pressed="' + (s.debug ? 'true' : 'false') + '">' + t('settings.label.debug') + '</button>' : ''}
+      <button class="mo-close" id="mo-close-btn" aria-label="Close">✕</button>
     </div>
   </div>
   <div class="mo-body">
     <input type="checkbox" id="mo-debug" ${s.debug ? "checked" : ""} hidden>
 
-    <div class="mo-tabs" id="mo-main-tabs">
-      <button class="mo-tab-btn${_settingsActiveTab === "timeline" ? " is-active" : ""}" data-tab="timeline">📅 ${escapeAttr(t('settings.tab.timeline'))}</button>
-      <button class="mo-tab-btn${_settingsActiveTab === "archive" ? " is-active" : ""}" data-tab="archive">🔍 ${escapeAttr(t('settings.tab.explore'))}</button>
-      <button class="mo-tab-btn${_settingsActiveTab === "dashboard" ? " is-active" : ""}" data-tab="dashboard">📊 ${escapeAttr(t('settings.tab.dashboard'))}</button>
-      <button class="mo-tab-btn${_settingsActiveTab === "reference" ? " is-active" : ""}" data-tab="reference">📚 원작 자료</button>
-      <button class="mo-tab-btn${settingsTopActive ? " is-active" : ""}" data-tab="settings">⚙ ${escapeAttr(t('settings.tab.settings'))}</button>
-      <button class="mo-tab-btn${_settingsActiveTab === "debug" ? " is-active" : ""}" id="mo-tab-btn-debug" data-tab="debug" style="${s.debug ? "" : "display:none"}">${t('settings.tab.debug')}</button>
-    </div>
+    <nav class="mo-app-nav" aria-label="Archive Center">
+      <div class="mo-tabs" id="mo-main-tabs" role="tablist">
+        <button role="tab" aria-selected="${_settingsActiveTab === "timeline" ? "true" : "false"}" tabindex="${_settingsActiveTab === "timeline" ? "0" : "-1"}" class="mo-tab-btn${_settingsActiveTab === "timeline" ? " is-active" : ""}" data-tab="timeline">${escapeAttr(t('settings.tab.timeline'))}</button>
+        <button role="tab" aria-selected="${_settingsActiveTab === "archive" ? "true" : "false"}" tabindex="${_settingsActiveTab === "archive" ? "0" : "-1"}" class="mo-tab-btn${_settingsActiveTab === "archive" ? " is-active" : ""}" data-tab="archive">${escapeAttr(t('settings.tab.explore'))}</button>
+        <button role="tab" aria-selected="${_settingsActiveTab === "memory_admin" ? "true" : "false"}" tabindex="${_settingsActiveTab === "memory_admin" ? "0" : "-1"}" class="mo-tab-btn${_settingsActiveTab === "memory_admin" ? " is-active" : ""}" data-tab="memory_admin">${escapeAttr(t('settings.tab.memoryManagement'))}</button>
+        <button role="tab" aria-selected="${extensionsFamilyActive ? "true" : "false"}" tabindex="${extensionsFamilyActive ? "0" : "-1"}" class="mo-tab-btn${extensionsFamilyActive ? " is-active" : ""}" data-tab="reference">${escapeAttr(t('settings.tab.extensions'))}</button>
+        <button role="tab" aria-selected="${settingsTopActive ? "true" : "false"}" tabindex="${settingsTopActive ? "0" : "-1"}" class="mo-tab-btn${settingsTopActive ? " is-active" : ""}" data-tab="settings">${escapeAttr(t('settings.tab.settings'))}</button>
+      </div>
+    </nav>
 
-    <div class="mo-tab-panel${_settingsActiveTab === "timeline" ? " is-active" : ""}" data-tab-panel="timeline">
+    <main class="mo-workspace">
+
+    ${activePrimaryTab === "timeline" ? `
+    <div class="mo-tab-panel is-active" role="tabpanel" aria-hidden="false" data-tab-panel="timeline">
       ${renderTimelinePanel()}
     </div>
+    ` : ""}
 
-    <div class="mo-tab-panel${_settingsActiveTab === "dashboard" ? " is-active" : ""}" data-tab-panel="dashboard">
+    ${activePrimaryTab === "settings" ? `
+    ${settingsSubtabsHtml(_settingsActiveTab)}
+    <div class="mo-tab-panel${_settingsActiveTab === "dashboard" ? " is-active" : ""}" role="tabpanel" aria-hidden="${_settingsActiveTab === "dashboard" ? "false" : "true"}" data-tab-panel="dashboard">
     <!-- dashboard panel -->
     <div class="mo-dash" id="mo-dashboard">
       ${renderDashboardViewModel(dashboardViewModel, dashLabel)}
@@ -53125,37 +49180,45 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
     </div>
 
-    <div class="mo-tab-panel${_settingsActiveTab === "review" ? " is-active" : ""}" data-tab-panel="review">
-      ${settingsSubtabsHtml("review")}
+    <div class="mo-tab-panel${_settingsActiveTab === "review" ? " is-active" : ""}" role="tabpanel" aria-hidden="${_settingsActiveTab === "review" ? "false" : "true"}" data-tab-panel="review">
       <div class="mo-section">${t('dash.section.effectiveInput')}</div>
       <div class="mo-section-desc">${t('dash.section.effectiveInput.desc')}</div>
       <div class="mo-dash">
         ${renderEffectiveInputSection()}
       </div>
     </div>
+    ` : ""}
 
-    <div class="mo-tab-panel${_settingsActiveTab === "reference" ? " is-active" : ""}" data-tab-panel="reference">
-      <div class="mo-dash" id="mo-reference-library-root">
-        ${renderReferenceLibrarySection()}
-      </div>
+    ${activePrimaryTab === "extensions" ? `
+    ${extensionsSubtabsHtml(_settingsActiveTab)}
+    <div class="mo-tab-panel is-active" role="tabpanel" aria-hidden="false" data-tab-panel="${_settingsActiveTab}">
+      ${_settingsActiveTab === "persona"
+        ? '<div id="mo-persona-capsule-root">' + renderPersonaCapsuleSection() + '</div>'
+        : (_settingsActiveTab === "lorebook"
+          ? '<div id="mo-lorebook-reference-root">' + renderLorebookReferenceManagementSection() + '</div>'
+          : '<div id="mo-reference-library-root">' + renderReferenceLibrarySection() + '</div>')}
     </div>
+    ` : ""}
 
-    <div class="mo-tab-panel${_settingsActiveTab === "archive" ? " is-active" : ""}" data-tab-panel="archive">
+    ${activePrimaryTab === "archive" ? `
+    <div class="mo-tab-panel is-active" role="tabpanel" aria-hidden="false" data-tab-panel="archive">
       <!-- ▸ DB Explorer — Sprint 2-E/F/G -->
-      <div class="mo-dash" id="mo-explorer-root">
-        ${renderExplorerSection()}
+      <div id="mo-explorer-root">
+        ${renderExplorerSection("memory")}
       </div>
     </div>
+    ` : ""}
 
-    <div class="mo-tab-panel${_settingsActiveTab === "persona" ? " is-active" : ""}" data-tab-panel="persona">
-      ${settingsSubtabsHtml("persona")}
-      <div class="mo-dash" id="mo-persona-capsule-root">
-        ${renderPersonaCapsuleSection()}
+    ${activePrimaryTab === "memory_admin" ? `
+    <div class="mo-tab-panel is-active" role="tabpanel" aria-hidden="false" data-tab-panel="memory_admin">
+      <div id="mo-explorer-root">
+        ${renderExplorerSection("management")}
       </div>
     </div>
+    ` : ""}
 
-    <div class="mo-tab-panel${_settingsActiveTab === "prompt" ? " is-active" : ""}" data-tab-panel="prompt">
-      ${settingsSubtabsHtml("prompt")}
+    ${activePrimaryTab === "settings" ? `
+    <div class="mo-tab-panel${_settingsActiveTab === "prompt" ? " is-active" : ""}" role="tabpanel" aria-hidden="${_settingsActiveTab === "prompt" ? "false" : "true"}" data-tab-panel="prompt">
       <div class="mo-section">${t('settings.section.prompts')}</div>
       <div class="mo-section-desc">${t('settings.section.prompts.desc')}</div>
       <div class="mo-dash" id="mo-prompt-editor-root">
@@ -53163,8 +49226,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       </div>
     </div>
 
-    <div class="mo-tab-panel${_settingsActiveTab === "settings" ? " is-active" : ""}" data-tab-panel="settings">
-    ${settingsSubtabsHtml("settings")}
+    <div class="mo-tab-panel${_settingsActiveTab === "settings" ? " is-active" : ""}" role="tabpanel" aria-hidden="${_settingsActiveTab === "settings" ? "false" : "true"}" data-tab-panel="settings">
 
     <!-- ▸ 설정 상태 요약 -->
     <div class="mo-section">${t('settings.section.status')}</div>
@@ -53592,8 +49654,19 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             <option value="weak"${s.narrativeGuideStrength === "weak" || !s.narrativeGuideStrength ? " selected" : ""}>${t('settings.narrativeStrength.weak')}</option>
             <option value="medium"${s.narrativeGuideStrength === "medium" ? " selected" : ""}>${t('settings.narrativeStrength.medium')}</option>
             <option value="strong"${s.narrativeGuideStrength === "strong" ? " selected" : ""}>${t('settings.narrativeStrength.strong')}</option>
+            <option value="extreme"${s.narrativeGuideStrength === "extreme" ? " selected" : ""}>${t('settings.narrativeStrength.extreme')}</option>
+            <option value="maximum"${s.narrativeGuideStrength === "maximum" ? " selected" : ""}>${t('settings.narrativeStrength.maximum')}</option>
           </select>
           <small>${t('settings.label.narrativeGuideStrength.help')}</small>
+        </div>
+        <div class="mo-row">
+          <label>${t('settings.label.publisherGuidanceFormat')}</label>
+          <select id="mo-publisherGuidanceFormat">
+            <option value="compact"${s.publisherGuidanceFormat === "compact" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.compact')}</option>
+            <option value="standard"${s.publisherGuidanceFormat === "standard" || !s.publisherGuidanceFormat ? " selected" : ""}>${t('settings.publisherGuidanceFormat.standard')}</option>
+            <option value="explicit"${s.publisherGuidanceFormat === "explicit" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.explicit')}</option>
+          </select>
+          <small>${t('settings.label.publisherGuidanceFormat.help')}</small>
         </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.narrativeSupportMaxChars')}</label>
@@ -53683,7 +49756,8 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
     </div>
 
-    <div class="mo-tab-panel${_settingsActiveTab === "debug" ? " is-active" : ""}" id="mo-tab-panel-debug" data-tab-panel="debug" style="${s.debug ? "" : "display:none"}">
+    <div class="mo-tab-panel${_settingsActiveTab === "debug" ? " is-active" : ""}" role="tabpanel" aria-hidden="${_settingsActiveTab === "debug" ? "false" : "true"}" id="mo-tab-panel-debug" data-tab-panel="debug" style="${s.debug ? "" : "display:none"}">
+      <div class="mo-inline-actions">${settingsDatabaseResetButtonHtml}</div>
       <div id="mo-debug-disabled-note" class="mo-note" style="${s.debug ? "display:none" : "display:block"}">${t('settings.debug.tab.disabled')}</div>
       <div id="mo-debug-enabled-group" style="flex-direction:column;gap:14px;${s.debug ? "display:flex" : "display:none"}">
         <div class="mo-section">${t('settings.label.debug')}</div>
@@ -53779,7 +49853,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         </div>
       </div>
     </div>
+    ` : ""}
 
+    </main>
   </div>
   <div class="mo-footer">
     <button class="mo-btn mo-btn-primary" id="mo-save-btn">${t('settings.btn.save')}</button>
@@ -53797,39 +49873,63 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 </div>`;
 
       const overlay = document.createElement("div");
+      if (renderRequestId !== _settingsPanelRenderRequestId) return;
       overlay.className = "mo-overlay";
       overlay.id = "mo-settings-overlay";
+      overlay.setAttribute("data-active-primary-tab", activePrimaryTab);
       overlay.innerHTML = html;
+      const footer = overlay.querySelector(".mo-footer");
+      if (footer) {
+        if (activePrimaryTab !== "settings") footer.remove();
+        else footer.hidden = _settingsActiveTab !== "settings";
+      }
       document.body.appendChild(overlay);
 
       attachSettingsEvents();
-  attachStep17VisibilityEvents();
-      attachStep17ReleaseGateEvents();
+      if (activePrimaryTab === "settings" && s.debug) {
+        attachStep17VisibilityEvents();
+        attachStep17ReleaseGateEvents();
+      }
 
       // Timeline tab: load live read-only projection after the shell is mounted.
-      loadTimelineData(true);
+      if (activePrimaryTab === "timeline") {
+        const selectedTimelineSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+        loadTimelineData(true, selectedTimelineSessionId ? { sessionId: selectedTimelineSessionId } : undefined);
+      }
 
       // Sprint 2-E: Explorer 초기 데이터 로드 (비동기, 실패해도 패널 자체는 열림)
-      (async () => {
+      if (activePrimaryTab === "archive" || activePrimaryTab === "memory_admin") (async () => {
         try {
           const currentSid = await getCurrentChatSessionId();
           const resolvedSid = currentSid !== SESSION_FALLBACK ? currentSid : null;
           _explorer.activeChatSessionId = resolvedSid; // Sprint 2-G: 현재 활성 채팅 세션 기록
-          _explorer.selectedSessionId = resolvedSid;
+          const inspectionSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || resolvedSid || "");
+          await explorerChangeSession(inspectionSessionId, false);
           await explorerFetchSessions();
-          await explorerLoadTab(_explorer.activeTab, true);
+          if (activePrimaryTab === "archive") await explorerLoadTab(_explorer.activeTab, true);
           await refreshExplorerUI();
         } catch { /* explorer init 실패는 무시 */ }
       })();
 
+      if (activePrimaryTab === "extensions" && _settingsActiveTab === "lorebook") {
+        loadLorebookReferenceManagementProjection().catch(() => {});
+      }
+
       // iframe을 fullscreen으로 보이게 한다
-      if (R && typeof R.showContainer === "function") {
+      if (!recompose && R && typeof R.showContainer === "function") {
         await R.showContainer("fullscreen");
+      }
+      if (renderRequestId !== _settingsPanelRenderRequestId || document.getElementById("mo-settings-overlay") !== overlay) {
+        if (!document.getElementById("mo-settings-overlay") && R && typeof R.hideContainer === "function") {
+          try { await R.hideContainer(); } catch (e) { /* ignore */ }
+        }
+        return;
       }
       panelOpen = true;
       debugLog("Settings panel opened");
 
     } catch (err) {
+      if (!document.getElementById("mo-settings-overlay")) panelOpen = false;
       warnLog("renderSettingsPanel failed:", err.message);
       console.error(LOG_PREFIX, "renderSettingsPanel error:", err);
     }
@@ -53837,14 +49937,19 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 
   async function closeSettingsPanel() {
     try {
+      _settingsPanelRenderRequestId += 1;
+      panelOpen = false;
       const overlay = document.getElementById("mo-settings-overlay");
-      if (overlay) overlay.remove();
+      if (overlay) {
+        const canvas = overlay.querySelector("#mo-timeline-worldline-canvas");
+        if (canvas) unmountTimelineWorldlineCanvas(canvas);
+        overlay.remove();
+      }
 
       // iframe 숨기기
       if (R && typeof R.hideContainer === "function") {
         try { await R.hideContainer(); } catch (e) { /* ignore */ }
       }
-      panelOpen = false;
       debugLog("Settings panel closed");
     } catch (err) {
       warnLog("closeSettingsPanel failed:", err.message);
@@ -53856,9 +49961,37 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   // ──────────────────────────────────────────────────────────────
 
   function attachTimelineEvents() {
-    const activate = _setActiveSettingsTabForTimeline || function(tab) {
-      _settingsActiveTab = tab || "timeline";
-    };
+    mountTimelineWorldlineCanvas();
+
+    const worldlineCanvas = document.getElementById("mo-timeline-worldline-canvas");
+    document.querySelectorAll("[data-worldline-canvas-action]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        if (!worldlineCanvas) return;
+        const action = btn.getAttribute("data-worldline-canvas-action") || "";
+        if (action === "zoom-in") timelineWorldlineZoomBy(worldlineCanvas, 1.2);
+        else if (action === "zoom-out") timelineWorldlineZoomBy(worldlineCanvas, 1 / 1.2);
+        else if (action === "fit-all") timelineWorldlineFitAll(worldlineCanvas, worldlineCanvas._moTimelineTopology);
+        else if (action === "recenter") {
+          const currentNode = timelineWorldlineCurrentNode(worldlineCanvas._moTimelineTopology);
+          if (currentNode) timelineWorldlineFocusNode(worldlineCanvas, currentNode);
+        }
+      });
+    });
+
+    const inspectorClose = document.querySelector("[data-worldline-inspector-close]");
+    if (inspectorClose) {
+      inspectorClose.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        _timelineState.expandedTurnKey = "";
+        _timelineSelectedDetail = null;
+        _timelineState.detailItem = null;
+        _timelineState.detailLoading = false;
+        _timelineState.detailError = "";
+        timelineResetEditState();
+        refreshTimelineUI({ reloadPresentation: false });
+      });
+    }
 
     const reloadBtn = document.getElementById("mo-timeline-reload-btn");
     if (reloadBtn) {
@@ -53870,21 +50003,20 @@ details.mo-it-block[open] .mo-it-expand{display:none}
     const loadMoreBtn = document.getElementById("mo-timeline-load-more-btn");
     if (loadMoreBtn) {
       loadMoreBtn.addEventListener("click", () => {
-        loadTimelineData(false, { append: true });
+        loadTimelineData(false, {
+          append: true,
+          sessionId: _timelineState.selectedSessionId || _timelineState.sessionId || "",
+          skipRuntimeSessionResolve: true,
+          skipSessionListRefresh: true,
+        });
       });
     }
 
-    document.querySelectorAll("[data-timeline-session-id]").forEach((btn) => {
-      const selectSession = () => {
-        const sid = btn.getAttribute("data-timeline-session-id") || "";
-        if (sid === _timelineState.selectedSessionId && !_timelineState.error) return;
-        _timelineState.selectedSessionId = sid;
-        _timelineState.sessionId = sid;
-        _timelineSelectedDetail = null;
-        _timelineState.detailItem = null;
-        _timelineState.detailError = "";
-        loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true });
-      };
+    const sessionSelect = document.getElementById("mo-timeline-session-select");
+    if (sessionSelect) {
+      sessionSelect.addEventListener("change", () => selectWorkspaceSession(String(sessionSelect.value || ""), "timeline"));
+    }
+    document.querySelectorAll("[data-timeline-session-id]:not(select)").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-delete-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-attach-id]")) return;
@@ -53892,7 +50024,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-migrate-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
-        selectSession();
+        selectWorkspaceSession(btn.getAttribute("data-timeline-session-id") || "", "timeline");
       });
       btn.addEventListener("keydown", (e) => {
         if (e.key !== "Enter" && e.key !== " ") return;
@@ -53903,78 +50035,25 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
         e.preventDefault();
-        selectSession();
+        selectWorkspaceSession(btn.getAttribute("data-timeline-session-id") || "", "timeline");
       });
     });
 
-    document.querySelectorAll("[data-timeline-session-delete-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const sid = btn.getAttribute("data-timeline-session-delete-id") || "";
-        deleteTimelineSessionFromBackend(sid);
-      });
-    });
-
-    document.querySelectorAll("[data-timeline-session-attach-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const sid = btn.getAttribute("data-timeline-session-attach-id") || "";
-        attachTimelineSessionToCurrentChat(sid);
-      });
-    });
-
-    document.querySelectorAll("[data-timeline-session-copy-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const sid = btn.getAttribute("data-timeline-session-copy-id") || "";
-        runTimelineSessionCopy(sid);
-      });
-    });
-
-    document.querySelectorAll("[data-timeline-session-migrate-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const sid = btn.getAttribute("data-timeline-session-migrate-id") || "";
-        runTimelineSessionMigration(sid);
-      });
-    });
-
-    document.querySelectorAll("[data-timeline-session-rollback-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        runTimelineSessionMigrationRollback();
-      });
-    });
-
-    document.querySelectorAll("[data-timeline-session-cleanup-id]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        runTimelineSessionMigrationCleanup();
-      });
-    });
-
-    document.querySelectorAll(".mo-tl-card[data-timeline-turn-key]").forEach((card) => {
-      card.addEventListener("click", (e) => {
-        if (e.target && e.target.closest && e.target.closest("[data-timeline-detail-key]")) return;
-        if (e.target && e.target.closest && e.target.closest("[data-timeline-edit-key]")) return;
-        if (e.target && e.target.closest && e.target.closest("[data-timeline-inline-key]")) return;
-        const key = card.getAttribute("data-timeline-turn-key") || "";
-        const wasOpen = _timelineState.expandedTurnKey === key;
-        _timelineState.expandedTurnKey = wasOpen ? "" : key;
-        if (!wasOpen && timelineSelectedTurnKey() !== key) {
-          const groups = _timelineState.viewModel && Array.isArray(_timelineState.viewModel.groups) ? _timelineState.viewModel.groups : [];
-          const group = groups.find((candidate) => candidate.key === key);
-          if (group && group.items && group.items.length > 0) _timelineSelectedDetail = group.items[0];
-        }
-        refreshTimelineUI();
-      });
-    });
+    const toggleTimelineItemDetail = (item) => {
+      if (!item) return;
+      const key = timelineItemKey(item);
+      if (_timelineSelectedDetail && timelineItemKey(_timelineSelectedDetail) === key) {
+        _timelineSelectedDetail = null;
+        _timelineState.detailItem = null;
+        _timelineState.detailLoading = false;
+        _timelineState.detailError = "";
+        timelineResetEditState();
+        refreshTimelineUI({ reloadPresentation: false });
+        return;
+      }
+      _timelineState.expandedTurnKey = timelineDisplayTurnKey(item);
+      loadTimelineItemDetail(item);
+    };
 
     document.querySelectorAll("[data-timeline-inline-key]").forEach((row) => {
       row.addEventListener("click", (e) => {
@@ -53983,11 +50062,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         if (e.target && e.target.closest && e.target.closest("[data-timeline-edit-key]")) return;
         const key = row.getAttribute("data-timeline-inline-key") || "";
         const item = timelineFindItemByKey(key);
-        if (item) {
-          _timelineSelectedDetail = item;
-          _timelineState.expandedTurnKey = timelineDisplayTurnKey(item);
-          refreshTimelineUI();
-        }
+        toggleTimelineItemDetail(item);
       });
     });
 
@@ -54006,10 +50081,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         e.stopPropagation();
         const key = btn.getAttribute("data-timeline-detail-key") || "";
         const item = timelineFindItemByKey(key) || _timelineSelectedDetail;
-        if (item) {
-          _timelineSelectedDetail = item;
-          loadTimelineItemDetail(item);
-        }
+        toggleTimelineItemDetail(item);
       });
     });
 
@@ -54041,39 +50113,17 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
     });
 
-    document.querySelectorAll("[data-tab-jump]").forEach((btn) => {
-      btn.addEventListener("click", (e) => {
-        e.preventDefault();
-        activate(btn.getAttribute("data-tab-jump") || "timeline");
-      });
-    });
   }
 
   function attachSettingsEvents() {
     try {
       const $ = (id) => document.getElementById(id);
-      attachReferenceLibraryEvents();
       if (_settingsActiveTab === "reference") {
+        attachReferenceLibraryEvents();
         if (_referenceLibraryState.works.length === 0) referenceLibraryLoadWorks().catch(() => {});
         else if (_referenceLibraryState.panelView === "binding") referenceLibraryLoadBindings().catch(() => {});
         else referenceLibraryRefreshUI();
       }
-
-      // 세션 ID 표시 (비동기) — Sprint 2-G: 세션 카운트도 함께 표시
-      getCurrentChatSessionId().then(async sid => {
-        await refreshSessionDisplayLookupFromRuntime();
-        const el = $("mo-session-id-display");
-        if (el) {
-          const sessionLabel = getSessionDisplayLabel(sid, false);
-          const sessionInfo = _explorer.sessions.find(s => s.chat_session_id === sid);
-          if (sessionInfo) {
-            el.textContent = sessionLabel + " (logs:" + sessionInfo.chat_logs_count + " mem:" + sessionInfo.memories_count + " kg:" + sessionInfo.kg_triples_count + ")";
-          } else {
-            el.textContent = sessionLabel;
-          }
-          el.title = buildSessionDisplayTitle(sid);
-        }
-      }).catch(() => {});
 
       // 닫기
       $("mo-close-btn").addEventListener("click", () => closeSettingsPanel());
@@ -54085,24 +50135,47 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       function setActiveSettingsTab(tab) {
         if (!tab) return;
         if (tab === "detail") tab = "timeline";
-        const prevTab = _settingsActiveTab || "dashboard";
-        const body = document.querySelector("#mo-settings-overlay .mo-body") || document.querySelector(".mo-body");
+        const prevTab = _settingsActiveTab || "timeline";
+        const body = document.querySelector("#mo-settings-overlay .mo-workspace") || document.querySelector(".mo-workspace");
         const viewportScrollState = captureSettingsViewportScrollState();
+        const settingsRoutes = ["settings", "review", "prompt", "dashboard", "debug"];
+        const extensionRoutes = ["reference", "persona", "lorebook"];
+        const prevPrimaryTab = settingsRoutes.includes(prevTab) ? "settings" : (extensionRoutes.includes(prevTab) ? "reference" : prevTab);
+        const nextPrimaryTab = settingsRoutes.includes(tab) ? "settings" : (extensionRoutes.includes(tab) ? "reference" : tab);
         if (body && prevTab && prevTab !== tab) {
           _settingsTabScrollTops[prevTab] = body.scrollTop || 0;
         }
         _settingsActiveTab = tab;
         _setActiveSettingsTabForTimeline = setActiveSettingsTab;
-        const topTab = (tab === "review" || tab === "prompt" || tab === "persona" || tab === "settings") ? "settings" : tab;
+        if (prevPrimaryTab !== nextPrimaryTab || (nextPrimaryTab === "reference" && prevTab !== tab)) {
+          const canvas = document.getElementById("mo-timeline-worldline-canvas");
+          if (canvas) unmountTimelineWorldlineCanvas(canvas);
+          renderSettingsPanel({ recompose: true }).then(() => {
+            const activeTabButton = document.querySelector('.mo-tab-btn[data-tab="' + nextPrimaryTab + '"]');
+            if (activeTabButton && typeof activeTabButton.focus === "function") activeTabButton.focus();
+          }).catch(() => {});
+          return;
+        }
+        const topTab = extensionRoutes.includes(tab) ? "reference" : (settingsRoutes.includes(tab) ? "settings" : tab);
         document.querySelectorAll(".mo-tab-btn").forEach((el) => {
-          el.classList.toggle("is-active", el.getAttribute("data-tab") === topTab);
+          const active = el.getAttribute("data-tab") === topTab;
+          el.classList.toggle("is-active", active);
+          el.setAttribute("aria-selected", active ? "true" : "false");
+          el.tabIndex = active ? 0 : -1;
         });
         document.querySelectorAll(".mo-tab-panel").forEach((panel) => {
-          panel.classList.toggle("is-active", panel.getAttribute("data-tab-panel") === tab);
+          const active = panel.getAttribute("data-tab-panel") === tab;
+          panel.classList.toggle("is-active", active);
+          panel.setAttribute("aria-hidden", active ? "false" : "true");
         });
         document.querySelectorAll(".mo-settings-subtabs .mo-subtab-btn").forEach((el) => {
-          el.classList.toggle("is-active", el.getAttribute("data-tab-jump") === tab);
+          const active = el.getAttribute("data-tab-jump") === tab;
+          el.classList.toggle("is-active", active);
+          el.setAttribute("aria-selected", active ? "true" : "false");
+          el.tabIndex = active ? 0 : -1;
         });
+        const settingsFooter = document.querySelector("#mo-settings-overlay .mo-footer");
+        if (settingsFooter) settingsFooter.hidden = tab !== "settings";
         if (tab === "prompt") {
           loadPromptEditor(false);
         }
@@ -54110,6 +50183,19 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           personaCapsuleResolveSessionDefaults().then(() => {
             personaCapsuleRefreshUI();
           }).catch(() => {});
+        }
+        if (tab === "archive" || tab === "memory_admin") {
+          const inspectionSessionId = String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
+          explorerChangeSession(inspectionSessionId, false);
+          if (tab === "archive") {
+            explorerShowTabLoading(_explorer.activeTab);
+            explorerRenderActiveTabShell();
+            explorerLoadTab(_explorer.activeTab, true).then(() => {
+              refreshExplorerUI({ preserveScroll: false });
+            }).catch(() => {});
+          } else {
+            refreshExplorerUI({ preserveScroll: false });
+          }
         }
         if (tab === "reference") {
           if (_referenceLibraryState.works.length === 0) {
@@ -54171,13 +50257,67 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         });
       }
 
+      const lorebookReferenceModeSelect = $("mo-lorebookReferenceMode");
+      const lorebookReferenceRefreshButton = $("mo-refresh-lorebook-reference");
+      let lorebookReferenceControlBusy = false;
+      const syncLorebookRefreshButton = () => {
+        if (lorebookReferenceRefreshButton) {
+          lorebookReferenceRefreshButton.disabled = lorebookReferenceControlBusy || !lorebookReferenceModeSelect;
+        }
+      };
+      if (lorebookReferenceModeSelect) lorebookReferenceModeSelect.addEventListener("change", async () => {
+        if (lorebookReferenceControlBusy) return;
+        const previousMode = String(settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
+        const nextMode = sanitizeEnumValue(lorebookReferenceModeSelect.value, previousMode, ["search_only", "reference_assist"]);
+        if (nextMode === previousMode) {
+          syncLorebookRefreshButton();
+          return;
+        }
+        lorebookReferenceControlBusy = true;
+        lorebookReferenceModeSelect.disabled = true;
+        syncLorebookRefreshButton();
+        try {
+          await updateSettings({ lorebookReferenceMode: nextMode });
+          await syncCurrentLorebookReference({ force: true });
+          await explorerFetchLorebook(true);
+          updateLorebookReferenceManagementStatus();
+        } catch (err) {
+          const statusEl = $("mo-lorebook-reference-status");
+          if (statusEl) statusEl.textContent = String(err && err.message || err);
+        } finally {
+          lorebookReferenceControlBusy = false;
+          lorebookReferenceModeSelect.disabled = false;
+          syncLorebookRefreshButton();
+        }
+      });
+      syncLorebookRefreshButton();
+      if (lorebookReferenceRefreshButton) {
+        lorebookReferenceRefreshButton.addEventListener("click", async () => {
+          const statusEl = $("mo-lorebook-reference-status");
+          lorebookReferenceControlBusy = true;
+          syncLorebookRefreshButton();
+          if (statusEl) statusEl.textContent = "reading_host_lorebook";
+          try {
+            const result = await syncCurrentLorebookReference({ force: true });
+            if (statusEl) statusEl.textContent = String(result && result.status || "unavailable");
+            await explorerFetchLorebook(true);
+            updateLorebookReferenceManagementStatus();
+          } catch (err) {
+            if (statusEl) statusEl.textContent = String(err && err.message || err);
+          } finally {
+            lorebookReferenceControlBusy = false;
+            syncLorebookRefreshButton();
+          }
+        });
+      }
+
       // 헤더 디버그 토글 (Save 없이 즉시 반영)
       const debugToggleBtn = $("mo-debug-header-btn");
       const debugHardResetBtn = $("mo-debug-hard-reset-btn");
       const adminDbResetBtn = $("mo-admin-db-reset-btn");
       const adminDbResetHeaderBtn = $("mo-admin-db-reset-header-btn");
       const debugToggleInput = $("mo-debug");
-      const debugTabBtn = $("mo-tab-btn-debug");
+      const debugTabButtons = Array.from(document.querySelectorAll('.mo-settings-subtabs [data-tab-jump="debug"]'));
       const debugTabPanel = $("mo-tab-panel-debug");
       const debugEnabledGroup = $("mo-debug-enabled-group");
       const debugDisabledNote = $("mo-debug-disabled-note");
@@ -54190,9 +50330,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       }
       function syncDebugTabVisibility() {
         const isOn = !!(debugToggleInput && debugToggleInput.checked);
-        if (debugTabBtn) {
-          debugTabBtn.style.display = isOn ? "" : "none";
-        }
+        debugTabButtons.forEach((button) => {
+          button.style.display = isOn ? "" : "none";
+        });
         if (debugHardResetBtn) {
           debugHardResetBtn.style.display = isOn ? "" : "none";
         }
@@ -54305,11 +50445,45 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           const tab = btn.getAttribute("data-tab");
           if (!tab || tab === _settingsActiveTab) return;
           setActiveSettingsTab(tab);
-          if (tab === "timeline") loadTimelineData(true);
+        });
+        btn.addEventListener("keydown", (e) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          const tabs = Array.from(document.querySelectorAll("#mo-main-tabs .mo-tab-btn"));
+          const currentIndex = tabs.indexOf(btn);
+          if (currentIndex < 0 || tabs.length === 0) return;
+          e.preventDefault();
+          const nextIndex = e.key === "Home" ? 0
+            : e.key === "End" ? tabs.length - 1
+            : (currentIndex + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+          tabs[nextIndex].focus();
+          tabs[nextIndex].click();
+        });
+      });
+      document.querySelectorAll("[data-tab-jump]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.preventDefault();
+          setActiveSettingsTab(btn.getAttribute("data-tab-jump") || "timeline");
+        });
+        btn.addEventListener("keydown", (e) => {
+          if (!["ArrowLeft", "ArrowRight", "Home", "End"].includes(e.key)) return;
+          const container = btn.closest(".mo-settings-subtabs");
+          const tabs = container ? Array.from(container.querySelectorAll("[data-tab-jump]")) : [];
+          const currentIndex = tabs.indexOf(btn);
+          if (currentIndex < 0 || tabs.length === 0) return;
+          e.preventDefault();
+          const nextIndex = e.key === "Home" ? 0
+            : e.key === "End" ? tabs.length - 1
+            : (currentIndex + (e.key === "ArrowRight" ? 1 : -1) + tabs.length) % tabs.length;
+          const nextTab = tabs[nextIndex];
+          nextTab.click();
+          nextTab.focus();
         });
       });
       _setActiveSettingsTabForTimeline = setActiveSettingsTab;
-      attachTimelineEvents();
+      if (_settingsActiveTab === "timeline") attachTimelineEvents();
+      if (_settingsActiveTab === "archive" || _settingsActiveTab === "memory_admin") attachExplorerEvents();
+      if (_settingsActiveTab === "persona") attachPersonaCapsuleEvents();
+      if (!["settings", "review", "prompt", "dashboard", "debug"].includes(_settingsActiveTab)) return;
 
       bindSettingsRangeSyncEvents(document);
       const syncAllRangesFromInputs = () => syncSettingsRangesFromInputs(document);
@@ -54345,9 +50519,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
         return getRequestTimeoutSettingMs(($("mo-requestTimeoutMs") || { value: settings.requestTimeoutMs }).value);
       }
 
-      function getCurrentUiPluginMainTimeoutMs() {
-        return getPluginMainTimeoutSettingMs(($("mo-pluginMainTimeoutMs") || { value: settings.pluginMainTimeoutMs }).value);
-      }
 
       async function withUiBridgeSettings(fn) {
         const prevUrl = settings.bridgeUrl;
@@ -54590,10 +50761,11 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude");
       syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude");
 
-      $("mo-save-btn").addEventListener("click", async () => {
+      $("mo-save-btn")?.addEventListener("click", async () => {
         try {
           const prevDebug = settings.debug;
           const prevTurnWorkflowHUDEnabled = settings.turnWorkflowHUDEnabled !== false;
+          const prevLorebookReferenceMode = String(settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
           const rawBridgeUrl = $("mo-bridgeUrl").value;
           const readValue = (id, fallback = "", trim = false) => {
             const el = $(id);
@@ -54614,6 +50786,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
+            lorebookReferenceMode: readValue("mo-lorebookReferenceMode", settings.lorebookReferenceMode, true),
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
@@ -54685,6 +50858,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             failedQueueMaxAttempts: $("mo-failedQueueMaxAttempts").value,
             narrativeGuideMode: $("mo-narrativeGuideMode").value,
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
+            publisherGuidanceFormat: $("mo-publisherGuidanceFormat").value,
             narrativeSupportMaxChars: $("mo-narrativeSupportMaxChars").value,
             // J-3a: Plugin Main Apply Mode
             pluginMainApplyMode: $("mo-pluginMainApplyMode").value,
@@ -54696,6 +50870,9 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           // sanitizeSettings가 숫자/URL 검증을 처리
           const updated = await updateSettings(patch);
           if (!updated) throw new Error("save failed");
+          if (prevLorebookReferenceMode !== settings.lorebookReferenceMode) {
+            await syncCurrentLorebookReference({ force: true });
+          }
           if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false) {
             await dismissTurnWorkflowHUD();
           }
@@ -54750,6 +50927,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
+          setValueIfPresent("mo-lorebookReferenceMode", settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
           const refreshedMemoryBudgets = settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
           setValueIfPresent("mo-memoryBudgetEventRecent", refreshedMemoryBudgets.event_recent);
           setValueIfPresent("mo-memoryBudgetCharacterObjective", refreshedMemoryBudgets.character_objective);
@@ -54759,10 +50937,12 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           setValueIfPresent("mo-memoryBudgetUnresolvedGoal", refreshedMemoryBudgets.unresolved_goal);
           setValueIfPresent("mo-memoryBudgetDirectEvidence", refreshedMemoryBudgets.direct_evidence);
           syncMemoryDeliveryBudgetControls();
+          syncLorebookRefreshButton();
           setValueIfPresent("mo-auxiliaryInjectionPlacement", settings.auxiliaryInjectionPlacement || "auto");
           setValueIfPresent("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker || "");
           setValueIfPresent("mo-narrativeGuideMode", settings.narrativeGuideMode || "auto");
           $("mo-narrativeGuideStrength").value = settings.narrativeGuideStrength || "weak";
+          setValueIfPresent("mo-publisherGuidanceFormat", settings.publisherGuidanceFormat || "standard");
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
           setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false);
           syncNarrativeGuideControls();
@@ -54792,7 +50972,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // 기본값 복원
-      $("mo-reset-btn").addEventListener("click", async () => {
+      $("mo-reset-btn")?.addEventListener("click", async () => {
         if (typeof confirm !== "function" || !confirm(t("settings.confirm.resetDefaults"))) {
           return;
         }
@@ -54807,7 +50987,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // /health 테스트
-      $("mo-test-health").addEventListener("click", async () => {
+      $("mo-test-health")?.addEventListener("click", async () => {
         const resultEl = $("mo-test-result");
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.health.loading') + '</div>';
@@ -54824,7 +51004,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // 출판사 LLM 호출 테스트 (출판사 입력값만 사용)
-      $("mo-test-call-publisher").addEventListener("click", async () => {
+      $("mo-test-call-publisher")?.addEventListener("click", async () => {
         const resultEl = $("mo-test-result");
         if (!resultEl) return;
         const testApiKey = (($("mo-pluginMainApiKey") || {}).value || "").trim();
@@ -54874,7 +51054,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
             max_completion_tokens: testMaxCompletionTokens,
           };
           applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
-          if (testProvider === "ollama" && testReasoningEffort === "none") testBody.reasoning_effort = "none";
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
           }
@@ -54910,7 +51089,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // 평론가 LLM 호출 테스트 (평론가 입력값만 사용, 출판사 자동 대체 금지)
-      $("mo-test-call-critic").addEventListener("click", async () => {
+      $("mo-test-call-critic")?.addEventListener("click", async () => {
         const resultEl = $("mo-test-result");
         if (!resultEl) return;
         const testApiKey = (($("mo-subLlmApiKey") || {}).value || "").trim();
@@ -54991,7 +51170,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // /wakeup 테스트
-      $("mo-test-wakeup").addEventListener("click", async () => {
+      $("mo-test-wakeup")?.addEventListener("click", async () => {
         const resultEl = $("mo-test-result");
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.wakeup.loading') + '</div>';
@@ -55008,7 +51187,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
       });
 
       // DB Stats 테스트
-      $("mo-test-stats").addEventListener("click", async () => {
+      $("mo-test-stats")?.addEventListener("click", async () => {
         const resultEl = $("mo-test-result");
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.stats.loading') + '</div>';
@@ -55152,19 +51331,10 @@ details.mo-it-block[open] .mo-it-expand{display:none}
           corruptBtn.disabled = true;
         });
       }
-
-
-      // ── Sprint 2-E: Explorer 이벤트 바인딩 ──
-      attachExplorerEvents();
-
-      // ── PMC-3: Persona Capsule UI 이벤트 바인딩 ──
+      // Settings-family panels stay mounted to preserve unsaved form state.
       attachPersonaCapsuleEvents();
-
-      // ── Prompt Editor 이벤트 바인딩 ──
       attachPromptEditorEvents();
-      if (_settingsActiveTab === "prompt") {
-        loadPromptEditor(false);
-      }
+      if (_settingsActiveTab === "prompt") loadPromptEditor(false);
 
       // ── Sprint 3-E-3: Audit 이벤트 바인딩 ──
       attachAuditEvents();
@@ -55317,193 +51487,6 @@ details.mo-it-block[open] .mo-it-expand{display:none}
   // [RUN]
   // ──────────────────────────────────────────────────────────────
   
-  // Step 18 marker surface (read-only evidence anchors for VR + HY)
-  const _step18MarkerSurface = {
-    reset_administration: "checklist_cleared_for_redo",
-    historical_content_preserved: true,
-    step_17_closure_gate: "closed",
-    prep_anchor_vr_hy: ["18-1_vr", "18-2_hy"],
-    downstream_slices: ["18-3_qr", "18-4_vx"],
-    backend_prep_anchor_file: "backend/archive/bridge.py",
-    backend_prep_anchor_function: "search_memories",
-    routing_contract_prep_anchor_file: "backend/main.py",
-    routing_contract_prep_anchor_function: "_build_recall_intent_contract_q3a",
-    runtime_prep_scope: "preparation_only",
-    vr_scoped_verbatim_support: "Scoped Verbatim Recall (support surface)",
-    vr_scoped_verbatim_support_source: "direct_evidence_gate_approved",
-    vr_policy_owner_block: "max_items=3 max_total_chars=720 max_excerpt_chars=160 support_surface_first=true",
-    vr_prompt_injection_strategy: "latest_anchor_only",
-    vr_multi_item_lane_exposed: true,
-    vr_hierarchy_escape_hatch: "visible_when_summary_thin",
-    vr_hierarchy_escape_hatch_status: "visible_when_summary_thin",
-    verbatim_support_surface_priority: true,
-    vr_backend_test_file: "backend/test_step18_scoped_verbatim_support.py",
-    vr_runtime_transparency_test_file: "test_step18_scoped_verbatim_input_transparency.js",
-    vr_regression_bundle_green: true,
-    adjacent_step19_regression_green: true,
-    hy_semantic_rank_preserved: true,
-    hy_keyword_overlap_policy: "hy1a.v1",
-    hy_hybrid_baseline_policy_version: "hy1a.v1",
-    hy_soft_bias_policy: "hy1b.v1",
-    hy_speaker_bias_weight: 0.04,
-    hy_location_bias_weight: 0.05,
-    hy_storyline_bias_weight: 0.06,
-    hy_soft_bias_cap: 0.12,
-    hy_stopword_inflation_fixed: true,
-    hy_tightened_extractor: true,
-    hy_common_filler_excluded: true,
-    hy_q1a_propagation: true,
-    hy_q1a_propagated_fields: [
-      "keyword_overlap_score",
-      "hybrid_baseline_score",
-      "keyword_overlap_terms",
-      "hybrid_baseline_policy_version",
-      "speaker_bias_score",
-      "location_bias_score",
-      "storyline_bias_score",
-      "soft_bias_score",
-      "soft_bias_policy_version"
-    ],
-    hy_js_function: "extractMemoryItems",
-    hy_row_meta_extended: true,
-    hy_row_meta_fields: ["final", "kw", "soft"],
-    hy_transparency_block: "Hybrid Retrieval Inspection",
-    hy_transparency_block_type: "trace_only",
-    hy_backend_regression_test_file: "backend/test_step18_hybrid_regression.py",
-    hy_js_transparency_test_file: "test_step18_hybrid_input_transparency.js",
-    hy_recurring_risk_guard_stopword: "guarded",
-    hy_recurring_risk_guard_missing_q1a: "guarded",
-    hy_recurring_risk_guard_inspection_disappearance: "guarded",
-    hy_policy_registry_file: "backend/archive/hybrid_policy.py",
-    hy_policy_registry_consolidated: true,
-    hy_policy_family: "hy",
-    hy_stop_at_18_2c: true,
-    hy_open_follow_up: ["18-2d", "18-3", "18-4"],
-    hy_tail_budget_rescue: "enabled",
-    hy_tail_budget_policy_version: "hy1d.v1",
-    hy_tail_budget_policy_owner: "backend/archive/hybrid_policy.py",
-    hy_tail_budget_rescue_pass: "bounded_post_rank_same_n_results_budget",
-    hy_tail_budget_promotion_trigger: "keyword_soft_bias_stronger_than_cutline",
-    hy_tail_budget_trace_fields: [
-      "tail_budget_policy_version",
-      "tail_budget_original_rank",
-      "tail_budget_promoted",
-      "tail_budget_reason",
-      "tail_budget_score_gap"
-    ],
-    hy_tail_budget_q1a_propagation: true,
-    hy_tail_budget_regression_scope: "near_cutoff_rescue",
-    qr_query_class_contract_version: "qr1a.v1",
-    qr_execution_mode: "single_query_shared",
-    qr_query_classes: ["scene", "callback", "resume", "canon", "temporal"],
-    qr_primary_precedence: [
-      "explicit_temporal_cue",
-      "resume_trigger_or_ready_resume_pack",
-      "canon_guard_signal",
-      "callback_recovery_signal",
-      "scene_fallback"
-    ],
-    qr_cue_block_owner: "query_class_contract",
-    qr_contract_test_file: "backend/test_step18_query_class_contract.py",
-    qr_budget_policy_version: "qr1b.v1",
-    qr_q3c_budget_reuse: true,
-    qr_temporal_profile_budget: "evidence_first_overlay",
-    qr_budget_visibility_fields: [
-      "retrieval_depth",
-      "candidate_budget",
-      "budget_policy_version",
-      "budget_source"
-    ],
-    qr_budget_test_file: "backend/test_step18_query_class_budget_policy.py",
-    qr_note_policy_version: "qr1c.v1",
-    qr_support_surface_first: true,
-    qr_note_only_until_route_exec: true,
-    qr_note_policy_fields: [
-      "extract_before_read",
-      "retrieval_note_surface",
-      "pre_extract_rule",
-      "note_delivery",
-      "note_policy_version"
-    ],
-    qr_note_policy_test_file: "backend/test_step18_query_class_note_policy.py",
-    qr_route_policy_version: "qr1d.v1",
-    qr_route_families: [
-      "scene_default",
-      "callback_rescue",
-      "needle_in_haystack",
-      "old_detail_bridge",
-      "resume_bridge",
-      "canon_guard",
-      "temporal_anchor"
-    ],
-    qr_long_tail_route_candidates: true,
-    qr_route_policy_fields: [
-      "route_family",
-      "route_candidates",
-      "selected_route",
-      "route_policy_version"
-    ],
-    qr_route_policy_test_file: "backend/test_step18_query_class_route_policy.py",
-    vx18a_hybrid_replay_gate: "validation_gates.hybrid_replay",
-    vx18a_threshold_reuse: "_U1E_CAPTURED_REPLAY",
-    vx18a_state_ladder: ["pending_hold", "blocked_hold", "ready_promote_candidate"],
-    vx18a_test_file: "backend/test_step18_hybrid_replay_gate.py",
-    vx18b_heldout_completeness_gate: "validation_gates.heldout_completeness",
-    vx18b_metrics: ["retention_rate", "false_negative_rate", "full_coverage_rate"],
-    vx18b_threshold_reuse: ["LC1P", "_U1E_CAPTURED_REPLAY_MIN"],
-    vx18b_test_file: "backend/test_step18_heldout_completeness_gate.py",
-    vx18c_latency_token_budget_gate: "validation_gates.latency_token_budget",
-    vx18c_metrics: ["baseline_latency_proxy_ms", "candidate_latency_proxy_ms", "candidate_token_budget_chars"],
-    vx18c_threshold_reuse: "_LC1M_MAX_SPLIT_LATENCY_MULTIPLIER",
-    vx18c_test_file: "backend/test_step18_latency_token_budget_gate.py",
-    vx18d_truth_boundary_replay_gate: "validation_gates.truth_boundary_replay",
-    vx18d_precedence_sources: ["_LC1K_HIGH_AUTHORITY_SOURCES", "_LC1K_LOWER_TIER_SOURCES"],
-    vx18d_state_ladder: ["pending_hold", "blocked_hold", "ready_promote_candidate"],
-    vx18d_test_file: "backend/test_step18_truth_boundary_replay_gate.py",
-    vx18e_truncation_summary_loss_gate: "validation_gates.truncation_summary_loss",
-    vx18e_policy_version: "vx18e.v1",
-    vx18e_metrics: [
-      "baseline_tail_fact_miss_rate",
-      "candidate_tail_fact_miss_rate",
-      "baseline_summary_loss_rate",
-      "candidate_summary_loss_rate",
-      "tail_budget_promoted"
-    ],
-    vx18e_threshold_reuse: "_U1E_CAPTURED_REPLAY_MIN",
-    vx18e_state_ladder: ["pending_hold", "blocked_hold", "ready_promote_candidate"],
-    vx18e_test_file: "backend/test_step18_truncation_summary_loss_gate.py",
-    post_chroma_top6: [
-      "scoped_verbatim_recall_lane",
-      "hybrid_retrieval_scoring_baseline",
-      "temporal_relation_story_clock_foundation",
-      "temporal_validity_retrieval",
-      "lightweight_entity_graph_retrieval_accelerator",
-      "selective_rerank_budget_aware_routing"
-    ],
-    step18_summary_priority_rows: [
-      "step18_vr_raw_preserving_support",
-      "step18_vr_truth_boundary_preserve",
-      "raw_preserving_support",
-      "hybrid_realism",
-      "soft_routing",
-      "latency_discipline",
-      "truth_boundary_preserve"
-    ],
-    step18_vr_summary_rows: ["18-1a", "18-1b", "18-1c", "18-1d", "step18_vr_18-1d"],
-    step18_hy_summary_rows: ["18-2a", "18-2b", "18-2c", "18-2d", "step18_hy_18-2d"],
-    step18_qr_summary_rows: ["18-3a", "18-3b", "18-3c", "18-3d", "step18_qr_18-3d"],
-    step18_vx_summary_rows: ["18-4a", "18-4b", "18-4c", "18-4d", "18-4e", "step18_vx_18-4e"],
-    pre_release_1_0_0_marker: "1.0.0-pre",
-    pre_release_bundle_authority: "Archive Center 3.0.0 Release",
-    pre_release_smoke_checks: [
-      "scoped_verbatim_recall",
-      "hybrid_baseline",
-      "query_class_routing_budget",
-      "vx_review_checklist"
-    ],
-    pre_release_raw_support_limits: "max_items=3 max_total_chars=720 max_excerpt_chars=160",
-    pre_release_hybrid_soft_bias: "speaker=0.04 location=0.05 storyline=0.06 cap=0.12"
-  };
 await init();
 
 })();

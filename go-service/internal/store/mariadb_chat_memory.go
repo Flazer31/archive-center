@@ -556,6 +556,8 @@ func (m *mariadbStore) ListEvidenceRange(ctx context.Context, chatSessionID stri
 			superseded_by_id, created_at
 		FROM direct_evidence_records
 		WHERE chat_session_id = ?
+			AND tombstoned = FALSE
+			AND COALESCE(superseded_by_id, 0) = 0
 			AND (
 				((? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) >= ?)
 			 AND (? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) <= ?))`+idClause+`

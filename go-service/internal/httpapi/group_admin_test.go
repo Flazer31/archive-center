@@ -921,6 +921,19 @@ func TestWorldRuleItemsAcceptsCriticJudgedWorldStateRule(t *testing.T) {
 	}
 }
 
+func TestWorldRuleItemsKeepsSameKeyDifferentValuesAndDedupesExactRepeat(t *testing.T) {
+	items := worldRuleItemsForSave(map[string]any{
+		"world_rules": []any{
+			map[string]any{"scope": "root", "category": "custom", "key": "gate_state", "value": "open"},
+			map[string]any{"scope": "root", "category": "custom", "key": "gate_state", "value": "closed"},
+			map[string]any{"scope": "root", "category": "custom", "key": "gate_state", "value": "open"},
+		},
+	})
+	if len(items) != 2 {
+		t.Fatalf("same-key values were collapsed or exact repeat survived: %#v", items)
+	}
+}
+
 func TestMaintenanceQueueStatusReadsAuditStore(t *testing.T) {
 	fake := &adminQueueStore{
 		narrativeFakeStore: &narrativeFakeStore{},

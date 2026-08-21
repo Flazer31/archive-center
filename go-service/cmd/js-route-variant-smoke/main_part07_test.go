@@ -610,30 +610,14 @@ func TestArchiveCenterJSSeq19P313ElapsedTimeWriteDisciplineDefineMarkers(t *test
 }
 
 // SEQ-19-P314: 19-3d temporal support packet define markers.
-func TestArchiveCenterJSSeq19P314TemporalSupportPacketDefineMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"Temporal Packet",
-		"temporal_packet",
-		"temporal_packet_text",
-		"current_story_clock",
-		"temporal_relation_ledger",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-19-P314 support packet marker %q", needle)
-		}
-	}
-}
-
 func TestArchiveCenterJSSeq19P303ToP314TemporalDefinitionRuntimeSemantics(t *testing.T) {
 	nodePath, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("node is required for JS runtime behavior smoke")
 	}
 	src := readArchiveCenterJS(t)
-	start := strings.Index(src, "function isTemporalQueryInput")
-	end := strings.Index(src, "function buildInputContext")
+	start := strings.Index(src, "function extractTemporalRelationEntriesStep19")
+	end := strings.Index(src, "function readSceneTemporalStateFromOrchResultStep19")
 	if start < 0 || end <= start {
 		t.Fatalf("Archive Center.js missing SEQ-19 temporal runtime block")
 	}
@@ -670,9 +654,6 @@ assert(relationOnly.clockWriteDirective.mode === "block_relation_only_write" && 
 const enOnly = buildTemporalStateSurfaceStep19("그저께 yesterday", "", { sourceTurn: 91, activeLocales: ["en"] }).temporalRelationLedger;
 assert(!byLabel(enOnly, "그저께") && byLabel(enOnly, "yesterday"), "P307 activeLocales should separate locale parser pack from canonical normalizer");
 
-assert(isTemporalQueryInput("언제였지?"), "P314 temporal query gate should detect 언제");
-assert(isTemporalQueryInput("얼마나 지났나?"), "P314 temporal query gate should detect elapsed-time query");
-assert(isTemporalQueryInput("지금 며칠째인가?"), "P314 temporal query gate should detect story-day query");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
@@ -735,22 +716,6 @@ func TestArchiveCenterJSSeq19P320MissingAnchorLowPrecisionDegradeReplayDefineMar
 }
 
 // SEQ-19-P321: 19-4d temporal packet truth-boundary / precedence replay define markers.
-func TestArchiveCenterJSSeq19P321TemporalPacketTruthBoundaryPrecedenceReplayDefineMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"temporal_packet",
-		"Temporal Packet",
-		"current_story_clock",
-		"temporal_relation_ledger",
-		"clockWriteDirective",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-19-P321 packet precedence marker %q", needle)
-		}
-	}
-}
-
 // SEQ-19-P322: 19-4e response-time deictic validator replay define markers.
 func TestArchiveCenterJSSeq19P322ResponseTimeDeicticValidatorReplayDefineMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -806,21 +771,6 @@ func TestArchiveCenterJSSeq19P324MultilingualParityMixedLanguageFailOpenReplayDe
 }
 
 // SEQ-19-P328: Beta 1.0 bundle latest root runtime define markers.
-func TestArchiveCenterJSSeq19P328Beta10BundleLatestRootRuntimeDefineMarkers(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"function extractTemporalRelationEntriesStep19",
-		"function buildTemporalStateSurfaceStep19",
-		"function validateResponseTemporalDeicticStep19",
-		"function isTemporalQueryInput",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing SEQ-19-P328 Beta 1.0 bundle marker %q", needle)
-		}
-	}
-}
-
 // SEQ-19-P329: story clock smoke check pass markers.
 func TestArchiveCenterJSSeq19P329StoryClockSmokeCheckPassMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
@@ -952,7 +902,7 @@ func TestArchiveCenterJSSeq19P328ToP332ReleaseGateRuntimeSmoke(t *testing.T) {
 		t.Skip("node is required for JS runtime behavior smoke")
 	}
 	src := readArchiveCenterJS(t)
-	start := strings.Index(src, "function isTemporalQueryInput")
+	start := strings.Index(src, "function extractTemporalRelationEntriesStep19")
 	end := strings.Index(src, "function readSceneTemporalStateFromOrchResultStep19")
 	if start < 0 || end <= start {
 		t.Fatalf("Archive Center.js missing SEQ-19 release-gate temporal runtime block")
@@ -963,8 +913,6 @@ const byLabel = (state, label) => state.temporalRelationLedger.find((entry) => e
 assert(typeof extractTemporalRelationEntriesStep19 === "function", "P328 extractor helper should exist");
 assert(typeof buildTemporalStateSurfaceStep19 === "function", "P328 state helper should exist");
 assert(typeof validateResponseTemporalDeicticStep19 === "function", "P328 validator helper should exist");
-assert(typeof isTemporalQueryInput === "function", "P328 temporal query helper should exist");
-
 const storyClock = buildTemporalStateSurfaceStep19("today", "", { sourceTurn: 201, activeLocales: ["en"] });
 assert(storyClock.currentStoryClock.resolved === true, "P329 story clock smoke should resolve current scene clock");
 assert(storyClock.currentStoryClock.selectedResolution === "input_current_scene_anchor", "P329 story clock smoke should use input current-scene anchor");

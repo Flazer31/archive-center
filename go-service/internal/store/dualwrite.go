@@ -142,12 +142,12 @@ func (d *dualWriteStore) ListKGTriplesRange(ctx context.Context, chatSessionID s
 	return reader.ListKGTriplesRange(ctx, chatSessionID, fromTurn, toTurn)
 }
 
-func (d *dualWriteStore) ListCharacterStatesCurrent(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
+func (d *dualWriteStore) ListCharacterStatesCurrentBefore(ctx context.Context, chatSessionID string, beforeTurn int) ([]CharacterState, error) {
 	reader, ok := d.primary.(PrepareTurnRangeStore)
 	if !ok {
 		return nil, ErrNotEnabled
 	}
-	return reader.ListCharacterStatesCurrent(ctx, chatSessionID)
+	return reader.ListCharacterStatesCurrentBefore(ctx, chatSessionID, beforeTurn)
 }
 
 func (d *dualWriteStore) ListActiveStatesRange(ctx context.Context, chatSessionID string, fromTurn, toTurn int) ([]ActiveState, error) {
@@ -534,6 +534,13 @@ func (d *dualWriteStore) ListCharacterPerspectiveMemoryUnits(ctx context.Context
 func (d *dualWriteStore) ListActiveInteractionMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
 	if primary, ok := d.primary.(ActiveInteractionMemoryReader); ok {
 		return primary.ListActiveInteractionMemoryUnits(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListGeneralVectorPreciseMemoryUnits(ctx context.Context, chatSessionID string) ([]PreciseMemoryUnit, error) {
+	if primary, ok := d.primary.(GeneralVectorPreciseMemoryReader); ok {
+		return primary.ListGeneralVectorPreciseMemoryUnits(ctx, chatSessionID)
 	}
 	return nil, ErrNotEnabled
 }
@@ -1324,6 +1331,14 @@ func (d *dualWriteStore) ListForkLineageRecords(ctx context.Context, chatSession
 		return nil, ErrNotEnabled
 	}
 	return primary.ListForkLineageRecords(ctx, chatSessionID, scopeID, limit)
+}
+
+func (d *dualWriteStore) GetWorldlineTopologySnapshot(ctx context.Context, anchorSessionID string, limit int) (WorldlineTopologySnapshot, error) {
+	primary, ok := d.primary.(WorldlineTopologySnapshotStore)
+	if !ok {
+		return WorldlineTopologySnapshot{}, ErrNotEnabled
+	}
+	return primary.GetWorldlineTopologySnapshot(ctx, anchorSessionID, limit)
 }
 
 func (d *dualWriteStore) SaveForkLineageRecord(ctx context.Context, record ForkLineageRecord) (ForkLineageRecord, error) {

@@ -3,10 +3,12 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -34,10 +36,14 @@ type sessionIdentityRoutingStore struct {
 
 type durableSessionIdentityBindingStore struct {
 	store.Store
-	bindings map[string]string
-	locks    map[string]string
-	fail     bool
-	lastMode string
+	bindings         map[string]string
+	locks            map[string]string
+	sources          map[string][]store.MemorySourceRevision
+	lineage          []store.ForkLineageRecord
+	baseline         *store.SessionRoutingBaseline
+	fail             bool
+	lastMode         string
+	lineageListCalls int
 }
 
 func (s *durableSessionIdentityBindingStore) BindSessionRoute(_ context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
@@ -50,6 +56,9 @@ func (s *durableSessionIdentityBindingStore) BindSessionRoute(_ context.Context,
 	s.lastMode = req.Mode
 	key := req.StableCharacterID + "\x00" + req.HostChatID
 	canonical, exists := s.bindings[key]
+	if req.Mode == store.SessionRouteBindingModeResolveExisting && !exists {
+		return nil, store.ErrNotFound
+	}
 	force := req.Mode == store.SessionRouteBindingModeManualAttach || req.Mode == store.SessionRouteBindingModeMigrationCommit
 	if !exists || force {
 		canonical = req.RequestedSessionID
@@ -76,6 +85,389 @@ func (s *durableSessionIdentityBindingStore) BindSessionRoute(_ context.Context,
 		ReadbackVerified:     true,
 		LockedSourceRedirect: redirected,
 	}, nil
+}
+
+func (s *durableSessionIdentityBindingStore) ListActiveSourceRevisions(_ context.Context, sid string, _, _ int) ([]store.MemorySourceRevision, error) {
+	return append([]store.MemorySourceRevision(nil), s.sources[sid]...), nil
+}
+
+func (s *durableSessionIdentityBindingStore) ListForkLineageRecords(_ context.Context, sid, _ string, limit int) ([]store.ForkLineageRecord, error) {
+	s.lineageListCalls++
+	out := make([]store.ForkLineageRecord, 0, len(s.lineage))
+	for index := len(s.lineage) - 1; index >= 0; index-- {
+		if s.lineage[index].ChatSessionID == sid {
+			out = append(out, s.lineage[index])
+		}
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (s *durableSessionIdentityBindingStore) GetSessionRoutingBaseline(_ context.Context, targetSessionID string) (*store.SessionRoutingBaseline, error) {
+	if s.baseline == nil || s.baseline.TargetSessionID != targetSessionID {
+		return nil, store.ErrNotFound
+	}
+	copy := *s.baseline
+	return &copy, nil
+}
+
+func TestSessionRoutingNormalObservationOmitsWorldlineAndDoesNotReadLineage(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"stable\x00child-chat": "child-session"},
+	}
+	server := &Server{Store: st}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"child-session",
+		"mode":"identity",
+		"stable_character_id":"stable",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"child-chat",
+		"host_chat_id_state":"observed"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if _, exists := payload["worldline"]; exists || st.lineageListCalls != 0 {
+		t.Fatalf("normal routing leaked/read worldline: exists=%t lineage_reads=%d body=%s", exists, st.lineageListCalls, rec.Body.String())
+	}
+}
+
+func TestAutomaticActiveChatFullSweepUsesConfirmedWorldlineOwnership(t *testing.T) {
+	routeObservation := func(t *testing.T, st *durableSessionIdentityBindingStore, userMessageIndex, observedPairOrdinal int, routingContext, baseline string) sessionRoutingTurnResolutionResponse {
+		t.Helper()
+		server := &Server{Store: st}
+		mux := http.NewServeMux()
+		server.RegisterRoutes(mux)
+		body := fmt.Sprintf(`{
+			"chat_session_id":"child-session",
+			"mode":"pair",
+			"stable_character_id":"stable",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"child-chat",
+			"host_chat_id_state":"observed",
+			"risu_user_message_index":%d,
+			"observed_pair_ordinal":%d,
+			"routing_context":%q%s
+		}`, userMessageIndex, observedPairOrdinal, routingContext, baseline)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var response sessionRoutingTurnResolutionResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	routeWithContext := func(t *testing.T, st *durableSessionIdentityBindingStore, userMessageIndex int, routingContext, baseline string) sessionRoutingTurnResolutionResponse {
+		t.Helper()
+		return routeObservation(t, st, userMessageIndex, 0, routingContext, baseline)
+	}
+	route := func(t *testing.T, st *durableSessionIdentityBindingStore, userMessageIndex int, baseline string) sessionRoutingTurnResolutionResponse {
+		t.Helper()
+		return routeWithContext(t, st, userMessageIndex, automaticActiveChatFullSweep, baseline)
+	}
+
+	lineage := func(role string, forkTurn int, parent string) store.ForkLineageRecord {
+		return store.ForkLineageRecord{
+			ContractVersion:     store.RisuWorldlineForkLineageContractVersion,
+			LineageState:        "confirmed",
+			ChatSessionID:       "child-session",
+			CopiedFromSessionID: parent,
+			ForkTurn:            forkTurn,
+			ForkSourceMessageID: "opaque-source",
+			ForkSourceRole:      role,
+			IdempotencyKey:      "opaque-key-" + parent,
+		}
+	}
+	newStore := func(records ...store.ForkLineageRecord) *durableSessionIdentityBindingStore {
+		return &durableSessionIdentityBindingStore{
+			Store:    store.NewNoopStore(),
+			bindings: map[string]string{"stable\x00child-chat": "child-session"},
+			lineage:  records,
+		}
+	}
+
+	t.Run("char source keeps the fork turn with the parent", func(t *testing.T) {
+		st := newStore(lineage("char", 3, "parent-session"))
+		inherited := route(t, st, 4, "")
+		childOwned := route(t, st, 6, "")
+		if inherited.Resolution != "skip_pre_route_visible_pair" || inherited.LocalTurnIndex != 3 || inherited.MinFromTurn != 4 {
+			t.Fatalf("inherited=%+v", inherited)
+		}
+		if childOwned.Resolution != "normal" || childOwned.TurnIndex != 4 {
+			t.Fatalf("child-owned=%+v", childOwned)
+		}
+	})
+
+	t.Run("user source leaves the fork turn for the child", func(t *testing.T) {
+		st := newStore(lineage("user", 3, "parent-session"))
+		inherited := route(t, st, 2, "")
+		childOwned := route(t, st, 4, "")
+		if inherited.Resolution != "skip_pre_route_visible_pair" || inherited.LocalTurnIndex != 2 || inherited.MinFromTurn != 3 {
+			t.Fatalf("inherited=%+v", inherited)
+		}
+		if childOwned.Resolution != "normal" || childOwned.TurnIndex != 3 {
+			t.Fatalf("child-owned=%+v", childOwned)
+		}
+	})
+
+	t.Run("first user source has no inherited completed turn", func(t *testing.T) {
+		response := route(t, newStore(lineage("user", 1, "parent-session")), 0,
+			`,"baseline":{"backend_turn_at_route":5,"local_pairs_at_route":2,"reason":"timeline_copy"}`)
+		if response.Resolution != "normal" || response.TurnIndex != 1 || response.BaselineApplied {
+			t.Fatalf("response=%+v", response)
+		}
+	})
+
+	t.Run("legacy and conflicting rows are not ownership authority", func(t *testing.T) {
+		legacy := lineage("", 3, "parent-session")
+		legacy.ContractVersion = store.ForkLineageContractVersion
+		legacyResponse := route(t, newStore(legacy), 0, "")
+		if legacyResponse.Resolution != "worldline_ownership_unresolved" || legacyResponse.TurnIndex != 0 {
+			t.Fatalf("legacy=%+v", legacyResponse)
+		}
+
+		first := lineage("char", 3, "parent-a")
+		second := lineage("user", 3, "parent-b")
+		conflictResponse := route(t, newStore(first, second), 0, "")
+		if conflictResponse.Resolution != "worldline_ownership_unresolved" || conflictResponse.TurnIndex != 0 ||
+			conflictResponse.Worldline == nil || conflictResponse.Worldline.State != "conflict" {
+			t.Fatalf("conflict=%+v", conflictResponse)
+		}
+	})
+
+	t.Run("client baseline cannot replay a char branch prefix or rebase its native tail", func(t *testing.T) {
+		st := newStore(lineage("char", 8, "parent-session"))
+		baseline := `,"baseline":{"backend_turn_at_route":9,"local_pairs_at_route":0,"reason":"timeline_attach"}`
+		for _, pair := range []int{1, 2, 8} {
+			response := route(t, st, (pair-1)*2, baseline)
+			if response.Resolution != "skip_pre_route_visible_pair" || response.LocalTurnIndex != pair || response.BaselineApplied {
+				t.Fatalf("pair=%d response=%+v", pair, response)
+			}
+		}
+		for _, pair := range []int{9, 10} {
+			response := route(t, st, (pair-1)*2, baseline)
+			if response.Resolution != "normal" || response.TurnIndex != pair || response.BaselineApplied {
+				t.Fatalf("pair=%d response=%+v", pair, response)
+			}
+		}
+		if st.lineageListCalls != 5 {
+			t.Fatalf("worldline ownership was not checked for every pair: lineage_reads=%d", st.lineageListCalls)
+		}
+	})
+
+	t.Run("batch rebuild plan keeps branch ownership and native turns", func(t *testing.T) {
+		st := newStore(lineage("char", 8, "parent-session"))
+		for _, baseline := range []string{
+			``,
+			`,"baseline":{"backend_turn_at_route":9,"local_pairs_at_route":0,"reason":"timeline_attach"}`,
+		} {
+			server := &Server{Store: st}
+			mux := http.NewServeMux()
+			server.RegisterRoutes(mux)
+			rec := httptest.NewRecorder()
+			body := fmt.Sprintf(`{
+			"chat_session_id":"child-session",
+			"mode":"batch",
+			"stable_character_id":"stable",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"child-chat",
+			"host_chat_id_state":"observed",
+			"observations":[
+				{"observation_index":0,"risu_user_message_index":0},
+				{"observation_index":1,"risu_user_message_index":14},
+				{"observation_index":2,"risu_user_message_index":16},
+				{"observation_index":3,"risu_user_message_index":18}
+			]%s
+		}`, baseline)
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(body)))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("baseline=%q status=%d body=%s", baseline, rec.Code, rec.Body.String())
+			}
+			var response sessionRoutingTurnResolutionResponse
+			if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+				t.Fatal(err)
+			}
+			wantTurns := []int{1, 8, 9, 10}
+			wantResolutions := []string{"skip_pre_route_visible_pair", "skip_pre_route_visible_pair", "normal", "normal"}
+			if len(response.ResolvedObservations) != len(wantTurns) {
+				t.Fatalf("baseline=%q response=%+v", baseline, response)
+			}
+			for index, item := range response.ResolvedObservations {
+				if item.TurnIndex != wantTurns[index] || item.Resolution != wantResolutions[index] {
+					t.Fatalf("baseline=%q resolved[%d]=%+v", baseline, index, item)
+				}
+			}
+		}
+	})
+
+	t.Run("nested branch ignores disabled marker offsets", func(t *testing.T) {
+		st := newStore(lineage("char", 9, "parent-session"))
+		response := routeObservation(t, st, 20, 10, "", "")
+		if response.Resolution != "normal" || response.TurnIndex != 10 || response.LocalTurnIndex != 10 || response.LocalTurnSource != "observed_pair_ordinal" {
+			t.Fatalf("response=%+v", response)
+		}
+	})
+
+	t.Run("nested branch batch ignores disabled marker offsets", func(t *testing.T) {
+		st := newStore(lineage("char", 9, "parent-session"))
+		server := &Server{Store: st}
+		mux := http.NewServeMux()
+		server.RegisterRoutes(mux)
+		rec := httptest.NewRecorder()
+		body := `{
+			"chat_session_id":"child-session",
+			"mode":"batch",
+			"stable_character_id":"stable",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"child-chat",
+			"host_chat_id_state":"observed",
+			"observations":[
+				{"observation_index":0,"risu_user_message_index":17,"observed_pair_ordinal":9},
+				{"observation_index":1,"risu_user_message_index":20,"observed_pair_ordinal":10}
+			]
+		}`
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var response sessionRoutingTurnResolutionResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		if len(response.ResolvedObservations) != 2 {
+			t.Fatalf("response=%+v", response)
+		}
+		inherited, childOwned := response.ResolvedObservations[0], response.ResolvedObservations[1]
+		if inherited.Resolution != "skip_pre_route_visible_pair" || inherited.TurnIndex != 9 || inherited.Source != "observed_pair_ordinal" {
+			t.Fatalf("inherited=%+v", inherited)
+		}
+		if childOwned.Resolution != "normal" || childOwned.TurnIndex != 10 || childOwned.LocalTurnIndex != 10 || childOwned.Source != "observed_pair_ordinal" {
+			t.Fatalf("child-owned=%+v", childOwned)
+		}
+	})
+
+	t.Run("client baseline preserves user-source child turns", func(t *testing.T) {
+		st := newStore(lineage("user", 8, "parent-session"))
+		baseline := `,"baseline":{"backend_turn_at_route":9,"local_pairs_at_route":0,"reason":"timeline_attach"}`
+		for _, pair := range []int{1, 7} {
+			response := route(t, st, (pair-1)*2, baseline)
+			if response.Resolution != "skip_pre_route_visible_pair" || response.LocalTurnIndex != pair {
+				t.Fatalf("pair=%d response=%+v", pair, response)
+			}
+		}
+		for _, pair := range []int{8, 9} {
+			response := route(t, st, (pair-1)*2, baseline)
+			if response.Resolution != "normal" || response.TurnIndex != pair || response.BaselineApplied {
+				t.Fatalf("pair=%d response=%+v", pair, response)
+			}
+		}
+	})
+
+	t.Run("non-automatic accepted final uses the same confirmed branch numbering", func(t *testing.T) {
+		st := newStore(lineage("char", 8, "parent-session"))
+		for _, baseline := range []string{
+			``,
+			`,"baseline":{"backend_turn_at_route":9,"local_pairs_at_route":0,"reason":"timeline_attach"}`,
+		} {
+			inherited := routeWithContext(t, st, 0, "", baseline)
+			if inherited.Resolution != "skip_pre_route_visible_pair" || inherited.TurnIndex != 1 {
+				t.Fatalf("baseline=%q inherited=%+v", baseline, inherited)
+			}
+			response := routeWithContext(t, st, 18, "", baseline)
+			if response.Resolution != "normal" || response.TurnIndex != 10 || response.BaselineApplied {
+				t.Fatalf("baseline=%q response=%+v", baseline, response)
+			}
+		}
+	})
+
+	t.Run("canonical tail alignment cannot bypass inherited ownership", func(t *testing.T) {
+		st := newStore(lineage("char", 8, "parent-session"))
+		req := sessionRoutingTurnResolutionRequest{
+			ChatSessionID: "child-session", Mode: "pair", RisuUserMessageIndex: intPointer(0),
+			Baseline:             &routingTurnBaseline{BackendTurnAtRoute: 9, Reason: "timeline_attach"},
+			canonicalTailAligned: true,
+		}
+		response := calculateSessionRoutingTurnResolution(req)
+		if response.BaselineApplied {
+			t.Fatalf("fixture did not exercise canonical-tail early return: %+v", response)
+		}
+		response = (&Server{Store: st}).applyAutomaticWorldlineBackfillBoundary(context.Background(), req, response)
+		if response.Resolution != "skip_pre_route_visible_pair" || response.TurnIndex != 1 {
+			t.Fatalf("response=%+v", response)
+		}
+	})
+
+	t.Run("durable migration baseline must agree with confirmed parent ownership", func(t *testing.T) {
+		st := newStore(lineage("char", 8, "parent-session"))
+		st.baseline = &store.SessionRoutingBaseline{
+			MigrationID: 1, SourceSessionID: "parent-session", TargetSessionID: "child-session",
+			Mode: store.SessionMigrationModeCopyKeepSource, ImportedThroughTurn: 8,
+		}
+		baseline := `,"baseline":{"backend_turn_at_route":999,"local_pairs_at_route":0,"reason":"timeline_copy"}`
+		inherited := route(t, st, 0, baseline)
+		childOwned := route(t, st, 16, baseline)
+		if inherited.Resolution != "skip_pre_route_visible_pair" || !inherited.BaselineApplied || inherited.ProtectedBeforeTurn != 8 {
+			t.Fatalf("inherited=%+v", inherited)
+		}
+		if childOwned.Resolution != "normal" || childOwned.TurnIndex != 9 || !childOwned.BaselineApplied {
+			t.Fatalf("child-owned=%+v", childOwned)
+		}
+
+		st.baseline.SourceSessionID = "different-parent"
+		conflict := route(t, st, 16, baseline)
+		if conflict.Resolution != "worldline_ownership_unresolved" || conflict.TurnIndex != 0 {
+			t.Fatalf("conflict=%+v", conflict)
+		}
+
+		st.baseline.SourceSessionID = "parent-session"
+		st.baseline.ImportedThroughTurn = 7
+		conflict = route(t, st, 16, baseline)
+		if conflict.Resolution != "worldline_ownership_unresolved" || conflict.TurnIndex != 0 {
+			t.Fatalf("boundary conflict=%+v", conflict)
+		}
+	})
+
+	t.Run("ordinary attach without lineage keeps its baseline", func(t *testing.T) {
+		st := newStore()
+		response := routeWithContext(t, st, 0, "", `,"baseline":{"backend_turn_at_route":9,"local_pairs_at_route":0,"reason":"timeline_attach"}`)
+		if response.Resolution != "rebased" || response.TurnIndex != 10 || !response.BaselineApplied {
+			t.Fatalf("response=%+v", response)
+		}
+	})
+}
+
+func (s *durableSessionIdentityBindingStore) SaveForkLineageRecord(_ context.Context, record store.ForkLineageRecord) (store.ForkLineageRecord, error) {
+	for index := range s.lineage {
+		if record.IdempotencyKey == "" ||
+			s.lineage[index].ChatSessionID != record.ChatSessionID ||
+			s.lineage[index].IdempotencyKey != record.IdempotencyKey {
+			continue
+		}
+		if (s.lineage[index].LineageState == "confirmed" && s.lineage[index].ContractVersion == record.ContractVersion) ||
+			s.lineage[index].ImportedAt.After(record.ImportedAt) {
+			return s.lineage[index], nil
+		}
+		record.ID = s.lineage[index].ID
+		s.lineage[index] = record
+		return record, nil
+	}
+	record.ID = int64(len(s.lineage) + 1)
+	s.lineage = append(s.lineage, record)
+	return record, nil
 }
 
 func (s *sessionIdentityRoutingStore) ListSessions(context.Context) ([]store.SessionSummary, error) {
@@ -119,6 +511,429 @@ func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string,
 
 func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
 	return s.baseline, nil
+}
+
+func activeSourceRevisionForUserAnchor(parentSessionID, parentHostChatID, userMessageID, assistantMessageID string, turn int) store.MemorySourceRevision {
+	return store.MemorySourceRevision{
+		LogicalTurnID: completeTurnLogicalTurnID(parentSessionID, completeTurnSourceObservation{
+			HostChatID:             parentHostChatID,
+			HostChatIDState:        "observed_before_request",
+			UserMessageChatID:      userMessageID,
+			UserMessageChatIDState: "observed_before_request",
+		}),
+		SourceMessageID: assistantMessageID,
+		TurnIndex:       turn,
+		LifecycleState:  "active",
+	}
+}
+
+func TestResolveRisuWorldlineObservationConfirmsExactParentActiveSource(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store: store.NewNoopStore(),
+		bindings: map[string]string{
+			"character-stable\x00parent-chat": "parent-session",
+		},
+		sources: map[string][]store.MemorySourceRevision{
+			"parent-session": {activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "user-anchor", "source-message", 7)},
+		},
+	}
+	server := &Server{Store: st}
+	req := sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "active_chat_pre_backfill",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_000,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::::source-message::}}",
+			MarkerIndex:         4,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 2, Role: "user", MessageChatID: "user-anchor"},
+				{MessageIndex: 3, Role: "char", MessageChatID: "source-message"},
+				{MessageIndex: 4, Role: "comment", Disabled: true},
+			},
+		},
+	}
+	vm := server.resolveRisuWorldlineObservation(context.Background(), req, "child-session")
+	if vm.State != "confirmed" || vm.ParentSessionID != "parent-session" || vm.ForkTurn != 7 ||
+		vm.ForkSourceMessageID != "source-message" || vm.ForkSourceRole != "char" || vm.InheritedThroughTurn != 7 {
+		t.Fatalf("worldline=%+v", vm)
+	}
+	if st.lastMode != store.SessionRouteBindingModeResolveExisting || len(st.lineage) != 1 ||
+		st.lineage[0].ContractVersion != store.RisuWorldlineForkLineageContractVersion ||
+		st.lineage[0].ForkSourceRole != "char" || st.lineage[0].InheritanceMode != "none" {
+		t.Fatalf("route/store state mode=%q lineage=%+v", st.lastMode, st.lineage)
+	}
+}
+
+func TestCompleteTurnSourceWriterFeedsExactWorldlineParentSource(t *testing.T) {
+	const (
+		opaqueUserMessageID   = "opaque-user-coordinate"
+		opaqueSourceMessageID = "opaque-source-coordinate"
+	)
+	logicalTurnID := completeTurnLogicalTurnID("parent-session", completeTurnSourceObservation{
+		HostChatID:             "parent-chat",
+		HostChatIDState:        "observed_before_request",
+		UserMessageChatID:      opaqueUserMessageID,
+		UserMessageChatIDState: "observed_before_request",
+	})
+	source, err := completeTurnMemorySourceRevision(completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "source-revision", LogicalTurnID: logicalTurnID,
+		Observation: completeTurnSourceObservation{
+			ObservedAtMS:           1_776_000_000_000,
+			HostChatID:             "parent-chat",
+			HostChatIDState:        "observed_before_request",
+			UserMessageChatID:      opaqueUserMessageID,
+			UserMessageChatIDState: "observed_before_request",
+			MessageIndex:           -1,
+			MessageChatIDState:     "not_exposed_by_risu_afterRequest",
+			HashAlgorithm:          "djb2.v1",
+		},
+	}, "parent-session", 7, "neutral user", "neutral assistant", time.UnixMilli(1_776_000_000_000).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.SourceMessageID != "" || source.LogicalTurnID != logicalTurnID {
+		t.Fatalf("normal v3 writer source=%+v", source)
+	}
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources:  map[string][]store.MemorySourceRevision{"parent-session": {*source}},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_100,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::" + opaqueSourceMessageID + "::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 0, Role: "user", MessageChatID: opaqueUserMessageID},
+				{MessageIndex: 1, Role: "char", MessageChatID: opaqueSourceMessageID},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		},
+	}, "child-session")
+	if vm.State != "confirmed" || vm.ParentSessionID != "parent-session" || vm.ForkTurn != 7 ||
+		vm.ForkSourceMessageID != opaqueSourceMessageID || vm.ForkSourceRole != "char" || vm.InheritedThroughTurn != 7 {
+		t.Fatalf("writer-to-resolver worldline=%+v", vm)
+	}
+}
+
+func TestCompleteTurnSourceWriterFeedsExactUserAnchorWorldlineParentSource(t *testing.T) {
+	const opaqueUserMessageID = "opaque-user-coordinate"
+	logicalTurnID := completeTurnLogicalTurnID("parent-session", completeTurnSourceObservation{
+		HostChatID:             "parent-chat",
+		HostChatIDState:        "observed_before_request",
+		UserMessageChatID:      opaqueUserMessageID,
+		UserMessageChatIDState: "observed_before_request",
+	})
+	source, err := completeTurnMemorySourceRevision(completeTurnSourceAcceptanceDecision{
+		Enabled: true, Accepted: true, Revision: "source-revision", LogicalTurnID: logicalTurnID,
+		Observation: completeTurnSourceObservation{
+			ObservedAtMS:           1_776_000_000_000,
+			HostChatID:             "parent-chat",
+			HostChatIDState:        "observed_before_request",
+			UserMessageChatID:      opaqueUserMessageID,
+			UserMessageChatIDState: "observed_before_request",
+			MessageIndex:           -1,
+			MessageChatIDState:     "not_exposed_by_risu_afterRequest",
+			HashAlgorithm:          "djb2.v1",
+		},
+	}, "parent-session", 7, "neutral user", "neutral assistant", time.UnixMilli(1_776_000_000_000).UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources:  map[string][]store.MemorySourceRevision{"parent-session": {*source}},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_100,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::" + opaqueUserMessageID + "::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 1, Role: "user", MessageChatID: opaqueUserMessageID},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		},
+	}, "child-session")
+	if vm.State != "confirmed" || vm.ParentSessionID != "parent-session" || vm.ForkTurn != 7 ||
+		vm.ForkSourceMessageID != opaqueUserMessageID || vm.ForkSourceRole != "user" || vm.InheritedThroughTurn != 6 {
+		t.Fatalf("writer-to-user-anchor resolver worldline=%+v source=%+v", vm, source)
+	}
+}
+
+func TestResolveRisuWorldlineObservationRejectsWrongOrDuplicateUserAnchor(t *testing.T) {
+	newObservation := func(userAnchor string) *risuWorldlineObservation {
+		return &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_100,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::assistant-source::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 0, Role: "user", MessageChatID: userAnchor},
+				{MessageIndex: 1, Role: "char", MessageChatID: "assistant-source"},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		}
+	}
+	t.Run("wrong anchor remains unresolved", func(t *testing.T) {
+		st := &durableSessionIdentityBindingStore{
+			Store:    store.NewNoopStore(),
+			bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+			sources: map[string][]store.MemorySourceRevision{
+				"parent-session": {activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "expected-anchor", "", 7)},
+			},
+		}
+		vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+			StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed", WorldlineObservation: newObservation("wrong-anchor"),
+		}, "child-session")
+		if vm.State != "unresolved" || vm.Reason != "parent_active_fork_source_unresolved" ||
+			len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
+			t.Fatalf("wrong anchor worldline=%+v lineage=%+v", vm, st.lineage)
+		}
+	})
+	t.Run("duplicate active anchor conflicts", func(t *testing.T) {
+		first := activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "user-anchor", "", 7)
+		second := first
+		second.TurnIndex = 8
+		st := &durableSessionIdentityBindingStore{
+			Store:    store.NewNoopStore(),
+			bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+			sources:  map[string][]store.MemorySourceRevision{"parent-session": {first, second}},
+		}
+		vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+			StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed", WorldlineObservation: newObservation("user-anchor"),
+		}, "child-session")
+		if vm.State != "conflict" || vm.Reason != "parent_active_fork_source_conflict" ||
+			len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
+			t.Fatalf("duplicate anchor worldline=%+v lineage=%+v", vm, st.lineage)
+		}
+	})
+}
+
+func TestResolveRisuWorldlineObservationStarterWithoutActiveSourceIsUnresolved(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources:  map[string][]store.MemorySourceRevision{},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_100,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::starter-source::}}",
+			MarkerIndex:         1,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 0, Role: "char", MessageChatID: "starter-source"},
+				{MessageIndex: 1, Role: "comment", Disabled: true},
+			},
+		},
+	}, "child-session")
+	if vm.State != "unresolved" || vm.Reason != "fork_user_anchor_unresolved" || vm.ParentSessionID != "" || vm.ForkTurn != 0 ||
+		len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
+		t.Fatalf("starter worldline=%+v lineage=%+v", vm, st.lineage)
+	}
+}
+
+func TestParseExactRisuBranchMarkerAllowsOpaqueParentName(t *testing.T) {
+	parent, name, source, ok := parseExactRisuBranchMarker(
+		"{{specialcomment::branchedfrom::parent-chat::Act 1::Quiet Room::source-message::}}",
+	)
+	if !ok || parent != "parent-chat" || name != "Act 1::Quiet Room" || source != "source-message" {
+		t.Fatalf("parsed parent=%q name=%q source=%q ok=%v", parent, name, source, ok)
+	}
+}
+
+func TestResolveRisuWorldlineObservationKeepsConfirmedAfterMarkerOrParentSourceDisappears(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources: map[string][]store.MemorySourceRevision{
+			"parent-session": {activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "user-anchor", "source-message", 7)},
+		},
+	}
+	server := &Server{Store: st}
+	observed := &risuWorldlineObservation{
+		ContractVersion: risuWorldlineObservationContract, HostSignalSource: "output",
+		BranchShapeContract: risuBranchShapeContract, ObservedAtMS: 1_776_000_000_000,
+		MarkerState:  "observed",
+		BranchMarker: "{{specialcomment::branchedfrom::parent-chat::Parent::source-message::}}",
+		MarkerIndex:  2,
+		Messages: []risuWorldlineMessageObservation{
+			{MessageIndex: 0, Role: "user", MessageChatID: "user-anchor"},
+			{MessageIndex: 1, Role: "char", MessageChatID: "source-message"},
+			{MessageIndex: 2, Role: "comment", Disabled: true},
+		},
+	}
+	first := server.resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed", WorldlineObservation: observed,
+	}, "child-session")
+	if first.State != "confirmed" {
+		t.Fatalf("first=%+v", first)
+	}
+	st.sources["parent-session"] = nil
+	absent := server.resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		HostChatID: "child-chat", WorldlineObservation: &risuWorldlineObservation{MarkerState: "absent"},
+	}, "child-session")
+	if absent.State != "confirmed" || absent.ForkTurn != 7 || len(st.lineage) != 1 {
+		t.Fatalf("confirmed lineage lost after marker/source removal: vm=%+v lineage=%+v", absent, st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationMissingParentPersistsUnresolvedWithoutCreatingRoute(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{Store: store.NewNoopStore(), bindings: map[string]string{}}
+	server := &Server{Store: st}
+	req := sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_000,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::missing-parent::Parent::source-message::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 0, Role: "user", MessageChatID: "user-anchor"},
+				{MessageIndex: 1, Role: "char", MessageChatID: "source-message"},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		},
+	}
+	vm := server.resolveRisuWorldlineObservation(context.Background(), req, "child-session")
+	if vm.State != "unresolved" || vm.Reason != "parent_route_unresolved" {
+		t.Fatalf("worldline=%+v", vm)
+	}
+	if len(st.bindings) != 0 || st.lastMode != store.SessionRouteBindingModeResolveExisting {
+		t.Fatalf("missing parent route mutated: mode=%q bindings=%v", st.lastMode, st.bindings)
+	}
+	if len(st.lineage) != 1 || st.lineage[0].LineageState != "unresolved" || st.lineage[0].CopiedFromSessionID != "" {
+		t.Fatalf("unresolved lineage=%+v", st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationRequiresObservedChildHostChat(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources: map[string][]store.MemorySourceRevision{
+			"parent-session": {activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "user-anchor", "source-message", 7)},
+		},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatIDState:   "unobserved",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "active_chat_pre_backfill",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_000,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::source-message::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 0, Role: "user", MessageChatID: "user-anchor"},
+				{MessageIndex: 1, Role: "char", MessageChatID: "source-message"},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		},
+	}, "child-session")
+	if vm.State != "unresolved" || vm.Reason != "child_host_chat_unresolved" ||
+		st.lastMode != "" || len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
+		t.Fatalf("missing child host worldline=%+v mode=%q lineage=%+v", vm, st.lastMode, st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationNonTurnSourceIsUnresolvedNotConflict(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{Store: store.NewNoopStore(), bindings: map[string]string{}}
+	server := &Server{Store: st}
+	vm := server.resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable",
+		HostChatID:        "child-chat",
+		HostChatIDState:   "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion:     risuWorldlineObservationContract,
+			HostSignalSource:    "output",
+			BranchShapeContract: risuBranchShapeContract,
+			ObservedAtMS:        1_776_000_000_000,
+			MarkerState:         "observed",
+			BranchMarker:        "{{specialcomment::branchedfrom::parent-chat::Parent::source-message::}}",
+			MarkerIndex:         2,
+			Messages: []risuWorldlineMessageObservation{
+				{MessageIndex: 1, Role: "comment", MessageChatID: "source-message"},
+				{MessageIndex: 2, Role: "comment", Disabled: true},
+			},
+		},
+	}, "child-session")
+	if vm.State != "unresolved" || vm.Reason != "fork_source_message_unresolved" {
+		t.Fatalf("worldline=%+v", vm)
+	}
+	if st.lastMode != "" || len(st.lineage) != 1 || st.lineage[0].LineageState != "unresolved" {
+		t.Fatalf("non-turn source unexpectedly resolved parent route: mode=%q lineage=%+v", st.lastMode, st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationMalformedMarkerPersistsConflict(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{Store: store.NewNoopStore(), bindings: map[string]string{}}
+	server := &Server{Store: st}
+	vm := server.resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		HostChatID:      "child-chat",
+		HostChatIDState: "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion: risuWorldlineObservationContract, HostSignalSource: "output",
+			BranchShapeContract: risuBranchShapeContract, ObservedAtMS: 1_776_000_000_000,
+			MarkerState: "observed", BranchMarker: "{{specialcomment::branchedfrom::broken}}",
+		},
+	}, "child-session")
+	if vm.State != "conflict" || vm.Reason != "official_branch_marker_malformed" {
+		t.Fatalf("worldline=%+v", vm)
+	}
+	if len(st.lineage) != 1 || strings.Contains(st.lineage[0].DivergenceMarker, "specialcomment") {
+		t.Fatalf("conflict lineage leaked raw marker: %+v", st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationAbsentIsNotApplicableAndDoesNotPersist(t *testing.T) {
+	st := &durableSessionIdentityBindingStore{Store: store.NewNoopStore(), bindings: map[string]string{}}
+	server := &Server{Store: st}
+	vm := server.resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		HostChatID:           "same-chat",
+		WorldlineObservation: &risuWorldlineObservation{MarkerState: "absent"},
+	}, "same-session")
+	if vm.State != "not_applicable" || len(st.lineage) != 0 {
+		t.Fatalf("worldline=%+v lineage=%+v", vm, st.lineage)
+	}
 }
 
 func TestRollbackDecisionProtectsCopiedSessionBaseline(t *testing.T) {
@@ -849,19 +1664,28 @@ func TestRollbackDecisionBlocksHistoryTrimAndOutOfRange(t *testing.T) {
 }
 
 func TestRollbackDecisionDefersPocketRisuStyleTailRemovalDuringGeneration(t *testing.T) {
-	for _, observation := range []string{"before_request_observed", "generation_watch_active"} {
-		t.Run(observation, func(t *testing.T) {
-			resp := calculateRollbackDecision(rollbackDecisionRequest{
-				ChatSessionID: "session-1", RequestSource: "auto",
-				CandidateFromTurn: 4, PreviousTurnIndex: 4,
-				RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
-				BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
-				HostLifecycleObservation: observation,
-			})
-			if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
-				t.Fatalf("pending generation tail removal must not authorize rollback: %+v", resp)
-			}
-		})
+	resp := calculateRollbackDecision(rollbackDecisionRequest{
+		ChatSessionID: "session-1", RequestSource: "auto",
+		CandidateFromTurn: 4, PreviousTurnIndex: 4,
+		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
+		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
+		HostLifecycleObservation: "generation_watch_active",
+	})
+	if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
+		t.Fatalf("active generation tail removal must not authorize rollback: %+v", resp)
+	}
+}
+
+func TestRollbackDecisionAllowsVerifiedDeleteObservedBeforeNewRequest(t *testing.T) {
+	resp := calculateRollbackDecision(rollbackDecisionRequest{
+		ChatSessionID: "session-1", RequestSource: "auto",
+		CandidateFromTurn: 4, PreviousTurnIndex: 4,
+		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
+		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
+		HostLifecycleObservation: "before_request_observed",
+	})
+	if !resp.Allowed || resp.FromTurn != 4 || resp.Reason != "verified_delete_range" {
+		t.Fatalf("verified delete before a new request was blocked: %+v", resp)
 	}
 }
 
@@ -908,6 +1732,16 @@ func TestSessionRoutingTurnResolutionDerivesTurnsFromRisuUserIndexes(t *testing.
 		if got.TurnIndex != tc.wantTurn || got.LocalTurnIndex != tc.wantTurn || got.LocalTurnSource != "risu_user_message_index" {
 			t.Fatalf("index=%d resolution=%+v", tc.messageIndex, got)
 		}
+	}
+
+	nestedMarkerIndex := 20
+	ordinary := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+		Mode:                 "pair",
+		RisuUserMessageIndex: &nestedMarkerIndex,
+		ObservedPairOrdinal:  10,
+	})
+	if ordinary.TurnIndex != 11 || ordinary.LocalTurnIndex != 11 || ordinary.LocalTurnSource != "risu_user_message_index" {
+		t.Fatalf("ordinary no-lineage raw-index contract changed: %+v", ordinary)
 	}
 }
 

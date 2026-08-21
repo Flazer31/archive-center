@@ -1043,21 +1043,24 @@ func TestSeq16P209SessionPartitionedIndex(t *testing.T) {
 	if idx["chat_session_id"] != "seq16-p209" {
 		t.Fatalf("unexpected chat_session_id: %v", idx["chat_session_id"])
 	}
-	if idx["document_count"] != float64(5) {
-		t.Fatalf("document_count=%v, want 5", idx["document_count"])
+	if idx["document_count"] != float64(4) {
+		t.Fatalf("document_count=%v, want 4 public retrieval documents", idx["document_count"])
 	}
 	tierCounts, _ := idx["tier_counts"].(map[string]any)
-	for _, tier := range []string{"memory", "evidence", "chat_log", "kg_triple", "episode"} {
+	for _, tier := range []string{"memory", "evidence", "kg_triple", "episode"} {
 		if tierCounts[tier] != float64(1) {
 			t.Fatalf("tier_counts[%s]=%v, want 1; all=%v", tier, tierCounts[tier], tierCounts)
 		}
 	}
+	if tierCounts["chat_log"] != nil {
+		t.Fatalf("raw chat log must not be indexed as a public retrieval document: %v", tierCounts)
+	}
 	authorityTierCounts, _ := idx["authority_tier_counts"].(map[string]any)
-	if authorityTierCounts["canonical"] != float64(1) || authorityTierCounts["support"] != float64(3) || authorityTierCounts["fallback"] != float64(1) {
-		t.Fatalf("authority_tier_counts=%v, want canonical=1 support=3 fallback=1", authorityTierCounts)
+	if authorityTierCounts["canonical"] != float64(1) || authorityTierCounts["support"] != float64(3) || authorityTierCounts["fallback"] != float64(0) {
+		t.Fatalf("authority_tier_counts=%v, want canonical=1 support=3 fallback=0", authorityTierCounts)
 	}
 	snapshot, _ := idx["index_snapshot"].(map[string]any)
-	if snapshot["document_count"] != float64(5) || snapshot["chat_session_id"] != "seq16-p209" || snapshot["schema_version"] != "q1e.v1" {
+	if snapshot["document_count"] != float64(4) || snapshot["chat_session_id"] != "seq16-p209" || snapshot["schema_version"] != "q1e.v1" {
 		t.Fatalf("unexpected index_snapshot: %v", snapshot)
 	}
 	if idx["truth_store"] != "maria_db" {

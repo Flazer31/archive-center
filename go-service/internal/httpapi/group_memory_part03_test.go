@@ -132,10 +132,12 @@ type fakeVectorStore struct {
 	countResult    int
 	countErr       error
 	searchResults  []vector.VectorDocument
+	memoryResults  []vector.VectorDocument
 	searchErr      error
 	searchCalls    int
 	searchLimit    int
 	searchFilter   string
+	searchFilters  []string
 	searchVector   []float32
 	deleteDocIDs   []string
 	deleteDocErr   error
@@ -145,9 +147,13 @@ func (f *fakeVectorStore) Search(ctx context.Context, sessionID string, v []floa
 	f.searchCalls++
 	f.searchLimit = limit
 	f.searchFilter = filter
+	f.searchFilters = append(f.searchFilters, filter)
 	f.searchVector = append([]float32(nil), v...)
 	if f.searchErr != nil {
 		return nil, f.searchErr
+	}
+	if strings.Contains(filter, `tier == "memory"`) && f.memoryResults != nil {
+		return f.memoryResults, nil
 	}
 	if f.searchResults != nil {
 		return f.searchResults, nil
@@ -955,6 +961,100 @@ func TestExplorerPatchMemoryWritesAuditAndChangedAt(t *testing.T) {
 	}
 	if resp["audit_written"] != true || resp["changed_at"] == "" {
 		t.Fatalf("response missing audit/changed_at: %#v", resp)
+	}
+	if resp["status"] != "partial_error" || mapFromAny(resp["vector_sync"])["reason"] != "durable_vector_sync_unavailable" {
+		t.Fatalf("canonical edit must remain explicit when vector sync is unavailable: %#v", resp)
+	}
+}
+
+type explorerManualEditVectorStore struct {
+	*memoryFakeStore
+	sources []store.MemorySourceRevision
+	queued  []*store.MemoryVectorOutboxItem
+}
+
+func (f *explorerManualEditVectorStore) ListActiveSourceRevisions(context.Context, string, int, int) ([]store.MemorySourceRevision, error) {
+	return append([]store.MemorySourceRevision(nil), f.sources...), nil
+}
+
+func (f *explorerManualEditVectorStore) EnqueueMemoryVectorOperation(_ context.Context, item *store.MemoryVectorOutboxItem) (bool, error) {
+	copyItem := *item
+	f.queued = append(f.queued, &copyItem)
+	return true, nil
+}
+
+func (f *explorerManualEditVectorStore) ClaimMemoryVectorOperations(context.Context, string, time.Time, time.Duration) ([]*store.MemoryVectorOutboxItem, error) {
+	return nil, nil
+}
+
+func (f *explorerManualEditVectorStore) CompleteMemoryVectorOperation(context.Context, int64, string, time.Time) error {
+	return nil
+}
+
+func (f *explorerManualEditVectorStore) FailMemoryVectorOperation(context.Context, int64, string, time.Time, time.Time, bool, string) error {
+	return nil
+}
+
+func TestExplorerPatchMemoryQueuesEditedSearchDocument(t *testing.T) {
+	base := &memoryFakeStore{memories: []store.Memory{{
+		ID: 42, ChatSessionID: "sess-edit", TurnIndex: 2,
+		SummaryJSON: `{"turn_summary":"old memory"}`, Importance: 0.3,
+	}}}
+	fake := &explorerManualEditVectorStore{
+		memoryFakeStore: base,
+		sources: []store.MemorySourceRevision{{
+			ChatSessionID: "sess-edit", TurnIndex: 2,
+			SourceRevision: "revision-2", LifecycleState: "active", DerivedAdmissionState: "committed",
+		}},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/explorer/memories/42", bytes.NewReader([]byte(
+		`{"chat_session_id":"sess-edit","summary_json":"{\"turn_summary\":\"corrected memory\"}"}`,
+	)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.queued) != 1 {
+		t.Fatalf("queued vector operations = %d, want 1", len(fake.queued))
+	}
+	queued := fake.queued[0]
+	if queued.Operation != "upsert" || queued.Status != "needs_embedding" || queued.EmbeddingReady ||
+		queued.RequiredSourceState != "active" || queued.SourceRevision != "revision-2" ||
+		queued.DocumentID != "memory:sess-edit:42" {
+		t.Fatalf("queued vector operation = %#v", queued)
+	}
+	var document vector.VectorDocument
+	if err := json.Unmarshal([]byte(queued.DocumentJSON), &document); err != nil {
+		t.Fatalf("decode vector document: %v", err)
+	}
+	if !strings.Contains(document.DocumentText, "corrected memory") || strings.Contains(document.DocumentText, "old memory") {
+		t.Fatalf("vector document text = %q", document.DocumentText)
+	}
+	if document.Metadata["source_revision"] != "revision-2" ||
+		document.Metadata["index_identity"] != store.MemoryPublicProjectionIndex {
+		t.Fatalf("vector document metadata = %#v", document.Metadata)
+	}
+	if err := verifyMemoryVectorUpsertReadback(queued, document, []vector.VectorDocument{document}); err != nil {
+		t.Fatalf("edited vector document does not satisfy outbox readback contract: %v", err)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	vectorSync := mapFromAny(response["vector_sync"])
+	if response["status"] != "ok" || vectorSync["ok"] != true || vectorSync["queued"] != true {
+		t.Fatalf("response = %#v", response)
 	}
 }
 

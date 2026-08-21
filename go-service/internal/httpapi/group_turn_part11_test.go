@@ -720,7 +720,7 @@ func TestS1eGuardedTakeoverReadyWithReplayGatePass(t *testing.T) {
 	}
 }
 
-func TestS1eGuardedTakeoverBlocksWithoutShadowCandidates(t *testing.T) {
+func TestS1eGuardedTakeoverDisablesWithoutPublicShadowCandidates(t *testing.T) {
 	fake := &turnRecordingStore{
 		returnChatLogs: []store.ChatLog{
 			{ID: 1, ChatSessionID: "sess-to-block", TurnIndex: 1, Role: "user", Content: "hello"},
@@ -746,19 +746,24 @@ func TestS1eGuardedTakeoverBlocksWithoutShadowCandidates(t *testing.T) {
 		t.Fatal(err)
 	}
 	rr := resp["recall_result"].(map[string]any)
+	for _, raw := range sliceFromAny(rr["documents"]) {
+		if stringFromMap(mapFromAny(raw), "tier") == "chat_log" {
+			t.Fatalf("raw chat log reentered the public retrieval document set: %#v", rr["documents"])
+		}
+	}
 	contract := rr["intent_contract"].(map[string]any)
 	rst, ok := contract["routing_shadow_takeover"].(map[string]any)
 	if !ok {
 		t.Fatal("routing_shadow_takeover missing")
 	}
-	if rst["status"] != "pending" {
-		t.Fatalf("status = %v, want pending", rst["status"])
+	if rst["status"] != "off" {
+		t.Fatalf("status = %v, want off", rst["status"])
 	}
-	if rst["decision"] != "hold" {
-		t.Fatalf("decision = %v, want hold", rst["decision"])
+	if rst["decision"] != "fail_open" {
+		t.Fatalf("decision = %v, want fail_open", rst["decision"])
 	}
-	if rst["reason"] != "no_shadow_candidates" {
-		t.Fatalf("reason = %v, want no_shadow_candidates", rst["reason"])
+	if rst["reason"] != "runtime_mode_not_per_intent_shadow" {
+		t.Fatalf("reason = %v, want runtime_mode_not_per_intent_shadow", rst["reason"])
 	}
 }
 

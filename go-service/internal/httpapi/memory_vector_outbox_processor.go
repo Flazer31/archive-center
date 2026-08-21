@@ -92,6 +92,9 @@ func (s *Server) processMemoryVectorOutboxGroup(
 			Failure: "vector store is not configured",
 		})
 	}
+	if items[0].Operation == "delete" {
+		return s.processClaimedMemoryVectorDeletes(ctx, vectorCtx, outbox, items, leaseOwner, now)
+	}
 	prepared := map[int64]vector.VectorDocument{}
 	preparationFailures := map[int64]memoryVectorPreparationFailure{}
 	embeddingCfg := s.completeTurnExtractionConfig(nil).Embedder
@@ -117,6 +120,71 @@ func (s *Server) processMemoryVectorOutboxGroup(
 		if itemErr != nil && firstErr == nil {
 			firstErr = itemErr
 		}
+	}
+	return results, firstErr
+}
+
+func (s *Server) processClaimedMemoryVectorDeletes(
+	ctx context.Context,
+	vectorCtx context.Context,
+	outbox store.MemoryVectorOutboxStore,
+	items []*store.MemoryVectorOutboxItem,
+	leaseOwner string,
+	now time.Time,
+) ([]memoryVectorProcessResult, error) {
+	documentIDs := make([]string, 0, len(items))
+	requested := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		documentID := strings.TrimSpace(item.DocumentID)
+		if _, duplicate := requested[documentID]; duplicate {
+			continue
+		}
+		requested[documentID] = struct{}{}
+		documentIDs = append(documentIDs, documentID)
+	}
+	deleter, ok := s.Vector.(vector.DocumentDeleter)
+	if !ok {
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+			Failure: "vector store does not support document deletion",
+		})
+	}
+	if err := deleter.DeleteDocuments(vectorCtx, documentIDs); err != nil {
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{Failure: err.Error()})
+	}
+	reader, ok := s.Vector.(vector.ExactDocumentReader)
+	if !ok {
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+			Failure: "vector exact readback is not supported",
+		})
+	}
+	readback, err := reader.GetDocuments(vectorCtx, documentIDs)
+	if err != nil {
+		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+			Failure: "vector delete readback failed: " + err.Error(),
+		})
+	}
+	for _, document := range readback {
+		if _, exists := requested[strings.TrimSpace(document.ID)]; exists {
+			return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
+				Failure: "vector delete readback still contains document",
+			})
+		}
+	}
+	results := make([]memoryVectorProcessResult, 0, len(items))
+	var firstErr error
+	for _, item := range items {
+		result := memoryVectorProcessResult{
+			Processed: true, OutboxID: item.ID, Operation: item.Operation,
+			DocumentID: item.DocumentID, VectorApplied: true,
+		}
+		if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, now); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+		} else {
+			result.CanonicalState = "completed"
+		}
+		results = append(results, result)
 	}
 	return results, firstErr
 }
@@ -196,37 +264,6 @@ func (s *Server) processClaimedMemoryVectorOperation(
 		Processed: true, OutboxID: item.ID, Operation: item.Operation, DocumentID: item.DocumentID,
 	}
 	switch item.Operation {
-	case "delete":
-		deleter, ok := s.Vector.(vector.DocumentDeleter)
-		if !ok {
-			result.CanonicalState = "retryable"
-			result.Failure = "vector store does not support document deletion"
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, "vector store does not support document deletion")
-		}
-		if err := deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID}); err != nil {
-			result.CanonicalState = "retryable"
-			result.Failure = err.Error()
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, err.Error())
-		}
-		reader, ok := s.Vector.(vector.ExactDocumentReader)
-		if !ok {
-			result.CanonicalState = "retryable"
-			result.Failure = "vector exact readback is not supported"
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
-		}
-		readback, readErr := reader.GetDocuments(vectorCtx, []string{item.DocumentID})
-		if readErr != nil {
-			result.CanonicalState = "retryable"
-			result.Failure = "vector delete readback failed: " + readErr.Error()
-			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
-		}
-		for _, document := range readback {
-			if strings.TrimSpace(document.ID) == strings.TrimSpace(item.DocumentID) {
-				result.CanonicalState = "retryable"
-				result.Failure = "vector delete readback still contains document"
-				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
-			}
-		}
 	case "upsert":
 		var document vector.VectorDocument
 		if preparedDocument != nil {

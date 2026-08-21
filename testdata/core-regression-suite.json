@@ -14,6 +14,12 @@
       "run": "^(TestActualInputAndBootstrapProductionObservationRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelSourceOwnershipComesFromGo|TestArchiveCenterJSRerollRollbackPath|TestArchiveCenterJSSeq13P181VX1bCopiedSessionDeletionReplayMarkers|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestCopiedEightPlusOneDeletionKeepsImportedEightTurns|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
     },
     {
+      "name": "workspace_shell",
+      "package": "./cmd/js-route-variant-smoke",
+      "expected_tests": 8,
+      "run": "^(TestArchiveCenterJSPremiumPanelVisualContract|TestArchiveCenterJSWorkspaceTabStateRuntime|TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations|TestArchiveCenterJSTimelineWorldlineProductionPresentationRuntime|TestArchiveCenterJSTimelineWorldlineProductionGestureRuntime|TestArchiveCenterJSTimelineFastSessionSwitchMarkers|TestArchiveCenterJSTimelineSessionListRejectsStaleParentRequest|TestArchiveCenterJSTimelineLocalRefreshSkipsPresentationReload)$"
+    },
+    {
       "name": "source_and_bootstrap_contract",
       "package": "./internal/httpapi",
       "expected_tests": 4,

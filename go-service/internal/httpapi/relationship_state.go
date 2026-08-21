@@ -252,14 +252,9 @@ func relationshipStateCandidateFromUnit(sid string, unit *store.PreciseMemoryUni
 		unit.LifecycleState != "active" {
 		return relationshipStateCandidate{}, true, "active_accepted_source_required"
 	}
-	if unit.AdmissionState != "committed" || unit.ReviewState != "source_observed" ||
-		unit.TruthScope != "source_scoped" || unit.EpistemicMode != "direct" ||
+	if unit.TruthScope != "source_scoped" || unit.EpistemicMode != "direct" ||
 		unit.AuthorityClass != "subjective_episodic" {
-		return relationshipStateCandidate{}, true, "committed_source_observed_relationship_required"
-	}
-	if extractionStringFromAny(payload["admission_state"]) != "committed" ||
-		extractionStringFromAny(payload["review_state"]) != "source_observed" {
-		return relationshipStateCandidate{}, true, "payload_admission_state_mismatch"
+		return relationshipStateCandidate{}, true, "source_scoped_relationship_required"
 	}
 	if sourceID == "" || targetID == "" || sourceID == targetID || sourceLabel == "" || targetLabel == "" {
 		return relationshipStateCandidate{}, true, "stable_directional_entity_ids_required"
@@ -272,17 +267,10 @@ func relationshipStateCandidateFromUnit(sid string, unit *store.PreciseMemoryUni
 		return relationshipStateCandidate{}, true, "relationship_observation_required"
 	}
 	visibility := strings.ToLower(strings.TrimSpace(unit.Visibility))
-	if visibility != strings.ToLower(strings.TrimSpace(extractionStringFromAny(payload["visibility"]))) ||
-		!map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
-		return relationshipStateCandidate{}, true, "source_bound_visibility_mismatch"
+	if !map[string]bool{"public": true, "owner_private": true, "restricted": true, "user_private": true}[visibility] {
+		return relationshipStateCandidate{}, true, "valid_visibility_required"
 	}
-	if strings.TrimSpace(unit.EvidenceExcerpt) == "" || strings.TrimSpace(unit.EvidenceHash) == "" {
-		return relationshipStateCandidate{}, true, "exact_evidence_payload_required"
-	}
-	directEvidenceIDs := []int64{}
-	if unit.RootEvidenceID <= 0 || json.Unmarshal([]byte(unit.DirectEvidenceIDsJSON), &directEvidenceIDs) != nil || len(directEvidenceIDs) == 0 {
-		return relationshipStateCandidate{}, true, "direct_evidence_refs_required"
-	}
+	directEvidenceIDs := jsonInt64Slice(unit.DirectEvidenceIDsJSON)
 	expressionScope := relationshipStateExpressionScope(unit.Visibility)
 	ownerID := relationshipStateOwnerID(sourceID, targetID, domain, expressionScope)
 	sourceUnitID := relationshipStateSourceUnitID(unit.UnitID)

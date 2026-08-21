@@ -916,69 +916,18 @@ func TestSeq15P135BroaderValidationAggregateEquivalent(t *testing.T) {
 	}
 }
 
-func TestSeq15P139OutputLanguageToggleEquivalent(t *testing.T) {
-
-	promptNoOverride := buildCompleteTurnCriticPrompt("sess-p139", 1, "hello", "hi there", nil, nil, nil)
-	if !strings.Contains(promptNoOverride, "Output_Language_Override_JSON") {
-		t.Fatal("prompt should always contain Output_Language_Override_JSON section")
-	}
-
-	if strings.Contains(promptNoOverride, "Korean") || strings.Contains(promptNoOverride, "Japanese") {
-		t.Fatal("prompt without override should not contain any target language")
-	}
-
-	override := &map[string]any{
-		"language": "Korean",
-		"mode":     "strict",
-	}
-	promptWithOverride := buildCompleteTurnCriticPrompt("sess-p139", 2, "hello", "hi there", nil, override, nil)
-	if !strings.Contains(promptWithOverride, "Korean") {
-		t.Fatal("prompt with override should contain the target language 'Korean'")
-	}
-	if !strings.Contains(promptWithOverride, "Output_Language_Override_JSON") {
-		t.Fatal("prompt with override should contain 'Output_Language_Override_JSON' section")
-	}
-}
-
-func TestSeq15P140CriticLanguageOutputOverrideEquivalent(t *testing.T) {
-	scenarios := []struct {
-		name     string
-		override *map[string]any
-		wantLang string
-		wantMode string
-	}{
-		{
-			name:     "korean strict",
-			override: &map[string]any{"language": "Korean", "mode": "strict"},
-			wantLang: "Korean",
-			wantMode: "strict",
-		},
-		{
-			name:     "japanese soft",
-			override: &map[string]any{"language": "Japanese", "mode": "soft"},
-			wantLang: "Japanese",
-			wantMode: "soft",
-		},
-		{
-			name:     "nil override",
-			override: nil,
-			wantLang: "",
-			wantMode: "",
-		},
-	}
-	for _, sc := range scenarios {
-		t.Run(sc.name, func(t *testing.T) {
-			prompt := buildCompleteTurnCriticPrompt("sess-p140", 1, "user input", "assistant reply", nil, sc.override, nil)
-			if sc.wantLang != "" && !strings.Contains(prompt, sc.wantLang) {
-				t.Fatalf("prompt should contain language %q", sc.wantLang)
+func TestSeq15P139CriticPromptIgnoresOutputLanguageOverride(t *testing.T) {
+	for _, override := range []*map[string]any{
+		nil,
+		&map[string]any{"language": "Korean", "mode": "strict"},
+		&map[string]any{"language": "Japanese", "mode": "soft"},
+	} {
+		prompt := buildCompleteTurnCriticPrompt("sess-p139", 1, "hello", "hi there", nil, override, nil)
+		for _, forbidden := range []string{"Output_Language_Override_JSON", "Korean", "Japanese", "strict", "soft"} {
+			if strings.Contains(prompt, forbidden) {
+				t.Fatalf("critic prompt retained ignored output-language override value %q: %s", forbidden, prompt)
 			}
-			if sc.wantMode != "" && !strings.Contains(prompt, sc.wantMode) {
-				t.Fatalf("prompt should contain mode %q", sc.wantMode)
-			}
-			if sc.override == nil && strings.Contains(prompt, "output_language_override") {
-				t.Fatal("nil override should not produce output_language_override section")
-			}
-		})
+		}
 	}
 }
 
