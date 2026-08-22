@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/DATA-DOG/go-sqlmock"
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 var reversibleStatusCurrentColumns = []string{
@@ -194,6 +195,60 @@ func TestMariaDBStoreApplyReversibleStatusTransitionRejectsStaleCurrentProjectio
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestMariaDBStoreApplyReversibleStatusTransitionReportsLockFailureIdentity(t *testing.T) {
+	tests := []struct {
+		name     string
+		number   uint16
+		sqlState [5]byte
+	}{
+		{name: "deadlock", number: 1213, sqlState: [5]byte{'4', '0', '0', '0', '1'}},
+		{name: "lock_wait_timeout", number: 1205, sqlState: [5]byte{'H', 'Y', '0', '0', '0'}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatalf("sqlmock new: %v", err)
+			}
+			defer db.Close()
+
+			transition := reversibleStatusTransitionFixture()
+			mysqlErr := &mysql.MySQLError{
+				Number:   tt.number,
+				SQLState: tt.sqlState,
+				Message:  "simulated lock failure",
+			}
+			mock.ExpectBegin()
+			mock.ExpectQuery("SELECT lifecycle_state").
+				WithArgs(transition.Event.ChatSessionID, transition.SourceRevision).
+				WillReturnError(mysqlErr)
+			mock.ExpectRollback()
+
+			_, gotErr := (&mariadbStore{db: db}).ApplyReversibleStatusTransition(context.Background(), transition)
+			var gotMySQLError *mysql.MySQLError
+			if !errors.As(gotErr, &gotMySQLError) || gotMySQLError.Number != tt.number {
+				t.Fatalf("ApplyReversibleStatusTransition error = %v, want wrapped MySQL %d", gotErr, tt.number)
+			}
+			for _, want := range []string{
+				fmt.Sprintf("mysql_error=%d", tt.number),
+				"sql_state=" + string(tt.sqlState[:]),
+				`source_revision="` + transition.SourceRevision + `"`,
+				`source_unit_id="` + transition.SourceUnitID + `"`,
+				`status_key="` + transition.Event.StatusKey + `"`,
+				`owner_scope="` + transition.Event.OwnerScope + `"`,
+				`owner_id="` + transition.Event.OwnerID + `"`,
+			} {
+				if !strings.Contains(gotErr.Error(), want) {
+					t.Errorf("error %q does not contain %q", gotErr, want)
+				}
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatalf("unmet expectations: %v", err)
+			}
+		})
 	}
 }
 

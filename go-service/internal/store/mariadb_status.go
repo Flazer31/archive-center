@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	_ "github.com/go-sql-driver/mysql"
+	mysql "github.com/go-sql-driver/mysql"
 )
 
 // mariadbStore is the R1 MariaDB shadow target implementation.
@@ -466,14 +466,16 @@ func (m *mariadbStore) SaveStatusChangeEvent(ctx context.Context, event StatusCh
 	return event, nil
 }
 
-func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (ReversibleStatusTransitionResult, error) {
-	var result ReversibleStatusTransitionResult
-	if err := m.ensureDB(); err != nil {
-		return result, err
-	}
+func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, transition ReversibleStatusTransition) (result ReversibleStatusTransitionResult, returnErr error) {
 	sourceRevision := strings.TrimSpace(transition.SourceRevision)
 	sourceUnitID := strings.TrimSpace(transition.SourceUnitID)
 	event := transition.Event
+	defer func() {
+		returnErr = reversibleStatusTransitionLockDiagnostic(returnErr, sourceRevision, sourceUnitID, event)
+	}()
+	if err := m.ensureDB(); err != nil {
+		return result, err
+	}
 	if strings.TrimSpace(transition.SourceContract) != acceptedSourceObservationContract ||
 		sourceRevision == "" || sourceUnitID == "" ||
 		strings.TrimSpace(event.ChatSessionID) == "" ||
@@ -642,6 +644,41 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 	}
 	committed = true
 	return result, nil
+}
+
+func reversibleStatusTransitionLockDiagnostic(err error, sourceRevision, sourceUnitID string, event StatusChangeEvent) error {
+	if err == nil {
+		return nil
+	}
+	var mysqlErr *mysql.MySQLError
+	if !errors.As(err, &mysqlErr) || (mysqlErr.Number != 1213 && mysqlErr.Number != 1205) {
+		return err
+	}
+	sqlState := strings.Trim(string(mysqlErr.SQLState[:]), "\x00 ")
+	if sqlState == "" {
+		sqlState = "unknown"
+	}
+	return fmt.Errorf(
+		"mariadb_lock_error mysql_error=%d sql_state=%s source_revision=%q source_unit_id=%q status_key=%q owner_scope=%q owner_id=%q: %w",
+		mysqlErr.Number,
+		sqlState,
+		boundedStatusLockDiagnosticValue(sourceRevision),
+		boundedStatusLockDiagnosticValue(sourceUnitID),
+		boundedStatusLockDiagnosticValue(event.StatusKey),
+		boundedStatusLockDiagnosticValue(event.OwnerScope),
+		boundedStatusLockDiagnosticValue(event.OwnerID),
+		err,
+	)
+}
+
+func boundedStatusLockDiagnosticValue(value string) string {
+	const maxRunes = 120
+	value = strings.Join(strings.Fields(value), " ")
+	runes := []rune(value)
+	if len(runes) <= maxRunes {
+		return value
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func (m *mariadbStore) latestActiveStatusEventIDTx(ctx context.Context, tx *sql.Tx, event StatusChangeEvent) (int64, error) {
