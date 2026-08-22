@@ -47,6 +47,7 @@ type turnRecordingStore struct {
 	savedCanonicalLayers      []*store.CanonicalStateLayer
 	returnKGTriples           []store.KGTriple
 	returnEvidence            []store.DirectEvidence
+	listEvidenceCalls         int
 	returnChatLogs            []store.ChatLog
 	returnResumePack          *store.ResumePack
 	returnStorylines          []store.Storyline
@@ -309,6 +310,7 @@ func (f *turnRecordingStore) ListKGTriples(ctx context.Context, sid string) ([]s
 }
 
 func (f *turnRecordingStore) ListEvidence(ctx context.Context, sid string) ([]store.DirectEvidence, error) {
+	f.listEvidenceCalls++
 	return f.returnEvidence, nil
 }
 
@@ -1312,7 +1314,7 @@ func TestCompleteTurnExistingRawWithoutDerivedRetriesCriticWithoutDuplicateLogs(
 		"kg_triples":        []any{testEntityScalarKG("item_fact", "Mina", "character", "found", "a brass key", "string", "Mina found a brass key.")},
 		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Mina"}}, "items": []any{map[string]any{"name": "brass key"}}},
 	}
-	extractionBytes, _ := json.Marshal(extraction)
+	extractionBytes := []byte(criticWireJSONForTest(extraction))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},

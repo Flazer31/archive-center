@@ -922,7 +922,7 @@ func TestSeq15P139CriticPromptIgnoresOutputLanguageOverride(t *testing.T) {
 		&map[string]any{"language": "Korean", "mode": "strict"},
 		&map[string]any{"language": "Japanese", "mode": "soft"},
 	} {
-		prompt := buildCompleteTurnCriticPrompt("sess-p139", 1, "hello", "hi there", nil, override, nil)
+		prompt := buildCompleteTurnCriticPrompt("sess-p139", 1, "hello", "hi there", nil, override)
 		for _, forbidden := range []string{"Output_Language_Override_JSON", "Korean", "Japanese", "strict", "soft"} {
 			if strings.Contains(prompt, forbidden) {
 				t.Fatalf("critic prompt retained ignored output-language override value %q: %s", forbidden, prompt)

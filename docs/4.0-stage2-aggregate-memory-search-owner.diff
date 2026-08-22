@@ -1,0 +1,226 @@
+diff --git a/go-service/internal/httpapi/prepare_turn_recall.go b/go-service/internal/httpapi/prepare_turn_recall.go
+--- a/go-service/internal/httpapi/prepare_turn_recall.go
++++ b/go-service/internal/httpapi/prepare_turn_recall.go
+@@ -1506,6 +1506,6 @@ func prepareTurnVectorSearchAttempted(vectorShadow map[string]any) bool {
+ 	if vectorShadow == nil {
+ 		return false
+ 	}
+-	return boolFromAny(vectorShadow["search_attempted"])
++	return boolFromAny(vectorShadow["memory_search_attempted"])
+ }
+ 
+@@ -1980,6 +1980,6 @@ func prepareTurnHydrateVectorMemoryHits(memories []store.Memory, vectorShadow ma
+-	if strings.TrimSpace(stringFromMap(vectorShadow, "search_result")) != "ok" {
++	if strings.TrimSpace(stringFromMap(vectorShadow, "memory_search_result")) != "ok" {
+ 		out.Trace["status"] = "skipped"
+-		out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_result"))
++		out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "memory_search_result"))
+ 		if out.Trace["reason"] == "" {
+ 			out.Trace["reason"] = strings.TrimSpace(stringFromMap(vectorShadow, "search_skipped_reason"))
+ 		}
+diff --git a/go-service/internal/httpapi/prepare_turn_assembly.go b/go-service/internal/httpapi/prepare_turn_assembly.go
+--- a/go-service/internal/httpapi/prepare_turn_assembly.go
++++ b/go-service/internal/httpapi/prepare_turn_assembly.go
+@@ -13,7 +13,7 @@ import (
+ func prepareTurnVectorRetrievalMethodStatus(vectorShadow map[string]any, selectedCount int) map[string]any {
+ 	status := "unavailable"
+ 	reason := "not_configured"
+-	switch strings.TrimSpace(stringFromMap(vectorShadow, "search_result")) {
++	switch strings.TrimSpace(stringFromMap(vectorShadow, "memory_search_result")) {
+ 	case "ok":
+ 		status = "ready"
+ 		reason = ""
+@@ -34,6 +34,6 @@ func prepareTurnVectorRetrievalMethodStatus(vectorShadow map[string]any, selecte
+ 		}
+ 	}
+-	revisionCheckFailedCount := intFromAny(mapFromAny(vectorShadow["source_revision_filter"])["dropped_check_error"], 0)
++	revisionCheckFailedCount := intFromAny(mapFromAny(vectorShadow["memory_source_revision_filter"])["dropped_check_error"], 0)
+ 	if revisionCheckFailedCount > 0 {
+ 		status = "failed"
+ 		if selectedCount > 0 {
+@@ -45,7 +45,7 @@ func prepareTurnVectorRetrievalMethodStatus(vectorShadow map[string]any, selecte
+ 	return map[string]any{
+ 		"status":                             status,
+ 		"reason_code":                        nilIfEmpty(reason),
+-		"candidate_count":                    intFromAny(vectorShadow["search_result_count"], len(prepareTurnVectorSearchResultMaps(vectorShadow["search_results"]))),
++		"candidate_count":                    intFromAny(vectorShadow["memory_search_result_count"], len(prepareTurnVectorMemorySearchResultMaps(vectorShadow))),
+ 		"selected_count":                     selectedCount,
+ 		"source_revision_check_failed_count": revisionCheckFailedCount,
+ 	}
+diff --git a/go-service/internal/httpapi/character_perspective_test.go b/go-service/internal/httpapi/character_perspective_test.go
+--- a/go-service/internal/httpapi/character_perspective_test.go
++++ b/go-service/internal/httpapi/character_perspective_test.go
+@@ -336,3 +336,4 @@ func TestPrepareTurnVectorMemoryHydrationFiltersLegacyHolderScopedAggregate(t *t
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+diff --git a/go-service/internal/httpapi/group_turn_part06_test.go b/go-service/internal/httpapi/group_turn_part06_test.go
+--- a/go-service/internal/httpapi/group_turn_part06_test.go
++++ b/go-service/internal/httpapi/group_turn_part06_test.go
+@@ -28,3 +28,4 @@ func TestPrepareTurnVectorHydrationUsesVectorIDFallbackAndFiltersNonMemory(t *tes
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+@@ -91,5 +92,5 @@ func TestPrepareTurnProtectedGuardDiversityKeepsVectorTopKAndIndependentLexicalM
+ 		})
+ 	}
+-	vectorShadow := map[string]any{"search_result": "ok", "search_results": vectorResults}
++	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
+ 
+ 	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 10, 12000, "Gloria returns to the market.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria", "source": "client_meta"})
+@@ -147,5 +148,5 @@ func TestPrepareTurnProtectedGuardDiversityKeepsProtectedOccurrencesWithMultilin
+ 	)
+-	vectorShadow := map[string]any{"search_result": "ok", "search_results": vectorResults}
++	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
+ 
+ 	assembly := buildPrepareTurnInjectionAssembly(
+ 		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+@@ -281,3 +282,4 @@ func TestPrepareTurnProtectedMemoryOccurrencesDoNotConsumeActualMemoryTarget(t *
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+diff --git a/go-service/internal/httpapi/group_turn_part05_test.go b/go-service/internal/httpapi/group_turn_part05_test.go
+--- a/go-service/internal/httpapi/group_turn_part05_test.go
++++ b/go-service/internal/httpapi/group_turn_part05_test.go
+@@ -1086,3 +1086,4 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+@@ -1148,3 +1149,4 @@ func TestPrepareTurnVectorReadyLeavesUnusedTopKEmptyInsteadOfInjectingUnrelatedR
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+@@ -1312,3 +1314,4 @@ func TestPrepareTurnRejectsLowSimilarityVectorAndUsesQueryRelevantFallback(t *te
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+diff --git a/go-service/internal/httpapi/group_turn_part13_test.go b/go-service/internal/httpapi/group_turn_part13_test.go
+--- a/go-service/internal/httpapi/group_turn_part13_test.go
++++ b/go-service/internal/httpapi/group_turn_part13_test.go
+@@ -487,3 +487,4 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
+ 		vectorShadow := map[string]any{
++			"memory_search_result": "ok",
+ 			"search_result": "ok",
+ 			"search_results": []map[string]any{
+diff --git a/go-service/internal/httpapi/prepare_turn_character_relevance_test.go b/go-service/internal/httpapi/prepare_turn_character_relevance_test.go
+--- a/go-service/internal/httpapi/prepare_turn_character_relevance_test.go
++++ b/go-service/internal/httpapi/prepare_turn_character_relevance_test.go
+@@ -271,3 +271,4 @@ func TestPrepareTurnVectorCurrentPairCoverageDoesNotAddSemanticDuplicate(t *test
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{{
+diff --git a/go-service/internal/httpapi/prepare_turn_memory_budget_test.go b/go-service/internal/httpapi/prepare_turn_memory_budget_test.go
+--- a/go-service/internal/httpapi/prepare_turn_memory_budget_test.go
++++ b/go-service/internal/httpapi/prepare_turn_memory_budget_test.go
+@@ -45,5 +45,5 @@
+ 		"default",
+ 		nil,
+-		map[string]any{"search_result": "not_found"},
++		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+ 		nil,
+ 	)
+diff --git a/go-service/internal/httpapi/prepare_turn_memory_policy_test.go b/go-service/internal/httpapi/prepare_turn_memory_policy_test.go
+--- a/go-service/internal/httpapi/prepare_turn_memory_policy_test.go
++++ b/go-service/internal/httpapi/prepare_turn_memory_policy_test.go
+@@ -36,3 +36,4 @@ func TestCoreObjectiveMemoryLimitAppliesAfterSelectionWithoutConsumingSupportLan
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+diff --git a/go-service/internal/httpapi/prepare_turn_prompt_hygiene_test.go b/go-service/internal/httpapi/prepare_turn_prompt_hygiene_test.go
+--- a/go-service/internal/httpapi/prepare_turn_prompt_hygiene_test.go
++++ b/go-service/internal/httpapi/prepare_turn_prompt_hygiene_test.go
+@@ -201,3 +201,4 @@ func TestPrepareTurnSemanticLaneCanSelectDeeperCharacterMemory(t *testing.T) {
+ 	vectorShadow := map[string]any{
++		"memory_search_result": "ok",
+ 		"search_result": "ok",
+ 		"search_results": []map[string]any{
+@@ -444,4 +445,6 @@ func TestPrepareTurnQueryRelevantRefillDoesNotPadUnusedCandidateCapacity(t *test
+ 	vectorShadow := map[string]any{
++		"memory_search_attempted": true,
++		"memory_search_result":    "ok",
+ 		"search_attempted":    true,
+ 		"search_result":       "ok",
+ 		"search_result_count": 1,
+@@ -635,6 +638,6 @@ func TestPrepareTurnVectorRetrievalStatusReportsSourceRevisionCheckFailure(t *te
+ 	shadow := map[string]any{
+-		"search_result":       "ok",
+-		"search_result_count": 2,
+-		"source_revision_filter": map[string]any{
++		"memory_search_result":       "ok",
++		"memory_search_result_count": 2,
++		"memory_source_revision_filter": map[string]any{
+ 			"dropped_check_error": 1,
+ 		},
+@@ -650,3 +653,64 @@ func TestPrepareTurnVectorRetrievalStatusReportsSourceRevisionCheckFailure(t *te
+ }
+ 
++func TestPrepareTurnAggregateMemoryVectorUsesMemorySearchOwner(t *testing.T) {
++	memories := []store.Memory{{
++		ID:          41,
++		TurnIndex:   4,
++		SummaryJSON: `{"turn_summary":"aggregate event marker"}`,
++	}}
++	memoryHits := []map[string]any{{
++		"id":                "memory:session:41",
++		"source_table":      "memories",
++		"source_row_id":     "41",
++		"similarity":        prepareTurnMinCosineSimilarity + 0.1,
++		"similarity_source": "cosine_from_query_and_stored_embedding",
++	}}
++
++	t.Run("memory success is not erased by broad failure", func(t *testing.T) {
++		shadow := map[string]any{
++			"search_attempted":           true,
++			"search_result":              "error",
++			"search_error":               "broad search failed",
++			"search_results":             []map[string]any{},
++			"memory_search_attempted":    true,
++			"memory_search_result":       "ok",
++			"memory_search_result_count": len(memoryHits),
++			"memory_search_results":      memoryHits,
++		}
++		hydrated := prepareTurnHydrateVectorMemoryHits(memories, shadow, 1)
++		if len(hydrated.Items) != 1 || hydrated.Items[0].ID != memories[0].ID {
++			t.Fatalf("memory-owned hit was erased by broad status: %#v", hydrated)
++		}
++		if !prepareTurnVectorSearchAttempted(shadow) {
++			t.Fatalf("memory search attempt was not reported: %#v", shadow)
++		}
++		method := prepareTurnVectorRetrievalMethodStatus(shadow, len(hydrated.Items))
++		if method["status"] != "ready" || intFromAny(method["candidate_count"], 0) != len(memoryHits) {
++			t.Fatalf("memory-owned retrieval status mismatch: %#v", method)
++		}
++	})
++
++	t.Run("memory failure is not hidden by broad success", func(t *testing.T) {
++		shadow := map[string]any{
++			"search_attempted":           true,
++			"search_result":              "ok",
++			"search_result_count":        1,
++			"search_results":             memoryHits,
++			"memory_search_attempted":    true,
++			"memory_search_result":       "error",
++			"memory_search_error":        "memory search failed",
++			"memory_search_result_count": 0,
++			"memory_search_results":      []map[string]any{},
++		}
++		hydrated := prepareTurnHydrateVectorMemoryHits(memories, shadow, 1)
++		if len(hydrated.Items) != 0 || hydrated.Trace["status"] != "skipped" || hydrated.Trace["reason"] != "error" {
++			t.Fatalf("broad status hid memory search failure: %#v", hydrated)
++		}
++		method := prepareTurnVectorRetrievalMethodStatus(shadow, 0)
++		if method["status"] != "failed" || method["reason_code"] != "search_failed" || intFromAny(method["candidate_count"], -1) != 0 {
++			t.Fatalf("memory failure was reported from broad status: %#v", method)
++		}
++	})
++}
++
+ func TestPrepareTurnOpenGoalCannotSelfActivateThroughSceneState(t *testing.T) {

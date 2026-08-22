@@ -467,12 +467,12 @@ func TestConfigUpdateRuntimeSettingsFeedCompleteTurnCritic(t *testing.T) {
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "Runtime config critic extracted one durable memory.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"The runtime-configured critic is active."},
 		"kg_triples":        []any{testEntityScalarKG("state_fact", "critic", "event", "is", "active", "state", "The runtime-configured critic is active.")},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -709,13 +709,13 @@ func TestExplorerRegenerateMemoryUsesCompleteTurnArtifactPipeline(t *testing.T) 
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "Rowan accepts Mina's request and confirms the cellar route.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Rowan accepts and confirms the cellar route is the only safe path."},
 		"kg_triples":        []any{testEntityScalarKG("state_fact", "cellar route", "location", "is", "the only safe path", "state", "Rowan accepts and confirms the cellar route is the only safe path.")},
 		"world_rules":       []any{map[string]any{"scope": "location", "scope_name": "cellar", "category": "access", "key": "cellar_route_only_safe_path", "value": "The cellar route is the only safe path."}},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-test",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -766,11 +766,11 @@ func TestCompleteTurnCriticLedgerWiringBehindFeatureFlag(t *testing.T) {
 		srv.Store = fake
 		srv.StoreOpenError = nil
 
-		extractionBytes, _ := json.Marshal(map[string]any{
+		extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 			"turn_summary":      "Latest turn produced a small durable memory.",
 			"importance_score":  5,
 			"evidence_excerpts": []any{"Latest turn produced a small durable memory."},
-		})
+		}))
 		chatResp, _ := json.Marshal(map[string]any{
 			"model":   "critic-ledger-test",
 			"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -905,7 +905,7 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	srv.StoreOpenError = nil
 	srv.Vector = vec
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "Imported HypaMemory says Chloe trusts Hero after the rooftop promise.",
 		"importance_score":  8,
 		"evidence_excerpts": []any{"Chloe trusts Hero after the rooftop promise."},
@@ -913,7 +913,7 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 			"source_entity": "Chloe", "source_entity_expression": "Chloe", "target_entity": "Hero", "target_entity_expression": "Hero",
 			"domain": "trust", "domain_expression": "trusts", "observation": "Chloe trusts Hero after the rooftop promise", "support_kind": "explicit_observed_state", "evidence_excerpt": "Chloe trusts Hero after the rooftop promise.",
 		}},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -1009,12 +1009,12 @@ func TestImportHypamemoryScoringPassRaisesLowCriticImportance(t *testing.T) {
 		"time_anchor_quality":         "summary_level",
 		"keep_reason":                 "The imported memory changes how future danger should be interpreted.",
 	})
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "Imported HypaMemory says Hero was shot before and Chloe took him to hospital.",
 		"importance_score":  2,
 		"evidence_excerpts": []any{"Hero was shot before and Chloe took him to hospital."},
 		"kg_triples":        []any{map[string]any{"semantic_class": "location_fact", "subject": "Hero", "predicate": "was_taken_to", "object": "hospital"}},
-	})
+	}))
 	scoringResp, _ := json.Marshal(map[string]any{
 		"model":   "runtime-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(scoringBytes)}}},

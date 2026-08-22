@@ -1090,7 +1090,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			}
 			s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageCheckpoints)
 		}
-
 	}
 	if !s.usesShadowWriteStore() {
 		timing.addElapsed("raw_and_audit_store", auditStoreStartedAt)
@@ -1259,6 +1258,9 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				s.TurnWorkflows.complete(workflowRequestID)
 			}
 		}
+	}
+	if reprocessingDurable {
+		s.wakeMemoryWorkers()
 	}
 	persistencePipeline := map[string]any{
 		"contract_version": "complete_turn.persistence_pipeline.v1",
@@ -1449,10 +1451,6 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			"persona_capsule_candidates":               personaCapsuleCandidates,
 			"subjective_entity_memories_saved":         subjectiveEntityMemoriesSaved,
 			"subjective_entity_memory_policy":          "support_only_entity_subjective_memory_bank",
-			"critic_preview_pass_version":              completeTurnCriticPreviewPassVersion,
-			"critic_preview_pass_enabled":              true,
-			"critic_preview_pass_scope":                "recent_raw_and_direct_evidence",
-			"critic_preview_compaction_mode":           "hint_only",
 			"canonical_state_promotion_policy_version": "hs1.verified_only.v1",
 			"canonical_state_layers_saved":             canonicalStateLayersSaved,
 			"canonical_state_hard_floor_enabled":       true,

@@ -80,10 +80,10 @@ func TestAdminRescanLongSessionResumesFromTurnZeroThrough120WithoutDuplicates(t 
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		criticCalls++
-		extractionBytes, _ := json.Marshal(map[string]any{
+		extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 			"turn_summary":     fmt.Sprintf("long-session-memory-%03d", criticCalls),
 			"importance_score": 6,
-		})
+		}))
 		chatResp, _ := json.Marshal(map[string]any{
 			"model":   "rescan-critic",
 			"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -176,10 +176,10 @@ func TestSessionNormalizeRescanMetadataDoesNotReplaySuccessfulCriticCalls(t *tes
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		criticCalls++
-		extractionBytes, _ := json.Marshal(map[string]any{
+		extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 			"turn_summary":     fmt.Sprintf("normalized-memory-%d", criticCalls),
 			"importance_score": 6,
-		})
+		}))
 		chatResp, _ := json.Marshal(map[string]any{
 			"model":   "normalize-critic",
 			"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},

@@ -465,13 +465,13 @@ func TestAdminRescanRegeneratesMissingArtifactsFromRawTurn(t *testing.T) {
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "Mina found and kept the blue key safe.",
 		"importance_score":  8,
 		"evidence_excerpts": []any{"Mina promised to keep the blue key safe."},
 		"kg_triples":        []any{testEntityScalarKG("state_fact", "Mina", "character", "keep", "safe", "state", "Mina promised to keep the blue key safe.")},
 		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Mina"}}},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -532,13 +532,13 @@ func TestAdminRescanIncludesTurnZeroAndTrustsCanonicalPlanBlocks(t *testing.T) {
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":     "Mina reaches the old gate while the language barrier remains active.",
 		"importance_score": 8,
 		"world_rules": []any{
 			map[string]any{"scope": "session", "scope_name": "Communication", "category": "setting", "key": "language_barrier", "value": "Mina and the locals cannot yet understand each other."},
 		},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},

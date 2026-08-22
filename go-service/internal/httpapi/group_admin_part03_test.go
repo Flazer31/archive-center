@@ -1372,11 +1372,12 @@ func TestAdminSessionNormalizeReplaysCanonicalRawLogsThroughSharedDerivationOwne
 	srv.StoreOpenError = nil
 
 	oldClient := proxyHTTPClient
+	criticContent := criticWireJSONForTest(map[string]any{"turn_summary": "The guard refused entry until dawn.", "importance_score": 6})
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		body, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{
 				"message": map[string]any{
-					"content": `{"turn_summary":"The guard refused entry until dawn.","importance_score":6}`,
+					"content": criticContent,
 				},
 			}},
 		})

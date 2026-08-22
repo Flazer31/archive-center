@@ -417,3 +417,54 @@ func TestGetLorebookReferenceCurrentPageReadsOnlyRequestedWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestGetLorebookReferenceLatestSessionPageResolvesNewestStoredScope(t *testing.T) {
+	maria, mock := newLorebookReferenceMock(t)
+	characterIndex := int64(3)
+	chatIndex := int64(8)
+	observedAt := time.Date(2026, 8, 22, 10, 0, 0, 0, time.UTC)
+	scope := LorebookReferenceScope{
+		ChatSessionID: "session-b", CharacterIndex: &characterIndex, ChatIndex: &chatIndex,
+		EnabledModuleIDs: []string{"module-b"}, EnabledModulesObserved: true,
+	}
+	_, identityJSON, err := lorebookScopeJSON(scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery("(?s)SELECT scope.scope_identity_json.*JOIN lorebook_reference_snapshots.*WHERE scope.chat_session_id").
+		WithArgs("session-b").
+		WillReturnRows(sqlmock.NewRows([]string{"scope_identity_json"}).AddRow(identityJSON))
+	mock.ExpectQuery("FROM lorebook_reference_scopes").
+		WithArgs("session-b", int64(3), int64(8)).
+		WillReturnRows(sqlmock.NewRows([]string{"scope_id", "enabled_modules_json", "scope_identity_json", "created_at", "updated_at"}).
+			AddRow(31, `["module-b"]`, identityJSON, observedAt, observedAt))
+	mock.ExpectQuery("FROM lorebook_reference_snapshots").
+		WithArgs(int64(31)).
+		WillReturnRows(sqlmock.NewRows([]string{"snapshot_id", "contract_version", "consent_state", "observation_state", "complete_snapshot", "provenance_json", "observed_at"}).
+			AddRow("snapshot-latest", LorebookReferenceSnapshotContractV1, LorebookConsentActive, LorebookObservationObserved, true, `{}`, observedAt))
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*FROM lorebook_reference_entries").
+		WithArgs(int64(31), LorebookLifecycleCurrent).
+		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+	mock.ExpectQuery("FROM lorebook_reference_entries.*LIMIT \\? OFFSET \\?").
+		WithArgs(int64(31), LorebookLifecycleCurrent, 20, 0).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"host_entry_id", "entry_ordinal", "source_kind", "source_identity", "entry_key", "second_key",
+			"entry_comment", "content", "normalized_search_text", "entry_mode", "always_active", "selective",
+			"use_regex", "insert_order", "activation_percent", "book_version", "folder", "extensions_json", "content_hash",
+		}).AddRow("entry-0", 0, "current_host_aggregate", nil, "Archive", "", "profile", "stored session lore",
+			"archive profile stored session lore", "normal", false, nil, nil, 0, nil, int64(1), "cast", `{}`, "hash"))
+
+	page, err := maria.GetLorebookReferenceLatestSessionPage(context.Background(), "session-b", 20, 0)
+	if err != nil {
+		t.Fatalf("GetLorebookReferenceLatestSessionPage: %v", err)
+	}
+	if page.ScopeID != 31 || page.Total != 1 || len(page.Entries) != 1 || page.Entries[0].Content != "stored session lore" {
+		t.Fatalf("page=%#v", page)
+	}
+	if page.Scope.ChatSessionID != "session-b" || page.LatestSnapshot == nil || page.LatestSnapshot.SnapshotID != "snapshot-latest" {
+		t.Fatalf("scope=%#v snapshot=%#v", page.Scope, page.LatestSnapshot)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}

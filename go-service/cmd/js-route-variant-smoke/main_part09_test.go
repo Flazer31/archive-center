@@ -420,7 +420,7 @@ func TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations(t *tes
 	turnItem := extractJSFunctionBlockForTest(t, src, "function renderTimelineTurnItemRow(item)")
 	events := extractJSFunctionBlockForTest(t, src, "function attachTimelineEvents()")
 	explorerEvents := extractJSFunctionBlockForTest(t, src, "function attachExplorerEvents()")
-	sessionAdmin := extractJSFunctionBlockForTest(t, src, "function renderSessionDatabaseManagement()")
+	sessionAdmin := extractJSFunctionBlockForTest(t, src, "function renderSessionDatabaseManagement(")
 	selection := extractJSFunctionBlockForTest(t, src, "function selectWorkspaceSession(sessionId, surface)")
 	settingsEvents := extractJSFunctionBlockForTest(t, src, "function attachSettingsEvents()")
 	mount := extractJSFunctionBlockForTest(t, src, "function mountTimelineWorldlineCanvas()")
@@ -454,10 +454,16 @@ func TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations(t *tes
 			t.Fatalf("Memory management session owner missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`data-memory-session-management`, `id="mo-memory-admin-session-select"`, `selectedSession.can_attach`, `selectedSession.can_copy`, `selectedSession.can_migrate`} {
+	for _, marker := range []string{`data-memory-session-management`, `class="mo-memory-admin-rail"`, `class="mo-memory-admin-workspace"`, `data-memory-admin-session-id=`, `selectedSession.can_attach`, `selectedSession.can_copy`, `selectedSession.can_migrate`} {
 		if !strings.Contains(sessionAdmin, marker) {
 			t.Fatalf("Memory management session projection missing %q", marker)
 		}
+	}
+	if strings.Contains(sessionAdmin, `id="mo-memory-admin-session-select"`) {
+		t.Fatal("Memory management must not retain the detached session select")
+	}
+	if !strings.Contains(explorerEvents, `querySelectorAll("[data-memory-admin-session-id]")`) || !strings.Contains(explorerEvents, `selectWorkspaceSession(String(sessionButton.getAttribute("data-memory-admin-session-id") || ""), "memory_admin")`) {
+		t.Fatal("Memory management session rail must drive the shared workspace selection owner")
 	}
 	for _, marker := range []string{`deleteTimelineSessionFromBackend(sid)`, `attachTimelineSessionToCurrentChat(sid)`, `runTimelineSessionCopy(sid)`, `runTimelineSessionMigration(sid)`, `runTimelineSessionMigrationRollback()`, `runTimelineSessionMigrationCleanup()`} {
 		if strings.Contains(events, marker) {
@@ -944,7 +950,8 @@ func TestArchiveCenterJSMemoryWorkspaceAndEditRuntime(t *testing.T) {
 		extractJSFunctionBlockForTest(t, src, "function getExplorerTabItems()"),
 		extractJSFunctionBlockForTest(t, src, "function renderExplorerTabs(tabItems)"),
 		extractJSFunctionBlockForTest(t, src, "function formatExplorerNumber(n)"),
-		extractJSFunctionBlockForTest(t, src, "function renderSessionDatabaseManagement()"),
+		extractJSFunctionBlockForTest(t, src, "function timelineSessionId(session)"),
+		extractJSFunctionBlockForTest(t, src, "function renderSessionDatabaseManagement("),
 		extractJSFunctionBlockForTest(t, src, "function renderExplorerSection(mode)"),
 		extractJSFunctionBlockForTest(t, src, "function explorerIsEditing(type, id)"),
 		extractJSFunctionBlockForTest(t, src, "function explorerStartEdit(type, id, currentFields)"),
@@ -986,7 +993,7 @@ const getMemoryPreviewTextForDisplay = (item) => item.preview || '';
 const feedbackKey = (kind, id) => kind + ':' + id;
 const settings = { debug: false };
 const _sessionRoutingResetState = { loading: false, error: "" };
-const _sessionNormalizeState = {};
+const _sessionNormalizeState = { panelOpen: false };
 const _reindexState = {};
 const _activeChatRescanDryRunState = {};
 const _activeChatRecentRebuildState = {};
@@ -1022,9 +1029,10 @@ assert(memoryScreen.includes('data-memory-content="ready"'), "Memory content mus
 assert(!memoryScreen.includes('mo-memory-management-stack') && !memoryScreen.includes('data-memory-maintenance'), "Memory must not mount maintenance UI");
 const managementScreen = renderExplorerSection("management");
 assert(managementScreen.includes('class="mo-memory-management"') && managementScreen.includes('data-memory-maintenance="runtime"'), "Memory management must own maintenance UI");
-for (const marker of ['data-memory-session-management', 'id="mo-memory-admin-session-select"', 'data-timeline-session-attach-id="sid-b"', 'data-timeline-session-copy-id="sid-b"', 'data-timeline-session-migrate-id="sid-b"', 'data-timeline-session-delete-id="sid-b"']) {
+for (const marker of ['data-memory-session-management', 'class="mo-memory-admin-rail"', 'class="mo-memory-admin-workspace"', 'data-memory-admin-session-id="sid-b"', 'data-timeline-session-attach-id="sid-b"', 'data-timeline-session-copy-id="sid-b"', 'data-timeline-session-migrate-id="sid-b"', 'data-timeline-session-delete-id="sid-b"']) {
   assert(managementScreen.includes(marker), "Memory management must own session DB action " + marker);
 }
+assert(!managementScreen.includes('id="mo-memory-admin-session-select"'), "Memory management must use direct session cards, not a detached select");
 assert(!managementScreen.includes('class="mo-memory-layout"'), "Memory management must not duplicate the record browser");
 const memoryRow = renderExplorerMemories();
 assert(memoryRow.includes('<button type="button" class="mo-ed-edit-btn"') && memoryRow.includes('data-edit-type="mem" data-edit-id="7"'), "selected-session Memory rows must expose an accessible edit action");
@@ -2375,6 +2383,32 @@ function bridgeFetch(url) { fetchCount++; return new Promise((resolve) => pendin
 	}
 }
 
+func TestArchiveCenterJSPublisherSettingsPrecedeCommonSettings(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	publisherSection := `<div class="mo-section">${t('settings.section.publisherSettings')}</div>`
+	commonSection := `<div class="mo-section">${t('settings.section.common')}</div>`
+	publisherIndex := strings.Index(src, publisherSection)
+	commonIndex := strings.Index(src, commonSection)
+	if publisherIndex < 0 || commonIndex < 0 || publisherIndex >= commonIndex {
+		t.Fatalf("publisher settings section must render before common settings")
+	}
+	for _, control := range []string{
+		`id="mo-narrativeGuideMode"`,
+		`id="mo-narrativeGuideStrength"`,
+		`id="mo-publisherGuidanceFormat"`,
+		`id="mo-narrativeSupportMaxChars"`,
+		`id="mo-pluginMainApplyMode"`,
+	} {
+		if strings.Count(src, control) != 1 {
+			t.Fatalf("publisher control %q must render exactly once", control)
+		}
+		controlIndex := strings.Index(src, control)
+		if controlIndex <= publisherIndex || controlIndex >= commonIndex {
+			t.Fatalf("publisher control %q must stay inside the publisher settings section", control)
+		}
+	}
+}
+
 func TestArchiveCenterJSLorebookReferenceUsesBoundedBackendProjection(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -2387,19 +2421,57 @@ func TestArchiveCenterJSLorebookReferenceUsesBoundedBackendProjection(t *testing
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
 		`["lorebook", t('settings.tab.lorebook')]`,
-		`lorebook: Number(_explorer.lorebook.total || 0)`,
+		`id="mo-lorebook-session-select"`,
+		`id="mo-lorebook-reference-items"`,
 		`data-more-type="lorebook"`,
 		`lorebook_reference_current.viewmodel.v1`,
+		`params.set("scope_mode", "latest_session")`,
+		`selectWorkspaceSession(sessionId, "lorebook")`,
+		`return String(tab && tab.key || "") !== "lorebook";`,
+		`visibleTabs.some(function(tab) { return tab.key === presentedActiveTab; })`,
+		`root.innerHTML = renderLorebookReferenceManagementSection();`,
+		`lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled"`,
+		`setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing lorebook UI marker %q", marker)
 		}
 	}
-	if strings.Count(src, `id="mo-lorebookReferenceMode"`) != 1 {
-		t.Fatalf("lorebook mode control must exist only in Extensions/Lorebook")
+	managementRenderer := extractJSFunctionBlockForTest(t, src, "function renderLorebookReferenceManagementSection()")
+	for _, marker := range []string{`id="mo-lorebook-session-select"`, `id="mo-lorebook-reference-items"`, `renderExplorerLorebook()`} {
+		if !strings.Contains(managementRenderer, marker) {
+			t.Fatalf("Extensions/Lorebook renderer missing %q", marker)
+		}
+	}
+	memoryRenderer := extractJSFunctionBlockForTest(t, src, "function renderExplorerContent()")
+	if strings.Contains(memoryRenderer, `activeTab === "lorebook"`) {
+		t.Fatal("Memory content renderer must not retain Auxiliary Reference")
+	}
+	if strings.Contains(src, `id="mo-lorebookReferenceMode"`) {
+		t.Fatalf("legacy lorebook mode select must be removed from Extensions/Lorebook")
+	}
+	tabProjection := extractJSFunctionBlockForTest(t, src, "function getExplorerTabItems()")
+	if !strings.Contains(tabProjection, `return String(tab && tab.key || "") !== "lorebook";`) {
+		t.Fatal("Memory tab projection must reject lorebook rows from an older Presentation ViewModel")
+	}
+	for _, removedMemoryMarker := range []string{
+		`lorebook: Number(_explorer.lorebook.total || 0)`,
+		`if (_explorer.activeTab === "lorebook") return renderExplorerLorebook();`,
+	} {
+		if strings.Contains(src, removedMemoryMarker) {
+			t.Fatalf("Memory must not retain lorebook tab marker %q", removedMemoryMarker)
+		}
+	}
+	const lorebookAssistControl = `id="mo-lorebookReferenceAssistEnabled"`
+	const floatingUIControl = `id="mo-turnWorkflowHUDEnabled"`
+	if strings.Count(src, lorebookAssistControl) != 1 {
+		t.Fatalf("lorebook auxiliary reference toggle must exist exactly once in Settings")
+	}
+	if lorebookIndex, floatingIndex := strings.Index(src, lorebookAssistControl), strings.Index(src, floatingUIControl); lorebookIndex < 0 || floatingIndex < 0 || lorebookIndex >= floatingIndex {
+		t.Fatalf("lorebook auxiliary reference toggle must render immediately before the floating UI control")
 	}
 	blocks := []string{
-		extractJSFunctionBlockForTest(t, src, "async function explorerResolveLorebookReferenceScope(sessionId)"),
+		extractJSFunctionBlockForTest(t, src, "function getExplorerTabItems()"),
 		extractJSFunctionBlockForTest(t, src, "async function explorerFetchLorebook(reset = false)"),
 	}
 	script := `
@@ -2412,13 +2484,10 @@ const _explorer = {
   activeChatSessionId: "session-a",
   lorebook: { items: [], total: 0, offset: 0, hasMore: false, loading: false, error: "", scope: null, latestSnapshot: null, requestId: 0 },
 };
-const _lorebookReferenceSync = { lastScope: { chat_session_id: "session-a", character_index: 2, chat_index: 7, enabled_module_ids: ["module-b", "module-a"], enabled_modules_observed: true } };
 const urls = [];
 function explorerSessionId() { return _explorer.selectedSessionId; }
-async function getCurrentChatSessionId() { return "session-a"; }
-async function observeLorebookReferenceScope() { throw new Error("cached exact scope should be reused"); }
-function canonicalLorebookReferenceModuleIds(values) { return Array.from(new Set(values || [])).sort(); }
 function getRequestTimeoutSettingMs() { return 1000; }
+function presentationExplorerTabLabel(key) { return String(key || ""); }
 async function bridgeFetch(url) {
   urls.push(url);
   const offset = Number(new URL("http://archive.local" + url).searchParams.get("offset") || 0);
@@ -2429,12 +2498,15 @@ async function bridgeFetch(url) {
     items: Array.from({ length: count }, (_, index) => ({ entry_ordinal: offset + index, key: "key-" + (offset + index), content: "lore" })),
     total: 35,
     has_more: offset === 0,
-    scope: _lorebookReferenceSync.lastScope,
+    scope: { chat_session_id: "session-a", character_index: 2, chat_index: 7 },
     latest_snapshot: { snapshot_id: "snapshot", observed_at: "2026-08-20T00:00:00Z" },
   };
 }
 ` + strings.Join(blocks, "\n") + `
 (async () => {
+  _explorer.viewModel = { tabs: [{ key: "chat_logs", count: 2 }, { key: "lorebook", count: 9 }] };
+  const visibleMemoryTabs = getExplorerTabItems();
+  assert(visibleMemoryTabs.length === 1 && visibleMemoryTabs[0].key === "chat_logs", "Memory UI must hide lorebook rows from an older backend ViewModel");
   await explorerFetchLorebook(true);
   assert(_explorer.lorebook.items.length === 20, "first page must contain exactly the bounded backend page");
   assert(_explorer.lorebook.offset === 20 && _explorer.lorebook.hasMore === true, "first page state mismatch");
@@ -2442,7 +2514,9 @@ async function bridgeFetch(url) {
   assert(_explorer.lorebook.items.length === 35, "second page must append without refetching the first page");
   assert(_explorer.lorebook.offset === 35 && _explorer.lorebook.hasMore === false, "completed page state mismatch");
   assert(urls.length === 2 && urls[0].includes("offset=0") && urls[1].includes("offset=20"), "paging must advance through the backend projection");
-  assert(urls[0].includes("enabled_module_id=module-a") && urls[0].includes("enabled_module_id=module-b"), "exact Host module scope must be preserved");
+  assert(urls[0].includes("scope_mode=latest_session"), "selected-session scope choice must belong to the backend");
+  assert(urls[0].includes("/sessions/session-a/lorebook-reference/current"), "selected session ID was not forwarded");
+  assert(!urls[0].includes("character_index=") && !urls[0].includes("enabled_module_id="), "adapter must not reconstruct a stored Host scope");
 })().catch((err) => { console.error(err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")

@@ -29,35 +29,28 @@ arc, goal, beat, or scene guidance at every strength.
 Return exactly this contract:
 
 {
-  "supervisor_scene_proposal": {
-    "publisher_plan": {
-      "contract_version": "publisher_plan.v2",
-      "book_author": {
-        "current_arc": null,
-        "narrative_goal": null,
-        "next_beats": [],
-        "guardrails": []
-      },
-      "director": {
-        "scene_mandate": null,
-        "required_outcomes": [],
-        "forbidden_moves": [],
-        "pressure_level": null
-      }
+  "contract_version": "publisher_output.v3",
+  "items": [
+    {
+      "role": "book_author|director",
+      "field": "one allowed field for that role",
+      "text": "short response-scoped guidance",
+      "source_refs": ["exact source_ref"]
     }
-  }
+  ]
 }
 
-For every non-null single field and every array item, use:
-{"text":"short response-scoped guidance","source_refs":["exact source_ref"]}
+Allowed Book Author fields are `current_arc`, `narrative_goal`, `next_beats`,
+and `guardrails`. Allowed Director fields are `scene_mandate`,
+`required_outcomes`, `forbidden_moves`, and `pressure_level`.
 
-For `pressure_level`, use:
-{"level":"quiet|low|medium|high","text":"how pressure should be expressed","source_refs":["exact source_ref"]}
+For a `pressure_level` item, also include
+`"level":"quiet|low|medium|high"`.
 
-All eight role fields must be present. Use null for an unsupported single field
-and [] for an unsupported array field. Do not fill a field merely to make the
-plan look complete. Keep supported guidance short and grounded in the supplied
-text.
+Return only supported items. An empty `items` array is valid. Do not emit null
+placeholders, empty role objects, or an item merely to make the plan look
+complete. A single invalid item must not cause you to omit other supported
+items. Keep every item short and grounded in the supplied text.
 
 `current_arc`, `narrative_goal`, and `next_beats` frame only the current
 response. `scene_mandate` and `required_outcomes` describe what the response

@@ -922,12 +922,12 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 	reroll.ClientMeta["critic"] = map[string]any{
 		"api_key": "sk-test", "endpoint": "https://api.example.com/v1", "model": "critic-model", "provider": "openai", "timeout_ms": 90000,
 	}
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":      "The corrected assistant output became the canonical memory.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"rerolled"},
 		"kg_triples":        []any{map[string]any{"subject": "Assistant", "predicate": "replaces", "object": "Old output"}},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model": "critic-model", "choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
 	})

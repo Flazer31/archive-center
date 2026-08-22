@@ -236,7 +236,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		"guide_focus":                 supervisorPack["guide_focus"],
 		"supervisor_support_packet":   supervisorPack["support_packet"],
 		"response_execution_contract": supervisorPack["response_execution_contract"],
-		"required_output":             "Return one JSON object containing supervisor_scene_proposal.publisher_plan with contract_version publisher_plan.v2 and both book_author and director roles. Include all eight required role fields, using null or [] when no supported item exists. Every non-empty item must copy exact source_refs from text-bearing entries in supervisor_support_packet. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure.",
+		"required_output":             "Return one JSON object with contract_version publisher_output.v3 and an items array. Each supported item must contain role, field, text, and exact source_refs copied from a text-bearing entry in supervisor_support_packet; pressure_level items must also contain level. Omit unsupported items instead of emitting empty role objects, null placeholders, or filler. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure.",
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
 	maxTokens := cfg.MaxTokens
@@ -596,14 +596,14 @@ func decodePublisherJSONValue(decoder *json.Decoder) (any, error) {
 	}
 }
 
-type publisherV2FieldSpec struct {
+type publisherFieldSpec struct {
 	role     string
 	field    string
 	isArray  bool
 	pressure bool
 }
 
-var publisherV2FieldSpecs = []publisherV2FieldSpec{
+var publisherFieldSpecs = []publisherFieldSpec{
 	{role: "book_author", field: "current_arc"},
 	{role: "book_author", field: "narrative_goal"},
 	{role: "book_author", field: "next_beats", isArray: true},
@@ -613,6 +613,8 @@ var publisherV2FieldSpecs = []publisherV2FieldSpec{
 	{role: "director", field: "forbidden_moves", isArray: true},
 	{role: "director", field: "pressure_level", pressure: true},
 }
+
+const publisherWireContractVersion = "publisher_output.v3"
 
 func buildPublisherFailureResult(supervisorPack map[string]any, reason string) (map[string]any, map[string]any) {
 	strength := normalizeNarrativeGuideStrength(extractionStringFromAny(supervisorPack["guide_strength"]))
@@ -686,75 +688,61 @@ func buildBoundedSupervisorResult(parsed, supervisorPack map[string]any) (map[st
 		return boundedSupervisorEnvelope(proposal), trace
 	}
 
-	rawProposal, ok := parsed["supervisor_scene_proposal"].(map[string]any)
+	if extractionStringFromAny(parsed["contract_version"]) != publisherWireContractVersion {
+		trace["wire_contract_version"] = extractionStringFromAny(parsed["contract_version"])
+		return buildPublisherSchemaFailure(proposal, trace)
+	}
+	rawItems, ok := parsed["items"].([]any)
 	if !ok {
 		return buildPublisherSchemaFailure(proposal, trace)
 	}
-	rawPlan, ok := rawProposal["publisher_plan"].(map[string]any)
-	if !ok || extractionStringFromAny(rawPlan["contract_version"]) != "publisher_plan.v2" {
-		return buildPublisherSchemaFailure(proposal, trace)
-	}
-	bookAuthor, bookAuthorOK := rawPlan["book_author"].(map[string]any)
-	director, directorOK := rawPlan["director"].(map[string]any)
-	if !bookAuthorOK && !directorOK {
-		return buildPublisherSchemaFailure(proposal, trace)
-	}
+	trace["wire_contract_version"] = publisherWireContractVersion
 
 	accepted := []map[string]any{}
 	rejected := []map[string]any{}
 	addRejected := func(path, code string) {
 		rejected = append(rejected, map[string]any{"path": path, "code": code})
 	}
-	publisherRecordUnknownFields(parsed, map[string]struct{}{"supervisor_scene_proposal": {}}, "", addRejected)
-	publisherRecordUnknownFields(rawProposal, map[string]struct{}{"publisher_plan": {}}, "supervisor_scene_proposal", addRejected)
-	publisherRecordUnknownFields(rawPlan, map[string]struct{}{"contract_version": {}, "book_author": {}, "director": {}}, "supervisor_scene_proposal.publisher_plan", addRejected)
-	roles := map[string]map[string]any{}
-	if bookAuthorOK {
-		roles["book_author"] = bookAuthor
-		publisherRecordUnknownFields(bookAuthor, map[string]struct{}{"current_arc": {}, "narrative_goal": {}, "next_beats": {}, "guardrails": {}}, "supervisor_scene_proposal.publisher_plan.book_author", addRejected)
-	} else if _, exists := rawPlan["book_author"]; exists {
-		addRejected("supervisor_scene_proposal.publisher_plan.book_author", "role_type_invalid")
-	} else {
-		addRejected("supervisor_scene_proposal.publisher_plan.book_author", "role_missing")
-	}
-	if directorOK {
-		roles["director"] = director
-		publisherRecordUnknownFields(director, map[string]struct{}{"scene_mandate": {}, "required_outcomes": {}, "forbidden_moves": {}, "pressure_level": {}}, "supervisor_scene_proposal.publisher_plan.director", addRejected)
-	} else if _, exists := rawPlan["director"]; exists {
-		addRejected("supervisor_scene_proposal.publisher_plan.director", "role_type_invalid")
-	} else {
-		addRejected("supervisor_scene_proposal.publisher_plan.director", "role_missing")
-	}
-
-	for _, spec := range publisherV2FieldSpecs {
-		role, readable := roles[spec.role]
-		if !readable {
+	publisherRecordUnknownFields(parsed, map[string]struct{}{"contract_version": {}, "items": {}}, "", addRejected)
+	singleAccepted := map[string]bool{}
+	fieldOrders := map[string]int{}
+	for index, rawItem := range rawItems {
+		path := fmt.Sprintf("items[%d]", index)
+		item, ok := rawItem.(map[string]any)
+		if !ok {
+			addRejected(path, "item_type_invalid")
 			continue
 		}
-		path := "supervisor_scene_proposal.publisher_plan." + spec.role + "." + spec.field
-		rawValue, exists := role[spec.field]
-		if !exists {
-			addRejected(path, "field_missing")
-			continue
-		}
-		if rawValue == nil {
-			if spec.isArray {
-				addRejected(path, "field_type_invalid")
+		role := extractionStringFromAny(item["role"])
+		field := extractionStringFromAny(item["field"])
+		var spec publisherFieldSpec
+		found := false
+		for _, candidate := range publisherFieldSpecs {
+			if candidate.role == role && candidate.field == field {
+				spec = candidate
+				found = true
+				break
 			}
+		}
+		if !found {
+			addRejected(path, "role_field_invalid")
 			continue
 		}
+		key := role + "." + field
+		if !spec.isArray && singleAccepted[key] {
+			addRejected(path, "single_field_duplicate")
+			continue
+		}
+		order := 0
 		if spec.isArray {
-			values, ok := rawValue.([]any)
-			if !ok {
-				addRejected(path, "field_type_invalid")
-				continue
-			}
-			for index, rawItem := range values {
-				publisherAcceptV2Item(rawItem, spec, index, path+fmt.Sprintf("[%d]", index), allowedRefs, &accepted, addRejected)
-			}
-			continue
+			order = fieldOrders[key]
+			fieldOrders[key]++
 		}
-		publisherAcceptV2Item(rawValue, spec, 0, path, allowedRefs, &accepted, addRejected)
+		acceptedBefore := len(accepted)
+		publisherAcceptItem(item, spec, order, path, allowedRefs, &accepted, addRejected)
+		if !spec.isArray && len(accepted) > acceptedBefore {
+			singleAccepted[key] = true
+		}
 	}
 
 	status := "ready"
@@ -818,13 +806,13 @@ func publisherRecordUnknownFields(object map[string]any, allowed map[string]stru
 	}
 }
 
-func publisherAcceptV2Item(raw any, spec publisherV2FieldSpec, order int, path string, allowedRefs map[string]struct{}, accepted *[]map[string]any, reject func(string, string)) {
+func publisherAcceptItem(raw any, spec publisherFieldSpec, order int, path string, allowedRefs map[string]struct{}, accepted *[]map[string]any, reject func(string, string)) {
 	item, ok := raw.(map[string]any)
 	if !ok {
 		reject(path, "item_type_invalid")
 		return
 	}
-	allowedFields := map[string]struct{}{"text": {}, "source_refs": {}}
+	allowedFields := map[string]struct{}{"role": {}, "field": {}, "text": {}, "source_refs": {}}
 	if spec.pressure {
 		allowedFields["level"] = struct{}{}
 	}

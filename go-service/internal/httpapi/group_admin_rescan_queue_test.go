@@ -361,6 +361,7 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 	oldClient := proxyHTTPClient
 	criticCalls := 0
 	criticRequest := ""
+	criticContent := criticWireJSONForTest(map[string]any{"turn_summary": "Mina found the brass key.", "importance_score": 7})
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		criticCalls++
 		body, _ := io.ReadAll(req.Body)
@@ -368,7 +369,7 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 		payload, _ := json.Marshal(map[string]any{
 			"choices": []any{map[string]any{
 				"message": map[string]any{
-					"content": `{"turn_summary":"Mina found the brass key.","importance_score":7}`,
+					"content": criticContent,
 				},
 			}},
 		})

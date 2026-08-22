@@ -90,7 +90,6 @@ func attachCriticInputSnapshotForTest(source *store.MemorySourceRevision) {
 		AssistantContent:   sanitizeCriticStorageText(source.AssistantContent),
 		ContextMessages:    []map[string]any{},
 		ActiveWorldRules:   []map[string]any{},
-		PreviewPass:        map[string]any{},
 		PipelineVersion:    completeTurnCriticPipelineVersion,
 		SystemPromptSHA256: criticSystemPromptHash(systemPrompt),
 	}
@@ -1325,7 +1324,7 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"retry later"}}`)),
 			}, nil
 		}
-		extraction, _ := json.Marshal(map[string]any{
+		extraction := criticWireJSONForTest(map[string]any{
 			"turn_summary":      "Mina found the brass key.",
 			"importance_score":  7,
 			"evidence_excerpts": []any{"Mina found a brass key."},
@@ -1333,7 +1332,7 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 		payload, _ := json.Marshal(map[string]any{
 			"model": "critic-test",
 			"choices": []any{map[string]any{
-				"message": map[string]any{"content": string(extraction)},
+				"message": map[string]any{"content": extraction},
 			}},
 		})
 		return &http.Response{
@@ -1465,7 +1464,7 @@ func TestMemoryReprocessingWorkerUsesSameAdmissionWriterAndCompletes(t *testing.
 	st := newMemoryReprocessingWorkerStore(now)
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		extraction, _ := json.Marshal(map[string]any{
+		extraction := criticWireJSONForTest(map[string]any{
 			"turn_summary":      "Mina found the brass key.",
 			"importance_score":  7,
 			"evidence_excerpts": []any{"Mina found the brass key."},
@@ -1473,7 +1472,7 @@ func TestMemoryReprocessingWorkerUsesSameAdmissionWriterAndCompletes(t *testing.
 		payload, _ := json.Marshal(map[string]any{
 			"model": "critic-test",
 			"choices": []any{map[string]any{
-				"message": map[string]any{"content": string(extraction)},
+				"message": map[string]any{"content": extraction},
 			}},
 		})
 		return &http.Response{

@@ -14,21 +14,17 @@ import (
 )
 
 func TestPublisherGuidanceFormatsPreserveAcceptedPlanAndSingleBlock(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	director := mapFromAny(plan["director"])
-	book["current_arc"] = map[string]any{"text": "Keep the quiet examination conversation central.", "source_refs": []any{"input:latest"}}
-	book["narrative_goal"] = map[string]any{"text": "Let Han-eol weigh the opportunity without deciding for him.", "source_refs": []any{"input:latest"}}
-	book["next_beats"] = []any{
-		map[string]any{"text": "Preserve the pause before his answer.", "source_refs": []any{"memory:delivered"}},
-		map[string]any{"text": "Keep the practical stakes visible.", "source_refs": []any{"input:latest"}},
-	}
-	book["guardrails"] = []any{map[string]any{"text": "Do not invent an examination result.", "source_refs": []any{"memory:delivered"}}}
-	director["scene_mandate"] = map[string]any{"text": "Stay in the current room and conversation.", "source_refs": []any{"input:latest"}}
-	director["required_outcomes"] = []any{map[string]any{"text": "Show the opportunity being understood.", "source_refs": []any{"memory:delivered"}}}
-	director["forbidden_moves"] = []any{map[string]any{"text": "Do not force Han-eol to accept.", "source_refs": []any{"input:latest"}}}
-	director["pressure_level"] = map[string]any{"level": "quiet", "text": "Keep the scene quiet.", "source_refs": []any{"input:latest"}}
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "current_arc", "Keep the quiet examination conversation central.", "input:latest"),
+		publisherWireV3Item("book_author", "narrative_goal", "Let Han-eol weigh the opportunity without deciding for him.", "input:latest"),
+		publisherWireV3Item("book_author", "next_beats", "Preserve the pause before his answer.", "memory:delivered"),
+		publisherWireV3Item("book_author", "next_beats", "Keep the practical stakes visible.", "input:latest"),
+		publisherWireV3Item("book_author", "guardrails", "Do not invent an examination result.", "memory:delivered"),
+		publisherWireV3Item("director", "scene_mandate", "Stay in the current room and conversation.", "input:latest"),
+		publisherWireV3Item("director", "required_outcomes", "Show the opportunity being understood.", "memory:delivered"),
+		publisherWireV3Item("director", "forbidden_moves", "Do not force Han-eol to accept.", "input:latest"),
+		publisherWireV3PressureItem("quiet", "Keep the scene quiet.", "input:latest"),
+	)
 
 	result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("maximum"))
 	acceptedPlan := mapFromAny(mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])["publisher_plan"])
@@ -109,12 +105,10 @@ func TestPublisherGuidanceFormatNormalizationKeepsStandardAsStableDefault(t *tes
 }
 
 func TestPublisherStrengthAndGuidanceFormatAxesRemainIndependent(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	director := mapFromAny(plan["director"])
-	book["current_arc"] = map[string]any{"text": "Keep the current quiet scene.", "source_refs": []any{"input:latest"}}
-	director["pressure_level"] = map[string]any{"level": "quiet", "text": "Do not raise the pressure.", "source_refs": []any{"input:latest"}}
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "current_arc", "Keep the current quiet scene.", "input:latest"),
+		publisherWireV3PressureItem("quiet", "Do not raise the pressure.", "input:latest"),
+	)
 
 	var baselineAccepted any
 	for _, strength := range []string{"weak", "medium", "strong", "extreme", "maximum"} {
@@ -144,12 +138,9 @@ func TestPublisherStrengthAndGuidanceFormatAxesRemainIndependent(t *testing.T) {
 }
 
 func TestPublisherPlanV2UnknownFieldDoesNotEraseValidSibling(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	book["current_arc"] = map[string]any{
-		"text": "Stay with the current opportunity.", "source_refs": []any{"input:latest"}, "legacy_hint": "discard",
-	}
+	item := publisherWireV3Item("book_author", "current_arc", "Stay with the current opportunity.", "input:latest")
+	item["legacy_hint"] = "discard"
+	parsed := publisherWireV3Parsed(item)
 	result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("strong"))
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
 	acceptedPlan := mapFromAny(proposal["publisher_plan"])
@@ -162,25 +153,22 @@ func TestPublisherPlanV2UnknownFieldDoesNotEraseValidSibling(t *testing.T) {
 	}
 }
 
-func TestPublisherPlanV2MissingOneRoleKeepsOtherRole(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	delete(plan, "director")
-	book := mapFromAny(plan["book_author"])
-	book["narrative_goal"] = map[string]any{"text": "Let the response acknowledge the practical path.", "source_refs": []any{"input:latest"}}
+func TestPublisherWireDoesNotRequireEmptySiblingRole(t *testing.T) {
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "narrative_goal", "Let the response acknowledge the practical path.", "input:latest"),
+	)
 	result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("weak"))
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
 	acceptedPlan := mapFromAny(proposal["publisher_plan"])
-	if proposal["status"] != "partial" || len(anySliceFromAny(acceptedPlan["accepted_items"])) != 1 {
-		t.Fatalf("readable role was rejected with missing sibling role: %#v", proposal)
+	if proposal["status"] != "ready" || len(anySliceFromAny(acceptedPlan["accepted_items"])) != 1 {
+		t.Fatalf("supported item required an empty sibling role: %#v", proposal)
 	}
 }
 
 func TestPublisherPlanV2GuidanceUsesExistingWholeBlockBudget(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	book["current_arc"] = map[string]any{"text": "Keep the current examination opportunity central.", "source_refs": []any{"input:latest"}}
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "current_arc", "Keep the current examination opportunity central.", "input:latest"),
+	)
 	result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("strong"))
 	guidance := supervisorSceneProposalGuidanceItems(result, "standard")
 	if len(guidance) != 1 {
@@ -201,8 +189,8 @@ func TestPublisherPlanV2GuidanceUsesExistingWholeBlockBudget(t *testing.T) {
 func TestPublisherPlanV2FailureHasNoDefaultOrStaleGuidance(t *testing.T) {
 	for _, parsed := range []map[string]any{
 		nil,
-		{"supervisor_scene_proposal": map[string]any{"publisher_plan": map[string]any{"contract_version": "publisher_plan.v1"}}},
-		{"directive": map[string]any{"supervisor_scene_proposal": publisherV2EmptyParsed()}},
+		{"contract_version": "publisher_output.v2", "items": []any{}},
+		{"directive": map[string]any{"contract_version": publisherWireContractVersion, "items": []any{}}},
 	} {
 		result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("strong"))
 		proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
@@ -216,7 +204,7 @@ func TestPublisherPlanV2FailureHasNoDefaultOrStaleGuidance(t *testing.T) {
 }
 
 func TestPublisherJSONObjectParserAcceptsOneObjectWithHarmlessWrapper(t *testing.T) {
-	valid := `{"supervisor_scene_proposal":{"publisher_plan":{"contract_version":"publisher_plan.v2","book_author":{"current_arc":null,"narrative_goal":null,"next_beats":[],"guardrails":[]},"director":{"scene_mandate":null,"required_outcomes":[],"forbidden_moves":[],"pressure_level":null}}}}`
+	valid := `{"contract_version":"publisher_output.v3","items":[]}`
 	for _, content := range []string{
 		valid,
 		"```json\n" + valid + "\n```",
@@ -229,19 +217,18 @@ func TestPublisherJSONObjectParserAcceptsOneObjectWithHarmlessWrapper(t *testing
 		if err != nil {
 			t.Fatalf("harmless wrapper was rejected: %v; content=%s", err, content)
 		}
-		plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-		if plan["contract_version"] != "publisher_plan.v2" {
-			t.Fatalf("parsed contract = %#v", plan)
+		if parsed["contract_version"] != publisherWireContractVersion {
+			t.Fatalf("parsed contract = %#v", parsed)
 		}
 	}
 }
 
 func TestPublisherJSONObjectParserRejectsAmbiguousOrMalformedOutput(t *testing.T) {
-	valid := `{"supervisor_scene_proposal":{"publisher_plan":{"contract_version":"publisher_plan.v2","book_author":{"current_arc":null,"narrative_goal":null,"next_beats":[],"guardrails":[]},"director":{"scene_mandate":null,"required_outcomes":[],"forbidden_moves":[],"pressure_level":null}}}}`
+	valid := `{"contract_version":"publisher_output.v3","items":[]}`
 	tests := map[string]string{
 		"two objects":           valid + ` {}`,
-		"incomplete object":     `{"supervisor_scene_proposal":`,
-		"duplicate key":         `{"supervisor_scene_proposal":{},"supervisor_scene_proposal":{}}`,
+		"incomplete object":     `{"contract_version":"publisher_output.v3","items":`,
+		"duplicate key":         `{"contract_version":"publisher_output.v3","contract_version":"publisher_output.v3","items":[]}`,
 		"stray opening brace":   `unfinished { prefix ` + valid,
 		"stray closing brace":   valid + ` suffix }`,
 		"array before object":   `[] ` + valid,
@@ -266,7 +253,7 @@ func TestPublisherE8FailedRequestDoesNotReusePreviousRequestPlan(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if calls.Add(1) == 1 {
-			_, _ = w.Write([]byte(publisherV2OpenAIResponse("input:latest", "FIRST_REQUEST_PLAN_MUST_NOT_SURVIVE")))
+			_, _ = w.Write([]byte(publisherV3OpenAIResponse("input:latest", "FIRST_REQUEST_PLAN_MUST_NOT_SURVIVE")))
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -389,7 +376,7 @@ func TestPublisherOllamaSingleCallPreservesInputStrengthModelAndReasoning(t *tes
 			t.Fatalf("Publisher input or strength omitted: %s", userPrompt)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse("input:latest", "Keep the present request central.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse("input:latest", "Keep the present request central.")))
 	}))
 	defer provider.Close()
 
@@ -405,7 +392,7 @@ func TestPublisherOllamaSingleCallPreservesInputStrengthModelAndReasoning(t *tes
 		t.Fatalf("Publisher provider calls = %d, want exactly one", calls.Load())
 	}
 	overrides := mapFromAny(trace["request_overrides"])
-	if overrides["json_response_applied"] != true || overrides["json_response_schema_contract"] != "publisher_plan.v2_prompt_validated" {
+	if overrides["json_response_applied"] != true || overrides["json_response_schema_contract"] != publisherWireContractVersion+"_prompt_validated" {
 		t.Fatalf("Ollama Publisher JSON trace = %+v", overrides)
 	}
 	if len(supervisorSceneProposalGuidanceItems(result, "standard")) != 1 {
@@ -448,7 +435,7 @@ func TestPublisherAllowsOnlyDeliveredLorebookReferenceExactRefs(t *testing.T) {
 			t.Fatalf("Publisher request lost delivered lorebook text or exact ref: %s", userPrompt)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse(lorebookRef, "Keep the supplied family background consistent.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse(lorebookRef, "Keep the supplied family background consistent.")))
 	}))
 	defer provider.Close()
 
@@ -531,7 +518,7 @@ func TestPublisherE8ProviderReceivesProjectionWithoutRawPrivateMemory(t *testing
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse(deliveredRef, "Express only the delivered private-memory projection as subtext.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse(deliveredRef, "Express only the delivered private-memory projection as subtext.")))
 	}))
 	defer provider.Close()
 

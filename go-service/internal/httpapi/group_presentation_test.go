@@ -80,11 +80,23 @@ func TestBuildPresentationViewModelGroupsTimelineAndExplorerCounts(t *testing.T)
 	for _, tab := range vm.Explorer.Tabs {
 		counts[tab.Key] = tab.Count
 	}
-	if counts["episodes"] != 3 || counts["trust"] != 4 || counts["world"] != 5 || counts["entities"] != 6 || counts["lorebook"] != 9 {
+	if counts["episodes"] != 3 || counts["trust"] != 4 || counts["world"] != 5 || counts["entities"] != 6 {
 		t.Fatalf("counts=%+v", counts)
 	}
-	if vm.Explorer.Tabs[len(vm.Explorer.Tabs)-1].Key != "lorebook" {
-		t.Fatalf("lorebook is not the final memory tab: %+v", vm.Explorer.Tabs)
+	if _, exists := counts["lorebook"]; exists {
+		t.Fatalf("lorebook must be owned by Extensions, not Memory tabs: %+v", vm.Explorer.Tabs)
+	}
+}
+
+func TestPresentationExplorerRehomesStaleLorebookTabToChatLogs(t *testing.T) {
+	vm := buildPresentationExplorerModel(presentationExplorerInput{ActiveTab: "lorebook"})
+	if vm.ActiveTab != "chat_logs" {
+		t.Fatalf("active_tab=%q tabs=%+v", vm.ActiveTab, vm.Tabs)
+	}
+	for _, tab := range vm.Tabs {
+		if tab.Key == "lorebook" {
+			t.Fatalf("lorebook remained in Memory tabs: %+v", vm.Tabs)
+		}
 	}
 }
 

@@ -92,6 +92,14 @@ func (s *Server) handleLorebookReferenceCurrent(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, CodeMissingParam, "chat_session_id is required")
 		return
 	}
+	scopeMode := strings.TrimSpace(r.URL.Query().Get("scope_mode"))
+	if scopeMode == "" {
+		scopeMode = "exact"
+	}
+	if scopeMode != "exact" && scopeMode != "latest_session" {
+		writeError(w, http.StatusBadRequest, "lorebook_reference_scope_mode_invalid", "scope_mode must be exact or latest_session")
+		return
+	}
 	characterIndex, err := lorebookReferenceOptionalIndex(r.URL.Query().Get("character_index"))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "lorebook_reference_scope_invalid", "character_index must be a non-negative integer")
@@ -126,21 +134,31 @@ func (s *Server) handleLorebookReferenceCurrent(w http.ResponseWriter, r *http.R
 			return
 		}
 	}
-	page, err := ref.GetLorebookReferenceCurrentPage(r.Context(), store.LorebookReferenceScope{
-		ChatSessionID: chatSessionID, CharacterIndex: characterIndex, ChatIndex: chatIndex,
-		EnabledModuleIDs: r.URL.Query()["enabled_module_id"], EnabledModulesObserved: enabledModulesObserved,
-	}, limit, offset)
+	var page *store.LorebookReferenceCurrentPage
+	if scopeMode == "latest_session" {
+		page, err = ref.GetLorebookReferenceLatestSessionPage(r.Context(), chatSessionID, limit, offset)
+	} else {
+		page, err = ref.GetLorebookReferenceCurrentPage(r.Context(), store.LorebookReferenceScope{
+			ChatSessionID: chatSessionID, CharacterIndex: characterIndex, ChatIndex: chatIndex,
+			EnabledModuleIDs: r.URL.Query()["enabled_module_id"], EnabledModulesObserved: enabledModulesObserved,
+		}, limit, offset)
+	}
 	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
+		if errors.Is(err, store.ErrNotFound) && scopeMode == "latest_session" {
+			page = &store.LorebookReferenceCurrentPage{
+				Scope:   store.LorebookReferenceScope{ChatSessionID: chatSessionID},
+				Entries: []store.LorebookReferenceEntryObservation{}, Limit: limit, Offset: offset,
+			}
+		} else if errors.Is(err, store.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "lorebook_reference_scope_not_found", "no stored lorebook reference exists for the observed Host scope")
 			return
-		}
-		if errors.Is(err, store.ErrInvalidLorebookReference) {
+		} else if errors.Is(err, store.ErrInvalidLorebookReference) {
 			writeError(w, http.StatusBadRequest, "lorebook_reference_scope_invalid", err.Error())
 			return
+		} else {
+			writeInternalError(w, err.Error())
+			return
 		}
-		writeInternalError(w, err.Error())
-		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status": "ok", "contract_version": store.LorebookReferenceCurrentViewV1,

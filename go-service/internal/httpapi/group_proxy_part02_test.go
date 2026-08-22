@@ -40,7 +40,7 @@ func TestSupervisorStorylineFeedbackReplayAssumedRuntimeGate(t *testing.T) {
 		callCount++
 
 		response := map[string]any{
-			"choices": []any{map[string]any{"message": map[string]any{"content": publisherV2TestContent("input:test", "baseline_continue", "Continue from recent chat without storyline feedback.")}}},
+			"choices": []any{map[string]any{"message": map[string]any{"content": publisherV3TestContent("input:test", "baseline_continue", "Continue from recent chat without storyline feedback.")}}},
 			"model":   "supervisor-replay",
 			"usage":   map[string]any{"total_tokens": 42},
 		}
@@ -188,7 +188,7 @@ func TestNarrativeGuideModesControlledReplayDiverges(t *testing.T) {
 			"action":      "action forward motion",
 			"mature_soft": "sensual consent-aware beat",
 		}[mode]
-		content := publisherV2TestContent("input:test", responseText)
+		content := publisherV3TestContent("input:test", responseText)
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -302,7 +302,7 @@ func TestNarrativeStanceDoesNotControlMemoryFidelityReviewer(t *testing.T) {
 		body := extractionStringFromAny(userMessage["content"])
 		callCount++
 		capturedPrompts = append(capturedPrompts, body)
-		content := publisherV2TestContent("input:test", "keep the current request perceptible")
+		content := publisherV3TestContent("input:test", "keep the current request perceptible")
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
@@ -401,39 +401,26 @@ func publisherAcceptedFieldText(resp map[string]any, field string) string {
 	return ""
 }
 
-func publisherV2TestContent(ref, currentArc string, nextBeats ...string) string {
-	beats := []any{}
+func publisherV3TestContent(ref, currentArc string, nextBeats ...string) string {
+	items := []any{
+		map[string]any{"role": "book_author", "field": "current_arc", "text": currentArc, "source_refs": []any{ref}},
+	}
 	for _, text := range nextBeats {
-		beats = append(beats, map[string]any{"text": text, "source_refs": []any{ref}})
+		items = append(items, map[string]any{"role": "book_author", "field": "next_beats", "text": text, "source_refs": []any{ref}})
 	}
 	content := map[string]any{
-		"supervisor_scene_proposal": map[string]any{
-			"publisher_plan": map[string]any{
-				"contract_version": "publisher_plan.v2",
-				"book_author": map[string]any{
-					"current_arc":    map[string]any{"text": currentArc, "source_refs": []any{ref}},
-					"narrative_goal": nil,
-					"next_beats":     beats,
-					"guardrails":     []any{},
-				},
-				"director": map[string]any{
-					"scene_mandate":     nil,
-					"required_outcomes": []any{},
-					"forbidden_moves":   []any{},
-					"pressure_level":    nil,
-				},
-			},
-		},
+		"contract_version": publisherWireContractVersion,
+		"items":            items,
 	}
 	data, _ := json.Marshal(content)
 	return string(data)
 }
 
-func publisherV2OpenAIResponse(ref, currentArc string, nextBeats ...string) string {
+func publisherV3OpenAIResponse(ref, currentArc string, nextBeats ...string) string {
 	response := map[string]any{
 		"model": "test-supervisor",
 		"choices": []any{map[string]any{
-			"message": map[string]any{"content": publisherV2TestContent(ref, currentArc, nextBeats...)},
+			"message": map[string]any{"content": publisherV3TestContent(ref, currentArc, nextBeats...)},
 		}},
 	}
 	data, _ := json.Marshal(response)

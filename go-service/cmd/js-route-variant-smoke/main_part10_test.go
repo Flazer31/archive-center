@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 )
@@ -74,24 +76,22 @@ func TestArchiveCenterJSPersonaCapsuleUIMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSGLMUsesDocumentedThinkingToggle(t *testing.T) {
+func TestArchiveCenterJSGLMUsesVersionedThinkingContract(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		`/(^|\/)glm[-_]/`,
+		`function resolveGLMReasoningMode(model)`,
+		`mode: "glm_reasoning_effort"`,
+		`effortOptions: ["none", "high", "max"]`,
 		`mode: "glm_toggle"`,
 		`effortOptions: ["enable", "disable"]`,
 		`function applyReasoningFieldsToPayload`,
 		`payload.glm_thinking_type = (effort === "disable" || effort === "disabled") ? "disabled" : "enabled"`,
-		`GLM thinking.type`,
+		`GLM 5.2+ thinking.type + reasoning_effort`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing GLM-5.2 reasoning marker %q", needle)
-		}
-	}
-	for _, forbidden := range []string{`glm_52_reasoning_effort`, `GLM-5.2 thinking.type + reasoning_effort`} {
-		if strings.Contains(src, forbidden) {
-			t.Fatalf("Archive Center.js kept undocumented GLM marker %q", forbidden)
+			t.Fatalf("Archive Center.js missing versioned GLM reasoning marker %q", needle)
 		}
 	}
 }
@@ -129,18 +129,93 @@ func TestArchiveCenterJSDeepSeekV4ReasoningMarkers(t *testing.T) {
 	required := []string{
 		`deepseek_v4: {`,
 		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
+		`function resolveReasoningTransport(provider, endpoint)`,
+		`transport === "ollama" && family !== "none"`,
+		`["llmgateway", "openrouter", "vercel"].includes(transport)`,
+		`mode: "gateway_reasoning_effort"`,
 		`mode: "deepseek_v4_reasoning_effort"`,
 		`effortOptions: ["none", "high", "max"]`,
 		`normalizedValue === "low" || normalizedValue === "medium"`,
 		`normalizedValue === "xhigh"`,
-		`controls.family === "deepseek_v4"`,
+		`controls.mode === "deepseek_v4_reasoning_effort"`,
 		`payload.reasoning_effort = effort || "none"`,
-		`DeepSeek V4 thinking.type + reasoning_effort`,
+		`현재 전송 규약: DeepSeek V4 thinking.type + reasoning_effort`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing DeepSeek V4 reasoning marker %q", needle)
 		}
+	}
+}
+
+func TestArchiveCenterJSReasoningControlsUseProviderAndEndpointRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("ARCHIVE_CENTER_NODE_BINARY or node on PATH is required for reasoning controls runtime smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	blocks := []string{
+		extractJSFunctionBlockForTest(t, src, "function sanitizeEnumValue("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeLlmProvider("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeReasoningPreset("),
+		extractJSFunctionBlockForTest(t, src, "function detectReasoningFamily("),
+		extractJSFunctionBlockForTest(t, src, "function resolveReasoningTransport("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeReasoningModelIdentifier("),
+		extractJSFunctionBlockForTest(t, src, "function resolveGLMReasoningMode("),
+		extractJSFunctionBlockForTest(t, src, "function resolveGeminiThinkingMode("),
+		extractJSFunctionBlockForTest(t, src, "function resolveGeminiThinkingLevelOptions("),
+		extractJSFunctionBlockForTest(t, src, "function resolveClaudeThinkingMode("),
+		extractJSFunctionBlockForTest(t, src, "function resolveGPTReasoningEffortOptions("),
+		extractJSFunctionBlockForTest(t, src, "function resolveReasoningControls("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeReasoningEffortForControls("),
+		extractJSFunctionBlockForTest(t, src, "function applyReasoningFieldsToPayload("),
+	}
+	script := `
+const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgateway","vercel","vertex","copilot","ollama","custom"];
+const REASONING_PRESET_OPTIONS = ["auto","gpt","gemini","claude","glm","custom"];
+` + strings.Join(blocks, "\n") + `
+function assert(value, message) { if (!value) throw new Error(message); }
+const ollama = resolveReasoningControls("ollama", "auto", "deepseek-v4-pro:0813-cloud", "http://127.0.0.1:11434");
+assert(ollama.mode === "ollama_reasoning_effort", JSON.stringify(ollama));
+assert(JSON.stringify(ollama.effortOptions) === JSON.stringify(["none","low","medium","high"]), JSON.stringify(ollama));
+assert(normalizeReasoningEffortForControls("medium", ollama) === "medium", "Ollama medium was promoted");
+assert(normalizeReasoningEffortForControls("max", ollama) === "none", "unsupported Ollama max survived");
+const gatewayLuna = resolveReasoningControls("llmgateway", "auto", "gpt-5.6-luna", "https://api.llmgateway.io/v1");
+assert(gatewayLuna.mode === "gateway_reasoning_effort" && gatewayLuna.effortOptions.includes("low"), JSON.stringify(gatewayLuna));
+const gatewayDeepSeek = resolveReasoningControls("openrouter", "auto", "deepseek/deepseek-v4-pro", "https://openrouter.ai/api/v1");
+assert(gatewayDeepSeek.mode === "gateway_reasoning_effort", JSON.stringify(gatewayDeepSeek));
+const directDeepSeek = resolveReasoningControls("custom", "auto", "deepseek-v4-pro", "https://api.deepseek.com/v1");
+assert(directDeepSeek.mode === "deepseek_v4_reasoning_effort", JSON.stringify(directDeepSeek));
+const conflict = resolveReasoningControls("ollama", "auto", "deepseek-v4-pro", "https://api.deepseek.com/v1");
+assert(conflict.mode === "unsupported" && !conflict.showEffort, JSON.stringify(conflict));
+const directGLM52 = resolveReasoningControls("custom", "auto", "glm-5.2", "https://api.z.ai/api/paas/v4");
+assert(directGLM52.mode === "glm_reasoning_effort", JSON.stringify(directGLM52));
+assert(JSON.stringify(directGLM52.effortOptions) === JSON.stringify(["none","high","max"]), JSON.stringify(directGLM52));
+assert(resolveGLMReasoningMode("z-ai/glm-6.0") === "effort", "future GLM version did not inherit the 5.2+ contract");
+assert(resolveGLMReasoningMode("glm-4.7") === "toggle", "GLM-4.7 did not keep the toggle contract");
+const directGLM52Payload = {};
+applyReasoningFieldsToPayload(directGLM52Payload, directGLM52, "auto", "max", 0);
+assert(directGLM52Payload.glm_thinking_type === "enabled" && directGLM52Payload.reasoning_effort === "max", JSON.stringify(directGLM52Payload));
+const directGLM51 = resolveReasoningControls("custom", "auto", "glm-5.1", "https://api.z.ai/api/paas/v4");
+assert(directGLM51.mode === "glm_toggle", JSON.stringify(directGLM51));
+assert(JSON.stringify(directGLM51.effortOptions) === JSON.stringify(["enable","disable"]), JSON.stringify(directGLM51));
+const directGLM51Payload = {};
+applyReasoningFieldsToPayload(directGLM51Payload, directGLM51, "auto", "enable", 0);
+assert(directGLM51Payload.glm_thinking_type === "enabled" && !directGLM51Payload.reasoning_effort, JSON.stringify(directGLM51Payload));
+const ollamaGLM52 = resolveReasoningControls("ollama", "auto", "glm-5.2:cloud", "http://127.0.0.1:11434");
+assert(JSON.stringify(ollamaGLM52.effortOptions) === JSON.stringify(["none","high"]), JSON.stringify(ollamaGLM52));
+assert(normalizeReasoningEffortForControls("max", ollamaGLM52) === "high", "Ollama GLM-5.2 max was not bounded to high");
+const ollamaGLM51 = resolveReasoningControls("ollama", "auto", "glm-5.1:cloud", "http://127.0.0.1:11434");
+assert(JSON.stringify(ollamaGLM51.effortOptions) === JSON.stringify(["enable","disable"]), JSON.stringify(ollamaGLM51));
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reasoning controls runtime failed: %v\n%s", err, output)
 	}
 }
 

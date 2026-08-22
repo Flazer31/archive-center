@@ -378,6 +378,46 @@ func TestArchiveCenterJSJ3ApplyModeGateAndTraceRecord(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSJ3ApplyModeGateRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("ARCHIVE_CENTER_NODE_BINARY or node on PATH is required for input rewrite gate runtime smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractJSFunctionBlockForTest(t, src, "function sanitizeEnumValue(value, defaultVal, allowedValues)") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function getApplyModeGate()") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function applyModeAllowsApply(verdict)") + `
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const DEFAULT_SETTINGS = { pluginMainApplyMode: "shadow" };
+const PLUGIN_MAIN_APPLY_MODES = ["off", "shadow", "reviewed_apply"];
+const pluginMainHasConfig = () => true;
+let settings = { pluginMainApplyMode: "reviewed_apply", pluginMainRewriteOptIn: true };
+let gate = getApplyModeGate();
+assert(gate.mode === "reviewed_apply" && gate.shouldRunShadow === true, "reviewed_apply must execute the improvement call");
+for (const verdict of ["approve", "partial", "first-pass-only"]) {
+  assert(applyModeAllowsApply(verdict) === true, "reviewed_apply rejected allowed verdict " + verdict);
+}
+assert(applyModeAllowsApply("reject") === false, "reviewed_apply accepted reject verdict");
+settings = { pluginMainApplyMode: "shadow", pluginMainRewriteOptIn: false };
+assert(getApplyModeGate().shouldRunShadow === true, "shadow must keep review call enabled");
+assert(applyModeAllowsApply("approve") === false, "shadow must never rewrite the payload");
+settings = { pluginMainApplyMode: "off", pluginMainRewriteOptIn: false };
+assert(getApplyModeGate().shouldRunShadow === false, "off must skip the improvement call");
+settings = { pluginMainApplyMode: "reviewed_apply", pluginMainRewriteOptIn: false };
+assert(applyModeAllowsApply("approve") === false, "rewrite must retain the explicit opt-in fence");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("input rewrite apply-mode runtime smoke failed: %v\n%s", err, output)
+	}
+}
+
 func TestArchiveCenterJSJ3TraceBlocksAndFailureSafety(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{

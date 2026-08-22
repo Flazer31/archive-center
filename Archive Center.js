@@ -116,7 +116,7 @@
       budgetTokens: 0,
       glmThinkingType: "enabled",
       maxCompletionTokens: 24000,
-      hint: "GLM은 공식 thinking.type enabled/disabled 토글만 사용합니다.",
+      hint: "GLM 5.2 이상은 추론 강도를 지원하고, 이전 GLM은 thinking.type enabled/disabled 토글을 사용합니다.",
     },
     deepseek_v4: {
       label: "DeepSeek V4",
@@ -261,7 +261,7 @@
     // shadow       → shadow call 실행, trace·preview만 기록, 실제 userInput은 변경하지 않음
     // reviewed_apply → merge verdict(approve/partial/first-pass-only)가 허용되면 userInput 교체
     pluginMainApplyMode: "shadow",
-    pluginMainRewriteLegacyOptIn: false,
+    pluginMainRewriteOptIn: false,
     // ── 18.5-3b: operator-gated Chroma live limited cutover ──
     // ── I-1d: Aggregate read (experimental) — true 시 3개 개별 fetch 대신 단일 GET /session-state 사용 ──
     useAggregateRead: false,
@@ -294,12 +294,12 @@
       "settings.tab.settings": "설정",
       "settings.tab.debug": "고급",
       "settings.section.status": "설정 상태",
+      "settings.section.publisherSettings": "출판사 설정",
       "settings.section.common": "공통 설정",
       "settings.section.common.desc": "직전 완료 턴의 연속성 맥락은 기본 적용됩니다. 입력 개선 LLM은 별도의 선택 기능이며 서사 가이드와 독립적으로 작동합니다.",
-      "settings.label.lorebookReferenceMode": "로어북 참조",
-      "settings.lorebookReferenceMode.search_only": "검색만",
-      "settings.lorebookReferenceMode.reference_assist": "본문 참조 보조",
-      "settings.lorebookReferenceMode.help": "현재 캐릭터·채팅·활성 모듈의 로어북을 별도 참조자료로 보관합니다. 일반 턴에는 RisuAI 원본을 다시 읽지 않습니다.",
+      "settings.label.lorebookReferenceMode": "로어북 보조 참조",
+      "settings.lorebookReferenceMode.on": "켜기",
+      "settings.lorebookReferenceMode.help": "켜면 관련성이 있는 활성 로어북을 별도 보조 참조로 사용합니다. 꺼도 저장·동기화·조회는 유지됩니다.",
       "settings.btn.refreshLorebookReference": "로어북 새로고침",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
@@ -409,7 +409,8 @@
       "settings.label.pluginMainApplyMode": "입력 개선 LLM (선택)",
       "settings.applyMode.off": "꺼짐 (입력 개선 호출 안 함)",
       "settings.applyMode.shadow": "검토만 (유저 입력 유지)",
-      "settings.applyMode.reviewed_apply": "Legacy 입력 재작성 (명시적 opt-in 필요)",
+      "settings.applyMode.reviewed_apply": "검토 후 입력 재작성",
+      "settings.hint.pluginMainApplyMode": "입력 재작성은 승인된 개선 결과를 메인 모델 요청의 마지막 사용자 메시지에 적용합니다. RisuAI에 저장된 원문 채팅은 변경하지 않습니다.",
                                                             "settings.label.takeoverMode": "Takeover 모드 (generation packet 적용 수준)",
       "settings.takeoverMode.off": "Off (backend 패킷 무시)",
       "settings.takeoverMode.shadow_compare": "Shadow Compare (비교 기록, 채팅 미적용)",
@@ -770,11 +771,10 @@
       "explorer.tabs.trust.label": "신뢰 제어",
       "explorer.tabs.world.label": "세계 규칙",
       "explorer.tabs.entities.label": "개체 정보",
-      "explorer.tabs.lorebook.label": "보조 참조",
-      "explorer.lorebook.loading": "보조 참조를 불러오는 중입니다.",
+      "explorer.lorebook.loading": "저장된 로어북을 불러오는 중입니다.",
       "explorer.lorebook.empty": "현재 범위에 저장된 로어북이 없습니다.",
-      "explorer.lorebook.scopeUnavailable": "현재 RisuAI 채팅의 로어북 범위를 확인할 수 없습니다.",
-      "explorer.lorebook.readFailed": "보조 참조를 불러오지 못했습니다.",
+      "explorer.lorebook.scopeUnavailable": "선택한 세션의 로어북 범위를 확인할 수 없습니다.",
+      "explorer.lorebook.readFailed": "저장된 로어북을 불러오지 못했습니다.",
       "explorer.chatLogs.loading": "로딩 중...",
       "explorer.chatLogs.empty": "대화 원문이 없습니다.",
       "explorer.chatLogs.userInput": "사용자 입력",
@@ -1120,7 +1120,7 @@
       "settings.label.coreObjectiveMemoryMaxItems.hint": "관련도·인물 coverage·중복 제거 뒤 본문에 전달할 객관적 사건 요약의 최대 수입니다. 직접 근거·비밀 보호·상태·주관 기억·계층 보조 자료는 이 숫자를 소비하지 않지만 전체 문자 예산은 지킵니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
       "settings.label.uiLanguage": "UI 언어",
-      "settings.label.turnWorkflowHUDEnabled": "플로팅 진행 UI",
+      "settings.label.turnWorkflowHUDEnabled": "플로팅 UI",
       "settings.turnWorkflowHUDEnabled.on": "켜기",
       "settings.hint.turnWorkflowHUDEnabled": "현재 턴 진행, LLM 호출 시간, 생성·저장 결과를 화면 오른쪽에 표시합니다. 끄면 플로팅 UI가 나타나지 않습니다.",
       "settings.option.auxiliaryInjectionPlacement.after_anchor_marker": "앵커 마커 뒤",
@@ -1405,8 +1405,10 @@
       "turn_hud.recovery.confirm_title": "턴 기억 복구",
       "turn_hud.recovery.confirm_retry_derived_turn": "{turn}턴의 확정된 원문으로 평론가를 다시 호출해 파생 기억을 다시 생성합니다. 대화 원문은 변경하지 않습니다.",
       "turn_hud.recovery.requested": "복구 요청을 보냈습니다.",
-      "turn_hud.recovery.running": "이미 이 턴을 복구 중입니다.",
-      "turn_hud.recovery.completed": "이 턴의 파생 기억이 이미 복구되었습니다.",
+      "turn_hud.recovery.running": "이 턴의 파생 기억을 복구 중입니다.",
+      "turn_hud.recovery.running_title": "기억 복구 중",
+      "turn_hud.recovery.completed": "이 턴의 기억 복구 처리가 완료되었습니다.",
+      "turn_hud.recovery.completed_title": "기억 복구 완료",
       "turn_hud.recovery.request_failed": "복구 요청에 실패했습니다.",
       "turn_hud.error.embedding_failed": "Embedding 생성에 실패했습니다.",
       "turn_hud.error.vector_index_failed": "Vector 색인에 실패했습니다.",
@@ -1433,12 +1435,12 @@
       "settings.tab.settings": "Settings",
       "settings.tab.debug": "Advanced",
       "settings.section.status": "Settings Status",
+      "settings.section.publisherSettings": "Publisher settings",
       "settings.section.common": "Common Settings",
       "settings.section.common.desc": "The previous completed turn is included as continuity context by default. The optional input-improvement LLM is independent from narrative guidance.",
-      "settings.label.lorebookReferenceMode": "Lorebook reference",
-      "settings.lorebookReferenceMode.search_only": "Search only",
-      "settings.lorebookReferenceMode.reference_assist": "Reference assist",
-      "settings.lorebookReferenceMode.help": "Stores the current character, chat, and enabled-module lorebook as separate reference data. Normal turns do not reread the RisuAI source.",
+      "settings.label.lorebookReferenceMode": "Lorebook auxiliary reference",
+      "settings.lorebookReferenceMode.on": "On",
+      "settings.lorebookReferenceMode.help": "Uses relevant active lorebooks as a separate auxiliary reference. Turning it off keeps storage, synchronization, and browsing available.",
       "settings.btn.refreshLorebookReference": "Refresh lorebook",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
@@ -1514,7 +1516,7 @@
       "settings.option.auxiliaryInjectionPlacement.end": "End of request messages",
       "settings.label.uiLanguage": "UI Language",
       "settings.label.uiDetailMode": "UI Detail Level",
-      "settings.label.turnWorkflowHUDEnabled": "Floating Turn UI",
+      "settings.label.turnWorkflowHUDEnabled": "Floating UI",
       "settings.turnWorkflowHUDEnabled.on": "Enabled",
       "settings.hint.turnWorkflowHUDEnabled": "Shows turn progress, LLM call time, and generated or saved results on the right. Disable it to hide the floating UI.",
       "settings.uiDetailMode.full": "Full",
@@ -1727,7 +1729,8 @@
       "settings.label.pluginMainApplyMode": "Input Improvement LLM (Optional)",
       "settings.applyMode.off": "Off (do not call input improvement)",
       "settings.applyMode.shadow": "Review only (keep user input)",
-      "settings.applyMode.reviewed_apply": "Legacy rewrite (explicit opt-in required)",
+      "settings.applyMode.reviewed_apply": "Rewrite after review",
+      "settings.hint.pluginMainApplyMode": "Rewrite applies the approved improvement to the final user message sent to the main model. The original chat stored in RisuAI is not changed.",
                                                             "settings.label.takeoverMode": "Takeover Mode (generation packet apply level)",
       "settings.takeoverMode.off": "Off (ignore backend packet)",
       "settings.takeoverMode.shadow_compare": "Shadow Compare (log only, no chat change)",
@@ -2085,11 +2088,10 @@
       "explorer.tabs.trust.label": "Trust",
       "explorer.tabs.world.label": "World",
       "explorer.tabs.entities.label": "Entities",
-      "explorer.tabs.lorebook.label": "Auxiliary Reference",
-      "explorer.lorebook.loading": "Loading auxiliary references...",
+      "explorer.lorebook.loading": "Loading stored lorebook entries...",
       "explorer.lorebook.empty": "No stored lorebook entries exist for this scope.",
-      "explorer.lorebook.scopeUnavailable": "The current RisuAI chat lorebook scope is unavailable.",
-      "explorer.lorebook.readFailed": "Failed to load auxiliary references.",
+      "explorer.lorebook.scopeUnavailable": "The selected session's lorebook scope is unavailable.",
+      "explorer.lorebook.readFailed": "Failed to load stored lorebook entries.",
       "explorer.chatLogs.loading": "Loading...",
       "explorer.chatLogs.empty": "No chat_logs found.",
       "explorer.chatLogs.userInput": "User input",
@@ -2544,8 +2546,10 @@
       "turn_hud.recovery.confirm_title": "Recover turn memories",
       "turn_hud.recovery.confirm_retry_derived_turn": "Call the Critic again with the accepted source for turn {turn} and rebuild its derived memories. The conversation source will not be changed.",
       "turn_hud.recovery.requested": "Recovery was requested.",
-      "turn_hud.recovery.running": "This turn is already being recovered.",
-      "turn_hud.recovery.completed": "This turn's derived memories have already recovered.",
+      "turn_hud.recovery.running": "This turn's derived memories are being recovered.",
+      "turn_hud.recovery.running_title": "Recovering memories",
+      "turn_hud.recovery.completed": "Memory recovery processing for this turn is complete.",
+      "turn_hud.recovery.completed_title": "Memory recovery complete",
       "turn_hud.recovery.request_failed": "The recovery request failed.",
       "turn_hud.error.embedding_failed": "Embedding generation failed.",
       "turn_hud.error.vector_index_failed": "Vector indexing failed.",
@@ -2572,12 +2576,12 @@
       "settings.tab.settings": "設定",
       "settings.tab.debug": "詳細",
       "settings.section.status": "設定状態",
+      "settings.section.publisherSettings": "出版社設定",
       "settings.section.common": "共通設定",
       "settings.section.common.desc": "直前の完了ターンは継続コンテキストとして既定で適用されます。入力改善LLMは任意機能で、ナラティブガイドとは独立しています。",
-      "settings.label.lorebookReferenceMode": "ロアブック参照",
-      "settings.lorebookReferenceMode.search_only": "検索のみ",
-      "settings.lorebookReferenceMode.reference_assist": "本文参照補助",
-      "settings.lorebookReferenceMode.help": "現在のキャラクター・チャット・有効モジュールのロアブックを別の参照資料として保存します。通常ターンではRisuAI原本を再読込しません。",
+      "settings.label.lorebookReferenceMode": "ロアブック補助参照",
+      "settings.lorebookReferenceMode.on": "オン",
+      "settings.lorebookReferenceMode.help": "関連性のある有効なロアブックを別の補助参照として使用します。オフにしても保存・同期・閲覧は維持されます。",
       "settings.btn.refreshLorebookReference": "ロアブックを更新",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
@@ -2653,7 +2657,7 @@
       "settings.option.auxiliaryInjectionPlacement.end": "リクエストメッセージの末尾",
       "settings.label.uiLanguage": "UI言語",
       "settings.label.uiDetailMode": "UI情報量",
-      "settings.label.turnWorkflowHUDEnabled": "フローティング進行UI",
+      "settings.label.turnWorkflowHUDEnabled": "フローティングUI",
       "settings.turnWorkflowHUDEnabled.on": "表示する",
       "settings.hint.turnWorkflowHUDEnabled": "現在のターン進行、LLM呼び出し時間、生成・保存結果を右側に表示します。無効にするとフローティングUIは表示されません。",
       "settings.uiDetailMode.full": "全体",
@@ -2831,7 +2835,8 @@
       "settings.label.pluginMainApplyMode": "入力改善LLM（任意）",
       "settings.applyMode.off": "オフ（入力改善を呼び出さない）",
       "settings.applyMode.shadow": "レビューのみ（ユーザー入力維持）",
-      "settings.applyMode.reviewed_apply": "Legacy入力書き換え（明示的opt-in必須）",
+      "settings.applyMode.reviewed_apply": "レビュー後に入力を書き換える",
+      "settings.hint.pluginMainApplyMode": "承認された改善結果をメインモデルへ送る最後のユーザーメッセージに適用します。RisuAIに保存された元のチャット本文は変更しません。",
                                                             "settings.label.takeoverMode": "Takeoverモード (generation packet適用水準)",
       "settings.takeoverMode.off": "Off（backendパケット無視）",
       "settings.takeoverMode.shadow_compare": "Shadow Compare（比較記録、チャット未適用）",
@@ -3190,11 +3195,10 @@
       "explorer.tabs.trust.label": "Trust（信頼制御）",
       "explorer.tabs.world.label": "World（世界ルール）",
       "explorer.tabs.entities.label": "Entities（エンティティ）",
-      "explorer.tabs.lorebook.label": "補助参照",
-      "explorer.lorebook.loading": "補助参照を読み込み中です。",
+      "explorer.lorebook.loading": "保存されたロアブックを読み込み中です。",
       "explorer.lorebook.empty": "現在の範囲に保存されたロアブックはありません。",
-      "explorer.lorebook.scopeUnavailable": "現在のRisuAIチャットのロアブック範囲を確認できません。",
-      "explorer.lorebook.readFailed": "補助参照を読み込めませんでした。",
+      "explorer.lorebook.scopeUnavailable": "選択したセッションのロアブック範囲を確認できません。",
+      "explorer.lorebook.readFailed": "保存されたロアブックを読み込めませんでした。",
       "explorer.chatLogs.loading": "読み込み中...",
       "explorer.chatLogs.empty": "chat_logsがありません。",
       "explorer.chatLogs.userInput": "ユーザー入力",
@@ -3681,8 +3685,10 @@
       "turn_hud.recovery.confirm_title": "ターン記憶の復旧",
       "turn_hud.recovery.confirm_retry_derived_turn": "ターン{turn}の確定済み原文で批評家を再度呼び出し、派生記憶を再生成します。会話原文は変更しません。",
       "turn_hud.recovery.requested": "復旧をリクエストしました。",
-      "turn_hud.recovery.running": "このターンはすでに復旧中です。",
-      "turn_hud.recovery.completed": "このターンの派生記憶はすでに復旧済みです。",
+      "turn_hud.recovery.running": "このターンの派生記憶を復旧しています。",
+      "turn_hud.recovery.running_title": "記憶を復旧中",
+      "turn_hud.recovery.completed": "このターンの記憶復旧処理が完了しました。",
+      "turn_hud.recovery.completed_title": "記憶の復旧完了",
       "turn_hud.recovery.request_failed": "復旧リクエストに失敗しました。",
       "turn_hud.error.embedding_failed": "Embedding生成に失敗しました。",
       "turn_hud.error.vector_index_failed": "Vector索引に失敗しました。",
@@ -10548,6 +10554,15 @@
     return String(model || "").trim().toLowerCase();
   }
 
+  function resolveGLMReasoningMode(model) {
+    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/_/g, "-");
+    const match = normalizedModel.match(/(?:^|\/)glm-?(\d+)(?:[.-](\d+))?(?:$|[-_:])/);
+    if (!match) return "toggle";
+    const major = parseInt(match[1], 10) || 0;
+    const minor = parseInt(match[2], 10) || 0;
+    return major > 5 || (major === 5 && minor >= 2) ? "effort" : "toggle";
+  }
+
   function resolveGeminiThinkingMode(model) {
     const normalizedModel = normalizeReasoningModelIdentifier(model);
     if (normalizedModel.indexOf("gemini-2.5") !== -1) return "budget";
@@ -10555,6 +10570,25 @@
       return "level";
     }
     return "none";
+  }
+
+  function resolveReasoningTransport(provider, endpoint) {
+    const normalizedProvider = normalizeLlmProvider(provider, "openai");
+    let endpointTransport = "";
+    try {
+      const parsed = new URL(String(endpoint || "").trim());
+      const hostname = String(parsed.hostname || "").trim().toLowerCase().replace(/\.$/, "");
+      if (hostname === "api.openai.com") endpointTransport = "openai";
+      else if (hostname === "openrouter.ai") endpointTransport = "openrouter";
+      else if (hostname === "api.llmgateway.io") endpointTransport = "llmgateway";
+      else if (hostname === "ai-gateway.vercel.sh") endpointTransport = "vercel";
+      else if (hostname === "api.deepseek.com") endpointTransport = "deepseek";
+      else if (["localhost", "127.0.0.1", "::1"].includes(hostname) && parsed.port === "11434") endpointTransport = "ollama";
+    } catch {}
+    if (normalizedProvider === "custom") return endpointTransport === "deepseek" ? "deepseek" : "custom";
+    if (normalizedProvider === "openai" && endpointTransport === "deepseek") return "deepseek";
+    if (endpointTransport && endpointTransport !== normalizedProvider) return "conflict";
+    return normalizedProvider;
   }
 
   function resolveGeminiThinkingLevelOptions(model) {
@@ -10598,28 +10632,106 @@
     return [];
   }
 
-  function resolveReasoningControls(provider, preset, model) {
+  function resolveReasoningControls(provider, preset, model, endpoint) {
     const family = detectReasoningFamily(provider, preset, model);
     const normalizedProvider = normalizeLlmProvider(provider, "openai");
+    const transport = resolveReasoningTransport(normalizedProvider, endpoint);
     const geminiMode = resolveGeminiThinkingMode(model);
     const geminiLevelOptions = resolveGeminiThinkingLevelOptions(model);
     const claudeMode = resolveClaudeThinkingMode(model);
     const gptEffortOptions = resolveGPTReasoningEffortOptions(model);
+    const glmMode = family === "glm" ? resolveGLMReasoningMode(model) : "none";
+    if (transport === "conflict") {
+      return {
+        family,
+        mode: "unsupported",
+        showEffort: false,
+        effortOptions: [],
+        effortLabel: "Reasoning Effort",
+        effortHint: "",
+        showBudget: false,
+        budgetLabel: "Reasoning Budget Tokens",
+        budgetHint: "",
+        guideModeText: "선택한 provider와 공식 endpoint가 서로 달라 추론 필드를 전달하지 않습니다.",
+      };
+    }
+    if (transport === "ollama" && family !== "none") {
+      const effortOptions = family === "glm"
+        ? (glmMode === "effort" ? ["none", "high"] : ["enable", "disable"])
+        : ["none", "low", "medium", "high"];
+      return {
+        family,
+        mode: "ollama_reasoning_effort",
+        showEffort: true,
+        effortOptions,
+        effortLabel: family === "glm" && glmMode === "toggle" ? "Reasoning Toggle" : "Reasoning Effort",
+        effortHint: family === "glm"
+          ? (glmMode === "effort"
+            ? "GLM 5.2 이상은 Ollama OpenAI 호환 규약에서 끄기/High만 전달합니다."
+            : "GLM 5.1 이하는 thinking 켜기/끄기만 선택하고 Ollama 전송값으로 변환합니다.")
+          : "Ollama endpoint 규약에 맞춰 none/low/medium/high만 전달합니다.",
+        showBudget: false,
+        budgetLabel: "Reasoning Budget Tokens",
+        budgetHint: "",
+        guideModeText: family === "glm"
+          ? "현재 모델/전송 규약: GLM " + (glmMode === "effort" ? "5.2+ effort" : "toggle") + " → Ollama reasoning_effort"
+          : "현재 전송 규약: Ollama OpenAI 호환 reasoning_effort",
+      };
+    }
+    if (["llmgateway", "openrouter", "vercel"].includes(transport) && family !== "none") {
+      const gatewayEffortOptions = family === "deepseek_v4"
+        ? ["none", "high", "max"]
+        : (family === "gpt" && gptEffortOptions.length > 0
+          ? gptEffortOptions
+          : (family === "glm"
+            ? (glmMode === "effort" ? ["none", "high"] : ["enable", "disable"])
+            : (family === "gemini" && geminiMode !== "none"
+              ? geminiLevelOptions
+              : (family === "claude" && claudeMode !== "none" ? ["none", "low", "medium", "high", "max"] : []))));
+      if (gatewayEffortOptions.length > 0) {
+        return {
+          family,
+          mode: "gateway_reasoning_effort",
+          showEffort: true,
+          effortOptions: gatewayEffortOptions,
+          effortLabel: "Reasoning Effort",
+          effortHint: "선택한 gateway의 전송 형식으로 변환해 전달합니다.",
+          showBudget: false,
+          budgetLabel: "Reasoning Budget Tokens",
+          budgetHint: "",
+          guideModeText: "현재 전송 규약: " + transport + " reasoning",
+        };
+      }
+    }
     if (family === "glm") {
+      if (glmMode === "effort") {
+        return {
+          family,
+          mode: "glm_reasoning_effort",
+          showEffort: true,
+          effortOptions: ["none", "high", "max"],
+          effortLabel: "Reasoning Effort",
+          effortHint: "GLM 5.2 이상은 none/high/max를 사용합니다. low/medium은 high, xhigh는 max로 정규화됩니다.",
+          showBudget: false,
+          budgetLabel: "Reasoning Budget Tokens",
+          budgetHint: "",
+          guideModeText: "현재 모델 감지: GLM 5.2+ thinking.type + reasoning_effort",
+        };
+      }
       return {
         family,
         mode: "glm_toggle",
         showEffort: true,
         effortOptions: ["enable", "disable"],
         effortLabel: "Reasoning Toggle",
-        effortHint: "GLM 계열은 enable/disable thinking toggle을 사용합니다.",
+        effortHint: "GLM 5.1 이하는 enable/disable thinking toggle을 사용합니다.",
         showBudget: false,
         budgetLabel: "Reasoning Budget Tokens",
         budgetHint: "",
         guideModeText: "현재 모델 감지: GLM thinking.type",
       };
     }
-    if (family === "deepseek_v4") {
+    if (family === "deepseek_v4" && transport === "deepseek") {
       return {
         family,
         mode: "deepseek_v4_reasoning_effort",
@@ -10630,29 +10742,7 @@
         showBudget: false,
         budgetLabel: "Reasoning Budget Tokens",
         budgetHint: "",
-        guideModeText: normalizedProvider === "ollama"
-          ? "현재 모델 감지: Ollama OpenAI 호환 reasoning_effort"
-          : "현재 모델 감지: DeepSeek V4 thinking.type + reasoning_effort",
-      };
-    }
-    if (normalizedProvider === "ollama"
-      && (family === "ollama_thinking"
-        || (family === "gemini" && geminiMode !== "none")
-        || (family === "claude" && claudeMode !== "none")
-        || (family === "gpt" && gptEffortOptions.length > 0))) {
-      return {
-        family,
-        mode: "ollama_reasoning_effort",
-        showEffort: true,
-        effortOptions: family === "gpt"
-          ? gptEffortOptions.filter((option) => ["none", "low", "medium", "high", "max"].includes(option))
-          : ["none", "low", "medium", "high", "max"],
-        effortLabel: "Reasoning Effort",
-        effortHint: "Ollama OpenAI 호환 reasoning_effort로 전달합니다.",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: "현재 모델 감지: Ollama OpenAI 호환 reasoning_effort",
+        guideModeText: "현재 전송 규약: DeepSeek V4 thinking.type + reasoning_effort",
       };
     }
     if (family === "gemini") {
@@ -10759,6 +10849,16 @@
     const options = Array.isArray(controls.effortOptions) ? controls.effortOptions.filter(Boolean) : [];
     if (!options.length) return "none";
     let normalizedValue = String(value || "").trim().toLowerCase();
+    if (controls.family === "glm") {
+      if (controls.mode === "glm_toggle" || (options.includes("enable") && options.includes("disable"))) {
+        normalizedValue = ["none", "minimal", "disable", "disabled", "off", "false"].includes(normalizedValue) ? "disable" : "enable";
+      } else {
+        if (["minimal", "disable", "disabled", "off", "false"].includes(normalizedValue)) normalizedValue = "none";
+        if (["enable", "enabled", "on", "true", "low", "medium"].includes(normalizedValue)) normalizedValue = "high";
+        if (normalizedValue === "xhigh") normalizedValue = options.includes("max") ? "max" : "high";
+        if (normalizedValue === "max" && !options.includes("max") && options.includes("high")) normalizedValue = "high";
+      }
+    }
     if (controls.mode === "deepseek_v4_reasoning_effort") {
       if (normalizedValue === "low" || normalizedValue === "medium") normalizedValue = "high";
       if (normalizedValue === "xhigh") normalizedValue = "max";
@@ -10794,13 +10894,16 @@
     if (reasoningPreset && String(reasoningPreset).trim().toLowerCase() !== "auto") {
       payload.reasoning_preset = String(reasoningPreset).trim();
     }
-    if (controls.family === "glm") {
+    if (controls.mode === "glm_toggle") {
       if (controls.showEffort && effort) {
         payload.glm_thinking_type = (effort === "disable" || effort === "disabled") ? "disabled" : "enabled";
       }
-    } else if (controls.family === "deepseek_v4") {
+    } else if (controls.mode === "glm_reasoning_effort") {
+      payload.glm_thinking_type = effort === "none" ? "disabled" : "enabled";
+      if (effort !== "none") payload.reasoning_effort = effort;
+    } else if (controls.mode === "deepseek_v4_reasoning_effort") {
       payload.reasoning_effort = effort || "none";
-    } else if (controls.showEffort && effort && (effort !== "none" || controls.mode === "reasoning_effort" || controls.mode === "ollama_reasoning_effort")) {
+    } else if (controls.showEffort && effort && (effort !== "none" || controls.mode === "reasoning_effort" || controls.mode === "ollama_reasoning_effort" || controls.mode === "gateway_reasoning_effort")) {
       payload.reasoning_effort = effort;
     }
     if (controls.showBudget && reasoningBudgetTokens > 0) {
@@ -10861,8 +10964,9 @@
     const provider = normalizeLlmProvider(source.provider, "openai");
     const preset = normalizeReasoningPreset(source.preset, "auto");
     const model = String(source.model || "").trim();
+    const endpoint = String(source.endpoint || "").trim();
     const family = detectReasoningFamily(provider, preset, model);
-    const controls = resolveReasoningControls(provider, preset, model);
+    const controls = resolveReasoningControls(provider, preset, model, endpoint);
     const presetInfo = REASONING_PRESET_GUIDE[family] || REASONING_PRESET_GUIDE.none;
     const syncKey = [provider, preset, normalizeReasoningModelIdentifier(model), controls.mode].join("|");
     const previousSyncKey = String(source.previousSyncKey || "");
@@ -10895,7 +10999,7 @@
         ? ((shouldApplyPresetDefaults || (isFirstSync && preset !== "custom" && !currentBudgetIsNumeric))
           ? defaultBudget
           : currentBudget)
-        : currentBudget,
+        : "0",
       nextMaxCompletion: (shouldApplyPresetDefaults || (isFirstSync && preset !== "custom" && !currentMaxCompletionIsNumeric))
         ? defaultMaxCompletion
         : currentMaxCompletion,
@@ -11169,11 +11273,11 @@
       DEFAULT_SETTINGS.pluginMainApplyMode,
       PLUGIN_MAIN_APPLY_MODES,
     );
-    merged.pluginMainRewriteLegacyOptIn = !!merged.pluginMainRewriteLegacyOptIn;
-    if (!merged.pluginMainRewriteLegacyOptIn && merged.pluginMainApplyMode === "reviewed_apply") {
-      merged.pluginMainApplyMode = "shadow";
-    }
-    // Step 23 / 2.3: shadow is the safe default. Do not migrate it to rewrite mode.
+    // Selecting reviewed_apply is the explicit opt-in. Other modes always clear rewrite permission.
+    merged.pluginMainRewriteOptIn = merged.pluginMainApplyMode === "reviewed_apply";
+    // Remove the deprecated persisted key; its value never overrides the selected apply mode.
+    delete merged.pluginMainRewriteLegacyOptIn;
+    // Shadow remains the default; rewrite is enabled only by the user's explicit mode selection.
     merged.uiLanguage = sanitizeEnumValue(
       merged.uiLanguage,
       DEFAULT_SETTINGS.uiLanguage,
@@ -14186,6 +14290,31 @@
           + (meta ? `<div style="${failed ? TURN_WORKFLOW_HUD_ERROR_META_STYLE : TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>` : "")
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
           + turnWorkflowHUDWarningListHTML(view)
+          + `</div>`,
+      };
+    }
+    if (view.status === "recovering") {
+      const error = view.error && typeof view.error === "object" ? view.error : {};
+      const recoveryPresentation = turnWorkflowHUDRecoveryPresentation(error);
+      const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
+      const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
+      const meta = [
+        turnWorkflowHUDTurnLabel(view),
+        String(error.code || "CRITIC_REPROCESSING_QUEUED"),
+      ].filter(Boolean).join(" · ");
+      return {
+        terminal: false,
+        elapsedStartedAt: "",
+        html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle("warning")}">`
+          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running_title"))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
+          + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running"))}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
+          + turnWorkflowHUDCountLedgerHTML(countPresentation)
+          + turnWorkflowHUDStageLedgerHTML(view)
+          + turnWorkflowHUDWarningListHTML(view)
+          + recoveryPresentation.html
           + `</div>`,
       };
     }
@@ -22391,8 +22520,8 @@
           version: 'p34a.v1',
           mode: applyModeName,
           payloadRewritten,
-          rewriteAllowed: applyModeName === 'reviewed_apply' && !!settings.pluginMainRewriteLegacyOptIn && payloadRewritten,
-          traceOnlyFallback: applyModeName !== 'reviewed_apply' || !settings.pluginMainRewriteLegacyOptIn,
+          rewriteAllowed: applyModeName === 'reviewed_apply' && !!settings.pluginMainRewriteOptIn && payloadRewritten,
+          traceOnlyFallback: applyModeName !== 'reviewed_apply' || !settings.pluginMainRewriteOptIn,
           guardReason: 'final_payload_parity_trace',
         },
         injectionApplied: !!injection.applied,
@@ -24864,7 +24993,7 @@
     const model    = settings.pluginMainModel.trim();
     const apiKey   = settings.pluginMainApiKey.trim();
     const reasoningPreset = typeof opts.reasoningPreset === "string" ? opts.reasoningPreset.trim() : configuredReasoningPreset;
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model);
+    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model, endpoint);
     const requestedReasoningEffort = typeof opts.reasoningEffort === "string" ? opts.reasoningEffort.trim() : configuredReasoningEffort;
     const reasoningEffort = normalizeReasoningEffortForControls(requestedReasoningEffort, reasoningControls);
     const reasoningBudgetTokensRaw = typeof opts.reasoningBudgetTokens === "number"
@@ -25304,7 +25433,7 @@
     const model    = settings.subLlmModel.trim();
     const apiKey   = settings.subLlmApiKey.trim();
     const reasoningPreset = typeof opts.reasoningPreset === "string" ? opts.reasoningPreset.trim() : configuredReasoningPreset;
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model);
+    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model, endpoint);
     const requestedReasoningEffort = typeof opts.reasoningEffort === "string" ? opts.reasoningEffort.trim() : configuredReasoningEffort;
     const reasoningEffort = normalizeReasoningEffortForControls(requestedReasoningEffort, reasoningControls);
     const reasoningBudgetTokensRaw = typeof opts.reasoningBudgetTokens === "number"
@@ -25533,10 +25662,10 @@
       PLUGIN_MAIN_APPLY_MODES
     );
     if (mode !== "reviewed_apply") return false;
-    if (!settings.pluginMainRewriteLegacyOptIn) return false;
+    if (!settings.pluginMainRewriteOptIn) return false;
     return verdict === "approve" || verdict === "partial" || verdict === "first-pass-only";
   }
-  // Step 23 / 2.3: user-input rewrite is legacy explicit opt-in only.
+  // The reviewed_apply selection is the explicit rewrite opt-in.
   // ── end J-3a ──────────────────────────────────────────────────────────────
 
   // ── J-4a: Improvement Trace Record ────────────────────────────────────────
@@ -29525,7 +29654,7 @@
         // rule=apply_if_approved → approve/partial 일 때만 교체 (reviewed_apply 모드 호환)
         const _bundleCanApply = (
           _bundleRule === "apply_if_approved" &&
-          !!settings.pluginMainRewriteLegacyOptIn &&
+          !!settings.pluginMainRewriteOptIn &&
           (_bundleVerdict === "approve" || _bundleVerdict === "partial") &&
           !_effectiveUserInputChanged // local path가 이미 적용 후보를 만들었으면 중복 적용 방지
         );
@@ -32737,7 +32866,7 @@
         ? String(lastOrchResult._effectiveUserInput)
         : String(userInput || "");
       const shouldRewriteEffectiveUserInput = isSaveType(type)
-        && !!settings.pluginMainRewriteLegacyOptIn
+        && !!settings.pluginMainRewriteOptIn
         && !!(lastOrchResult && lastOrchResult._effectiveUserInputChanged)
         && !!effectiveUserInput.trim()
         && effectiveUserInput !== String(userInput || "");
@@ -34458,7 +34587,7 @@
     sessions: [],
     selectedSessionId: null,  // null = 아직 선택 안 됨 (현재 session 자동 반영)
     activeChatSessionId: null, // Sprint 2-G: 현재 활성 채팅의 session ID (explorer 필터와 별도)
-    activeTab: "chat_logs",   // "chat_logs" | "memories" | "direct_evidence" | "kg_triples" | "episodes" | "trust" | "world" | "entities" | "lorebook"
+    activeTab: "chat_logs",   // "chat_logs" | "memories" | "direct_evidence" | "kg_triples" | "episodes" | "trust" | "world" | "entities"
     hierarchySubTab: "episodes", // "episodes" | "chapters" | "arcs" | "sagas"
     chatLogs: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
     memories: { items: [], total: 0, offset: 0, hasMore: false, loading: false },
@@ -34864,25 +34993,6 @@
     }
   }
 
-  async function explorerResolveLorebookReferenceScope(sessionId) {
-    const sid = String(sessionId || "").trim();
-    if (!sid) return null;
-    const cached = _lorebookReferenceSync.lastScope;
-    if (cached && String(cached.chat_session_id || "") === sid) return cached;
-    let activeSid = String(_explorer.activeChatSessionId || "").trim();
-    if (!activeSid) {
-      const observed = String(await getCurrentChatSessionId() || "").trim();
-      if (observed && observed !== SESSION_FALLBACK) {
-        activeSid = observed;
-        _explorer.activeChatSessionId = observed;
-      }
-    }
-    if (!activeSid || activeSid !== sid) return null;
-    const scope = await observeLorebookReferenceScope(sid);
-    _lorebookReferenceSync.lastScope = scope;
-    return scope;
-  }
-
   async function explorerFetchLorebook(reset = false) {
     const state = _explorer.lorebook;
     if (state.loading && !reset) return;
@@ -34901,19 +35011,8 @@
     const requestSid = explorerSessionId() || String(_timelineState.selectedSessionId || _timelineState.sessionId || "");
     try {
       if (!requestSid) return;
-      const scope = await explorerResolveLorebookReferenceScope(requestSid);
-      if (state.requestId !== requestId || String(explorerSessionId() || _timelineState.selectedSessionId || _timelineState.sessionId || "") !== requestSid) return;
-      if (!scope) {
-        state.error = "scope_unavailable";
-        return;
-      }
       const params = new URLSearchParams();
-      if (scope.character_index != null) params.set("character_index", String(scope.character_index));
-      if (scope.chat_index != null) params.set("chat_index", String(scope.chat_index));
-      params.set("enabled_modules_observed", scope.enabled_modules_observed === true ? "true" : "false");
-      canonicalLorebookReferenceModuleIds(scope.enabled_module_ids).forEach(function(moduleId) {
-        params.append("enabled_module_id", moduleId);
-      });
+      params.set("scope_mode", "latest_session");
       params.set("limit", String(EXPLORER_PAGE_SIZE));
       params.set("offset", String(state.offset));
       const result = await bridgeFetch(
@@ -34929,7 +35028,7 @@
       state.total = Number(result.total || 0);
       state.offset = state.items.length;
       state.hasMore = result.has_more === true;
-      state.scope = result.scope || scope;
+      state.scope = result.scope || null;
       state.latestSnapshot = result.latest_snapshot || null;
       state.error = "";
     } catch (err) {
@@ -34948,7 +35047,6 @@
     if (tab === "chapters") return _explorer.chapters;
     if (tab === "arcs") return _explorer.arcs;
     if (tab === "sagas") return _explorer.sagas;
-    if (tab === "lorebook") return _explorer.lorebook;
     return null;
   }
 
@@ -34974,11 +35072,6 @@
     if (tab === "direct_evidence") {
       state.stateCounts = null;
       state.stateContract = null;
-    }
-    if (tab === "lorebook") {
-      state.error = "";
-      state.scope = null;
-      state.latestSnapshot = null;
     }
   }
 
@@ -35022,9 +35115,6 @@
     }
     else if (tab === "entities") {
       await explorerFetchEntities();
-    }
-    else if (tab === "lorebook") {
-      await explorerFetchLorebook(reset);
     }
   }
 
@@ -36541,7 +36631,7 @@
   // ──────────────────────────────────────────────────────────────
 
   let _rescanState = { loading: false, error: null, result: null, job: null };
-  let _sessionNormalizeState = { loading: false, error: null, result: null, job: null, planWarning: "", panelOpen: true };
+  let _sessionNormalizeState = { loading: false, error: null, result: null, job: null, planWarning: "", panelOpen: false };
   let _activeChatRescanDryRunState = { loading: false, error: null, result: null };
   let _activeChatRecentRebuildState = { loading: false, error: null, result: null };
   let _chatLogRepairState = { loading: false, error: null, progress: null, result: null };
@@ -40048,7 +40138,9 @@
 
   function getExplorerTabItems() {
     const tabs = _explorer.viewModel && Array.isArray(_explorer.viewModel.tabs) ? _explorer.viewModel.tabs : [];
-    return tabs.map(function(tab) {
+    return tabs.filter(function(tab) {
+      return String(tab && tab.key || "") !== "lorebook";
+    }).map(function(tab) {
       return { key: String(tab.key || ""), label: presentationExplorerTabLabel(tab.key), count: Number(tab.count || 0) };
     });
   }
@@ -42500,27 +42592,48 @@
     if (_explorer.activeTab === "trust") return renderExplorerTrust();
     if (_explorer.activeTab === "world") return renderExplorerWorldGraph();   // I-4d
     if (_explorer.activeTab === "entities") return renderExplorerEntities();
-    if (_explorer.activeTab === "lorebook") return renderExplorerLorebook();
     return '<div class="mo-note">탭을 선택하세요.</div>';
   }
 
   // DOM-only projection of Go-owned session capabilities for the Memory management screen.
-  function renderSessionDatabaseManagement() {
-    const viewModel = _timelineState.viewModel && typeof _timelineState.viewModel === "object"
-      ? _timelineState.viewModel
+  function renderSessionDatabaseManagement(maintenancePanels = "", syncIndicator = "") {
+    const explorerViewModel = _explorer.viewModel && typeof _explorer.viewModel === "object"
+      ? _explorer.viewModel
       : null;
+    const viewModel = explorerViewModel && Array.isArray(explorerViewModel.sessions)
+      ? explorerViewModel
+      : _timelineState.viewModel && typeof _timelineState.viewModel === "object"
+        ? _timelineState.viewModel
+        : null;
     const sessions = viewModel && Array.isArray(viewModel.sessions) ? viewModel.sessions : [];
     const selectedSessionId = String(_explorer.selectedSessionId || _timelineState.selectedSessionId || _timelineState.sessionId || "");
-    const sessionOptionsHtml = sessions.length > 0 ? sessions.map(function(session) {
-      const sid = String(session.session_id || "");
-      const lifecycle = String(session.label || session.status || "");
-      const label = getSessionDisplayLabel(sid, false) || sid;
-      return '<option value="' + escapeAttr(sid) + '"' + (sid === selectedSessionId ? ' selected' : '') + '>' + escapeAttr(label + (lifecycle ? ' · ' + lifecycle : '')) + '</option>';
-    }).join("") : '<option value="">' + escapeAttr(_explorer.sessionsLoading ? t("timeline.note.loadingSessions") : t("timeline.note.noSessions")) + '</option>';
-    const selectedSession = sessions.find(function(session) { return String(session.session_id || "") === selectedSessionId; })
+    const selectedSession = sessions.find(function(session) { return timelineSessionId(session) === selectedSessionId; })
       || sessions.find(function(session) { return !!session.selected; })
       || null;
-    const selectedActionSessionId = String(selectedSession && selectedSession.session_id || selectedSessionId || "");
+    const selectedActionSessionId = String(selectedSession ? timelineSessionId(selectedSession) : selectedSessionId || "");
+    const sessionCardsHtml = sessions.length > 0 ? sessions.map(function(session) {
+      const sid = timelineSessionId(session);
+      const counts = session.counts && typeof session.counts === "object" ? session.counts : {};
+      const logs = Number(counts.chat_logs ?? session.chat_logs_count ?? 0);
+      const memories = Number(counts.memories ?? session.memories_count ?? 0);
+      const kg = Number(counts.kg_triples ?? session.kg_triples_count ?? 0);
+      const lifecycle = String(session.deleted
+        ? t("timeline.session.deleted")
+        : session.current
+          ? t("timeline.session.current")
+          : session.label || session.status || "");
+      const label = getSessionDisplayLabel(sid, false) || sid;
+      const activeClass = sid === selectedActionSessionId ? " is-active" : "";
+      const deletedClass = session.deleted ? " is-deleted" : "";
+      return '<button type="button" class="mo-memory-admin-session' + activeClass + deletedClass + '" data-memory-admin-session-id="' + escapeAttr(sid) + '" aria-pressed="' + (sid === selectedActionSessionId ? 'true' : 'false') + '">' +
+        '<span class="mo-memory-admin-session-head"><strong>' + escapeAttr(label) + '</strong>' +
+          (lifecycle ? '<span>' + escapeAttr(lifecycle) + '</span>' : '') + '</span>' +
+        '<span class="mo-memory-admin-session-counts">' +
+          escapeAttr(t("timeline.label.logs")) + ' ' + logs + ' · ' +
+          escapeAttr(t("timeline.label.mem")) + ' ' + memories + ' · ' +
+          escapeAttr(t("timeline.label.kg")) + ' ' + kg +
+        '</span></button>';
+    }).join("") : '<div class="mo-note">' + escapeAttr(_explorer.sessionsLoading ? t("timeline.note.loadingSessions") : t("timeline.note.noSessions")) + '</div>';
     const attachBtn = selectedSession && selectedSession.can_attach
       ? '<button type="button" class="mo-tl-session-attach" data-timeline-session-attach-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.attachTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.attachCurrent")) + '</button>'
       : '';
@@ -42549,12 +42662,41 @@
             migrationOpsCleanupHtml +
           '</div></div>'
       : '';
-    return '<section class="mo-tl-toolbar mo-memory-session-admin" data-memory-session-management>' +
-      '<label class="mo-tl-session-chooser" for="mo-memory-admin-session-select"><span>' + escapeAttr(t("timeline.label.sessions")) + '</span><select id="mo-memory-admin-session-select">' + sessionOptionsHtml + '</select></label>' +
-      '<div class="mo-tl-session-actions">' + attachBtn + copyBtn + migrateBtn + deleteBtn + '</div>' +
-      migrationStatusHtml + migrationOpsHtml +
-      (_explorer.sessionsError ? '<div class="mo-status mo-status-fail">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
-      '</section>';
+    const selectedCounts = selectedSession && selectedSession.counts && typeof selectedSession.counts === "object" ? selectedSession.counts : {};
+    const selectedMetaHtml = selectedSession
+      ? '<div class="mo-memory-admin-selected-meta">' +
+          escapeAttr(t("timeline.label.logs")) + ' ' + Number(selectedCounts.chat_logs ?? selectedSession.chat_logs_count ?? 0) + ' · ' +
+          escapeAttr(t("timeline.label.mem")) + ' ' + Number(selectedCounts.memories ?? selectedSession.memories_count ?? 0) + ' · ' +
+          escapeAttr(t("timeline.label.kg")) + ' ' + Number(selectedCounts.kg_triples ?? selectedSession.kg_triples_count ?? 0) +
+        '</div>'
+      : '';
+    const routingResetHtml = selectedActionSessionId
+      ? '<button class="mo-btn mo-btn-danger-solid mo-ex-routing-reset-btn" id="mo-ex-routing-reset-btn"' +
+          (_sessionRoutingResetState.loading ? ' disabled' : '') +
+          ' title="' + escapeAttr(t('routing.resetState.title')) + '">' +
+          (_sessionRoutingResetState.loading ? t('explorer.resetRouting.loading') : t('explorer.resetRouting.btn')) +
+        '</button>'
+      : '';
+    const selectedWorkspaceHtml = selectedActionSessionId
+      ? '<section class="mo-memory-admin-workspace">' +
+          '<header class="mo-memory-admin-workspace-head"><div class="mo-memory-admin-selected">' +
+            '<span>' + escapeAttr(t("timeline.label.selected")) + ' · ' + escapeAttr(t("timeline.label.sessions")) + '</span>' +
+            '<strong title="' + escapeAttr(selectedActionSessionId) + '">' + escapeAttr(getSessionDisplayLabel(selectedActionSessionId, false) || selectedActionSessionId) + '</strong>' +
+            selectedMetaHtml +
+          '</div><div class="mo-memory-admin-actions">' + attachBtn + copyBtn + migrateBtn + deleteBtn + '</div></header>' +
+          '<div class="mo-memory-admin-secondary">' + syncIndicator + routingResetHtml +
+            (_sessionRoutingResetState.error ? '<span class="mo-ex-routing-reset-error">❌ ' + escapeAttr(_sessionRoutingResetState.error) + '</span>' : '') +
+          '</div>' +
+          migrationStatusHtml + migrationOpsHtml +
+          '<div class="mo-memory-management-stack">' + (maintenancePanels || '<div class="mo-note">' + escapeAttr(t('common.empty')) + '</div>') + '</div>' +
+        '</section>'
+      : '<section class="mo-memory-admin-workspace"><div class="mo-note">' + escapeAttr(t("timeline.note.noSessions")) + '</div></section>';
+    return '<div class="mo-memory-admin-layout" data-memory-session-management>' +
+      '<aside class="mo-memory-admin-rail" aria-label="' + escapeAttr(t("timeline.label.sessions")) + '">' +
+        '<div class="mo-memory-admin-rail-head"><strong>' + escapeAttr(t("timeline.label.sessions")) + '</strong><span>' + sessions.length + '</span></div>' +
+        '<div class="mo-memory-admin-session-list">' + sessionCardsHtml + '</div>' +
+        (_explorer.sessionsError ? '<div class="mo-status mo-status-fail">' + escapeAttr(_explorer.sessionsError) + '</div>' : '') +
+      '</aside>' + selectedWorkspaceHtml + '</div>';
   }
 
   function renderExplorerSection(mode) {
@@ -42607,7 +42749,8 @@
           '</details>' +
           '</div>';
       }
-      sessionNormalizePanel = '<div class="mo-reindex-panel">' +
+      const normalizeNeedsAttention = !!(_sessionNormalizeState.loading || _sessionNormalizeState.error || _sessionNormalizeState.result || _sessionNormalizeState.job || _sessionNormalizeState.planWarning);
+      sessionNormalizePanel = '<div class="mo-reindex-panel mo-session-normalize-panel' + (normalizeNeedsAttention ? ' is-attention' : '') + '">' +
         '<details data-session-normalize-panel' + (_sessionNormalizeState.panelOpen !== false ? ' open' : '') + '>' +
         '<summary class="mo-reindex-summary">🧭 ' + escapeAttr(t("sessionNormalize.title")) + '</summary>' +
         '<div class="mo-reindex-body">' +
@@ -42938,7 +43081,7 @@
     const activeTabItem = tabItems.find(function(item) { return item.key === _explorer.activeTab; }) || { label: _explorer.activeTab, count: 0 };
 
     const maintenancePanels = managementMode
-      ? renderExplorerRuntimeTokenProfileBanner() + sessionNormalizePanel + reindexPanel + activeChatRescanDryRunPanel + rescanPanel + hypaImportPanel
+      ? sessionNormalizePanel + renderExplorerRuntimeTokenProfileBanner() + hypaImportPanel + reindexPanel + activeChatRescanDryRunPanel + rescanPanel
       : '';
     const contextHtml = '<div class="mo-memory-context">' +
       '<div class="mo-memory-context-main"><span>' + t('explorer.filter.current') + '</span><strong>' + escapeAttr(sidDisplay) + '</strong></div>' +
@@ -42951,11 +43094,7 @@
         (_sessionRoutingResetState.error ? ' <span class="mo-ex-routing-reset-error">❌ ' + escapeAttr(_sessionRoutingResetState.error) + '</span>' : '') +
       '</div></div>';
     if (managementMode) {
-      return '<section class="mo-memory-management">' + contextHtml +
-        renderSessionDatabaseManagement() +
-        '<div class="mo-memory-management-stack">' +
-          (maintenancePanels || '<div class="mo-note">' + escapeAttr(t('common.empty')) + '</div>') +
-        '</div></section>';
+      return '<section class="mo-memory-management">' + renderSessionDatabaseManagement(maintenancePanels, syncIndicator) + '</section>';
     }
     return '<section class="mo-memory-surface">' + contextHtml +
       '<div class="mo-memory-layout">' +
@@ -42973,59 +43112,69 @@
 
   function renderLorebookReferenceManagementSection() {
     const state = _explorer.lorebook;
+    const viewModel = _explorer.viewModel && Array.isArray(_explorer.viewModel.sessions)
+      ? _explorer.viewModel
+      : _timelineState.viewModel && Array.isArray(_timelineState.viewModel.sessions)
+        ? _timelineState.viewModel
+        : null;
+    const sessions = viewModel ? viewModel.sessions : explorerVisibleSessions();
+    const selectedSessionId = String(_explorer.selectedSessionId || _timelineState.selectedSessionId || _timelineState.sessionId || "");
+    const activeSessionId = String(_explorer.activeChatSessionId || _timelineState.currentSessionId || "");
+    const sessionOptions = sessions.length > 0 ? sessions.map(function(session) {
+      const sid = timelineSessionId(session);
+      const current = !!session.current || sid === activeSessionId;
+      const deleted = !!session.deleted;
+      const suffix = current ? t("timeline.session.current") : deleted ? t("timeline.session.deleted") : "";
+      const label = getSessionDisplayLabel(sid, false) || sid;
+      return '<option value="' + escapeAttr(sid) + '"' + (sid === selectedSessionId ? ' selected' : '') + '>' +
+        escapeAttr(label + (suffix ? ' · ' + suffix : '')) + '</option>';
+    }).join("") : '<option value="">' + escapeAttr(t("timeline.note.noSessions")) + '</option>';
+    const refreshDisabled = !selectedSessionId || selectedSessionId !== activeSessionId;
     const runtimeSync = runtimeState.lastLorebookReferenceSync && typeof runtimeState.lastLorebookReferenceSync === "object"
       ? runtimeState.lastLorebookReferenceSync
       : null;
-    const syncText = String(runtimeSync && runtimeSync.detail || "-");
+    const syncText = selectedSessionId === activeSessionId ? String(runtimeSync && runtimeSync.detail || "-") : "-";
     const snapshotTime = state.latestSnapshot && state.latestSnapshot.observed_at
       ? formatDashboardTimestampLocal(state.latestSnapshot.observed_at, { includeDate: true })
       : "-";
     return '<section class="mo-memory-surface mo-lorebook-management">' +
       '<div class="mo-memory-context">' +
-        '<div class="mo-memory-context-main"><strong>' + escapeAttr(t('settings.tab.lorebook')) + '</strong></div>' +
-        '<div class="mo-memory-context-actions"><span id="mo-lorebook-reference-current-count">' + formatExplorerNumber(state.total) + '</span></div>' +
+        '<div class="mo-memory-context-main"><label class="mo-tl-session-chooser" for="mo-lorebook-session-select"><span>' + escapeAttr(t("timeline.label.sessions")) + '</span>' +
+          '<select id="mo-lorebook-session-select"' + (state.loading ? ' disabled' : '') + '>' + sessionOptions + '</select></label></div>' +
+        '<div class="mo-memory-context-actions">' +
+          '<button type="button" class="mo-btn" id="mo-refresh-lorebook-reference"' + (refreshDisabled ? ' disabled' : '') + '>' + t('settings.btn.refreshLorebookReference') + '</button>' +
+        '</div>' +
       '</div>' +
       '<div class="mo-memory-workspace">' +
-        '<div class="mo-row">' +
-          '<label>' + t('settings.label.lorebookReferenceMode') + '</label>' +
-          '<select id="mo-lorebookReferenceMode">' +
-            '<option value="search_only"' + (settings.lorebookReferenceMode === "search_only" ? " selected" : "") + '>' + t('settings.lorebookReferenceMode.search_only') + '</option>' +
-            '<option value="reference_assist"' + (settings.lorebookReferenceMode !== "search_only" ? " selected" : "") + '>' + t('settings.lorebookReferenceMode.reference_assist') + '</option>' +
-          '</select>' +
-          '<button type="button" class="mo-btn" id="mo-refresh-lorebook-reference">' + t('settings.btn.refreshLorebookReference') + '</button>' +
-        '</div>' +
         '<div class="mo-dash">' +
           '<div class="mo-dash-row"><span class="mo-dash-label">DB</span><span class="mo-dash-value" id="mo-lorebook-reference-count-value">' + formatExplorerNumber(state.total) + '</span></div>' +
           '<div class="mo-dash-row"><span class="mo-dash-label">Sync</span><span class="mo-dash-value" id="mo-lorebook-reference-status">' + escapeAttr(syncText) + '</span></div>' +
           '<div class="mo-dash-row"><span class="mo-dash-label">Observed</span><span class="mo-dash-value" id="mo-lorebook-reference-observed-at">' + escapeAttr(snapshotTime) + '</span></div>' +
         '</div>' +
+        '<header class="mo-memory-workspace-head"><div class="mo-memory-workspace-title">' + escapeAttr(t('settings.tab.lorebook')) + '</div>' +
+          '<div class="mo-memory-workspace-count" id="mo-lorebook-reference-current-count">' + formatExplorerNumber(state.total) + '</div></header>' +
+        '<div class="mo-ex-content" id="mo-lorebook-reference-items">' + renderExplorerLorebook() + '</div>' +
       '</div>' +
     '</section>';
   }
 
   function updateLorebookReferenceManagementStatus() {
-    const state = _explorer.lorebook;
-    const runtimeSync = runtimeState.lastLorebookReferenceSync && typeof runtimeState.lastLorebookReferenceSync === "object"
-      ? runtimeState.lastLorebookReferenceSync
-      : null;
-    const status = document.getElementById("mo-lorebook-reference-status");
-    const count = document.getElementById("mo-lorebook-reference-count-value");
-    const compactCount = document.getElementById("mo-lorebook-reference-current-count");
-    const observedAt = document.getElementById("mo-lorebook-reference-observed-at");
-    if (status) status.textContent = state.error ? (state.error === "scope_unavailable" ? t('explorer.lorebook.scopeUnavailable') : t('explorer.lorebook.readFailed')) : String(runtimeSync && runtimeSync.detail || "-");
-    if (count) count.textContent = formatExplorerNumber(state.total);
-    if (compactCount) compactCount.textContent = formatExplorerNumber(state.total);
-    if (observedAt) observedAt.textContent = state.latestSnapshot && state.latestSnapshot.observed_at ? formatDashboardTimestampLocal(state.latestSnapshot.observed_at, { includeDate: true }) : "-";
+    const root = document.getElementById("mo-lorebook-reference-root");
+    if (root) root.innerHTML = renderLorebookReferenceManagementSection();
   }
 
   async function loadLorebookReferenceManagementProjection() {
     const activeSid = String(await getCurrentChatSessionId() || "").trim();
     if (activeSid && activeSid !== SESSION_FALLBACK) _explorer.activeChatSessionId = activeSid;
+
+    await explorerFetchSessions();
     if (!_explorer.selectedSessionId) {
       const inspectionSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || activeSid || "");
       await explorerChangeSession(inspectionSid, false);
     }
-    await explorerFetchLorebook(true);
+    const pending = explorerFetchLorebook(true);
+    updateLorebookReferenceManagementStatus();
+    await pending;
     updateLorebookReferenceManagementStatus();
   }
 
@@ -43124,12 +43273,12 @@
 
   function attachExplorerEvents() {
     try {
-      const managementSessionSelect = document.getElementById("mo-memory-admin-session-select");
-      if (managementSessionSelect) {
-        managementSessionSelect.addEventListener("change", () => {
-          selectWorkspaceSession(String(managementSessionSelect.value || ""), "memory_admin");
+      document.querySelectorAll("[data-memory-admin-session-id]").forEach((sessionButton) => {
+        sessionButton.addEventListener("click", (event) => {
+          event.preventDefault();
+          selectWorkspaceSession(String(sessionButton.getAttribute("data-memory-admin-session-id") || ""), "memory_admin");
         });
-      }
+      });
       const runMemorySessionAction = async function(action) {
         try {
           await action();
@@ -44540,6 +44689,31 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-memory-workspace-count{font-size:11px;color:#5C626D}
 .mo-memory-management{display:flex;flex-direction:column;gap:18px}
 .mo-memory-management-stack{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
+.mo-memory-admin-layout{display:grid;grid-template-columns:minmax(230px,280px) minmax(0,1fr);gap:24px;align-items:start}
+.mo-memory-admin-rail{min-width:0;padding-right:20px;border-right:1px solid rgba(255,255,255,.07)}
+.mo-memory-admin-rail-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px;color:#F4F5F7;font-size:12px}
+.mo-memory-admin-rail-head span{color:#5C626D;font-size:10px;font-variant-numeric:tabular-nums}
+.mo-memory-admin-session-list{display:flex;flex-direction:column;gap:6px}
+.mo-memory-admin-session{display:grid;gap:5px;width:100%;min-width:0;padding:11px 12px;background:transparent;border:1px solid transparent;border-radius:12px;color:#8B909A;text-align:left;cursor:pointer;font:inherit;transition:background .15s,border-color .15s,color .15s}
+.mo-memory-admin-session:hover{background:#13161C;border-color:rgba(255,255,255,.07);color:#F4F5F7}
+.mo-memory-admin-session.is-active{background:#151923;border-color:rgba(143,167,255,.32);color:#F4F5F7}
+.mo-memory-admin-session.is-deleted{border-color:rgba(230,133,165,.26)}
+.mo-memory-admin-session-head{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
+.mo-memory-admin-session-head strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;font-weight:600}
+.mo-memory-admin-session-head span{flex:0 0 auto;color:#8FA7FF;font-size:9px;font-weight:700}
+.mo-memory-admin-session-counts{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#5C626D;font-size:10px;font-variant-numeric:tabular-nums}
+.mo-memory-admin-workspace{min-width:0;display:flex;flex-direction:column;gap:14px}
+.mo-memory-admin-workspace-head{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;padding-bottom:14px;border-bottom:1px solid rgba(255,255,255,.07)}
+.mo-memory-admin-selected{display:flex;flex-direction:column;gap:4px;min-width:0}
+.mo-memory-admin-selected>span{color:#5C626D;font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+.mo-memory-admin-selected>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#F4F5F7;font-size:18px;font-weight:500;letter-spacing:-.02em}
+.mo-memory-admin-selected-meta{color:#8B909A;font-size:10px;font-variant-numeric:tabular-nums}
+.mo-memory-admin-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
+.mo-memory-admin-actions .mo-tl-session-attach,.mo-memory-admin-actions .mo-tl-session-copy,.mo-memory-admin-actions .mo-tl-session-migrate,.mo-memory-admin-actions .mo-tl-session-delete{min-height:32px;padding:6px 10px;border-radius:10px;background:transparent;font-size:10px}
+.mo-memory-admin-secondary{display:flex;align-items:center;justify-content:flex-end;gap:7px;min-height:28px;flex-wrap:wrap}
+.mo-memory-admin-workspace .mo-memory-management-stack{grid-template-columns:1fr;gap:12px}
+.mo-session-normalize-panel.is-attention{border-color:rgba(199,168,105,.34)}
+@media(max-width:820px){.mo-memory-admin-layout{grid-template-columns:1fr;gap:20px}.mo-memory-admin-rail{padding:0 0 18px;border-right:0;border-bottom:1px solid rgba(255,255,255,.07)}.mo-memory-admin-session-list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr))}}
 .mo-hierarchy-subtabs{display:flex;gap:4px;flex-wrap:wrap;margin:0 0 8px 0;padding:4px 0;border-bottom:1px solid rgba(255,255,255,.07)}
 .mo-hierarchy-subtab{background:transparent;border:1px solid rgba(255,255,255,.07);color:#8B909A;padding:4px 10px;border-radius:12px;cursor:pointer;font-size:11px;font-weight:600}
 .mo-hierarchy-subtab:hover{background:#181C24;color:#F4F5F7}
@@ -44795,7 +44969,7 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cursor:not-allowed;filter:none}
 .mo-status{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:12px;color:#8B909A}.mo-status-ok{border-color:rgba(110,190,145,.28);color:#91C9AA}.mo-status-notice{border-color:rgba(143,167,255,.30);color:#8FA7FF}.mo-status-wait{border-color:rgba(199,168,105,.28);color:#C7A869}.mo-status-fail{border-color:rgba(230,133,165,.32);color:#E685A5}
 .mo-session-normalize-status,.mo-session-normalize-result{background:#13161C;border-color:rgba(255,255,255,.07);border-radius:14px;color:#F4F5F7;box-shadow:0 12px 28px rgba(0,0,0,.18)}
-@media(max-width:600px){.mo-hdr{min-height:60px;padding:10px 14px;align-items:center}.mo-brand-mark{width:32px;height:32px;flex-basis:32px}.mo-hdr-left{min-width:0;flex:1 1 auto}.mo-hdr-ver{display:none}.mo-hdr-actions{min-width:0;flex-wrap:nowrap;gap:5px}.mo-hdr-actions>.mo-dash-header-card,.mo-hdr-actions>.mo-hdr-danger-btn{display:none}.mo-debug-toggle{padding:6px 8px}.mo-app-nav{padding:0 14px}.mo-tabs{gap:20px;min-height:48px}.mo-tab-btn{padding:15px 0 13px;font-size:12px}.mo-workspace{padding:20px 14px 56px}.mo-memory-context{align-items:flex-start;flex-direction:column;gap:8px}.mo-memory-layout{display:block;padding-top:18px}.mo-memory-rail{position:static;margin-bottom:18px}.mo-memory-rail-label{display:none}.mo-ex-tabs{flex-direction:row;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid rgba(255,255,255,.07)}.mo-ex-tab{width:auto;flex:0 0 auto;border-left:0;border-bottom:2px solid transparent;padding:10px 8px}.mo-ex-tab-active{border-bottom-color:#F4F5F7;background:transparent}.mo-memory-workspace-head{padding-bottom:10px}.mo-memory-management-stack{grid-template-columns:1fr}.mo-model-grid{grid-template-columns:1fr}.mo-row{display:block}.mo-row label{display:block;margin-bottom:7px}.mo-row input,.mo-row select,.mo-row textarea{width:100%}.mo-common-grid>*{grid-column:1/-1}.mo-settings-card,.mo-prompt-card{padding:16px}.mo-footer{padding:10px 14px}.mo-footer-language{margin-left:0}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
+@media(max-width:600px){.mo-hdr{min-height:60px;padding:10px 14px;align-items:center}.mo-brand-mark{width:32px;height:32px;flex-basis:32px}.mo-hdr-left{min-width:0;flex:1 1 auto}.mo-hdr-ver{display:none}.mo-hdr-actions{min-width:0;flex-wrap:nowrap;gap:5px}.mo-hdr-actions>.mo-dash-header-card,.mo-hdr-actions>.mo-hdr-danger-btn{display:none}.mo-debug-toggle{padding:6px 8px}.mo-app-nav{padding:0 14px}.mo-tabs{gap:20px;min-height:48px}.mo-tab-btn{padding:15px 0 13px;font-size:12px}.mo-workspace{padding:20px 14px 56px}.mo-memory-context{align-items:flex-start;flex-direction:column;gap:8px}.mo-memory-layout{display:block;padding-top:18px}.mo-memory-rail{position:static;margin-bottom:18px}.mo-memory-rail-label{display:none}.mo-ex-tabs{flex-direction:row;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid rgba(255,255,255,.07)}.mo-ex-tab{width:auto;flex:0 0 auto;border-left:0;border-bottom:2px solid transparent;padding:10px 8px}.mo-ex-tab-active{border-bottom-color:#F4F5F7;background:transparent}.mo-memory-workspace-head{padding-bottom:10px}.mo-memory-management-stack{grid-template-columns:1fr}.mo-memory-admin-session-list{grid-template-columns:1fr}.mo-memory-admin-workspace-head{align-items:flex-start;flex-direction:column}.mo-memory-admin-actions,.mo-memory-admin-secondary{justify-content:flex-start}.mo-model-grid{grid-template-columns:1fr}.mo-row{display:block}.mo-row label{display:block;margin-bottom:7px}.mo-row input,.mo-row select,.mo-row textarea{width:100%}.mo-common-grid>*{grid-column:1/-1}.mo-settings-card,.mo-prompt-card{padding:16px}.mo-footer{padding:10px 14px}.mo-footer-language{margin-left:0}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
 @media(max-width:600px){.mo-tl-toolbar{grid-template-columns:1fr;align-items:stretch;padding:12px}.mo-tl-session-chooser{min-width:100%}.mo-tl-session-actions{justify-content:flex-start;gap:5px}.mo-tl-toolbar-meta{grid-column:1;gap:6px 10px}.mo-tl-main{padding:8px}.mo-tl-canvas-tools{align-items:flex-start}.mo-tl-canvas-actions{width:100%}.mo-tl-canvas-actions .mo-btn{flex:1 1 auto}.mo-tl-canvas-frame{height:clamp(480px,72vh,680px);min-height:420px}.mo-tl-node-inspector{inset:8px}.mo-tl-node-inspector-body{padding:12px}.mo-tl-stream{gap:8px}.mo-tl-stream:before{left:36px}.mo-tl-entry{grid-template-columns:24px 18px minmax(0,1fr);gap:6px}.mo-tl-entry-meta{align-items:center;font-size:10px}.mo-tl-entry-time{display:none}.mo-tl-node{width:15px;height:15px;box-shadow:0 0 0 4px #13161C}.mo-tl-card{padding:10px 11px;border-radius:12px}.mo-tl-card-head{flex-direction:column;align-items:stretch;gap:6px}.mo-tl-badges{justify-content:flex-start}.mo-tl-title{font-size:13px;line-height:1.4}.mo-tl-summary{font-size:11px;line-height:1.4;-webkit-line-clamp:1}.mo-tl-turn-item{grid-template-columns:14px minmax(0,1fr);grid-template-areas:"dot kind" "dot text" "dot action";align-items:start;gap:5px 8px;padding:10px}.mo-tl-turn-item .mo-tl-turn-dot{grid-area:dot;margin-top:4px}.mo-tl-turn-kind{grid-area:kind;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tl-turn-item>span:nth-child(3){grid-area:text;min-width:0}.mo-tl-turn-item-title,.mo-tl-turn-preview{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}.mo-tl-turn-item-title{-webkit-line-clamp:2}.mo-tl-turn-preview{-webkit-line-clamp:2}.mo-tl-row-actions{grid-area:action;justify-self:start;flex-wrap:wrap}.mo-tl-row-actions .mo-btn{min-height:34px;padding:6px 12px}.mo-detail-header{align-items:flex-start}.mo-detail-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis}.mo-detail-header .mo-note{font-size:10px}.mo-tl-node-inspector-head>div{align-items:flex-start;flex-direction:column;gap:2px}.mo-tl-inline-detail{margin-left:0;padding-left:8px}}
 `;
 
@@ -45373,6 +45547,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       await refreshExplorerUI();
       return;
     }
+    if (surface === "lorebook") return;
     await loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true });
   }
 
@@ -47407,7 +47582,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
               chapters: Number(_explorer.chapters.total || 0),
               arcs: Number(_explorer.arcs.total || 0),
               sagas: Number(_explorer.sagas.total || 0),
-              lorebook: Number(_explorer.lorebook.total || 0),
             },
             trust: {
               storylines: Array.isArray(_explorer.trust.storylines) ? _explorer.trust.storylines : [],
@@ -47435,6 +47609,13 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       }
       _timelineState.viewModel = result.timeline || null;
       _explorer.viewModel = result.explorer || null;
+      if (_explorer.viewModel && _explorer.viewModel.active_tab) {
+        const presentedActiveTab = String(_explorer.viewModel.active_tab);
+        const visibleTabs = getExplorerTabItems();
+        _explorer.activeTab = visibleTabs.some(function(tab) { return tab.key === presentedActiveTab; })
+          ? presentedActiveTab
+          : String(visibleTabs[0] && visibleTabs[0].key || "chat_logs");
+      }
       return result;
     } catch (err) {
       if (!requestIsCurrent()) return null;
@@ -49549,6 +49730,60 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
 
     </div>
 
+    <!-- ▸ 출판사 설정 -->
+    <div class="mo-section">${t('settings.section.publisherSettings')}</div>
+    <div class="mo-settings-card mo-publisher-settings-card">
+      <div class="mo-row">
+        <label>${t('settings.label.narrativeGuideMode')}</label>
+        <select id="mo-narrativeGuideMode">
+          <option value="auto"${s.narrativeGuideMode === "auto" ? " selected" : ""}>${t('settings.narrativeMode.auto')}</option>
+          <option value="off"${s.narrativeGuideMode === "off" ? " selected" : ""}>${t('settings.narrativeMode.off')}</option>
+          <option value="standard"${s.narrativeGuideMode === "standard" ? " selected" : ""}>${t('settings.narrativeMode.standard')}</option>
+          <option value="romantic"${s.narrativeGuideMode === "romantic" ? " selected" : ""}>${t('settings.narrativeMode.romantic')}</option>
+          <option value="action"${s.narrativeGuideMode === "action" ? " selected" : ""}>${t('settings.narrativeMode.action')}</option>
+          <option value="mature_soft"${s.narrativeGuideMode === "mature_soft" ? " selected" : ""}>${t('settings.narrativeMode.matureSoft')}</option>
+          <option value="mature_direct"${s.narrativeGuideMode === "mature_direct" ? " selected" : ""}>${t('settings.narrativeMode.matureDirect')}</option>
+        </select>
+        <small>${t('settings.label.narrativeGuideMode.help')}</small>
+      </div>
+      <div class="mo-row">
+        <label>${t('settings.label.narrativeGuideStrength')}</label>
+        <select id="mo-narrativeGuideStrength">
+          <option value="none"${s.narrativeGuideStrength === "none" ? " selected" : ""}>${t('settings.narrativeStrength.none')}</option>
+          <option value="weak"${s.narrativeGuideStrength === "weak" || !s.narrativeGuideStrength ? " selected" : ""}>${t('settings.narrativeStrength.weak')}</option>
+          <option value="medium"${s.narrativeGuideStrength === "medium" ? " selected" : ""}>${t('settings.narrativeStrength.medium')}</option>
+          <option value="strong"${s.narrativeGuideStrength === "strong" ? " selected" : ""}>${t('settings.narrativeStrength.strong')}</option>
+          <option value="extreme"${s.narrativeGuideStrength === "extreme" ? " selected" : ""}>${t('settings.narrativeStrength.extreme')}</option>
+          <option value="maximum"${s.narrativeGuideStrength === "maximum" ? " selected" : ""}>${t('settings.narrativeStrength.maximum')}</option>
+        </select>
+        <small>${t('settings.label.narrativeGuideStrength.help')}</small>
+      </div>
+      <div class="mo-row">
+        <label>${t('settings.label.publisherGuidanceFormat')}</label>
+        <select id="mo-publisherGuidanceFormat">
+          <option value="compact"${s.publisherGuidanceFormat === "compact" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.compact')}</option>
+          <option value="standard"${s.publisherGuidanceFormat === "standard" || !s.publisherGuidanceFormat ? " selected" : ""}>${t('settings.publisherGuidanceFormat.standard')}</option>
+          <option value="explicit"${s.publisherGuidanceFormat === "explicit" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.explicit')}</option>
+        </select>
+        <small>${t('settings.label.publisherGuidanceFormat.help')}</small>
+      </div>
+      <div class="mo-row mo-range-row">
+        <label>${t('settings.label.narrativeSupportMaxChars')}</label>
+        <input type="number" id="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
+        <input class="mo-range" type="range" id="mo-narrativeSupportMaxCharsRange" data-sync-input="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
+        <small>${t('settings.hint.narrativeSupportMaxChars')}</small>
+      </div>
+      <div class="mo-row">
+        <label>${t('settings.label.pluginMainApplyMode')}</label>
+        <select id="mo-pluginMainApplyMode">
+          <option value="off"${s.pluginMainApplyMode === "off" ? " selected" : ""}>${t('settings.applyMode.off')}</option>
+          <option value="shadow"${s.pluginMainApplyMode === "shadow" || !s.pluginMainApplyMode ? " selected" : ""}>${t('settings.applyMode.shadow')}</option>
+          <option value="reviewed_apply"${s.pluginMainApplyMode === "reviewed_apply" ? " selected" : ""}>${t('settings.applyMode.reviewed_apply')}</option>
+        </select>
+        <small>${t('settings.hint.pluginMainApplyMode')}</small>
+      </div>
+    </div>
+
     <!-- ▸ 공통 설정 (Common) -->
     <div class="mo-section">${t('settings.section.common')}</div>
     <div class="mo-section-desc">${t('settings.section.common.desc')}</div>
@@ -49598,14 +49833,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <input class="mo-range" type="range" id="mo-llmRetryCountRange" data-sync-input="mo-llmRetryCount" value="${s.llmRetryCount ?? 3}" min="0" max="10" step="1">
           <small>${t('settings.label.llmRetryCount.hint')}</small>
         </div>
-        <div class="mo-row">
-          <label>${t('settings.label.pluginMainApplyMode')}</label>
-          <select id="mo-pluginMainApplyMode">
-            <option value="off"${s.pluginMainApplyMode === "off" ? " selected" : ""}>${t('settings.applyMode.off')}</option>
-            <option value="shadow"${s.pluginMainApplyMode === "shadow" || !s.pluginMainApplyMode ? " selected" : ""}>${t('settings.applyMode.shadow')}</option>
-            <option value="reviewed_apply"${s.pluginMainApplyMode === "reviewed_apply" ? " selected" : ""}>${t('settings.applyMode.reviewed_apply')}</option>
-          </select>
-        </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.injectionBudgetExtraChars')}</label>
           <input type="number" id="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? 0}" min="0" max="15000" step="500">
@@ -49635,52 +49862,19 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <small>${t('settings.hint.auxiliaryInjectionAnchorMarker')}</small>
         </div>
         <div class="mo-row">
-          <label>${t('settings.label.narrativeGuideMode')}</label>
-          <select id="mo-narrativeGuideMode">
-            <option value="auto"${s.narrativeGuideMode === "auto" ? " selected" : ""}>${t('settings.narrativeMode.auto')}</option>
-            <option value="off"${s.narrativeGuideMode === "off" ? " selected" : ""}>${t('settings.narrativeMode.off')}</option>
-            <option value="standard"${s.narrativeGuideMode === "standard" ? " selected" : ""}>${t('settings.narrativeMode.standard')}</option>
-            <option value="romantic"${s.narrativeGuideMode === "romantic" ? " selected" : ""}>${t('settings.narrativeMode.romantic')}</option>
-            <option value="action"${s.narrativeGuideMode === "action" ? " selected" : ""}>${t('settings.narrativeMode.action')}</option>
-            <option value="mature_soft"${s.narrativeGuideMode === "mature_soft" ? " selected" : ""}>${t('settings.narrativeMode.matureSoft')}</option>
-            <option value="mature_direct"${s.narrativeGuideMode === "mature_direct" ? " selected" : ""}>${t('settings.narrativeMode.matureDirect')}</option>
-          </select>
-          <small>${t('settings.label.narrativeGuideMode.help')}</small>
-        </div>
-        <div class="mo-row">
-          <label>${t('settings.label.narrativeGuideStrength')}</label>
-          <select id="mo-narrativeGuideStrength">
-            <option value="none"${s.narrativeGuideStrength === "none" ? " selected" : ""}>${t('settings.narrativeStrength.none')}</option>
-            <option value="weak"${s.narrativeGuideStrength === "weak" || !s.narrativeGuideStrength ? " selected" : ""}>${t('settings.narrativeStrength.weak')}</option>
-            <option value="medium"${s.narrativeGuideStrength === "medium" ? " selected" : ""}>${t('settings.narrativeStrength.medium')}</option>
-            <option value="strong"${s.narrativeGuideStrength === "strong" ? " selected" : ""}>${t('settings.narrativeStrength.strong')}</option>
-            <option value="extreme"${s.narrativeGuideStrength === "extreme" ? " selected" : ""}>${t('settings.narrativeStrength.extreme')}</option>
-            <option value="maximum"${s.narrativeGuideStrength === "maximum" ? " selected" : ""}>${t('settings.narrativeStrength.maximum')}</option>
-          </select>
-          <small>${t('settings.label.narrativeGuideStrength.help')}</small>
-        </div>
-        <div class="mo-row">
-          <label>${t('settings.label.publisherGuidanceFormat')}</label>
-          <select id="mo-publisherGuidanceFormat">
-            <option value="compact"${s.publisherGuidanceFormat === "compact" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.compact')}</option>
-            <option value="standard"${s.publisherGuidanceFormat === "standard" || !s.publisherGuidanceFormat ? " selected" : ""}>${t('settings.publisherGuidanceFormat.standard')}</option>
-            <option value="explicit"${s.publisherGuidanceFormat === "explicit" ? " selected" : ""}>${t('settings.publisherGuidanceFormat.explicit')}</option>
-          </select>
-          <small>${t('settings.label.publisherGuidanceFormat.help')}</small>
-        </div>
-        <div class="mo-row mo-range-row">
-          <label>${t('settings.label.narrativeSupportMaxChars')}</label>
-          <input type="number" id="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
-          <input class="mo-range" type="range" id="mo-narrativeSupportMaxCharsRange" data-sync-input="mo-narrativeSupportMaxChars" value="${s.narrativeSupportMaxChars ?? DEFAULT_SETTINGS.narrativeSupportMaxChars}" min="0" max="12000" step="250">
-          <small>${t('settings.hint.narrativeSupportMaxChars')}</small>
-        </div>
-        <div class="mo-row">
           <label>${t('settings.label.uiDetailMode')}</label>
           <select id="mo-uiDetailMode">
             <option value="full"${s.uiDetailMode === "full" || !s.uiDetailMode ? " selected" : ""}>${t('settings.uiDetailMode.full')}</option>
             <option value="reduced_info"${s.uiDetailMode === "reduced_info" ? " selected" : ""}>${t('settings.uiDetailMode.reduced_info')}</option>
             <option value="status_only"${s.uiDetailMode === "status_only" ? " selected" : ""}>${t('settings.uiDetailMode.status_only')}</option>
           </select>
+        </div>
+        <div class="mo-row">
+          <label title="${escapeAttr(t('settings.lorebookReferenceMode.help'))}">${t('settings.label.lorebookReferenceMode')}</label>
+          <div class="mo-chk">
+            <input type="checkbox" id="mo-lorebookReferenceAssistEnabled"${s.lorebookReferenceMode !== "search_only" ? " checked" : ""}>
+            <label for="mo-lorebookReferenceAssistEnabled">${t('settings.lorebookReferenceMode.on')}</label>
+          </div>
         </div>
         <div class="mo-row">
           <label>${t('settings.label.turnWorkflowHUDEnabled')}</label>
@@ -50257,56 +50451,75 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         });
       }
 
-      const lorebookReferenceModeSelect = $("mo-lorebookReferenceMode");
-      const lorebookReferenceRefreshButton = $("mo-refresh-lorebook-reference");
+      const lorebookReferenceRoot = $("mo-lorebook-reference-root");
       let lorebookReferenceControlBusy = false;
       const syncLorebookRefreshButton = () => {
-        if (lorebookReferenceRefreshButton) {
-          lorebookReferenceRefreshButton.disabled = lorebookReferenceControlBusy || !lorebookReferenceModeSelect;
+        const button = $("mo-refresh-lorebook-reference");
+        if (button && lorebookReferenceControlBusy) {
+          button.disabled = true;
         }
       };
-      if (lorebookReferenceModeSelect) lorebookReferenceModeSelect.addEventListener("change", async () => {
-        if (lorebookReferenceControlBusy) return;
-        const previousMode = String(settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
-        const nextMode = sanitizeEnumValue(lorebookReferenceModeSelect.value, previousMode, ["search_only", "reference_assist"]);
-        if (nextMode === previousMode) {
-          syncLorebookRefreshButton();
-          return;
-        }
-        lorebookReferenceControlBusy = true;
-        lorebookReferenceModeSelect.disabled = true;
-        syncLorebookRefreshButton();
-        try {
-          await updateSettings({ lorebookReferenceMode: nextMode });
-          await syncCurrentLorebookReference({ force: true });
-          await explorerFetchLorebook(true);
-          updateLorebookReferenceManagementStatus();
-        } catch (err) {
-          const statusEl = $("mo-lorebook-reference-status");
-          if (statusEl) statusEl.textContent = String(err && err.message || err);
-        } finally {
-          lorebookReferenceControlBusy = false;
-          lorebookReferenceModeSelect.disabled = false;
-          syncLorebookRefreshButton();
-        }
-      });
       syncLorebookRefreshButton();
-      if (lorebookReferenceRefreshButton) {
-        lorebookReferenceRefreshButton.addEventListener("click", async () => {
+      if (lorebookReferenceRoot) {
+        lorebookReferenceRoot.addEventListener("change", async (event) => {
+          const target = event.target;
+          if (!target || target.id !== "mo-lorebook-session-select" || lorebookReferenceControlBusy) return;
+          const sessionId = String(target.value || "").trim();
+          if (!sessionId) return;
+          lorebookReferenceControlBusy = true;
+          syncLorebookRefreshButton();
+          try {
+            await selectWorkspaceSession(sessionId, "lorebook");
+            const pending = explorerFetchLorebook(true);
+            updateLorebookReferenceManagementStatus();
+            await pending;
+          } finally {
+            lorebookReferenceControlBusy = false;
+            updateLorebookReferenceManagementStatus();
+          }
+        });
+        lorebookReferenceRoot.addEventListener("click", async (event) => {
+          const target = event.target;
+          if (!target || lorebookReferenceControlBusy) return;
+          const expandButton = target.closest && target.closest(".mo-ex-expand-btn");
+          if (expandButton) {
+            const item = expandButton.closest(".mo-ex-item");
+            const ordinal = item ? parseInt(item.dataset.expandId, 10) : NaN;
+            if (item && item.dataset.expandType === "lore" && !isNaN(ordinal)) {
+              explorerToggleExpand("lore", ordinal);
+              updateLorebookReferenceManagementStatus();
+            }
+            return;
+          }
+          const loadMoreButton = target.closest && target.closest('.mo-ex-more-btn[data-more-type="lorebook"]');
+          if (loadMoreButton) {
+            lorebookReferenceControlBusy = true;
+            try {
+              const pending = explorerFetchLorebook(false);
+              updateLorebookReferenceManagementStatus();
+              await pending;
+            } finally {
+              lorebookReferenceControlBusy = false;
+              updateLorebookReferenceManagementStatus();
+            }
+            return;
+          }
+          const refreshButton = target.closest && target.closest("#mo-refresh-lorebook-reference");
+          if (!refreshButton || refreshButton.disabled) return;
           const statusEl = $("mo-lorebook-reference-status");
           lorebookReferenceControlBusy = true;
           syncLorebookRefreshButton();
           if (statusEl) statusEl.textContent = "reading_host_lorebook";
           try {
-            const result = await syncCurrentLorebookReference({ force: true });
-            if (statusEl) statusEl.textContent = String(result && result.status || "unavailable");
-            await explorerFetchLorebook(true);
+            await syncCurrentLorebookReference({ force: true });
+            const pending = explorerFetchLorebook(true);
             updateLorebookReferenceManagementStatus();
+            await pending;
           } catch (err) {
-            if (statusEl) statusEl.textContent = String(err && err.message || err);
+            _explorer.lorebook.error = String(err && err.message || err);
           } finally {
             lorebookReferenceControlBusy = false;
-            syncLorebookRefreshButton();
+            updateLorebookReferenceManagementStatus();
           }
         });
       }
@@ -50534,8 +50747,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       }
 
       const reasoningSyncRunners = [];
-      const syncReasoningPresetSelectForProvider = (providerSelectId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
+      const syncReasoningPresetSelectForProvider = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
         const providerEl = $(providerSelectId);
+        const endpointEl = endpointInputId ? $(endpointInputId) : null;
         const modelEl = modelInputId ? $(modelInputId) : null;
         const presetEl = $(presetSelectId);
         if (!providerEl || !presetEl) return;
@@ -50561,6 +50775,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         }
         const syncState = resolveReasoningSyncUiState({
           provider,
+          endpoint: endpointEl ? endpointEl.value : "",
           preset: presetEl.value,
           model: modelEl ? modelEl.value : "",
           currentEffort: effortEl ? effortEl.value : "",
@@ -50598,7 +50813,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (budgetHintEl) {
           budgetHintEl.textContent = controls.budgetHint || "";
         }
-        if (budgetInputEl && controls.showBudget) {
+        if (budgetInputEl) {
           budgetInputEl.value = syncState.nextBudget;
         }
         if (maxCompletionEl && syncState.nextMaxCompletion) {
@@ -50612,13 +50827,15 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         presetEl.dataset.reasoningSyncInitialized = "1";
       };
 
-      const bindProviderReasoningPresetSync = (providerSelectId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
+      const bindProviderReasoningPresetSync = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
         const providerEl = $(providerSelectId);
+        const endpointEl = endpointInputId ? $(endpointInputId) : null;
         const modelEl = modelInputId ? $(modelInputId) : null;
         const presetEl = $(presetSelectId);
         if (!providerEl || !presetEl) return;
         const runSync = () => syncReasoningPresetSelectForProvider(
           providerSelectId,
+          endpointInputId,
           modelInputId,
           presetSelectId,
           guideId,
@@ -50633,6 +50850,10 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           maxCompletionId,
         );
         providerEl.addEventListener("change", runSync);
+        if (endpointEl) {
+          endpointEl.addEventListener("change", runSync);
+          endpointEl.addEventListener("input", runSync);
+        }
         if (modelEl) {
           modelEl.addEventListener("change", runSync);
           modelEl.addEventListener("input", runSync);
@@ -50644,6 +50865,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
 
       bindProviderReasoningPresetSync(
         "mo-pluginMainProvider",
+        "mo-pluginMainEndpoint",
         "mo-pluginMainModel",
         "mo-pluginMainReasoningPreset",
         "mo-pluginMainReasoningGuide",
@@ -50659,6 +50881,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       );
       bindProviderReasoningPresetSync(
         "mo-subLlmProvider",
+        "mo-subLlmEndpoint",
         "mo-subLlmModel",
         "mo-subLlmReasoningPreset",
         "mo-subLlmReasoningGuide",
@@ -50786,7 +51009,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
-            lorebookReferenceMode: readValue("mo-lorebookReferenceMode", settings.lorebookReferenceMode, true),
+            lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")
+              ? "reference_assist"
+              : "search_only",
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
@@ -50927,7 +51152,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
-          setValueIfPresent("mo-lorebookReferenceMode", settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
+          setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only");
           const refreshedMemoryBudgets = settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
           setValueIfPresent("mo-memoryBudgetEventRecent", refreshedMemoryBudgets.event_recent);
           setValueIfPresent("mo-memoryBudgetCharacterObjective", refreshedMemoryBudgets.character_objective);
@@ -51033,7 +51258,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           }
           const testTimeoutMs = getPluginMainTimeoutSettingMs((($("mo-pluginMainTimeoutMs") || {}).value));
           const testReasoningPreset = (($("mo-pluginMainReasoningPreset") || {}).value || "auto").trim();
-          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel);
+          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel, testEndpoint);
           const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-pluginMainReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-pluginMainReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getPluginMainMaxCompletionTokensSetting((($("mo-pluginMainMaxCompletionTokens") || {}).value));
@@ -51119,7 +51344,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           }
           const testTimeoutMs = getSubLlmTimeoutSettingMs((($("mo-subLlmTimeoutMs") || {}).value));
           const testReasoningPreset = (($("mo-subLlmReasoningPreset") || {}).value || "auto").trim();
-          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel);
+          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel, testEndpoint);
           const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-subLlmReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-subLlmReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getSubLlmMaxCompletionTokensSetting((($("mo-subLlmMaxCompletionTokens") || {}).value));

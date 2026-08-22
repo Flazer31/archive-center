@@ -205,7 +205,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"sess-p83", 3,
 			"Mina found the brass key.",
 			"Rowan nodded and followed.",
-			nil, nil, nil,
+			nil, nil,
 		))
 		required := []string{
 			"Extract durable Archive Center memory data",
@@ -254,7 +254,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			"sess-p83-lang", 4,
 			"RAW-KO: Mina found the brass key.",
 			"Mina found the brass key.",
-			nil, nil, nil, languageContext,
+			nil, nil, languageContext,
 		))
 		for _, needle := range []string{
 			"Language_Context_JSON",

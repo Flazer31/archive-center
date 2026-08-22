@@ -118,6 +118,10 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
 	isGLM := provider != "ollama" && proxyIsGLMLike(model, endpoint, provider)
 	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
+	reasoningTransport, transportErr := proxyReasoningTransport(provider, endpoint)
+	if transportErr != nil {
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "configuration", Cause: transportErr}
+	}
 
 	headers := map[string]string{
 		"Content-Type": "application/json",
@@ -150,7 +154,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		"stream":      false,
 	}
 	reasoningFamily := proxyReasoningFamily(provider, stringPtrValue(req.ReasoningPreset, "auto"), model, endpoint)
-	if provider == "ollama" {
+	if reasoningTransport == "ollama" {
 		if effort := proxyOllamaReasoningEffort(
 			reasoningFamily,
 			model,
@@ -168,6 +172,22 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
+	} else if reasoningTransport == "llmgateway" {
+		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+			body["reasoning_effort"] = effort
+			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
+			if reasoningFamily == "gpt" {
+				delete(body, "temperature")
+			}
+		}
+	} else if reasoningTransport == "openrouter" || reasoningTransport == "vercel" {
+		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+			body["reasoning"] = map[string]any{"effort": effort}
+			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
+			if reasoningFamily == "gpt" {
+				delete(body, "temperature")
+			}
+		}
 	} else if reasoningFamily == "glm" {
 		body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
@@ -175,7 +195,15 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		body["thinking"] = map[string]any{
 			"type": thinkingType,
 		}
-	} else if reasoningFamily == "deepseek_v4" {
+		if thinkingType == "enabled" && proxyGLMSupportsReasoningEffort(model) {
+			switch effort {
+			case "xhigh", "max":
+				body["reasoning_effort"] = "max"
+			case "enable", "enabled", "on", "true", "low", "medium", "high":
+				body["reasoning_effort"] = "high"
+			}
+		}
+	} else if reasoningFamily == "deepseek_v4" && reasoningTransport == "deepseek" {
 		outputTokens := maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 		body["max_tokens"] = outputTokens
 		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
@@ -204,9 +232,24 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			}
 		}
 	}
+	managedReasoning := map[string][]byte{}
+	for _, key := range []string{"reasoning_effort", "reasoning", "thinking"} {
+		if value, ok := body[key]; ok {
+			managedReasoning[key], _ = json.Marshal(value)
+		}
+	}
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
+	}
+	for key, expected := range managedReasoning {
+		actual, _ := json.Marshal(body[key])
+		if !bytes.Equal(actual, expected) {
+			return nil, http.StatusBadRequest, &proxyLocalRequestError{
+				Stage: "request_build",
+				Cause: fmt.Errorf("extra_body_json conflicts with backend-managed %s", key),
+			}
+		}
 	}
 	if policyErr := proxyApplyOpenAIJSONResponsePolicy(body, overrideTrace, provider, policy); policyErr != nil {
 		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, &proxyLocalRequestError{
@@ -226,11 +269,12 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
-	_, ollamaReasoningRequest := body["reasoning_effort"]
-	ollamaReasoningRequest = ollamaReasoningRequest && provider == "ollama"
+	_, hasReasoningEffort := body["reasoning_effort"]
+	_, hasReasoningObject := body["reasoning"]
+	_, hasThinking := body["thinking"]
+	managedReasoningRequest := hasReasoningEffort || hasReasoningObject || hasThinking
 	if status == http.StatusBadRequest &&
-		reasoningFamily != "deepseek_v4" &&
-		!ollamaReasoningRequest &&
+		!managedReasoningRequest &&
 		proxyHasAdvancedParams(body) &&
 		proxyUnsupportedParameter(raw, data) &&
 		!proxyServiceTierError(raw, data) &&
@@ -266,6 +310,44 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	proxyAttachLLMGatewayServiceTierTrace(data, overrideTrace)
 	proxyAttachRequestOverrideTrace(data, overrideTrace)
 	return data, http.StatusOK, nil
+}
+
+func proxyReasoningTransport(provider, endpoint string) (string, error) {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	knownEndpoint := ""
+	if parsed, err := url.Parse(strings.TrimSpace(endpoint)); err == nil {
+		host := strings.ToLower(strings.TrimSuffix(parsed.Hostname(), "."))
+		switch host {
+		case "api.openai.com":
+			knownEndpoint = "openai"
+		case "openrouter.ai":
+			knownEndpoint = "openrouter"
+		case "api.llmgateway.io":
+			knownEndpoint = "llmgateway"
+		case "ai-gateway.vercel.sh":
+			knownEndpoint = "vercel"
+		case "api.deepseek.com":
+			knownEndpoint = "deepseek"
+		case "localhost", "127.0.0.1", "::1":
+			if parsed.Port() == "11434" {
+				knownEndpoint = "ollama"
+			}
+		}
+	}
+
+	if provider == "custom" {
+		if knownEndpoint == "deepseek" {
+			return "deepseek", nil
+		}
+		return "custom", nil
+	}
+	if provider == "openai" && knownEndpoint == "deepseek" {
+		return "deepseek", nil
+	}
+	if knownEndpoint != "" && knownEndpoint != provider {
+		return "", fmt.Errorf("provider %q conflicts with endpoint host for %q reasoning transport", provider, knownEndpoint)
+	}
+	return provider, nil
 }
 
 func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model string, policy proxyRequestPolicy) (map[string]any, int, error) {
@@ -498,7 +580,7 @@ func proxyApplyJSONResponsePolicy(body map[string]any, trace map[string]any, pol
 	} else {
 		trace["json_response_schema_source"] = "extra_body_json"
 	}
-	trace["json_response_schema_contract"] = "publisher_plan.v2"
+	trace["json_response_schema_contract"] = publisherWireContractVersion
 	return nil
 }
 
@@ -525,7 +607,7 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 			trace["json_response_applied"] = true
 			trace["json_response_source"] = "backend_policy"
 			trace["json_response_format"] = requiredType
-			trace["json_response_schema_contract"] = "publisher_plan.v2_prompt_validated"
+			trace["json_response_schema_contract"] = publisherWireContractVersion + "_prompt_validated"
 			return nil
 		}
 		if !providerSupportsNativeJSON {
@@ -556,7 +638,7 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_source"] = "backend_policy"
 		trace["json_response_format"] = appliedType
 		if proxyJSONResponsePurposeIsPublisher(policy) {
-			trace["json_response_schema_contract"] = "publisher_plan.v2"
+			trace["json_response_schema_contract"] = publisherWireContractVersion
 		}
 		return nil
 	}
@@ -629,7 +711,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_source"] = "backend_policy"
 		trace["json_response_format"] = "json_schema"
 		if proxyJSONResponsePurposeIsPublisher(policy) {
-			trace["json_response_schema_contract"] = "publisher_plan.v2"
+			trace["json_response_schema_contract"] = publisherWireContractVersion
 		}
 		return nil
 	}
@@ -649,7 +731,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_source"] = "backend_policy"
 		trace["json_response_format"] = "json_schema"
 		if proxyJSONResponsePurposeIsPublisher(policy) {
-			trace["json_response_schema_contract"] = "publisher_plan.v2"
+			trace["json_response_schema_contract"] = publisherWireContractVersion
 		}
 		return nil
 	}
@@ -674,7 +756,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 	trace["json_response_source"] = "extra_body_json"
 	trace["json_response_format"] = "json_schema"
 	if proxyJSONResponsePurposeIsPublisher(policy) {
-		trace["json_response_schema_contract"] = "publisher_plan.v2"
+		trace["json_response_schema_contract"] = publisherWireContractVersion
 	}
 	return nil
 }
@@ -685,79 +767,34 @@ func proxyJSONResponsePurposeIsPublisher(policy proxyRequestPolicy) bool {
 
 func proxyJSONResponseSchema(policy proxyRequestPolicy) (string, map[string]any) {
 	if proxyJSONResponsePurposeIsPublisher(policy) {
-		return "archive_center_publisher_plan_v2", proxyPublisherTopLevelJSONSchema()
+		return "archive_center_publisher_output_v3", proxyPublisherTopLevelJSONSchema()
 	}
-	return "archive_center_critic", proxyCriticTopLevelJSONSchema()
+	return "archive_center_critic_output_v1", proxyCriticTopLevelJSONSchema()
 }
 
 func proxyPublisherTopLevelJSONSchema() map[string]any {
-	itemSchema := func(pressure bool) map[string]any {
-		properties := map[string]any{
+	item := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"role": map[string]any{"type": "string", "enum": []string{"book_author", "director"}},
+			"field": map[string]any{"type": "string", "enum": []string{
+				"current_arc", "narrative_goal", "next_beats", "guardrails",
+				"scene_mandate", "required_outcomes", "forbidden_moves", "pressure_level",
+			}},
 			"text":        map[string]any{"type": "string", "minLength": 1},
 			"source_refs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
-		}
-		required := []string{"text", "source_refs"}
-		if pressure {
-			properties["level"] = map[string]any{"type": "string", "enum": []string{"quiet", "low", "medium", "high"}}
-			required = append(required, "level")
-		}
-		return map[string]any{
-			"type":                 "object",
-			"properties":           properties,
-			"required":             required,
-			"additionalProperties": false,
-		}
-	}
-	nullableItemSchema := func(pressure bool) map[string]any {
-		return map[string]any{"anyOf": []any{itemSchema(pressure), map[string]any{"type": "null"}}}
-	}
-	itemArraySchema := func() map[string]any {
-		return map[string]any{"type": "array", "items": itemSchema(false)}
-	}
-	bookAuthor := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"current_arc":    nullableItemSchema(false),
-			"narrative_goal": nullableItemSchema(false),
-			"next_beats":     itemArraySchema(),
-			"guardrails":     itemArraySchema(),
+			"level":       map[string]any{"type": "string", "enum": []string{"quiet", "low", "medium", "high"}},
 		},
-		"required":             []string{"current_arc", "narrative_goal", "next_beats", "guardrails"},
-		"additionalProperties": false,
-	}
-	director := map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"scene_mandate":     nullableItemSchema(false),
-			"required_outcomes": itemArraySchema(),
-			"forbidden_moves":   itemArraySchema(),
-			"pressure_level":    nullableItemSchema(true),
-		},
-		"required":             []string{"scene_mandate", "required_outcomes", "forbidden_moves", "pressure_level"},
+		"required":             []string{"role", "field", "text", "source_refs"},
 		"additionalProperties": false,
 	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"supervisor_scene_proposal": map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"publisher_plan": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"contract_version": map[string]any{"type": "string", "enum": []string{"publisher_plan.v2"}},
-							"book_author":      bookAuthor,
-							"director":         director,
-						},
-						"required":             []string{"contract_version", "book_author", "director"},
-						"additionalProperties": false,
-					},
-				},
-				"required":             []string{"publisher_plan"},
-				"additionalProperties": false,
-			},
+			"contract_version": map[string]any{"type": "string", "enum": []string{publisherWireContractVersion}},
+			"items":            map[string]any{"type": "array", "items": item},
 		},
-		"required":             []string{"supervisor_scene_proposal"},
+		"required":             []string{"contract_version", "items"},
 		"additionalProperties": false,
 	}
 }
@@ -766,42 +803,12 @@ func proxyCriticTopLevelJSONSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"turn_summary":                   map[string]any{"type": "string"},
-			"importance_score":               map[string]any{"type": "number"},
-			"story_clock":                    map[string]any{},
-			"relationship_memory":            map[string]any{},
-			"entities":                       map[string]any{},
-			"kg_triples":                     map[string]any{"type": "array", "items": map[string]any{}},
-			"archive_hint":                   map[string]any{},
-			"world_rule_audit":               map[string]any{},
-			"world_rules":                    map[string]any{"type": "array", "items": map[string]any{}},
-			"world_state":                    map[string]any{},
-			"subjective_entity_memories":     map[string]any{"type": "array", "items": map[string]any{}},
-			"protected_secrets":              map[string]any{"type": "array", "items": map[string]any{}},
-			"character_identity_accuracy":    map[string]any{"type": "array", "items": map[string]any{}},
-			"persona_capsule_candidates":     map[string]any{"type": "array", "items": map[string]any{}},
-			"narrative_events":               map[string]any{"type": "array", "items": map[string]any{}},
-			"state_claims":                   map[string]any{"type": "array", "items": map[string]any{}},
-			"belief_updates":                 map[string]any{"type": "array", "items": map[string]any{}},
-			"interaction_events":             map[string]any{"type": "array", "items": map[string]any{}},
-			"relationship_observations":      map[string]any{"type": "array", "items": map[string]any{}},
-			"interaction_boundaries":         map[string]any{"type": "array", "items": map[string]any{}},
-			"habit_observations":             map[string]any{"type": "array", "items": map[string]any{}},
-			"character_profile_observations": map[string]any{"type": "array", "items": map[string]any{}},
-			"voice_observations":             map[string]any{"type": "array", "items": map[string]any{}},
-			"user_interaction_profile":       map[string]any{"type": "array", "items": map[string]any{}},
-			"rp_character_profile":           map[string]any{"type": "array", "items": map[string]any{}},
-			"prune_targets":                  map[string]any{"type": "array", "items": map[string]any{}},
-			"evidence_excerpts":              map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			"emotional_intensity":            map[string]any{"type": "number"},
-			"narrative_significance":         map[string]any{"type": "number"},
-			"state_deltas":                   map[string]any{},
-			"character_deltas":               map[string]any{"type": "array", "items": map[string]any{}},
-			"physical_conditions":            map[string]any{"type": "array", "items": map[string]any{}},
-			"entity_conditions":              map[string]any{"type": "array", "items": map[string]any{}},
-			"reversible_states":              map[string]any{"type": "array", "items": map[string]any{}},
-			"pending_threads":                map[string]any{"type": "array", "items": map[string]any{}},
+			"turn_summary":           map[string]any{"type": "string"},
+			"importance_score":       map[string]any{"type": "number"},
+			"emotional_intensity":    map[string]any{"type": "number"},
+			"narrative_significance": map[string]any{"type": "number"},
 		},
+		"required":             []string{"turn_summary", "importance_score"},
 		"additionalProperties": true,
 	}
 }
@@ -1536,6 +1543,20 @@ func proxyReasoningFamily(provider, preset, model, endpoint string) string {
 	}
 }
 
+func proxyGLMSupportsReasoningEffort(model string) bool {
+	normalized := strings.ReplaceAll(strings.ToLower(strings.TrimSpace(model)), "_", "-")
+	match := regexp.MustCompile(`(?:^|/)glm-?(\d+)(?:[.-](\d+))?(?:$|[-_:])`).FindStringSubmatch(normalized)
+	if len(match) == 0 {
+		return false
+	}
+	major, _ := strconv.Atoi(match[1])
+	minor := 0
+	if len(match) > 2 && match[2] != "" {
+		minor, _ = strconv.Atoi(match[2])
+	}
+	return major > 5 || (major == 5 && minor >= 2)
+}
+
 func proxyGeminiThinkingMode(model string) string {
 	model = strings.ToLower(strings.TrimSpace(model))
 	if strings.Contains(model, "gemini-2.5") {
@@ -1661,20 +1682,26 @@ func proxyOllamaReasoningEffort(family, model, effort, glmThinkingType string) s
 		return "high"
 	case "deepseek_v4":
 		switch effort {
-		case "high", "max":
+		case "none":
 			return effort
-		case "low", "medium":
+		case "minimal":
+			return "low"
+		case "low", "medium", "high":
+			return effort
+		case "xhigh", "max":
 			return "high"
-		case "xhigh":
-			return "max"
 		default:
 			return "none"
 		}
 	case "gpt":
 		normalized := proxyOpenAICompatibleReasoningEffort(model, effort)
 		switch normalized {
-		case "none", "low", "medium", "high", "max":
+		case "none", "low", "medium", "high":
 			return normalized
+		case "minimal":
+			return "low"
+		case "xhigh", "max":
+			return "high"
 		default:
 			return ""
 		}
@@ -1694,10 +1721,59 @@ func proxyOllamaReasoningEffort(family, model, effort, glmThinkingType string) s
 			return "none"
 		case "minimal":
 			return "low"
-		case "low", "medium", "high", "max":
+		case "low", "medium", "high":
 			return effort
+		case "xhigh", "max":
+			return "high"
+		default:
+			return ""
+		}
+	default:
+		return ""
+	}
+}
+
+func proxyGatewayReasoningEffort(family, model, effort, glmThinkingType string) string {
+	effort = strings.ToLower(strings.TrimSpace(effort))
+	switch family {
+	case "glm":
+		if proxyGLMThinkingTypeFromRequest(glmThinkingType, effort) == "disabled" {
+			return "none"
+		}
+		return "high"
+	case "deepseek_v4":
+		switch effort {
+		case "none", "high", "max":
+			return effort
+		case "minimal", "low", "medium":
+			return "high"
 		case "xhigh":
 			return "max"
+		default:
+			return ""
+		}
+	case "gpt":
+		return proxyOpenAICompatibleReasoningEffort(model, effort)
+	case "gemini":
+		if proxyGeminiThinkingMode(model) == "none" {
+			return ""
+		}
+		if effort == "none" {
+			return "none"
+		}
+		return proxyGeminiThinkingLevel(model, effort)
+	case "claude":
+		if proxyClaudeThinkingMode(model) == "none" {
+			return ""
+		}
+		if effort == "none" {
+			return "none"
+		}
+		return proxyClaudeAdaptiveEffort(effort)
+	case "ollama_thinking":
+		switch effort {
+		case "none", "minimal", "low", "medium", "high", "xhigh", "max":
+			return effort
 		default:
 			return ""
 		}

@@ -37,6 +37,7 @@ type criticPipelineError struct {
 
 const completeTurnCriticInputBudgetObservationContract = "critic_input_budget_observation.v1"
 const completeTurnCriticInputSnapshotContract = "critic_reprocessing_input.v1"
+const criticOutputPolicyVersion = "critic_sparse_output.v1"
 
 type completeTurnCriticInputPolicy struct {
 	AuxiliaryMaxChars int    `json:"auxiliary_max_chars"`
@@ -56,7 +57,6 @@ type completeTurnCriticInputSnapshot struct {
 	ArchiveLedger      map[string]any                `json:"archive_ledger"`
 	ActiveWorldRules   []map[string]any              `json:"active_world_rules"`
 	LanguageContext    map[string]any                `json:"language_context"`
-	PreviewPass        map[string]any                `json:"preview_pass"`
 	InputPolicy        completeTurnCriticInputPolicy `json:"input_policy"`
 	PipelineVersion    string                        `json:"pipeline_version"`
 	SystemPromptSHA256 string                        `json:"system_prompt_sha256"`
@@ -371,7 +371,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	criticContextMessages := []map[string]any{}
 	criticArchiveLedgerPromptInput := map[string]any(nil)
 	selectedActiveWorldRules := []map[string]any{}
-	previewPass := map[string]any(nil)
 	contextSelectionTrace := map[string]any{}
 	criticArchiveLedgerTrace := map[string]any{}
 	activeWorldRuleTrace := map[string]any{}
@@ -407,7 +406,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		criticAssistantContent = snapshot.AssistantContent
 		criticContextMessages = snapshot.ContextMessages
 		selectedActiveWorldRules = snapshot.ActiveWorldRules
-		previewPass = snapshot.PreviewPass
 		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(snapshot.LanguageContext)
 		criticArchiveLedgerPromptInput = cloneMapAny(snapshot.ArchiveLedger)
 		if criticArchiveLedgerPromptInput != nil {
@@ -486,7 +484,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				criticArchiveLedgerPromptInput["active_world_rules"] = activeWorldRules
 			}
 		}
-		previewPass = s.buildCompleteTurnCriticPreviewPass(ctx, sid, turnIndex, criticContextMessages, criticUserInput, criticAssistantContent)
 		if strings.TrimSpace(replay.SourceRevision) != "" {
 			snapshotHash, err := s.persistCompleteTurnCriticInputSnapshot(ctx, completeTurnCriticInputSnapshot{
 				ContractVersion:    completeTurnCriticInputSnapshotContract,
@@ -499,7 +496,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				ArchiveLedger:      criticArchiveLedgerPromptInput,
 				ActiveWorldRules:   selectedActiveWorldRules,
 				LanguageContext:    languageContext,
-				PreviewPass:        previewPass,
 				InputPolicy:        inputPolicy,
 				PipelineVersion:    completeTurnCriticPipelineVersion,
 				SystemPromptSHA256: criticSystemPromptHash(systemPrompt),
@@ -520,7 +516,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			}
 		}
 	}
-	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, previewPass, languageContext, criticArchiveLedgerPromptInput)
+	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, languageContext, criticArchiveLedgerPromptInput)
 	contextMessagesJSON, _ := json.Marshal(criticContextMessages)
 	archiveLedgerJSON, _ := json.Marshal(criticArchiveLedgerPromptInput)
 	inputBudgetTrace := map[string]any{
@@ -537,6 +533,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		"final_prompt_chars":           len([]rune(systemPrompt)) + len([]rune(userPrompt)),
 	}
 	providerResponse := map[string]any{}
+	outputObservation := map[string]any{}
 	attachInputBudgetTrace := func(trace map[string]any) map[string]any {
 		if trace == nil {
 			trace = map[string]any{}
@@ -548,6 +545,9 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["input_snapshot"] = snapshotTrace
 		if len(providerResponse) > 0 {
 			trace["provider_response"] = providerResponse
+		}
+		if len(outputObservation) > 0 {
+			trace["output_observation"] = outputObservation
 		}
 		return trace
 	}
@@ -598,6 +598,11 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		return nil, attachInputBudgetTrace(firstFailureTrace), providerErr
 	}
 	content := chatCompletionText(upstream)
+	outputObservation = map[string]any{
+		"contract_version": "critic_output_observation.v1",
+		"response_bytes":   len([]byte(content)),
+		"response_chars":   len([]rune(content)),
+	}
 	if strings.TrimSpace(content) == "" {
 		emptyErr := newCriticPipelineError("CRITIC_EMPTY_RESPONSE", "provider_response", true, upstreamStatus, errors.New("critic provider returned no assistant content"))
 		trace := criticFailureTrace(promptSource, cfg, upstreamStatus, emptyErr, "")
@@ -621,6 +626,18 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		}
 		return nil, attachInputBudgetTrace(parseTrace), parseErr
 	}
+	wireFieldCount := len(parsed)
+	wireItemCount := 0
+	for _, value := range parsed {
+		switch typed := value.(type) {
+		case []any:
+			wireItemCount += len(typed)
+		case map[string]any:
+			wireItemCount++
+		}
+	}
+	outputObservation["wire_field_count"] = wireFieldCount
+	outputObservation["wire_item_count"] = wireItemCount
 	parsed, schemaQuarantineTrace, err := validateCriticExtractionSchema(parsed)
 	if err != nil {
 		schemaErr := newCriticPipelineError("CRITIC_SCHEMA_INVALID", "schema_validation", true, upstreamStatus, err)
@@ -632,6 +649,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			schemaTrace["request_overrides"] = requestOverrides
 		}
 		return nil, attachInputBudgetTrace(schemaTrace), schemaErr
+	}
+	outputObservation["canonical_field_count"] = len(parsed)
+	if len(schemaQuarantineTrace) > 0 {
+		outputObservation["quarantined_field_count"] = intFromAny(schemaQuarantineTrace["dropped_field_count"], 0)
+		outputObservation["quarantined_item_count"] = intFromAny(schemaQuarantineTrace["dropped_item_count"], 0)
+	} else {
+		outputObservation["quarantined_field_count"] = 0
+		outputObservation["quarantined_item_count"] = 0
 	}
 	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, criticUserInput, criticAssistantContent)
 	trustedRPIdentities := s.resolveTrustedRPCharacterIdentities(ctx, sid, parsed)
@@ -647,10 +672,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			"policy_version": completeTurnCriticPipelineVersion,
 			"stages": map[string]any{
 				"evidence_extractor": map[string]any{
-					"status":                 "ok",
-					"owner":                  "complete_turn.configured_critic_extract",
-					"preview_policy_version": completeTurnCriticPreviewPassVersion,
-					"preview_seed_applied":   true,
+					"status": "ok",
+					"owner":  "complete_turn.configured_critic_extract",
 				},
 				"deterministic_reducer": map[string]any{
 					"status": "ok",
@@ -666,11 +689,11 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				},
 			},
 		},
-		"preview_pass": previewPass,
 	}
 	if len(providerResponse) > 0 {
 		trace["provider_response"] = providerResponse
 	}
+	trace["output_observation"] = outputObservation
 	if len(schemaQuarantineTrace) > 0 {
 		trace["schema_quarantine"] = schemaQuarantineTrace
 	}
@@ -692,32 +715,27 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
 	}
 	normalized := normalizeCriticExtraction(parsed)
-	if len(worldRuleItemsForSave(normalized)) == 0 && (cfg.ForceWorldRuleAudit || shouldRunFocusedWorldRuleAudit(normalized)) {
-		auditedRules, auditTrace := s.runCompleteTurnWorldRuleAudit(ctx, sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, previewPass, normalized, cfg, selectedActiveWorldRules)
-		trace["world_rule_audit"] = auditTrace
-		if stringFromMap(auditTrace, "status") == "error" {
-			cause := extractionFirstNonEmpty(stringFromMap(auditTrace, "error"), "focused_world_rule_audit_failed")
-			auditErr := newCriticPipelineError("CRITIC_WORLD_RULE_AUDIT_FAILED", "world_rule_audit", true, 0, errors.New(cause))
-			return nil, trace, auditErr
-		}
-		if len(worldRuleItemsForSave(auditedRules)) > 0 {
-			var mergedCount int
-			normalized, mergedCount = mergeWorldRuleAuditIntoExtraction(normalized, auditedRules)
-			auditTrace["merged_world_rule_count"] = mergedCount
-		}
-	} else if len(worldRuleItemsForSave(normalized)) > 0 {
+	worldRuleCount := len(worldRuleItemsForSave(normalized))
+	if worldRuleCount > 0 {
 		trace["world_rule_audit"] = map[string]any{
-			"status": "skipped",
-			"reason": "initial_extraction_has_world_rules",
+			"status":           "ok",
+			"reason":           "single_critic_call_extracted_world_rules",
+			"llm_call_attempt": false,
+			"world_rule_count": worldRuleCount,
+		}
+	} else if cfg.ForceWorldRuleAudit || shouldRunFocusedWorldRuleAudit(normalized) {
+		trace["world_rule_audit"] = map[string]any{
+			"status":           "incomplete",
+			"reason":           "single_critic_call_returned_no_world_rules",
+			"llm_call_attempt": false,
+			"world_rule_count": 0,
 		}
 	} else {
-		reason := "initial_audit_did_not_request_focused_world_rule_pass"
-		if cfg.ForceWorldRuleAudit {
-			reason = "force_world_rule_audit_configured_but_not_reached"
-		}
 		trace["world_rule_audit"] = map[string]any{
-			"status": "skipped",
-			"reason": reason,
+			"status":           "skipped",
+			"reason":           "single_critic_call_found_no_durable_world_rule",
+			"llm_call_attempt": false,
+			"world_rule_count": 0,
 		}
 	}
 	normalized = enrichNormalizedCriticExtractionForFocusedRecall(normalized, criticUserInput, criticAssistantContent, turnIndex)
@@ -775,7 +793,7 @@ func shouldRunFocusedWorldRuleAudit(extraction map[string]any) bool {
 	return status == "positive" || status == "found" || status == "needs_world_rule"
 }
 
-func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any, cfg completeTurnLLMConfig, selectedActiveWorldRuleInput ...[]map[string]any) (map[string]any, map[string]any) {
+func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, initialExtraction map[string]any, cfg completeTurnLLMConfig, selectedActiveWorldRuleInput ...[]map[string]any) (map[string]any, map[string]any) {
 	trace := map[string]any{
 		"status":           "skipped",
 		"policy_version":   "world_rule_audit.v1",
@@ -801,7 +819,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		activeWorldRules, activeWorldRuleTrace = s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
 	}
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
-	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, previewPass, initialExtraction, activeWorldRules)
+	prompt := buildCompleteTurnWorldRuleAuditPrompt(sid, turnIndex, userInput, assistantContent, contextMessages, initialExtraction, activeWorldRules)
 	maxTokens := cfg.MaxTokens
 	maxCompletionTokens := cfg.MaxCompletionTokens
 	if maxCompletionTokens <= 0 {
@@ -813,7 +831,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		Endpoint:            &cfg.Endpoint,
 		Model:               &cfg.Model,
 		Provider:            &cfg.Provider,
-		Messages:            []any{map[string]any{"role": "system", "content": "You are Archive Center's world-rule audit extractor. Return only valid JSON. Do not use markdown fences."}, map[string]any{"role": "user", "content": prompt}},
+		Messages:            []any{map[string]any{"role": "system", "content": "You are Archive Center's world-rule audit extractor. Return only one sparse JSON object. Do not use markdown fences."}, map[string]any{"role": "user", "content": prompt}},
 		MaxTokens:           &maxTokens,
 		MaxCompletionTokens: &maxCompletionTokens,
 		Temperature:         &temp,
@@ -851,6 +869,18 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		trace["raw_preview"] = truncateRunes(content, 1000)
 		return nil, trace
 	}
+	parsed, schemaTrace, err := validateCriticExtractionSchema(parsed)
+	if err != nil {
+		trace["status"] = "error"
+		trace["error"] = err.Error()
+		if len(schemaTrace) > 0 {
+			trace["schema_quarantine"] = schemaTrace
+		}
+		return nil, trace
+	}
+	if len(schemaTrace) > 0 {
+		trace["schema_quarantine"] = schemaTrace
+	}
 	normalized := normalizeCriticExtraction(parsed)
 	count := len(worldRuleItemsForSave(normalized))
 	trace["status"] = "ok"
@@ -864,14 +894,13 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 	}
 	trace["world_rule_count"] = count
 	if count == 0 {
-		trace["reason"] = extractionFirstNonEmpty(stringFromMap(mapFromAny(parsed["audit"]), "reason"), "audit_returned_no_durable_rule")
+		trace["reason"] = extractionFirstNonEmpty(stringFromMap(mapFromAny(parsed["world_rule_audit"]), "reason"), "audit_returned_no_durable_rule")
 	}
 	return normalized, trace
 }
 
-func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, previewPass map[string]any, initialExtraction map[string]any, activeWorldRuleInput ...[]map[string]any) string {
+func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, initialExtraction map[string]any, activeWorldRuleInput ...[]map[string]any) string {
 	ctx, _ := json.Marshal(contextMessages)
-	preview, _ := json.Marshal(previewPass)
 	initial, _ := json.Marshal(initialExtraction)
 	var activeRules any
 	if len(activeWorldRuleInput) > 0 {
@@ -880,15 +909,15 @@ func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput 
 	active, _ := json.Marshal(activeRules)
 	return strings.Join([]string{
 		"Audit whether the completed turn establishes durable world rules that the main extraction missed.",
-		"Return ONLY JSON. Do not use markdown fences.",
+		"Return ONLY one sparse JSON object. Do not use markdown fences.",
 		"Use this JSON shape:",
-		`{"audit":{"durable_rule_found":false,"reason":""},"world_rules":[],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]}}`,
+		`{"turn_summary":"world-rule audit","importance_score":5,"world_rule_audit":{"durable_rule_found":false,"reason":""},"world_rules":[{"key":"","value":""}],"world_state":{"version":"world_state.v1","confidence":0,"verification":"","rules":[]}}`,
 		"Decision contract:",
 		"- This is an AI judgement step. Do not rely on keyword lists, genre names, or instruction examples as facts.",
 		"- Extract the abstract invariant established by the session's own evidence.",
 		"- A world rule is any source-grounded constraint or invariant that should remain true beyond this exchange. Judge durability from the story evidence rather than a fixed category or genre list.",
-		"- If the latest turn only has a temporary action, mood, one-off dialogue, rejected plan, speculation, or private thought with no durable setting constraint, return empty arrays.",
-		"- If the latest turn confirms a durable rule, world_rules must not be empty. Preserve the rule with whatever descriptive fields the evidence supports; key and value are sufficient for collection.",
+		"- If the latest turn only has a temporary action, mood, one-off dialogue, rejected plan, speculation, or private thought with no durable setting constraint, omit world_rules.",
+		"- If the latest turn confirms a durable rule, emit at least one world_rules item. Preserve the rule with whatever descriptive fields the evidence supports; key and value are sufficient for collection.",
 		"- Active_World_Rules_JSON contains the current unsuppressed stored rules. For a changed or explicitly reaffirmed existing rule, reuse its exact scope, scope_name, category, and key even when the output language differs. Never translate an existing key into a new key. If the latest turn supplies no new evidence or change for an existing rule, omit that unchanged repeat.",
 		"- When scope or category is useful, describe the story's own structure. Do not discard a rule because its scope or category is unfamiliar.",
 		"- Mirror the same durable rules in world_state.rules when they shape the current setting state.",
@@ -909,10 +938,6 @@ func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput 
 		string(ctx),
 		"</Recent_Context_JSON>",
 		"",
-		"<Deterministic_Preview_Pass_JSON>",
-		string(preview),
-		"</Deterministic_Preview_Pass_JSON>",
-		"",
 		"<Initial_Critic_Extraction_JSON>",
 		string(initial),
 		"</Initial_Critic_Extraction_JSON>",
@@ -921,35 +946,6 @@ func buildCompleteTurnWorldRuleAuditPrompt(sid string, turnIndex int, userInput 
 		string(active),
 		"</Active_World_Rules_JSON>",
 	}, "\n")
-}
-
-func mergeWorldRuleAuditIntoExtraction(base map[string]any, audit map[string]any) (map[string]any, int) {
-	items := worldRuleItemsForSave(audit)
-	if len(items) == 0 {
-		return base, 0
-	}
-	out := make(map[string]any, len(base)+2)
-	for k, v := range base {
-		out[k] = v
-	}
-	out["world_rules"] = append(sliceFromAny(out["world_rules"]), items...)
-	ws := mapFromAny(out["world_state"])
-	if len(ws) == 0 {
-		ws = map[string]any{
-			"version":      "world_state.v1",
-			"confidence":   0.85,
-			"verification": "verified_by_world_rule_audit",
-		}
-	}
-	ws["rules"] = append(sliceFromAny(ws["rules"]), items...)
-	if strings.TrimSpace(stringFromMap(ws, "version")) == "" {
-		ws["version"] = "world_state.v1"
-	}
-	if strings.TrimSpace(stringFromMap(ws, "verification")) == "" {
-		ws["verification"] = "verified_by_world_rule_audit"
-	}
-	out["world_state"] = ws
-	return out, len(worldRuleItemsForSave(out))
 }
 
 func (s *Server) buildCompleteTurnCriticArchiveLedgerInput(ctx context.Context, sid string, turnIndex int, assistantContent string, assistantFinalLanguage string) (map[string]any, map[string]any) {
@@ -1452,14 +1448,13 @@ func readSupervisorSystemPrompt(configuredDir string) (string, string, error) {
 	return "", "missing", errors.New("publisher system prompt is missing")
 }
 
-func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, previewPass map[string]any, archiveLedger ...map[string]any) string {
-	return buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, userInput, assistantContent, contextMessages, nil, previewPass, nil, archiveLedger...)
+func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, archiveLedger ...map[string]any) string {
+	return buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, userInput, assistantContent, contextMessages, nil, nil, archiveLedger...)
 }
 
-func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, previewPass map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
+func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
 	ctx, _ := json.Marshal(contextMessages)
 	langCtx, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
-	preview, _ := json.Marshal(previewPass)
 	var ledgerInput any
 	if len(archiveLedger) > 0 && archiveLedger[0] != nil {
 		ledgerInput = archiveLedger[0]
@@ -1481,10 +1476,6 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		string(ctx),
 		"</Recent_Context_JSON>",
 		"",
-		"<Deterministic_Preview_Pass_JSON>",
-		string(preview),
-		"</Deterministic_Preview_Pass_JSON>",
-		"",
 		"<Critic_Archive_Ledger_JSON>",
 		string(ledger),
 		"</Critic_Archive_Ledger_JSON>",
@@ -1492,72 +1483,6 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		string(langCtx),
 		"</Language_Context_JSON>",
 	}, "\n")
-}
-
-func (s *Server) buildCompleteTurnCriticPreviewPass(ctx context.Context, sid string, turnIndex int, contextMessages []map[string]any, userInput, assistantContent string) map[string]any {
-	rawPreview := []map[string]any{}
-	start := len(contextMessages) - 3
-	if start < 0 {
-		start = 0
-	}
-	for _, item := range contextMessages[start:] {
-		content := strings.TrimSpace(stringFromMap(item, "content"))
-		if content == "" {
-			continue
-		}
-		rawPreview = append(rawPreview, map[string]any{
-			"role":    extractionFirstNonEmpty(stringFromMap(item, "role"), "unknown"),
-			"text":    truncateRunes(content, 240),
-			"source":  extractionFirstNonEmpty(stringFromMap(item, "source"), "context"),
-			"bounded": true,
-		})
-	}
-	directSeed := []map[string]any{}
-	if s.Store != nil {
-		if rows, err := s.Store.ListEvidence(ctx, sid); err == nil {
-			for i := len(rows) - 1; i >= 0 && len(directSeed) < 3; i-- {
-				row := rows[i]
-				if row.Tombstoned || strings.TrimSpace(row.EvidenceText) == "" {
-					continue
-				}
-				if row.SourceTurnEnd > 0 && row.SourceTurnEnd > turnIndex {
-					continue
-				}
-				evidenceText := sanitizeTextForCriticInput(row.EvidenceText)
-				if strings.TrimSpace(evidenceText) == "" {
-					continue
-				}
-				directSeed = append(directSeed, map[string]any{
-					"text":        truncateRunes(evidenceText, 240),
-					"turn_anchor": row.TurnAnchor,
-					"source_turn": map[string]any{"start": row.SourceTurnStart, "end": row.SourceTurnEnd},
-					"kind":        row.EvidenceKind,
-				})
-			}
-		}
-	}
-	latestChars := len([]rune(strings.TrimSpace(userInput + "\n" + assistantContent)))
-	priority := "low"
-	if len(directSeed) > 0 || len(rawPreview) >= 2 || latestChars >= 1200 {
-		priority = "medium"
-	}
-	shouldCompact := latestChars >= 4000 || len(rawPreview) >= 3
-	return map[string]any{
-		"policy_version":                       completeTurnCriticPreviewPassVersion,
-		"status":                               "ok",
-		"recent_raw_preview":                   rawPreview,
-		"recent_verified_direct_evidence_seed": directSeed,
-		"triage": map[string]any{
-			"priority":        priority,
-			"latest_chars":    latestChars,
-			"raw_item_count":  len(rawPreview),
-			"direct_seed_hit": len(directSeed) > 0,
-		},
-		"compaction_hint": map[string]any{
-			"should_trigger": shouldCompact,
-			"mode":           "hint_only",
-		},
-	}
 }
 
 func parseJSONFromLLMContent(content string) (map[string]any, error) {
@@ -1850,100 +1775,98 @@ func validateCriticExtractionSchema(raw map[string]any) (map[string]any, map[str
 	if raw == nil || len(raw) == 0 {
 		return nil, nil, errors.New("critic schema requires a non-empty JSON object")
 	}
-	out := cloneMapAny(raw)
+
+	out := map[string]any{}
 	trace := map[string]any{
-		"contract_version":    "critic_schema_quarantine.v1",
+		"contract_version":    "critic_record_quarantine.v1",
+		"output_policy":       criticOutputPolicyVersion,
 		"dropped_field_count": 0,
 		"dropped_item_count":  0,
 		"dropped_fields":      []any{},
 		"dropped_items":       []any{},
 	}
-	dropField := func(field, expected string, value any) {
+	dropField := func(field, reason, expected string, value any) {
 		delete(out, field)
 		trace["dropped_field_count"] = intFromAny(trace["dropped_field_count"], 0) + 1
 		trace["dropped_fields"] = append(sliceFromAny(trace["dropped_fields"]), map[string]any{
-			"field": field, "reason": "wrong_type", "expected": expected, "actual": fmt.Sprintf("%T", value),
+			"field": field, "reason": reason, "expected": expected, "actual": fmt.Sprintf("%T", value),
 		})
 	}
+	dropItem := func(field string, itemIndex int, reason, expected string, value any) {
+		trace["dropped_item_count"] = intFromAny(trace["dropped_item_count"], 0) + 1
+		detail := map[string]any{
+			"field": field, "reason": reason, "expected": expected, "actual": fmt.Sprintf("%T", value),
+		}
+		if itemIndex >= 0 {
+			detail["item_index"] = itemIndex
+		}
+		trace["dropped_items"] = append(sliceFromAny(trace["dropped_items"]), detail)
+	}
 	recognizedPayload := false
-	stringFields := []string{"turn_summary"}
-	numberFields := []string{"importance_score", "emotional_intensity", "narrative_significance"}
-	arrayFields := []string{
-		"evidence_excerpts", "kg_triples", "character_deltas", "pending_threads",
-		"speaker_attributions", "world_rules", "reversible_states",
-		"narrative_events", "state_claims", "belief_updates",
-		"subjective_entity_memories", "protected_secrets",
-		"character_identity_accuracy", "persona_capsule_candidates",
-		"interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations",
-		"character_profile_observations", "voice_observations",
-		"user_interaction_profile", "rp_character_profile",
-	}
-	objectFields := []string{
-		"entities", "relationship_memory", "state_deltas", "world_rule_audit",
-		"world_state", "archive_hint", "story_clock",
-	}
-	for _, field := range stringFields {
-		value, exists := out[field]
-		if !exists {
-			continue
-		}
-		if _, ok := value.(string); !ok {
-			dropField(field, "string", value)
-			continue
-		}
-		recognizedPayload = true
-	}
-	for _, field := range numberFields {
-		value, exists := out[field]
-		if !exists {
-			continue
-		}
-		switch value.(type) {
-		case float64, float32, int, int32, int64, json.Number:
-			recognizedPayload = true
-		default:
-			dropField(field, "number", value)
-		}
-	}
-	for _, field := range arrayFields {
-		value, exists := out[field]
-		if !exists {
-			continue
-		}
-		if _, ok := value.([]any); !ok {
-			dropField(field, "array", value)
-			continue
-		}
-		recognizedPayload = true
-	}
-	for _, field := range objectFields {
-		value, exists := out[field]
-		if !exists {
-			continue
-		}
-		if value == nil {
-			recognizedPayload = true
-			continue
-		}
-		if _, ok := value.(map[string]any); !ok {
-			dropField(field, "object", value)
-			continue
-		}
-		recognizedPayload = true
-	}
-	if excerpts, ok := out["evidence_excerpts"].([]any); ok {
-		kept := make([]any, 0, len(excerpts))
-		for index, excerpt := range excerpts {
-			if _, ok := excerpt.(string); ok {
-				kept = append(kept, excerpt)
+	for field, value := range raw {
+		switch field {
+		case "turn_summary":
+			if _, ok := value.(string); ok {
+				out[field] = value
+				recognizedPayload = true
+			} else {
+				dropField(field, "wrong_type", "string", value)
+			}
+		case "importance_score", "emotional_intensity", "narrative_significance":
+			switch value.(type) {
+			case float64, float32, int, int32, int64, json.Number:
+				out[field] = value
+				recognizedPayload = true
+			default:
+				dropField(field, "wrong_type", "number", value)
+			}
+		case "evidence_excerpts", "prune_targets":
+			items, ok := value.([]any)
+			if !ok {
+				dropField(field, "wrong_type", "array of strings", value)
 				continue
 			}
-			trace["dropped_item_count"] = intFromAny(trace["dropped_item_count"], 0) + 1
-			trace["dropped_items"] = append(sliceFromAny(trace["dropped_items"]), map[string]any{
-				"field": "evidence_excerpts", "index": index, "reason": "wrong_type", "expected": "string", "actual": fmt.Sprintf("%T", excerpt),
-			})
+			for itemIndex, item := range items {
+				text, ok := item.(string)
+				if !ok || strings.TrimSpace(text) == "" {
+					dropItem(field, itemIndex, "text_invalid", "non-empty string", item)
+					continue
+				}
+				out[field] = append(sliceFromAny(out[field]), text)
+				recognizedPayload = true
+			}
+		case "kg_triples", "character_deltas", "pending_threads", "speaker_attributions", "world_rules", "reversible_states",
+			"physical_conditions", "entity_conditions", "narrative_events", "state_claims", "belief_updates",
+			"subjective_entity_memories", "protected_secrets", "character_identity_accuracy", "persona_capsule_candidates",
+			"interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations",
+			"character_profile_observations", "voice_observations", "user_interaction_profile", "rp_character_profile":
+			items, ok := value.([]any)
+			if !ok {
+				dropField(field, "wrong_type", "array of objects", value)
+				continue
+			}
+			for itemIndex, item := range items {
+				data, ok := item.(map[string]any)
+				if !ok || data == nil {
+					dropItem(field, itemIndex, "item_invalid", "object", item)
+					continue
+				}
+				out[field] = append(sliceFromAny(out[field]), data)
+				recognizedPayload = true
+			}
+		case "entities", "relationship_memory", "state_deltas", "world_rule_audit", "world_state", "archive_hint", "story_clock":
+			data, ok := value.(map[string]any)
+			if !ok || data == nil {
+				dropField(field, "wrong_type", "object", value)
+				continue
+			}
+			if len(data) > 0 {
+				out[field] = data
+				recognizedPayload = true
+			}
+		default:
+			dropField(field, "unsupported_field", "supported critic field", value)
 		}
-		out["evidence_excerpts"] = kept
 	}
 	if !recognizedPayload {
 		return nil, trace, errors.New("critic schema has no recognized extraction payload")

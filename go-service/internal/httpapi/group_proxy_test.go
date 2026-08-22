@@ -518,10 +518,9 @@ func TestHandleProxyPluginMainMissingProviderReturns400WithoutFallback(t *testin
 	}
 }
 
-func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) {
+func TestProxyOpenAILikeReasoningFailureDoesNotStripConfiguredControl(t *testing.T) {
 	oldClient := proxyHTTPClient
 	calls := 0
-	var fallbackBody map[string]any
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
 		raw, _ := io.ReadAll(r.Body)
@@ -529,23 +528,14 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 		if err := json.Unmarshal(raw, &body); err != nil {
 			t.Fatalf("decode upstream body: %v", err)
 		}
-		if calls == 1 {
-			if _, ok := body["reasoning_effort"]; !ok {
-				t.Fatalf("first request missing reasoning_effort: %+v", body)
-			}
-			return &http.Response{
-				StatusCode: http.StatusBadRequest,
-				Status:     "400 Bad Request",
-				Header:     make(http.Header),
-				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported parameter: reasoning_effort"}}`)),
-			}, nil
+		if _, ok := body["reasoning_effort"]; !ok {
+			t.Fatalf("request missing reasoning_effort: %+v", body)
 		}
-		fallbackBody = body
 		return &http.Response{
-			StatusCode: http.StatusOK,
-			Status:     "200 OK",
+			StatusCode: http.StatusBadRequest,
+			Status:     "400 Bad Request",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"model":"gpt-5-test","choices":[{"message":{"content":"ok"}}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported parameter: reasoning_effort"}}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -561,24 +551,11 @@ func TestProxyOpenAILikeReasoningFallbackRemovesUnsupportedParams(t *testing.T) 
 		MaxCompletionTokens: int64Ptr(256),
 		ReasoningEffort:     &effort,
 	}
-	resp, status, err := performProxyPluginMainWithRetryBudget(context.Background(), req, newLLMRetryBudget(1))
-	if err != nil {
-		t.Fatalf("performProxyPluginMain error: %v", err)
+	if _, status, err := performProxyPluginMainWithRetryBudget(context.Background(), req, newLLMRetryBudget(1)); err == nil || status != http.StatusBadRequest {
+		t.Fatalf("status=%d err=%v, want original reasoning error", status, err)
 	}
-	if status != http.StatusOK || resp["model"] != "gpt-5-test" {
-		t.Fatalf("unexpected response status=%d resp=%+v", status, resp)
-	}
-	if calls != 2 {
-		t.Fatalf("calls = %d, want 2", calls)
-	}
-	if _, ok := fallbackBody["reasoning_effort"]; ok {
-		t.Fatalf("fallback body kept reasoning_effort: %+v", fallbackBody)
-	}
-	if _, ok := fallbackBody["max_completion_tokens"]; ok {
-		t.Fatalf("fallback body kept max_completion_tokens: %+v", fallbackBody)
-	}
-	if fallbackBody["max_tokens"] != float64(5) && fallbackBody["max_tokens"] != int64(5) {
-		t.Fatalf("fallback max_tokens = %v, want 5", fallbackBody["max_tokens"])
+	if calls != 1 {
+		t.Fatalf("calls = %d, want exactly one configured request", calls)
 	}
 }
 
@@ -721,12 +698,14 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 			defer func() { proxyHTTPClient = oldClient }()
 
 			provider := "llmgateway"
+			endpoint := "https://api.llmgateway.io/v1"
 			if tc.name == "wrong provider" {
 				provider = "openrouter"
+				endpoint = "https://openrouter.ai/api/v1"
 			}
 			req := dto.ProxyPluginMainRequest{
 				APIKey:                strPtr("llmg-test"),
-				Endpoint:              strPtr("https://api.llmgateway.io/v1"),
+				Endpoint:              &endpoint,
 				Model:                 strPtr("gateway/test"),
 				Provider:              strPtr(provider),
 				LLMGatewayServiceTier: strPtr(tc.tier),
@@ -1251,7 +1230,7 @@ func TestProxyClaudePromptCacheWrongVertexProviderFailsBeforeOAuthExchange(t *te
 	}
 }
 
-func TestProxyGLM52UsesDocumentedThinkingToggleWithoutReasoningEffort(t *testing.T) {
+func TestProxyGLM52UsesDocumentedThinkingAndReasoningEffort(t *testing.T) {
 	oldClient := proxyHTTPClient
 	var upstreamBody map[string]any
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -1287,8 +1266,8 @@ func TestProxyGLM52UsesDocumentedThinkingToggleWithoutReasoningEffort(t *testing
 	if thinking["type"] != "enabled" {
 		t.Fatalf("GLM-5.2 thinking = %+v, want enabled", upstreamBody["thinking"])
 	}
-	if _, ok := upstreamBody["reasoning_effort"]; ok {
-		t.Fatalf("GLM-5.2 request should not send undocumented reasoning_effort: %+v", upstreamBody)
+	if upstreamBody["reasoning_effort"] != "max" {
+		t.Fatalf("GLM-5.2 reasoning_effort = %v, want max: %+v", upstreamBody["reasoning_effort"], upstreamBody)
 	}
 }
 
@@ -1333,7 +1312,51 @@ func TestProxyGLM52ReasoningNoneDisablesThinking(t *testing.T) {
 	}
 }
 
-func TestProxyOllamaDeepSeekV4ReasoningRequestUsesModelContract(t *testing.T) {
+func TestProxyGLMPre52UsesThinkingToggleWithoutReasoningEffort(t *testing.T) {
+	tests := []struct {
+		model        string
+		effort       string
+		wantThinking string
+	}{
+		{model: "glm-5.1", effort: "enable", wantThinking: "enabled"},
+		{model: "glm-5", effort: "disable", wantThinking: "disabled"},
+		{model: "glm-4.7", effort: "enable", wantThinking: "enabled"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.model+"_"+tt.effort, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			var upstreamBody map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(r.Body).Decode(&upstreamBody); err != nil {
+					t.Fatalf("decode upstream body: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Status:     "200 OK",
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`)),
+				}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			preset := "glm"
+			if _, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("sk-test"), Endpoint: strPtr("https://api.z.ai/api/paas/v4"), Model: &tt.model, Provider: strPtr("custom"),
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), ReasoningPreset: &preset, ReasoningEffort: &tt.effort,
+			}); err != nil || status != http.StatusOK {
+				t.Fatalf("performProxyPluginMain status=%d err=%v", status, err)
+			}
+			if got := extractionStringFromAny(mapFromAny(upstreamBody["thinking"])["type"]); got != tt.wantThinking {
+				t.Fatalf("thinking.type=%q want=%q body=%+v", got, tt.wantThinking, upstreamBody)
+			}
+			if _, ok := upstreamBody["reasoning_effort"]; ok {
+				t.Fatalf("%s must use only the thinking toggle: %+v", tt.model, upstreamBody)
+			}
+		})
+	}
+}
+
+func TestProxyOllamaDeepSeekV4ReasoningRequestUsesProviderTransportContract(t *testing.T) {
 	tests := []struct {
 		name       string
 		effort     string
@@ -1341,10 +1364,10 @@ func TestProxyOllamaDeepSeekV4ReasoningRequestUsesModelContract(t *testing.T) {
 		wantTokens float64
 	}{
 		{name: "high", effort: "high", wantEffort: "high", wantTokens: 11873},
-		{name: "max", effort: "max", wantEffort: "max", wantTokens: 11873},
+		{name: "stored max", effort: "max", wantEffort: "high", wantTokens: 11873},
 		{name: "none", effort: "none", wantEffort: "none", wantTokens: 4096},
-		{name: "stored medium", effort: "medium", wantEffort: "high", wantTokens: 11873},
-		{name: "stored xhigh", effort: "xhigh", wantEffort: "max", wantTokens: 11873},
+		{name: "medium", effort: "medium", wantEffort: "medium", wantTokens: 11873},
+		{name: "stored xhigh", effort: "xhigh", wantEffort: "high", wantTokens: 11873},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1411,6 +1434,106 @@ func TestProxyOllamaDeepSeekV4ReasoningRequestUsesModelContract(t *testing.T) {
 	}
 }
 
+func TestProxyReasoningWireUsesProviderAndEndpointTransport(t *testing.T) {
+	tests := []struct {
+		name               string
+		provider           string
+		endpoint           string
+		model              string
+		effort             string
+		wantEffort         string
+		wantReasoning      string
+		wantNativeThinking bool
+		wantNoTemperature  bool
+	}{
+		{name: "LLM Gateway Luna", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "gpt-5.6-luna", effort: "low", wantEffort: "low", wantNoTemperature: true},
+		{name: "LLM Gateway DeepSeek", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
+		{name: "OpenRouter DeepSeek", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "high", wantReasoning: "high"},
+		{name: "Vercel GPT", provider: "vercel", endpoint: "https://ai-gateway.vercel.sh/v1", model: "openai/gpt-5.6", effort: "medium", wantReasoning: "medium", wantNoTemperature: true},
+		{name: "custom exact DeepSeek endpoint", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldClient := proxyHTTPClient
+			var body map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatalf("decode request: %v", err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"}}]}`))}, nil
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+
+			_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+				APIKey: strPtr("test"), Endpoint: &tt.endpoint, Model: &tt.model, Provider: &tt.provider,
+				Messages: []any{map[string]any{"role": "user", "content": "ping"}}, MaxTokens: int64Ptr(5), MaxCompletionTokens: int64Ptr(4096), ReasoningEffort: &tt.effort,
+			})
+			if err != nil || status != http.StatusOK {
+				t.Fatalf("status=%d err=%v", status, err)
+			}
+			if got := extractionStringFromAny(body["reasoning_effort"]); got != tt.wantEffort {
+				t.Fatalf("reasoning_effort=%q want=%q body=%+v", got, tt.wantEffort, body)
+			}
+			if got := extractionStringFromAny(mapFromAny(body["reasoning"])["effort"]); got != tt.wantReasoning {
+				t.Fatalf("reasoning.effort=%q want=%q body=%+v", got, tt.wantReasoning, body)
+			}
+			_, hasThinking := body["thinking"]
+			if hasThinking != tt.wantNativeThinking {
+				t.Fatalf("thinking present=%v want=%v body=%+v", hasThinking, tt.wantNativeThinking, body)
+			}
+			_, hasTemperature := body["temperature"]
+			if tt.wantNoTemperature && hasTemperature {
+				t.Fatalf("reasoning transport kept temperature: %+v", body)
+			}
+		})
+	}
+}
+
+func TestProxyReasoningProviderEndpointConflictFailsBeforeUpstream(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return nil, errors.New("unexpected upstream call")
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	provider, endpoint, model, effort := "ollama", "https://api.deepseek.com/v1", "deepseek-v4-pro", "low"
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		Endpoint: &endpoint, Model: &model, Provider: &provider, ReasoningEffort: &effort,
+		Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "conflicts with endpoint host") {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls=%d want 0", upstreamCalls)
+	}
+}
+
+func TestProxyReasoningExtraBodyConflictFailsBeforeUpstream(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return nil, errors.New("unexpected upstream call")
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	provider, endpoint, model, effort := "llmgateway", "https://api.llmgateway.io/v1", "gpt-5.6-luna", "low"
+	extraBody := `{"reasoning_effort":"high"}`
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey: strPtr("test"), Endpoint: &endpoint, Model: &model, Provider: &provider, ReasoningEffort: &effort, ExtraBodyJSON: &extraBody,
+		Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "conflicts with backend-managed reasoning_effort") {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstreamCalls=%d want 0", upstreamCalls)
+	}
+}
+
 func TestProxyReasoningFamilyUsesModelBeforeProviderDefault(t *testing.T) {
 	tests := []struct {
 		model string
@@ -1438,6 +1561,26 @@ func TestProxyReasoningFamilyUsesModelBeforeProviderDefault(t *testing.T) {
 	}
 }
 
+func TestProxyGLMReasoningEffortUsesVersionBoundary(t *testing.T) {
+	tests := []struct {
+		model string
+		want  bool
+	}{
+		{model: "glm-4.7", want: false},
+		{model: "glm-5", want: false},
+		{model: "glm-5.1:cloud", want: false},
+		{model: "glm-5.2", want: true},
+		{model: "z-ai/glm-5.2:cloud", want: true},
+		{model: "glm-6.0", want: true},
+		{model: "glm-unversioned", want: false},
+	}
+	for _, tt := range tests {
+		if got := proxyGLMSupportsReasoningEffort(tt.model); got != tt.want {
+			t.Errorf("proxyGLMSupportsReasoningEffort(%q)=%v want=%v", tt.model, got, tt.want)
+		}
+	}
+}
+
 func TestProxyOllamaReasoningUsesOpenAICompatibleTransportForDetectedModels(t *testing.T) {
 	tests := []struct {
 		name            string
@@ -1447,14 +1590,16 @@ func TestProxyOllamaReasoningUsesOpenAICompatibleTransportForDetectedModels(t *t
 		wantEffort      string
 		wantMaxTokens   float64
 	}{
-		{name: "GLM enabled", model: "glm-5.2", effort: "enable", wantEffort: "high", wantMaxTokens: 4096},
-		{name: "GLM disabled", model: "glm-5.2", effort: "disable", wantEffort: "none", wantMaxTokens: 4096},
-		{name: "GLM explicit disabled", model: "glm-5.2", effort: "enable", glmThinkingType: "disabled", wantEffort: "none", wantMaxTokens: 4096},
+		{name: "GLM 5.2 high", model: "glm-5.2", effort: "high", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GLM 5.2 max bounded by Ollama wire", model: "glm-5.2", effort: "max", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GLM 5.1 enabled", model: "glm-5.1", effort: "enable", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GLM 5.1 disabled", model: "glm-5.1", effort: "disable", wantEffort: "none", wantMaxTokens: 4096},
+		{name: "GLM explicit disabled", model: "glm-5.2", effort: "high", glmThinkingType: "disabled", wantEffort: "none", wantMaxTokens: 4096},
 		{name: "Gemini", model: "gemini-3-pro", effort: "medium", wantEffort: "medium", wantMaxTokens: 4096},
 		{name: "Claude", model: "claude-sonnet-4-6", effort: "high", wantEffort: "high", wantMaxTokens: 4096},
-		{name: "GPT 5.6", model: "gpt-5.6-sol", effort: "max", wantEffort: "max", wantMaxTokens: 4096},
-		{name: "GPT 5 baseline minimal unsupported by Ollama wire", model: "gpt-5", effort: "minimal", wantMaxTokens: 5},
-		{name: "GPT 5.5 xhigh unsupported by Ollama wire", model: "gpt-5.5", effort: "xhigh", wantMaxTokens: 5},
+		{name: "GPT 5.6 max bounded by Ollama wire", model: "gpt-5.6-sol", effort: "max", wantEffort: "high", wantMaxTokens: 4096},
+		{name: "GPT 5 baseline minimal normalized by Ollama wire", model: "gpt-5", effort: "minimal", wantEffort: "low", wantMaxTokens: 4096},
+		{name: "GPT 5.5 xhigh bounded by Ollama wire", model: "gpt-5.5", effort: "xhigh", wantEffort: "high", wantMaxTokens: 4096},
 		{name: "unknown future Gemini", model: "gemini-4-pro", effort: "high", wantMaxTokens: 5},
 		{name: "unknown Claude", model: "claude-unversioned", effort: "high", wantMaxTokens: 5},
 		{name: "unknown GPT generation", model: "gpt-5.9", effort: "high", wantMaxTokens: 5},
@@ -2259,8 +2404,9 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaWithoutCriticFields(t *testi
 				schemaBlock := mapFromAny(format["json_schema"])
 				schema := mapFromAny(schemaBlock["schema"])
 				serialized, _ := json.Marshal(schema)
-				if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_plan_v2" || schemaBlock["strict"] != true ||
-					!strings.Contains(string(serialized), "publisher_plan") || !strings.Contains(string(serialized), "book_author") ||
+				if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_output_v3" || schemaBlock["strict"] != true ||
+					!strings.Contains(string(serialized), "publisher_output.v3") || !strings.Contains(string(serialized), "book_author") ||
+					!strings.Contains(string(serialized), "items") || strings.Contains(string(serialized), "publisher_plan") ||
 					strings.Contains(string(serialized), "turn_summary") || strings.Contains(string(serialized), "evidence_excerpts") {
 					t.Fatalf("publisher received wrong schema: %+v", format)
 				}
@@ -2280,7 +2426,7 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaWithoutCriticFields(t *testi
 				t.Fatalf("status=%d err=%v", status, err)
 			}
 			trace := mapFromAny(resp["_proxy_request_overrides"])
-			if trace["json_response_schema_contract"] != "publisher_plan.v2" {
+			if trace["json_response_schema_contract"] != publisherWireContractVersion {
 				t.Fatalf("publisher schema trace = %+v", trace)
 			}
 		})
@@ -2303,7 +2449,8 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaForClaudeAndGemini(t *testin
 					schema = mapFromAny(mapFromAny(body["generationConfig"])["responseJsonSchema"])
 				}
 				serialized, _ := json.Marshal(schema)
-				if !strings.Contains(string(serialized), "publisher_plan") || !strings.Contains(string(serialized), "director") ||
+				if !strings.Contains(string(serialized), "publisher_output.v3") || !strings.Contains(string(serialized), "director") ||
+					strings.Contains(string(serialized), "publisher_plan") ||
 					strings.Contains(string(serialized), "turn_summary") {
 					t.Fatalf("%s publisher schema is wrong: %+v", provider, schema)
 				}
@@ -2321,7 +2468,7 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaForClaudeAndGemini(t *testin
 			if err != nil || status != http.StatusOK {
 				t.Fatalf("status=%d err=%v", status, err)
 			}
-			if trace := mapFromAny(resp["_proxy_request_overrides"]); trace["json_response_schema_contract"] != "publisher_plan.v2" {
+			if trace := mapFromAny(resp["_proxy_request_overrides"]); trace["json_response_schema_contract"] != publisherWireContractVersion {
 				t.Fatalf("publisher schema trace = %+v", trace)
 			}
 		})
@@ -2415,17 +2562,19 @@ func TestProxyClaudeJSONPolicyAddsOutputConfigAndTrace(t *testing.T) {
 		properties := mapFromAny(schema["properties"])
 		if schema["type"] != "object" || schema["additionalProperties"] != true ||
 			mapFromAny(properties["turn_summary"])["type"] != "string" ||
-			mapFromAny(properties["evidence_excerpts"])["type"] != "array" {
+			mapFromAny(properties["importance_score"])["type"] != "number" ||
+			len(mapFromAny(properties["records"])) != 0 ||
+			len(mapFromAny(properties["contract_version"])) != 0 {
 			t.Fatalf("Claude critic schema is incomplete: %+v", schema)
 		}
-		if _, fixedRequired := schema["required"]; fixedRequired {
-			t.Fatalf("Claude critic schema restored a fixed required-field list: %+v", schema)
+		if required := sliceFromAny(schema["required"]); len(required) != 2 {
+			t.Fatalf("Claude critic schema required fields = %#v, want lightweight core", required)
 		}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Status:     "200 OK",
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"{\"turn_summary\":\"ok\",\"importance_score\":5,\"evidence_excerpts\":[]}"}]}`)),
+			Body:       io.NopCloser(strings.NewReader(`{"content":[{"type":"text","text":"{\"turn_summary\":\"ok\",\"importance_score\":5}"}]}`)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -3260,14 +3409,15 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		format := mapFromAny(upstreamReq["response_format"])
 		schemaBlock := mapFromAny(format["json_schema"])
 		schemaJSON, _ := json.Marshal(mapFromAny(schemaBlock["schema"]))
-		if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_plan_v2" ||
-			!strings.Contains(string(schemaJSON), "publisher_plan") || strings.Contains(string(schemaJSON), "turn_summary") {
+		if format["type"] != "json_schema" || schemaBlock["name"] != "archive_center_publisher_output_v3" ||
+			!strings.Contains(string(schemaJSON), "publisher_output.v3") || strings.Contains(string(schemaJSON), "publisher_plan") ||
+			strings.Contains(string(schemaJSON), "turn_summary") {
 			t.Fatalf("supervisor request missing publisher-native schema or leaked critic schema: %+v", format)
 		}
 		if !strings.Contains(userPrompt, "response_execution_contract") ||
 			!strings.Contains(userPrompt, "supervisor_support_packet") ||
 			!strings.Contains(userPrompt, "guide_focus") ||
-			!strings.Contains(userPrompt, "publisher_plan.v2") ||
+			!strings.Contains(userPrompt, "publisher_output.v3") ||
 			!strings.Contains(userPrompt, "publisher_strength_profile.v1") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
 		}
@@ -3284,13 +3434,13 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 				t.Fatalf("supervisor prompt contains story-control field %q: system=%s user=%s", forbidden, systemPrompt, userPrompt)
 			}
 		}
-		if !strings.Contains(systemPrompt, "publisher_plan.v2") ||
+		if !strings.Contains(systemPrompt, "publisher_output.v3") ||
 			!strings.Contains(systemPrompt, "cannot decide user or protagonist action") ||
 			!strings.Contains(systemPrompt, "quiet supported scene") ||
 			!strings.Contains(systemPrompt, "Do not add filler or meet a") {
 			t.Fatalf("supervisor prompt missing bounded publisher contract: %s", systemPrompt)
 		}
-		response := publisherV2OpenAIResponse("input:test", "preserve the current request boundary")
+		response := publisherV3OpenAIResponse("input:test", "preserve the current request boundary")
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),

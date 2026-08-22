@@ -288,14 +288,16 @@ func TestCompleteTurnInvalidNestedCriticItemKeepsValidDerivedMemory(t *testing.T
 
 	oldClient := proxyHTTPClient
 	providerCalls := 0
+	criticContent := `{"turn_summary":"broken schema","importance_score":5,"evidence_excerpts":[{"quote":"not a string"}]}`
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 		providerCalls++
+		responseBody, _ := json.Marshal(map[string]any{
+			"model": "critic", "choices": []any{map[string]any{"message": map[string]any{"content": criticContent}}},
+		})
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(
-				`{"choices":[{"message":{"content":"{\"turn_summary\":\"broken schema\",\"importance_score\":5,\"evidence_excerpts\":[{\"quote\":\"not a string\"}]}"}}],"model":"critic"}`,
-			)),
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -418,13 +420,15 @@ func runCompleteTurnDerivedFailureReprocessingTest(
 	srv.StoreOpenError = nil
 
 	oldClient := proxyHTTPClient
+	criticContent := criticWireJSONForTest(map[string]any{"turn_summary": "accepted final summary", "importance_score": 1})
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		responseBody, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{"message": map[string]any{"content": criticContent}}},
+		})
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(
-				`{"choices":[{"message":{"content":"{\"turn_summary\":\"accepted final summary\",\"importance_score\":1}"}}]}`,
-			)),
+			Body:       io.NopCloser(bytes.NewReader(responseBody)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()

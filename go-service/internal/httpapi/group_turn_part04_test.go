@@ -86,6 +86,16 @@ func TestCompleteTurnEmbeddingProviderFailureReportsWarning(t *testing.T) {
 	srv.Vector = &turnRecordingVectorStore{}
 
 	oldClient := proxyHTTPClient
+	criticContent := criticWireJSONForTest(map[string]any{
+		"turn_summary":      "Mina and Rowan commit to the blue key.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"blue key safe"},
+		"kg_triples":        []any{map[string]any{"semantic_class": "event_fact", "subject": "Rowan", "predicate": "protects", "object": "blue key"}},
+		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Rowan"}}, "items": []any{map[string]any{"name": "blue key"}}},
+	})
+	criticResponse, _ := json.Marshal(map[string]any{
+		"model": "critic-model", "choices": []any{map[string]any{"message": map[string]any{"content": criticContent}}},
+	})
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		if strings.Contains(r.URL.Path, "/embeddings") {
 			return &http.Response{
@@ -97,10 +107,7 @@ func TestCompleteTurnEmbeddingProviderFailureReportsWarning(t *testing.T) {
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body: io.NopCloser(strings.NewReader(`{
-				"model":"critic-model",
-				"choices":[{"message":{"content":"{\"turn_summary\":\"Mina and Rowan commit to the blue key.\",\"importance_score\":7,\"evidence_excerpts\":[\"blue key safe\"],\"kg_triples\":[{\"semantic_class\":\"event_fact\",\"subject\":\"Rowan\",\"predicate\":\"protects\",\"object\":\"blue key\"}],\"entities\":{\"characters\":[{\"name\":\"Rowan\"}],\"items\":[{\"name\":\"blue key\"}]}}"}}]
-			}`)),
+			Body:       io.NopCloser(bytes.NewReader(criticResponse)),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -253,7 +260,7 @@ func TestCompleteTurnStructuredCanonicalContentDoesNotSkipDerivedIngest(t *testi
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		calls++
-		extraction := `{"turn_summary":"The scene continues under the requested constraints.","importance_score":6}`
+		extraction := criticWireJSONForTest(map[string]any{"turn_summary": "The scene continues under the requested constraints.", "importance_score": 6})
 		response := `{"model":"critic-model","choices":[{"message":{"content":` + strconv.Quote(extraction) + `}}]}`
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
 	})}

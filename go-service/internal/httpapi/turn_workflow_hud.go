@@ -545,7 +545,7 @@ func (l *turnWorkflowHUDLedger) startStage(requestID, stageKey string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry := l.entries[strings.TrimSpace(requestID)]
-	if entry == nil || turnWorkflowHUDTerminal(entry.view.Status) {
+	if entry == nil || turnWorkflowHUDTerminal(entry.view.Status) || entry.view.Status == "recovering" {
 		return
 	}
 	now := time.Now().UTC()
@@ -673,6 +673,7 @@ func (l *turnWorkflowHUDLedger) failWithDetails(
 	if entry == nil || entry.view.Status == "failed" || entry.view.Status == "invalidated" {
 		return
 	}
+	reprocessingQueued := turnWorkflowHUDDetailMatches(details, "reprocessing", "queued")
 	now := time.Now().UTC()
 	index := turnWorkflowHUDStageIndex(entry.view.Stages, stageKey)
 	if index >= 0 {
@@ -688,16 +689,31 @@ func (l *turnWorkflowHUDLedger) failWithDetails(
 	}
 	entry.view.Status = "failed"
 	entry.view.Severity = turnWorkflowHUDSeverityError
+	processingStatus := "failed"
+	processingDisposition := "dropped"
+	processingReason := strings.TrimSpace(code)
+	processingSeverity := turnWorkflowHUDSeverityError
+	if reprocessingQueued {
+		entry.view.Status = "recovering"
+		entry.view.Severity = turnWorkflowHUDSeverityWarning
+		processingStatus = "recovering"
+		processingDisposition = "deferred"
+		processingSeverity = turnWorkflowHUDSeverityWarning
+	}
 	failureDetail := turnWorkflowHUDDetailsText(details)
 	setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
 		Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
-		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Detail: failureDetail, Severity: turnWorkflowHUDSeverityError,
+		Status: processingStatus, Disposition: processingDisposition, ReasonCode: processingReason, Detail: failureDetail, Severity: processingSeverity,
 	})
 	setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
 		Key: "finality", Owner: "go_backend", Scope: "current_request",
-		Status: "failed", Disposition: "dropped", ReasonCode: strings.TrimSpace(code), Detail: failureDetail, Severity: turnWorkflowHUDSeverityError,
+		Status: processingStatus, Disposition: processingDisposition, ReasonCode: processingReason, Detail: failureDetail, Severity: processingSeverity,
 	})
-	entry.view.EndedAt = timePtr(now)
+	if reprocessingQueued {
+		entry.view.EndedAt = nil
+	} else {
+		entry.view.EndedAt = timePtr(now)
+	}
 	entry.view.Error = &turnWorkflowHUDError{
 		Code: strings.TrimSpace(code), MessageKey: strings.TrimSpace(messageKey), StageKey: strings.TrimSpace(stageKey),
 		Retryable: retryable, PreservedCounts: cloneTurnWorkflowHUDCounts(entry.view.Counts),
@@ -709,7 +725,7 @@ func (l *turnWorkflowHUDLedger) failWithDetails(
 			details,
 		),
 	}
-	if l.activeBySession[entry.view.ChatSessionID] == entry.view.RequestID {
+	if !reprocessingQueued && l.activeBySession[entry.view.ChatSessionID] == entry.view.RequestID {
 		delete(l.activeBySession, entry.view.ChatSessionID)
 	}
 	l.touchLocked(entry, now)
@@ -732,7 +748,8 @@ func turnWorkflowHUDRecoveryActions(
 			LabelKey:          "turn_hud.recovery.retry_derived_turn",
 			ConfirmTitleKey:   "turn_hud.recovery.confirm_title",
 			ConfirmMessageKey: "turn_hud.recovery.confirm_retry_derived_turn",
-			Status:            "available",
+			Status:            "running",
+			StatusMessageKey:  "turn_hud.recovery.running",
 		},
 	}
 }
@@ -842,9 +859,17 @@ func (l *turnWorkflowHUDLedger) setCounts(requestID string, values map[string]in
 	if entry == nil {
 		return
 	}
+	setTurnWorkflowHUDCountValues(&entry.view, values)
+	l.touchLocked(entry, time.Now().UTC())
+}
+
+func setTurnWorkflowHUDCountValues(view *turnWorkflowHUDViewModel, values map[string]int) {
+	if view == nil {
+		return
+	}
 	total := 0
-	for index := range entry.view.Counts {
-		count := &entry.view.Counts[index]
+	for index := range view.Counts {
+		count := &view.Counts[index]
 		if count.Key == "total_committed" {
 			continue
 		}
@@ -856,13 +881,144 @@ func (l *turnWorkflowHUDLedger) setCounts(requestID string, values map[string]in
 		}
 		total += count.Value
 	}
-	if index := turnWorkflowHUDCountIndex(entry.view.Counts, "total_committed"); index >= 0 {
-		entry.view.Counts[index].Value = total
+	if index := turnWorkflowHUDCountIndex(view.Counts, "total_committed"); index >= 0 {
+		view.Counts[index].Value = total
 	}
-	if entry.view.Error != nil {
-		entry.view.Error.PreservedCounts = cloneTurnWorkflowHUDCounts(entry.view.Counts)
+	if view.Error != nil {
+		view.Error.PreservedCounts = cloneTurnWorkflowHUDCounts(view.Counts)
 	}
-	l.touchLocked(entry, time.Now().UTC())
+}
+
+func turnWorkflowHUDCountsFromArtifactSave(result artifactSaveResult) map[string]int {
+	return map[string]int{
+		"turn_summary":        maxInt(0, result.Memories),
+		"precise_memory":      maxInt(0, result.PreciseMemoryUnits),
+		"direct_evidence":     maxInt(0, result.Evidence),
+		"knowledge_graph":     maxInt(0, result.KGTriples),
+		"relationship_state":  maxInt(0, result.RelationCurrentStates+result.RelationStateEvents),
+		"entity_identity":     maxInt(0, result.EntityIdentities),
+		"identity_surface":    maxInt(0, result.IdentitySurfaces),
+		"identity_binding":    maxInt(0, result.IdentityBindings),
+		"speaker_attribution": maxInt(0, result.SpeakerAttributions),
+		"subjective_memory":   maxInt(0, result.SubjectiveEntityMemories),
+		"world_rule":          maxInt(0, result.WorldRules),
+		"character_state": maxInt(0,
+			result.CharacterStates+result.PhysicalConditions+result.EntityConditions+result.StatusSchemaDefinitions+result.StatusEffects),
+		"narrative_state": maxInt(0,
+			result.CharacterEvents+result.Storylines+result.NarrativeCurrentStates+result.NarrativeStateEvents+
+				result.PendingThreads+result.ActiveStates+result.CanonicalStateLayers+result.Entities+result.TrustStates),
+		"vector_index": maxInt(0, result.VectorsUpserted),
+	}
+}
+
+func (l *turnWorkflowHUDLedger) updateRecoveryResult(
+	chatSessionID string,
+	logicalTurn int,
+	sourceRevision string,
+	state string,
+	failure string,
+	saveResult artifactSaveResult,
+) bool {
+	if l == nil {
+		return false
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	sourceRevision = strings.TrimSpace(sourceRevision)
+	state = strings.TrimSpace(state)
+	if chatSessionID == "" || logicalTurn <= 0 || sourceRevision == "" {
+		return false
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var matched *turnWorkflowHUDEntry
+	for _, entry := range l.entries {
+		if entry == nil || entry.recoveryTarget.ChatSessionID != chatSessionID ||
+			entry.recoveryTarget.LogicalTurn != logicalTurn ||
+			entry.recoveryTarget.SourceRevision != sourceRevision {
+			continue
+		}
+		if matched == nil || entry.view.UpdatedAt.After(matched.view.UpdatedAt) {
+			matched = entry
+		}
+	}
+	if matched == nil || matched.view.Status != "recovering" {
+		return false
+	}
+	now := time.Now().UTC()
+	switch state {
+	case "completed", "skipped_ooc":
+		setTurnWorkflowHUDCountValues(&matched.view, turnWorkflowHUDCountsFromArtifactSave(saveResult))
+		for _, stageKey := range []string{turnWorkflowStageCriticLLM, turnWorkflowStageDerivedPersist, turnWorkflowStageComplete} {
+			if index := turnWorkflowHUDStageIndex(matched.view.Stages, stageKey); index >= 0 {
+				stage := &matched.view.Stages[index]
+				if stage.StartedAt == nil {
+					stage.StartedAt = timePtr(now)
+				}
+				stage.Status = "succeeded"
+				stage.ReasonCode = "critic_reprocessing_completed"
+				stage.EndedAt = timePtr(now)
+				stage.DurationMS = turnWorkflowHUDDurationMS(stage.StartedAt, stage.EndedAt)
+				matched.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
+			}
+		}
+		matched.view.Error = nil
+		matched.view.Status = "completed"
+		matched.view.Severity = turnWorkflowHUDSeverityNotice
+		matched.view.DisplayMode = "notice"
+		matched.view.TitleKey = "turn_hud.recovery.completed_title"
+		matched.view.MessageKey = "turn_hud.recovery.completed"
+		matched.view.NoticeCode = "CRITIC_REPROCESSING_COMPLETED"
+		matched.view.NoticeKind = "recovery"
+		matched.view.EndedAt = timePtr(now)
+		setTurnWorkflowHUDFactValue(&matched.view, turnWorkflowHUDFact{
+			Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
+			Status: "completed", Disposition: "delivered", ReasonCode: "critic_reprocessing_completed", Severity: turnWorkflowHUDSeverityNotice,
+		})
+		setTurnWorkflowHUDFactValue(&matched.view, turnWorkflowHUDFact{
+			Key: "finality", Owner: "go_backend", Scope: "current_request",
+			Status: "accepted", Disposition: "delivered", ReasonCode: "critic_reprocessing_completed", Severity: turnWorkflowHUDSeverityNotice,
+		})
+		if l.activeBySession[chatSessionID] == matched.view.RequestID {
+			delete(l.activeBySession, chatSessionID)
+		}
+	case "retryable":
+		if matched.view.Error != nil {
+			for index := range matched.view.Error.RecoveryActions {
+				matched.view.Error.RecoveryActions[index].Status = "running"
+				matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.running"
+			}
+		}
+		matched.view.Status = "recovering"
+		matched.view.Severity = turnWorkflowHUDSeverityWarning
+		matched.view.EndedAt = nil
+	case "terminal", "stale_rejected":
+		matched.view.Status = "failed"
+		matched.view.Severity = turnWorkflowHUDSeverityError
+		matched.view.EndedAt = timePtr(now)
+		if matched.view.Error == nil {
+			matched.view.Error = &turnWorkflowHUDError{MessageKey: "turn_hud.error.critic_llm_failed", StageKey: turnWorkflowStageCriticLLM}
+		}
+		if strings.TrimSpace(failure) != "" {
+			matched.view.Error.Code = strings.TrimSpace(failure)
+		}
+		matched.view.Error.Retryable = state != "stale_rejected"
+		for index := range matched.view.Error.RecoveryActions {
+			if state == "stale_rejected" {
+				matched.view.Error.RecoveryActions[index].Status = "failed"
+				matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.request_failed"
+				continue
+			}
+			matched.view.Error.RecoveryActions[index].Status = "available"
+			matched.view.Error.RecoveryActions[index].StatusMessageKey = ""
+		}
+		if l.activeBySession[chatSessionID] == matched.view.RequestID {
+			delete(l.activeBySession, chatSessionID)
+		}
+	default:
+		return false
+	}
+	l.touchLocked(matched, now)
+	return true
 }
 
 func (l *turnWorkflowHUDLedger) setMemorySelection(requestID string, selection turnWorkflowHUDMemorySelection) {
@@ -891,7 +1047,7 @@ func (l *turnWorkflowHUDLedger) completeWithNotice(requestID, titleKey, messageK
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	entry := l.entries[strings.TrimSpace(requestID)]
-	if entry == nil || entry.view.Status == "failed" || entry.view.Status == "invalidated" {
+	if entry == nil || entry.view.Status == "failed" || entry.view.Status == "invalidated" || entry.view.Status == "recovering" {
 		return
 	}
 	if strings.TrimSpace(titleKey) != "" || strings.TrimSpace(messageKey) != "" || strings.TrimSpace(noticeCode) != "" {

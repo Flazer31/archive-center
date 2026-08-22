@@ -57,7 +57,7 @@ func TestPublisherResponseNormalizationUsesOneSupportedContainer(t *testing.T) {
 }
 
 func TestPublisherSingleJSONObjectNormalizesWrappersAndRejectsAmbiguity(t *testing.T) {
-	valid := `{"supervisor_scene_proposal":{"publisher_plan":{"contract_version":"publisher_plan.v2","book_author":{},"director":{}}}}`
+	valid := `{"contract_version":"publisher_output.v3","items":[]}`
 	for _, content := range []string{
 		valid,
 		"```json\n" + valid + "\n```",
@@ -73,7 +73,7 @@ func TestPublisherSingleJSONObjectNormalizesWrappersAndRejectsAmbiguity(t *testi
 		"stray { wrapper " + valid,
 		valid + " stray } wrapper",
 		`{"a":1,"a":2}`,
-		`{"supervisor_scene_proposal":`,
+		`{"contract_version":"publisher_output.v3","items":`,
 	} {
 		if _, err := parsePublisherJSONObject(content); err == nil {
 			t.Fatalf("ambiguous or incomplete JSON was accepted: %q", content)
@@ -81,47 +81,90 @@ func TestPublisherSingleJSONObjectNormalizesWrappersAndRejectsAmbiguity(t *testi
 	}
 }
 
-func TestPublisherPlanV2PartialKeepsValidItems(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	director := mapFromAny(plan["director"])
-	book["current_arc"] = map[string]any{"text": "Keep the immediate examination scene in view.", "source_refs": []any{"input:latest"}}
-	book["next_beats"] = []any{
-		map[string]any{"text": "Let Han-eol evaluate the opportunity.", "source_refs": []any{"input:latest"}},
-		map[string]any{"text": "This item has a wrong ref.", "source_refs": []any{"memory:not-delivered"}},
-	}
-	director["scene_mandate"] = "wrong type"
-	director["pressure_level"] = map[string]any{"level": "low", "text": "Keep the pressure restrained.", "source_refs": []any{"memory:delivered"}}
-
-	result, trace := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("strong"))
+func TestPublisherWireV3PreservesAllCanonicalFields(t *testing.T) {
+	parsed := publisherWireV3Parsed(
+		map[string]any{"role": "book_author", "field": "current_arc", "text": "Current arc", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "book_author", "field": "narrative_goal", "text": "Narrative goal", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "book_author", "field": "next_beats", "text": "Next beat", "source_refs": []any{"memory:delivered"}},
+		map[string]any{"role": "book_author", "field": "guardrails", "text": "Guardrail", "source_refs": []any{"memory:delivered"}},
+		map[string]any{"role": "director", "field": "scene_mandate", "text": "Scene mandate", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "director", "field": "required_outcomes", "text": "Required outcome", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "director", "field": "forbidden_moves", "text": "Forbidden move", "source_refs": []any{"memory:delivered"}},
+		map[string]any{"role": "director", "field": "pressure_level", "level": "quiet", "text": "Quiet pressure", "source_refs": []any{"input:latest"}},
+	)
+	result, trace := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("maximum"))
 	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
-	acceptedPlan := mapFromAny(proposal["publisher_plan"])
-	if proposal["status"] != "partial" || acceptedPlan["contract_version"] != "publisher_plan.v2" {
-		t.Fatalf("partial v2 classification missing: %#v", proposal)
+	plan := mapFromAny(proposal["publisher_plan"])
+	accepted := anySliceFromAny(plan["accepted_items"])
+	if proposal["status"] != "ready" || plan["contract_version"] != "publisher_plan.v2" || len(accepted) != 8 {
+		t.Fatalf("wire v3 did not preserve all canonical Publisher fields: proposal=%#v trace=%#v", proposal, trace)
 	}
-	accepted := anySliceFromAny(acceptedPlan["accepted_items"])
-	if len(accepted) != 3 || intFromAny(trace["rejected_items"], 0) != 2 {
-		t.Fatalf("valid siblings were lost or invalid siblings accepted: plan=%#v trace=%#v", acceptedPlan, trace)
+	want := map[string]bool{
+		"book_author.current_arc": false, "book_author.narrative_goal": false,
+		"book_author.next_beats": false, "book_author.guardrails": false,
+		"director.scene_mandate": false, "director.required_outcomes": false,
+		"director.forbidden_moves": false, "director.pressure_level": false,
 	}
 	for _, raw := range accepted {
-		if strings.Contains(extractionStringFromAny(mapFromAny(raw)["text"]), "wrong ref") {
-			t.Fatalf("invalid item reached accepted list: %#v", accepted)
+		item := mapFromAny(raw)
+		key := extractionStringFromAny(item["role"]) + "." + extractionStringFromAny(item["field"])
+		if _, exists := want[key]; !exists {
+			t.Fatalf("unexpected canonical item: %#v", item)
 		}
+		want[key] = true
+		if key == "director.pressure_level" && item["level"] != "quiet" {
+			t.Fatalf("pressure level was not preserved: %#v", item)
+		}
+	}
+	for key, found := range want {
+		if !found {
+			t.Fatalf("canonical field %s was lost: %#v", key, accepted)
+		}
+	}
+}
+
+func TestPublisherWireV3RejectsOnlyInvalidItems(t *testing.T) {
+	parsed := publisherWireV3Parsed(
+		map[string]any{"role": "book_author", "field": "current_arc", "text": "Bad first single item", "source_refs": []any{"memory:not-delivered"}},
+		map[string]any{"role": "book_author", "field": "current_arc", "text": "Keep the current scene", "source_refs": []any{"input:latest"}, "unexpected": true},
+		map[string]any{"role": "book_author", "field": "next_beats", "text": "Bad ref", "source_refs": []any{"memory:not-delivered"}},
+		map[string]any{"role": "producer", "field": "scene_mandate", "text": "Wrong role", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "director", "field": "pressure_level", "level": "low", "text": "Keep pressure low", "source_refs": []any{"memory:delivered"}},
+	)
+	result, trace := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("strong"))
+	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+	plan := mapFromAny(proposal["publisher_plan"])
+	if proposal["status"] != "partial" || plan["accepted_count"] != 2 || plan["rejected_count"] != 4 {
+		t.Fatalf("one invalid wire item deleted valid siblings or was accepted: proposal=%#v trace=%#v", proposal, trace)
+	}
+	if trace["wire_contract_version"] != publisherWireContractVersion {
+		t.Fatalf("wire contract trace missing: %#v", trace)
+	}
+}
+
+func TestPublisherWireV3RejectsLegacyProviderShape(t *testing.T) {
+	legacy := map[string]any{"supervisor_scene_proposal": map[string]any{"publisher_plan": map[string]any{"contract_version": "publisher_plan.v2"}}}
+	result, _ := buildBoundedSupervisorResult(legacy, supervisorBoundaryTestPack("strong"))
+	proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+	if proposal["status"] != "publisher_schema_invalid" {
+		t.Fatalf("legacy nested provider wire was accepted: %#v", proposal)
+	}
+	if _, exists := proposal["publisher_plan"]; exists {
+		t.Fatalf("legacy wire fabricated a canonical plan: %#v", proposal)
 	}
 }
 
 func TestPublisherPlanV2SeparatesValidEmptyNoValidAndSchemaFailure(t *testing.T) {
 	pack := supervisorBoundaryTestPack("weak")
-	emptyResult, _ := buildBoundedSupervisorResult(publisherV2EmptyParsed(), pack)
+	emptyResult, _ := buildBoundedSupervisorResult(publisherWireV3Parsed(), pack)
 	emptyProposal := mapFromAny(mapFromAny(emptyResult["directive"])["supervisor_scene_proposal"])
 	if emptyProposal["status"] != "valid_empty" || mapFromAny(emptyProposal["publisher_plan"])["accepted_count"] != 0 {
 		t.Fatalf("explicit empty v2 plan was not accepted: %#v", emptyProposal)
 	}
 
-	noValid := publisherV2EmptyParsed()
-	noValidBook := mapFromAny(mapFromAny(mapFromAny(noValid["supervisor_scene_proposal"])["publisher_plan"])["book_author"])
-	noValidBook["current_arc"] = map[string]any{"text": "unsupported", "source_refs": []any{"not:allowed"}}
+	noValid := publisherWireV3Parsed(map[string]any{
+		"role": "book_author", "field": "current_arc", "text": "unsupported", "source_refs": []any{"not:allowed"},
+	})
 	noValidResult, _ := buildBoundedSupervisorResult(noValid, pack)
 	noValidProposal := mapFromAny(mapFromAny(noValidResult["directive"])["supervisor_scene_proposal"])
 	if noValidProposal["status"] != "publisher_plan_no_valid_items" {
@@ -139,15 +182,11 @@ func TestPublisherPlanV2SeparatesValidEmptyNoValidAndSchemaFailure(t *testing.T)
 }
 
 func TestPublisherPlanV2RendersOneAcceptedOnlyGuidanceBlock(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	director := mapFromAny(plan["director"])
-	book["current_arc"] = map[string]any{"text": "Frame the immediate examination opportunity.", "source_refs": []any{"input:latest"}}
-	director["required_outcomes"] = []any{
-		map[string]any{"text": "Show Han-eol weighing the practical opening.", "source_refs": []any{"memory:delivered"}},
-		map[string]any{"text": "Rejected text must not appear.", "source_refs": []any{"not:allowed"}},
-	}
+	parsed := publisherWireV3Parsed(
+		map[string]any{"role": "book_author", "field": "current_arc", "text": "Frame the immediate examination opportunity.", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "director", "field": "required_outcomes", "text": "Show Han-eol weighing the practical opening.", "source_refs": []any{"memory:delivered"}},
+		map[string]any{"role": "director", "field": "required_outcomes", "text": "Rejected text must not appear.", "source_refs": []any{"not:allowed"}},
+	)
 	result, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("medium"))
 	items := supervisorSceneProposalGuidanceItems(result, "standard")
 	if len(items) != 1 {
@@ -175,13 +214,11 @@ func TestPublisherSkippedGateDoesNotFabricateV2Plan(t *testing.T) {
 }
 
 func TestPublisherStrengthDoesNotFilterAcceptedItemsOrForcePressure(t *testing.T) {
-	parsed := publisherV2EmptyParsed()
-	plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-	book := mapFromAny(plan["book_author"])
-	director := mapFromAny(plan["director"])
-	book["current_arc"] = map[string]any{"text": "Keep the current quiet conversation in view.", "source_refs": []any{"input:latest"}}
-	book["next_beats"] = []any{map[string]any{"text": "Let the response preserve the pause.", "source_refs": []any{"memory:delivered"}}}
-	director["pressure_level"] = map[string]any{"level": "quiet", "text": "Keep the scene quiet.", "source_refs": []any{"input:latest"}}
+	parsed := publisherWireV3Parsed(
+		map[string]any{"role": "book_author", "field": "current_arc", "text": "Keep the current quiet conversation in view.", "source_refs": []any{"input:latest"}},
+		map[string]any{"role": "book_author", "field": "next_beats", "text": "Let the response preserve the pause.", "source_refs": []any{"memory:delivered"}},
+		map[string]any{"role": "director", "field": "pressure_level", "level": "quiet", "text": "Keep the scene quiet.", "source_refs": []any{"input:latest"}},
+	)
 
 	weakResult, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("weak"))
 	maximumResult, _ := buildBoundedSupervisorResult(parsed, supervisorBoundaryTestPack("maximum"))
@@ -211,20 +248,29 @@ func TestPublisherStrengthDoesNotFilterAcceptedItemsOrForcePressure(t *testing.T
 	}
 }
 
-func publisherV2EmptyParsed() map[string]any {
-	return map[string]any{
-		"supervisor_scene_proposal": map[string]any{
-			"publisher_plan": map[string]any{
-				"contract_version": "publisher_plan.v2",
-				"book_author": map[string]any{
-					"current_arc": nil, "narrative_goal": nil, "next_beats": []any{}, "guardrails": []any{},
-				},
-				"director": map[string]any{
-					"scene_mandate": nil, "required_outcomes": []any{}, "forbidden_moves": []any{}, "pressure_level": nil,
-				},
-			},
-		},
+func publisherWireV3Parsed(items ...map[string]any) map[string]any {
+	rawItems := make([]any, 0, len(items))
+	for _, item := range items {
+		rawItems = append(rawItems, item)
 	}
+	return map[string]any{
+		"contract_version": publisherWireContractVersion,
+		"items":            rawItems,
+	}
+}
+
+func publisherWireV3Item(role, field, text string, refs ...string) map[string]any {
+	sourceRefs := make([]any, 0, len(refs))
+	for _, ref := range refs {
+		sourceRefs = append(sourceRefs, ref)
+	}
+	return map[string]any{"role": role, "field": field, "text": text, "source_refs": sourceRefs}
+}
+
+func publisherWireV3PressureItem(level, text string, refs ...string) map[string]any {
+	item := publisherWireV3Item("director", "pressure_level", text, refs...)
+	item["level"] = level
+	return item
 }
 
 func supervisorBoundaryTestPack(strength string) map[string]any {

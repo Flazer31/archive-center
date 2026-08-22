@@ -405,7 +405,7 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 		},
 		"world_rules": []any{map[string]any{"scope": "session", "category": "relationship", "key": "trust_changes_need_evidence", "value": "Trust shifts should be grounded in visible actions."}},
 	}
-	extractionBytes, _ := json.Marshal(extraction)
+	extractionBytes := []byte(criticWireJSONForTest(extraction))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -540,8 +540,13 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if trace["critic_pipeline_version"] != completeTurnCriticPipelineVersion || trace["critic_pipeline_split_enabled"] != true || trace["critic_pipeline_all_in_single_call"] != false {
 		t.Fatalf("critic pipeline handoff mismatch: %+v", trace)
 	}
-	if trace["critic_preview_pass_version"] != "ea1k.v1" || trace["direct_evidence_retention_policy_version"] != "ea1l.v1" {
-		t.Fatalf("preview/retention handoff mismatch: %+v", trace)
+	if trace["direct_evidence_retention_policy_version"] != "ea1l.v1" {
+		t.Fatalf("direct evidence retention handoff mismatch: %+v", trace)
+	}
+	for _, key := range []string{"critic_preview_pass_version", "critic_preview_pass_enabled", "critic_preview_pass_scope", "critic_preview_compaction_mode"} {
+		if _, ok := trace[key]; ok {
+			t.Fatalf("removed critic preview handoff %q remained: %+v", key, trace)
+		}
 	}
 	criticTrace, ok := trace["critic_trace"].(map[string]any)
 	if !ok {
@@ -555,31 +560,8 @@ func TestCompleteTurnWithCriticConfigWritesExtractedArtifacts(t *testing.T) {
 	if !ok || stages["evidence_extractor"] == nil || stages["deterministic_reducer"] == nil || stages["summary_compactor_background"] == nil {
 		t.Fatalf("critic split stages missing: %+v", pipeline)
 	}
-	previewPass, ok := criticTrace["preview_pass"].(map[string]any)
-	if !ok || previewPass["policy_version"] != "ea1k.v1" {
-		t.Fatalf("preview_pass trace missing: %+v", criticTrace)
-	}
-	rawPreview, ok := previewPass["recent_raw_preview"].([]any)
-	if !ok || len(rawPreview) == 0 {
-		t.Fatalf("preview_pass recent_raw_preview missing: %+v", previewPass)
-	}
-	switch directSeed := previewPass["recent_verified_direct_evidence_seed"].(type) {
-	case []map[string]any:
-		if len(directSeed) == 0 {
-			t.Fatalf("preview_pass direct evidence seed empty: %+v", previewPass)
-		}
-	case []any:
-		if len(directSeed) == 0 {
-			t.Fatalf("preview_pass direct evidence seed empty: %+v", previewPass)
-		}
-	default:
-		t.Fatalf("preview_pass direct evidence seed missing: %+v", previewPass)
-	}
-	if _, ok := previewPass["triage"].(map[string]any); !ok {
-		t.Fatalf("preview_pass triage missing: %+v", previewPass)
-	}
-	if _, ok := previewPass["compaction_hint"].(map[string]any); !ok {
-		t.Fatalf("preview_pass compaction_hint missing: %+v", previewPass)
+	if _, ok := criticTrace["preview_pass"]; ok {
+		t.Fatalf("removed preview_pass remained in critic trace: %+v", criticTrace)
 	}
 	if trace["maintenance_queue_status"] != "audit_recorded" || trace["maintenance_queue_depth"] != float64(0) {
 		t.Fatalf("maintenance handoff mismatch: %+v", trace)
@@ -623,13 +605,13 @@ func TestCompleteTurnEpisodeCheckpointGeneratesAtIntervalBoundary(t *testing.T) 
 	srv.Store = fake
 	srv.StoreOpenError = nil
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":     "Wren loads oxygen tanks for Operation Ice Wedge.",
 		"importance_score": 7,
 		"evidence_excerpts": []any{
 			"Wren loads oxygen tanks",
 		},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -736,7 +718,7 @@ func TestCompleteTurnBlocksLegacyCharacterRelationshipAccumulation(t *testing.T)
 		if criticCall >= len(extractions) {
 			t.Fatalf("unexpected extra critic call %d", criticCall+1)
 		}
-		extractionBytes, _ := json.Marshal(extractions[criticCall])
+		extractionBytes := []byte(criticWireJSONForTest(extractions[criticCall]))
 		criticCall++
 		resp, _ := json.Marshal(map[string]any{
 			"model":   "critic-model",
@@ -845,7 +827,7 @@ func TestCompleteTurnCriticGuardsEvidenceKGAndEntityTypes(t *testing.T) {
 		},
 		"world_rules": []any{map[string]any{"scope": "location", "scope_name": "old library", "category": "access", "key": "cellar_needs_key", "value": "The cellar can be opened with the brass key."}},
 	}
-	extractionBytes, _ := json.Marshal(extraction)
+	extractionBytes := []byte(criticWireJSONForTest(extraction))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -914,7 +896,7 @@ func TestCompleteTurnLocationTimeGroundingSeparatesSceneResidenceAndSeason(t *te
 			"sess-loc-time", 8,
 			"Rowan lives in London.",
 			"The current scene stays on the school rooftop as summer vacation begins.",
-			nil, nil, nil,
+			nil, nil,
 		))
 		for _, needle := range []string{
 			"Location and time typed lanes do not suppress compatible kg_triples",

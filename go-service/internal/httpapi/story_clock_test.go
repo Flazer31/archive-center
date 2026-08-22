@@ -479,8 +479,7 @@ func TestStoryClockSchemaRejectsFabricatedOrInvalidPrecision(t *testing.T) {
 func TestProxyCriticSchemaLeavesStoryClockVocabularyOpen(t *testing.T) {
 	schema := proxyCriticTopLevelJSONSchema()
 	properties := mapFromAny(schema["properties"])
-	storySchema := mapFromAny(properties["story_clock"])
-	if len(storySchema) != 0 {
-		t.Fatalf("proxy critic story_clock restored a fixed provider vocabulary: %#v", storySchema)
+	if schema["additionalProperties"] != true || len(mapFromAny(properties["story_clock"])) != 0 {
+		t.Fatalf("proxy critic schema restored a fixed story-clock vocabulary: %#v", schema)
 	}
 }

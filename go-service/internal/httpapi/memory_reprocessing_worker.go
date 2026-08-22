@@ -209,6 +209,12 @@ func (s *Server) processMemoryReprocessingOnce(
 			result.State = "stale_rejected"
 			return result, nil
 		}
+		if finishErr == nil && s.TurnWorkflows != nil {
+			s.TurnWorkflows.updateRecoveryResult(
+				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
+				"stale_rejected", "source_revision_not_active", artifactSaveResult{},
+			)
+		}
 		return result, finishErr
 	}
 	derivation := s.processAcceptedSourceRevision(
@@ -239,19 +245,46 @@ func (s *Server) processMemoryReprocessingOnce(
 			}
 			return result, err
 		}
+		if s.TurnWorkflows != nil {
+			s.TurnWorkflows.updateRecoveryResult(
+				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
+				derivation.State, "", derivation.SaveResult,
+			)
+		}
 		return result, nil
 	case "stale_rejected":
-		return result, finishSupersededMemoryReprocessingJob(
+		finishErr := finishSupersededMemoryReprocessingJob(
 			ctx, jobs, job, leaseOwner, time.Now().UTC(), &result,
 		)
+		if finishErr == nil && s.TurnWorkflows != nil {
+			s.TurnWorkflows.updateRecoveryResult(
+				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
+				"stale_rejected", result.Failure, artifactSaveResult{},
+			)
+		}
+		return result, finishErr
 	case "terminal":
-		return result, jobs.FailMemoryReprocessingJob(
+		finishErr := jobs.FailMemoryReprocessingJob(
 			ctx, job.ID, leaseOwner, time.Now().UTC(), time.Time{}, true, result.Failure,
 		)
+		if finishErr == nil && s.TurnWorkflows != nil {
+			s.TurnWorkflows.updateRecoveryResult(
+				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
+				"terminal", result.Failure, artifactSaveResult{},
+			)
+		}
+		return result, finishErr
 	case "retryable":
-		return result, s.retryMemoryReprocessingJob(
+		retryErr := s.retryMemoryReprocessingJob(
 			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
 		)
+		if retryErr == nil && s.TurnWorkflows != nil {
+			s.TurnWorkflows.updateRecoveryResult(
+				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
+				result.State, result.Failure, artifactSaveResult{},
+			)
+		}
+		return result, retryErr
 	default:
 		return result, fmt.Errorf(
 			"accepted source derivation returned unknown state %q",

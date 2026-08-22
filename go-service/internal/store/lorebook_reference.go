@@ -113,4 +113,5 @@ type LorebookReferenceStore interface {
 // independent from the UI-only bounded projection.
 type LorebookReferenceExplorerStore interface {
 	GetLorebookReferenceCurrentPage(context.Context, LorebookReferenceScope, int, int) (*LorebookReferenceCurrentPage, error)
+	GetLorebookReferenceLatestSessionPage(context.Context, string, int, int) (*LorebookReferenceCurrentPage, error)
 }

@@ -374,24 +374,33 @@ func Test39CharacterMemoryCommonAdmissionDoesNotRequireRedundantExpressionFields
 }
 
 func Test39CDCriticAndProviderContractsExposeTypedLanes(t *testing.T) {
-	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, `Mira says, "Enough."`, "Rook waits.", nil, nil, nil))
-	for _, needle := range []string{`"character_profile_observations"`, `"voice_observations"`, "speaker_attributions is optional and source-bound", "retained story context and the latest turn uses an alias", "Do not use a fixed count to decide that a habit exists", "a first observation is valid contextual evidence", "rather than forcing future dialogue to repeat an example sentence"} {
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, `Mira says, "Enough."`, "Rook waits.", nil, nil))
+	for _, needle := range []string{"character_profile_observations", "voice_observations", "speaker_attributions is optional and source-bound", "retained story context and the latest turn uses an alias", "Do not use a fixed count to decide that a habit exists", "a first observation is valid contextual evidence", "rather than forcing future dialogue to repeat an example sentence"} {
 		if !strings.Contains(prompt, needle) {
 			t.Fatalf("critic prompt missing 3.9-C/D guard %q", needle)
 		}
 	}
-	if _, _, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "character_profile_observations": []any{}, "voice_observations": []any{}}); err != nil {
+	if _, _, err := validateCriticExtractionSchema(map[string]any{
+		"turn_summary": "ok",
+		"character_profile_observations": []any{
+			map[string]any{"subject_entity": "Mira", "trait_key": "reserved"},
+		},
+		"voice_observations": []any{
+			map[string]any{"subject_entity": "Mira", "principle_key": "concise"},
+		},
+	}); err != nil {
 		t.Fatalf("typed C/D lanes rejected by critic schema: %v", err)
 	}
-	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "kept", "voice_observations": map[string]any{}})
-	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_field_count"], 0) != 1 {
-		t.Fatalf("non-array voice lane was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
+	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{
+		"turn_summary":       "kept",
+		"voice_observations": []any{"wrong wire value"},
+	})
+	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_item_count"], 0) != 1 {
+		t.Fatalf("invalid voice record was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
 	}
-	properties := mapFromAny(proxyCriticTopLevelJSONSchema()["properties"])
-	for _, key := range []string{"character_profile_observations", "voice_observations"} {
-		if extractionStringFromAny(mapFromAny(properties[key])["type"]) != "array" {
-			t.Fatalf("provider JSON schema lacks %s: %#v", key, properties[key])
-		}
+	schema := proxyCriticTopLevelJSONSchema()
+	if schema["additionalProperties"] != true || len(mapFromAny(mapFromAny(schema["properties"])["records"])) != 0 {
+		t.Fatalf("provider critic schema is not sparse top-level: %#v", schema)
 	}
 }
 

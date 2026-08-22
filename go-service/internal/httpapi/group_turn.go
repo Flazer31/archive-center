@@ -9,7 +9,6 @@ import (
 
 const (
 	completeTurnCriticPipelineVersion          = "critic_pipeline.v6"
-	completeTurnCriticPreviewPassVersion       = "ea1k.v1"
 	completeTurnDirectEvidenceRetentionVersion = "ea1l.v1"
 	completeTurnMaintenancePlanVersion         = "maintenance_audit.v2"
 	completeTurnHierarchyPromotionVersion      = "step23.guarded_worker.v1"

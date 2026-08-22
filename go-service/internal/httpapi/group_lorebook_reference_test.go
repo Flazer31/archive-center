@@ -16,6 +16,7 @@ type lorebookReferenceHTTPStore struct {
 	last              *store.LorebookReferenceSnapshot
 	currentPage       *store.LorebookReferenceCurrentPage
 	currentPageScope  store.LorebookReferenceScope
+	latestSessionID   string
 	currentPageLimit  int
 	currentPageOffset int
 }
@@ -36,6 +37,16 @@ func (f *lorebookReferenceHTTPStore) GetLorebookReferenceCurrent(context.Context
 
 func (f *lorebookReferenceHTTPStore) GetLorebookReferenceCurrentPage(_ context.Context, scope store.LorebookReferenceScope, limit, offset int) (*store.LorebookReferenceCurrentPage, error) {
 	f.currentPageScope = scope
+	f.currentPageLimit = limit
+	f.currentPageOffset = offset
+	if f.currentPage == nil {
+		return nil, store.ErrNotFound
+	}
+	return f.currentPage, nil
+}
+
+func (f *lorebookReferenceHTTPStore) GetLorebookReferenceLatestSessionPage(_ context.Context, sessionID string, limit, offset int) (*store.LorebookReferenceCurrentPage, error) {
+	f.latestSessionID = sessionID
 	f.currentPageLimit = limit
 	f.currentPageOffset = offset
 	if f.currentPage == nil {
@@ -172,5 +183,71 @@ func TestLorebookReferenceCurrentRejectsUnboundedPage(t *testing.T) {
 	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/sessions/session-a/lorebook-reference/current?limit=101", nil))
 	if recorder.Code != http.StatusBadRequest || fake.currentPageLimit != 0 {
 		t.Fatalf("status=%d called_limit=%d body=%s", recorder.Code, fake.currentPageLimit, recorder.Body.String())
+	}
+}
+
+func TestLorebookReferenceCurrentReturnsLatestStoredScopeForSelectedSession(t *testing.T) {
+	fake := &lorebookReferenceHTTPStore{
+		Store: store.NewNoopStore(),
+		currentPage: &store.LorebookReferenceCurrentPage{
+			ScopeID: 12,
+			Entries: []store.LorebookReferenceEntryObservation{
+				{EntryOrdinal: 0, Key: "archive", Content: "selected session lore"},
+			},
+			Total: 1, Limit: 20, Offset: 0,
+		},
+	}
+	server := &Server{Store: fake}
+	mux := http.NewServeMux()
+	server.registerLorebookReferenceRoutes(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+		"/sessions/session-b/lorebook-reference/current?scope_mode=latest_session&limit=20&offset=0", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fake.latestSessionID != "session-b" || fake.currentPageLimit != 20 || fake.currentPageOffset != 0 {
+		t.Fatalf("latest_session=%q limit=%d offset=%d", fake.latestSessionID, fake.currentPageLimit, fake.currentPageOffset)
+	}
+	if fake.currentPageScope.ChatSessionID != "" {
+		t.Fatalf("latest-session read must not enter exact-scope owner: %#v", fake.currentPageScope)
+	}
+}
+
+func TestLorebookReferenceCurrentReturnsEmptyProjectionForSessionWithoutLorebook(t *testing.T) {
+	fake := &lorebookReferenceHTTPStore{Store: store.NewNoopStore()}
+	server := &Server{Store: fake}
+	mux := http.NewServeMux()
+	server.registerLorebookReferenceRoutes(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+		"/sessions/session-empty/lorebook-reference/current?scope_mode=latest_session&limit=20&offset=0", nil))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Status string                                    `json:"status"`
+		Scope  store.LorebookReferenceScope              `json:"scope"`
+		Items  []store.LorebookReferenceEntryObservation `json:"items"`
+		Total  int                                       `json:"total"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Status != "ok" || response.Scope.ChatSessionID != "session-empty" || response.Total != 0 || len(response.Items) != 0 {
+		t.Fatalf("response=%+v body=%s", response, recorder.Body.String())
+	}
+}
+
+func TestLorebookReferenceCurrentRejectsUnknownScopeMode(t *testing.T) {
+	fake := &lorebookReferenceHTTPStore{Store: store.NewNoopStore()}
+	server := &Server{Store: fake}
+	mux := http.NewServeMux()
+	server.registerLorebookReferenceRoutes(mux)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet,
+		"/sessions/session-a/lorebook-reference/current?scope_mode=guess", nil))
+	if recorder.Code != http.StatusBadRequest || fake.latestSessionID != "" || fake.currentPageScope.ChatSessionID != "" {
+		t.Fatalf("status=%d latest_session=%q exact_scope=%#v body=%s", recorder.Code, fake.latestSessionID, fake.currentPageScope, recorder.Body.String())
 	}
 }

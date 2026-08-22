@@ -472,3 +472,36 @@ func (m *mariadbStore) GetLorebookReferenceCurrentPage(ctx context.Context, scop
 		Entries: current.Entries, Total: total, Limit: limit, Offset: offset,
 	}, nil
 }
+
+func (m *mariadbStore) GetLorebookReferenceLatestSessionPage(ctx context.Context, chatSessionID string, limit, offset int) (*LorebookReferenceCurrentPage, error) {
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" || limit <= 0 || limit > 100 || offset < 0 {
+		return nil, ErrInvalidLorebookReference
+	}
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	var scopeIdentityJSON string
+	err := m.db.QueryRowContext(ctx, `
+		SELECT scope.scope_identity_json
+		FROM lorebook_reference_scopes AS scope
+		JOIN lorebook_reference_snapshots AS snapshot ON snapshot.scope_id = scope.scope_id
+		WHERE scope.chat_session_id = ?
+		ORDER BY snapshot.observed_at DESC, snapshot.created_at DESC, snapshot.snapshot_id DESC, scope.scope_id DESC
+		LIMIT 1
+	`, chatSessionID).Scan(&scopeIdentityJSON)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	var scope LorebookReferenceScope
+	if err := json.Unmarshal([]byte(scopeIdentityJSON), &scope); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(scope.ChatSessionID) != chatSessionID {
+		return nil, ErrInvalidLorebookReference
+	}
+	return m.GetLorebookReferenceCurrentPage(ctx, scope, limit, offset)
+}

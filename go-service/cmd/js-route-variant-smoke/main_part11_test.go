@@ -136,7 +136,7 @@ func TestFinalPayloadParitySeparatesActualUserFromRisuPromptTailRuntime(t *testi
 		extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace"),
 	}, "\n")
 	script := functions + `
-const settings = {pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false};
+const settings = {pluginMainApplyMode:"shadow",pluginMainRewriteOptIn:false};
 const emptyPlan = {contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly",status:"empty",auxiliary_text:"",input_context_text:""};
 const emptyObservation = {contract_version:"payload_application_observation.v1",status:"ready",payload_application_status:"empty",blocks:[]};
 const auxPlan = {contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly",status:"ready",auxiliary_text:"required auxiliary",input_context_text:"",auxiliary_observation_hash:"or1c_aux"};
@@ -231,7 +231,7 @@ func TestEffectiveInputUsesCompletePayloadPlanAndCurrentTurnRuntime(t *testing.T
 	script := functions + `
 const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto","before_latest_user","after_anchor_marker","after_last_cache_point","after_first_system","end"]);
 const DEFAULT_SETTINGS = {auxiliaryInjectionPlacement:"before_latest_user"};
-const settings = {auxiliaryInjectionPlacement:"before_latest_user",auxiliaryInjectionAnchorMarker:"",pluginMainApplyMode:"shadow",pluginMainRewriteLegacyOptIn:false,maxInputContextChars:12000};
+const settings = {auxiliaryInjectionPlacement:"before_latest_user",auxiliaryInjectionAnchorMarker:"",pluginMainApplyMode:"shadow",pluginMainRewriteOptIn:false,maxInputContextChars:12000};
 const RECOMPOSER_BRIDGE_CONTRACT = "archive_center_recomposer_bridge.v1";
 const AUTO_CONTINUE_USER_INPUT_MARKER = "[Continue]";
 function updateRuntimeState() {}

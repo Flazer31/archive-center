@@ -996,7 +996,7 @@ func TestCompleteTurnDualShadowWithCriticSavesAllArtifacts(t *testing.T) {
 		"pending_threads": []any{map[string]any{"thread_type": "promise", "title": "Alice thanks Bob later", "confidence": 0.85}},
 		"world_rules":     []any{map[string]any{"scope": "session", "category": "relationship", "key": "trust_changes_need_evidence", "value": "Trust shifts should be grounded in visible actions."}},
 	}
-	extractionBytes, _ := json.Marshal(extraction)
+	extractionBytes := []byte(criticWireJSONForTest(extraction))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "critic-model",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},

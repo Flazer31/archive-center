@@ -233,7 +233,6 @@ func (s *Server) backfillWorldRulesFromChatLogs(ctx context.Context, sid string,
 			"Session-level world rule audit from raw chat logs. Extract only durable rules grounded in the transcript.",
 			chunk.text,
 			nil,
-			nil,
 			map[string]any{},
 			cfg,
 		)

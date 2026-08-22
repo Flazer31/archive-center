@@ -555,13 +555,17 @@ func TestAdminRescanBackfillsWorldRulesFromRawChatLogsWhenMemoriesMissRules(t *t
 	srv.StoreOpenError = nil
 	srv.Store = fake
 
-	noRulesBytes, _ := json.Marshal(map[string]any{
-		"audit":       map[string]any{"durable_rule_found": false, "reason": "per-turn extractor missed the lore"},
-		"world_rules": []any{},
-		"world_state": map[string]any{"version": "world_state.v1", "rules": []any{}},
-	})
-	rawRuleBytes, _ := json.Marshal(map[string]any{
-		"audit": map[string]any{"durable_rule_found": true, "reason": "The transcript establishes cosmology and apostle doctrine."},
+	noRulesBytes := []byte(criticWireJSONForTest(map[string]any{
+		"turn_summary":     "No durable world rule was found.",
+		"importance_score": 1,
+		"world_rule_audit": map[string]any{"durable_rule_found": false, "reason": "per-turn extractor missed the lore"},
+		"world_rules":      []any{},
+		"world_state":      map[string]any{"version": "world_state.v1", "rules": []any{}},
+	}))
+	rawRuleBytes := []byte(criticWireJSONForTest(map[string]any{
+		"turn_summary":     "The transcript establishes cosmology and apostle doctrine.",
+		"importance_score": 8,
+		"world_rule_audit": map[string]any{"durable_rule_found": true, "reason": "The transcript establishes cosmology and apostle doctrine."},
 		"world_rules": []any{
 			map[string]any{"scope": "session", "scope_name": "Cassia Doctrine", "category": "cosmology", "key": "apostles_borrow_divine_power_against_chaos_monsters", "value": "Apostles are humans or agents who borrow power granted by goddess Cassia to eliminate monsters, which are remnants of chaos rather than Cassia's creations."},
 		},
@@ -571,7 +575,7 @@ func TestAdminRescanBackfillsWorldRulesFromRawChatLogsWhenMemoriesMissRules(t *t
 				map[string]any{"scope": "session", "scope_name": "Cassia Doctrine", "category": "cosmology", "key": "cassia_non_intervention_except_monsters", "value": "Goddess Cassia does not directly intervene in human fate, but grants humans power against monsters because monsters come from leftover chaos."},
 			},
 		},
-	})
+	}))
 	noRulesResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(noRulesBytes)}}},
@@ -642,7 +646,7 @@ func TestAdminRescanForceDerivedRebuildProcessesTurnsThatAlreadyHaveMemory(t *te
 	srv.StoreOpenError = nil
 	srv.Store = fake
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":     "Luka and Hank confirm the ice wedge bridge demolition rule.",
 		"importance_score": 8,
 		"evidence_excerpts": []any{
@@ -651,7 +655,7 @@ func TestAdminRescanForceDerivedRebuildProcessesTurnsThatAlreadyHaveMemory(t *te
 		"world_rules": []any{
 			map[string]any{"scope": "session", "scope_name": "Demolition Logic", "category": "setting", "key": "ice_wedge_effect", "value": "Ice shock can crack heated bridge steel."},
 		},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -722,7 +726,7 @@ func TestAdminRescanBackfillsEpisodesAfterRegeneratingMemories(t *testing.T) {
 	srv.StoreOpenError = nil
 	srv.Store = fake
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":     "The team confirms Operation Ice Wedge as a bridge demolition plan.",
 		"importance_score": 8,
 		"evidence_excerpts": []any{
@@ -736,7 +740,7 @@ func TestAdminRescanBackfillsEpisodesAfterRegeneratingMemories(t *testing.T) {
 				map[string]any{"scope": "session", "scope_name": "Demolition Logic", "category": "operation", "key": "operation_ice_wedge", "value": "The bridge team plans to fracture heated bridge beams with cold shock."},
 			},
 		},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
@@ -808,13 +812,13 @@ func TestAdminRescanFullSessionBackfillDoesNotClampHierarchyToProcessedTurns(t *
 	srv.StoreOpenError = nil
 	srv.Store = fake
 
-	extractionBytes, _ := json.Marshal(map[string]any{
+	extractionBytes := []byte(criticWireJSONForTest(map[string]any{
 		"turn_summary":     "The long session checkpoint is rebuilt.",
 		"importance_score": 6,
 		"evidence_excerpts": []any{
 			"The group records durable consequence 18.",
 		},
-	})
+	}))
 	chatResp, _ := json.Marshal(map[string]any{
 		"model":   "rescan-critic",
 		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},

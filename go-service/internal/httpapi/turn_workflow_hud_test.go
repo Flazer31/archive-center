@@ -78,7 +78,8 @@ func TestTurnWorkflowHUDDerivedPersistenceFailureKeepsCauseAndCommittedCount(t *
 	}
 	if len(view.Error.RecoveryActions) != 1 ||
 		view.Error.RecoveryActions[0].ID != turnWorkflowHUDRecoveryRetryDerivedTurn ||
-		view.Error.RecoveryActions[0].Status != "available" {
+		view.Error.RecoveryActions[0].Status != "running" ||
+		view.Status != "recovering" {
 		t.Fatalf("recovery actions=%+v", view.Error.RecoveryActions)
 	}
 	var derived turnWorkflowHUDFact
@@ -221,6 +222,11 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 		true,
 		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
 	)
+	if _, ok := ledger.setRecoveryActionStatus(
+		"request-recovery", turnWorkflowHUDRecoveryRetryDerivedTurn, "available", "",
+	); !ok {
+		t.Fatal("failed to expose manual recovery action")
+	}
 	srv := &Server{
 		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
 		Store: st,
@@ -323,7 +329,7 @@ func TestTurnWorkflowHUDRecoveryDoesNotInterruptAnActiveCriticRun(t *testing.T) 
 		rec,
 		httptest.NewRequest(http.MethodPost, "/turn-workflow/recovery", bytes.NewReader(body)),
 	)
-	if rec.Code != http.StatusAccepted {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	view, _ := ledger.snapshot("request-running-recovery")
@@ -350,6 +356,11 @@ func TestTurnWorkflowHUDRecoveryRejectsAnUnboundTarget(t *testing.T) {
 		true,
 		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
 	)
+	if _, ok := ledger.setRecoveryActionStatus(
+		"request-unbound-recovery", turnWorkflowHUDRecoveryRetryDerivedTurn, "available", "",
+	); !ok {
+		t.Fatal("failed to expose manual recovery action")
+	}
 	srv := &Server{
 		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
 		Store: st,
@@ -382,6 +393,111 @@ func TestTurnWorkflowHUDRecoveryRejectsAnUnboundTarget(t *testing.T) {
 	}
 	if stringFromMap(response, "code") != "recovery_target_unavailable" || st.listCalls != 0 || st.reopenCalls != 0 {
 		t.Fatalf("unbound recovery response=%#v list_calls=%d reopen_calls=%d", response, st.listCalls, st.reopenCalls)
+	}
+}
+
+func TestTurnWorkflowHUDQueuedRecoveryBecomesVisibleCompletion(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-recovery-complete", "session-recovery", 21)
+	if !ledger.bindRecoveryTarget("request-recovery-complete", "session-recovery", 21, "sar-recovery") {
+		t.Fatal("failed to bind recovery target")
+	}
+	ledger.failWithDetails(
+		"request-recovery-complete",
+		"CRITIC_JSON_PARSE_FAILED",
+		"turn_hud.error.critic_llm_failed",
+		turnWorkflowStageCriticLLM,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	queued, ok := ledger.snapshot("request-recovery-complete")
+	if !ok || queued.Status != "recovering" || turnWorkflowHUDTerminal(queued.Status) ||
+		queued.DismissalPolicy != turnWorkflowHUDDismissNone || queued.Error == nil ||
+		len(queued.Error.RecoveryActions) != 1 || queued.Error.RecoveryActions[0].Status != "running" {
+		t.Fatalf("queued recovery view=%+v found=%t", queued, ok)
+	}
+	ledger.startStage("request-recovery-complete", turnWorkflowStageCheckpoints)
+	ledger.complete("request-recovery-complete")
+	protected, ok := ledger.snapshot("request-recovery-complete")
+	if !ok || protected.Status != "recovering" || protected.EndedAt != nil {
+		t.Fatalf("synchronous completion overwrote recovery view=%+v found=%t", protected, ok)
+	}
+	if ledger.updateRecoveryResult(
+		"session-recovery", 21, "sar-other", "completed", "",
+		artifactSaveResult{Memories: 99},
+	) {
+		t.Fatal("mismatched source revision updated the HUD")
+	}
+	if !ledger.updateRecoveryResult(
+		"session-recovery", 21, "sar-recovery", "completed", "",
+		artifactSaveResult{Memories: 1, Evidence: 18, KGTriples: 9, ActiveStates: 3, VectorsUpserted: 4},
+	) {
+		t.Fatal("matching recovery completion did not update the HUD")
+	}
+	completed, ok := ledger.snapshot("request-recovery-complete")
+	if !ok || completed.Status != "completed" || completed.DisplayMode != "notice" ||
+		completed.TitleKey != "turn_hud.recovery.completed_title" ||
+		completed.MessageKey != "turn_hud.recovery.completed" || completed.Error != nil {
+		t.Fatalf("completed recovery view=%+v found=%t", completed, ok)
+	}
+	for key, want := range map[string]int{
+		"turn_summary": 1, "direct_evidence": 18, "knowledge_graph": 9,
+		"narrative_state": 3, "vector_index": 4,
+	} {
+		index := turnWorkflowHUDCountIndex(completed.Counts, key)
+		if index < 0 || completed.Counts[index].Value != want {
+			t.Fatalf("completed count %s=%v want=%d", key, completed.Counts, want)
+		}
+	}
+}
+
+func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-recovery-terminal", "session-recovery", 22)
+	ledger.bindRecoveryTarget("request-recovery-terminal", "session-recovery", 22, "sar-terminal")
+	ledger.failWithDetails(
+		"request-recovery-terminal",
+		"CRITIC_JSON_PARSE_FAILED",
+		"turn_hud.error.critic_llm_failed",
+		turnWorkflowStageCriticLLM,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	if !ledger.updateRecoveryResult(
+		"session-recovery", 22, "sar-terminal", "terminal", "CRITIC_RETRY_LIMIT_REACHED", artifactSaveResult{},
+	) {
+		t.Fatal("terminal recovery result did not update the HUD")
+	}
+	failed, ok := ledger.snapshot("request-recovery-terminal")
+	if !ok || failed.Status != "failed" || failed.Error == nil ||
+		failed.Error.Code != "CRITIC_RETRY_LIMIT_REACHED" ||
+		len(failed.Error.RecoveryActions) != 1 || failed.Error.RecoveryActions[0].Status != "available" {
+		t.Fatalf("terminal recovery view=%+v found=%t", failed, ok)
+	}
+}
+
+func TestTurnWorkflowHUDQueuedRecoveryStaleFailureDoesNotOfferManualAction(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-recovery-stale", "session-recovery", 23)
+	ledger.bindRecoveryTarget("request-recovery-stale", "session-recovery", 23, "sar-stale")
+	ledger.failWithDetails(
+		"request-recovery-stale",
+		"CRITIC_JSON_PARSE_FAILED",
+		"turn_hud.error.critic_llm_failed",
+		turnWorkflowStageCriticLLM,
+		true,
+		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
+	)
+	if !ledger.updateRecoveryResult(
+		"session-recovery", 23, "sar-stale", "stale_rejected", "reprocessing_source_stale", artifactSaveResult{},
+	) {
+		t.Fatal("stale recovery result did not update the HUD")
+	}
+	failed, ok := ledger.snapshot("request-recovery-stale")
+	if !ok || failed.Status != "failed" || failed.Error == nil || failed.Error.Retryable ||
+		len(failed.Error.RecoveryActions) != 1 || failed.Error.RecoveryActions[0].Status != "failed" ||
+		failed.Error.RecoveryActions[0].StatusMessageKey != "turn_hud.recovery.request_failed" {
+		t.Fatalf("stale recovery view=%+v found=%t", failed, ok)
 	}
 }
 

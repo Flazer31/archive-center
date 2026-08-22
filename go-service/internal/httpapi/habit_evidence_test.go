@@ -197,9 +197,9 @@ func Test39BHabitAdmissionRequiresExactExpressionsAndBlocksLegacyTraitWrites(t *
 }
 
 func Test39BHabitCriticContractIsTypedAndDoesNotClaimSpeechStyle(t *testing.T) {
-	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, "Mira checks the door.", "Rook waits.", nil, nil, nil))
+	prompt := combinedCriticPromptForTest(t, buildCompleteTurnCriticPrompt("session-prompt", 1, "Mira checks the door.", "Rook waits.", nil, nil))
 	for _, needle := range []string{
-		`"habit_observations"`,
+		"habit_observations",
 		"habit_observations collect behavior occurrences, patterns, counterexamples, and exceptions",
 		"Do not use a fixed count to decide that a habit exists",
 		"character_profile_observations collect personality, values, desires, fears, contradictions",
@@ -210,16 +210,24 @@ func Test39BHabitCriticContractIsTypedAndDoesNotClaimSpeechStyle(t *testing.T) {
 			t.Fatalf("critic prompt missing 3.9-B guard %q", needle)
 		}
 	}
-	if _, _, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "ok", "habit_observations": []any{}}); err != nil {
+	if _, _, err := validateCriticExtractionSchema(map[string]any{
+		"turn_summary": "ok",
+		"habit_observations": []any{
+			map[string]any{"subject_entity": "Mira", "behavior_key": "checks doors"},
+		},
+	}); err != nil {
 		t.Fatalf("typed habit lane rejected by critic schema: %v", err)
 	}
-	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{"turn_summary": "kept", "habit_observations": map[string]any{}})
-	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_field_count"], 0) != 1 {
-		t.Fatalf("non-array habit lane was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
+	sanitized, trace, err := validateCriticExtractionSchema(map[string]any{
+		"turn_summary":       "kept",
+		"habit_observations": []any{"wrong wire value"},
+	})
+	if err != nil || sanitized["turn_summary"] != "kept" || intFromAny(trace["dropped_item_count"], 0) != 1 {
+		t.Fatalf("invalid habit record was not isolated: sanitized=%#v trace=%#v err=%v", sanitized, trace, err)
 	}
-	properties := mapFromAny(proxyCriticTopLevelJSONSchema()["properties"])
-	if extractionStringFromAny(mapFromAny(properties["habit_observations"])["type"]) != "array" {
-		t.Fatalf("provider JSON schema lacks typed habit lane: %#v", properties["habit_observations"])
+	schema := proxyCriticTopLevelJSONSchema()
+	if schema["additionalProperties"] != true || len(mapFromAny(mapFromAny(schema["properties"])["records"])) != 0 {
+		t.Fatalf("provider critic schema is not sparse top-level: %#v", schema)
 	}
 }
 

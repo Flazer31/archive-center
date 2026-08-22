@@ -681,11 +681,15 @@ func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testin
 	required := []string{
 		`"settings.section.common.desc": "The previous completed turn is included as continuity context by default. The optional input-improvement LLM is independent from narrative guidance."`,
 		`"settings.label.pluginMainApplyMode": "Input Improvement LLM (Optional)"`,
+		`"settings.applyMode.reviewed_apply": "Rewrite after review"`,
+		`"settings.hint.pluginMainApplyMode": "Rewrite applies the approved improvement to the final user message sent to the main model. The original chat stored in RisuAI is not changed."`,
 		`merged.dbEnabled = true;`,
 		`merged.supervisorEnabled = true;`,
+		`merged.pluginMainRewriteOptIn = merged.pluginMainApplyMode === "reviewed_apply";`,
+		`delete merged.pluginMainRewriteLegacyOptIn;`,
 		`settings.pluginMainApplyMode`,
 		`inputImprovementApplied`,
-		`rewriteAllowed: applyModeName === 'reviewed_apply' && !!settings.pluginMainRewriteLegacyOptIn && payloadRewritten`,
+		`rewriteAllowed: applyModeName === 'reviewed_apply' && !!settings.pluginMainRewriteOptIn && payloadRewritten`,
 		`<select id="mo-pluginMainApplyMode">`,
 	}
 	for _, needle := range required {
@@ -702,11 +706,16 @@ func TestSeq01ContextInjectionToggleRemovedAndSyncedToInputImprovement(t *testin
 		`const syncInputImprovementDependentControls =`,
 		`if (_narrativeGuideOff) return Promise.resolve(null);`,
 		`reasoningSummary: "guide_off"`,
+		`Legacy rewrite (explicit opt-in required)`,
+		`if (!merged.pluginMainRewriteLegacyOptIn && merged.pluginMainApplyMode === "reviewed_apply")`,
 	}
 	for _, needle := range forbidden {
 		if strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js still exposes legacy SEQ-01 manual toggle %q", needle)
 		}
+	}
+	if strings.Count(src, `pluginMainRewriteLegacyOptIn`) != 1 {
+		t.Fatal("deprecated rewrite key must remain only as the persisted-setting cleanup target")
 	}
 }
 

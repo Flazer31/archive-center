@@ -574,10 +574,8 @@ func TestReversibleStateHistoryOnlyValidityAndRollbackRestore(t *testing.T) {
 func TestReversibleStateProviderSchemaStaysOpenWhileRuntimeValidatesProjection(t *testing.T) {
 	schema := proxyCriticTopLevelJSONSchema()
 	properties := mapFromAny(schema["properties"])
-	arraySchema := mapFromAny(properties["reversible_states"])
-	itemSchema := mapFromAny(arraySchema["items"])
-	if arraySchema["type"] != "array" || len(itemSchema) != 0 {
-		t.Fatalf("provider reversible state collection restored a fixed field schema: %#v", arraySchema)
+	if schema["additionalProperties"] != true || len(mapFromAny(properties["reversible_state"])) != 0 {
+		t.Fatalf("provider schema restored a fixed reversible-state vocabulary: %#v", schema)
 	}
 
 	invalid := reversibleStateProposal("body", "set", "Mina", "pregnancy", "Mina smiled.", "pregnant")

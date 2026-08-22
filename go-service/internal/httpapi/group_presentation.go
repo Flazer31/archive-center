@@ -372,7 +372,16 @@ func buildPresentationExplorerModel(input presentationExplorerInput) presentatio
 		{Key: "trust", Count: presentationSliceLen(input.Trust["storylines"]) + presentationSliceLen(input.Trust["world_rules"]) + presentationSliceLen(input.Trust["hooks"])},
 		{Key: "world", Count: presentationWorldCount(input.WorldGraph)},
 		{Key: "entities", Count: presentationSliceLen(input.Entities["characters"]) + presentationSliceLen(input.Entities["locations"]) + presentationSliceLen(input.Entities["items"])},
-		{Key: "lorebook", Count: presentationInt(input.Totals["lorebook"])},
+	}
+	activeFound := false
+	for _, tab := range tabs {
+		if tab.Key == active {
+			activeFound = true
+			break
+		}
+	}
+	if !activeFound {
+		active = tabs[0].Key
 	}
 	syncState := "unknown"
 	if input.ActiveChatSessionID != "" {

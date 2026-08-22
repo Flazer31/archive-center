@@ -207,7 +207,7 @@ func TestOutputFidelityE7PublisherGuidanceFormatChangesOnlyRenderedBlock(t *test
 			t.Errorf("main-model guidance format leaked into Publisher LLM request: %s", providerJSON)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse("active:1", "Keep the current quiet request perceptible.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse("active:1", "Keep the current quiet request perceptible.")))
 	}))
 	defer supervisor.Close()
 
@@ -271,7 +271,7 @@ func TestOutputFidelity36FCurrentInputOnlyCallsExpressionSupervisor(t *testing.T
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse("active:1", "Keep the current request perceptible.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse("active:1", "Keep the current request perceptible.")))
 	}))
 	defer supervisor.Close()
 
@@ -332,7 +332,7 @@ func TestOutputFidelity36FFreshTurnZeroMemoryBudgetStillCallsExpressionSuperviso
 	supervisor := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		supervisorCalls.Add(1)
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(publisherV2OpenAIResponse("active:1", "Keep the fresh-turn request perceptible.")))
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse("active:1", "Keep the fresh-turn request perceptible.")))
 	}))
 	defer supervisor.Close()
 
@@ -505,10 +505,10 @@ func TestOutputFidelity35CWeakGuideCallsConfiguredSupervisorOnce(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		parsed := publisherV2EmptyParsed()
-		plan := mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])
-		mapFromAny(plan["book_author"])["current_arc"] = map[string]any{"text": "keep the current request perceptible", "source_refs": []any{"active:1"}}
-		mapFromAny(plan["book_author"])["guardrails"] = []any{map[string]any{"text": "preserve the supported recollection", "source_refs": []any{"memory:output-fidelity-35c-prepare:51"}}}
+		parsed := publisherWireV3Parsed(
+			map[string]any{"role": "book_author", "field": "current_arc", "text": "keep the current request perceptible", "source_refs": []any{"active:1"}},
+			map[string]any{"role": "book_author", "field": "guardrails", "text": "preserve the supported recollection", "source_refs": []any{"memory:output-fidelity-35c-prepare:51"}},
+		)
 		content, _ := json.Marshal(parsed)
 		response, _ := json.Marshal(map[string]any{"model": "test-supervisor", "choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
 		_, _ = w.Write(response)
@@ -564,8 +564,9 @@ func TestOutputFidelity36FVisibleGuideOmitsRefsWhileTraceRetainsThem(t *testing.
 	contractRefs["memory"] = []string{memoryRef}
 	contractRefs["all"] = []string{"input:latest", memoryRef}
 	mapFromAny(pack["support_packet"])["delivered_memory"] = []map[string]any{{"source_ref": memoryRef, "final_text": "delivered safe memory"}}
-	parsed := publisherV2EmptyParsed()
-	mapFromAny(mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])["book_author"])["guardrails"] = []any{map[string]any{"text": "Preserve the delivered recollection.", "source_refs": []any{memoryRef}}}
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "guardrails", "Preserve the delivered recollection.", memoryRef),
+	)
 	result, _ := buildBoundedSupervisorResult(parsed, pack)
 	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 3000, supervisorSceneProposalGuidanceItems(result, "standard"), "applied")
 	lane := outputFidelity36FFindLane(plan, "output_guidance")
@@ -616,8 +617,9 @@ func TestOutputFidelity36FManyHostRefsDoNotConsumeVisibleNarrativeBudget(t *test
 	if ready, reason := supervisorExecutionContractReady(pack); !ready {
 		t.Fatalf("many Host refs blocked supervisor readiness: %s", reason)
 	}
-	parsed := publisherV2EmptyParsed()
-	mapFromAny(mapFromAny(mapFromAny(parsed["supervisor_scene_proposal"])["publisher_plan"])["book_author"])["current_arc"] = map[string]any{"text": "Keep the current request perceptible.", "source_refs": []any{"input:latest"}}
+	parsed := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "current_arc", "Keep the current request perceptible.", "input:latest"),
+	)
 	result, _ := buildBoundedSupervisorResult(parsed, pack)
 	plan := buildPrepareTurnPayloadApplicationPlan("", "", "", "", true, false, 0, 0, 3000, supervisorSceneProposalGuidanceItems(result, "standard"), "applied")
 	lane := outputFidelity36FFindLane(plan, "output_guidance")
