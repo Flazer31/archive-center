@@ -43,7 +43,7 @@ type lorebookReferenceEntryRequest struct {
 	Extensions        json.RawMessage `json:"extentions"`
 	ActivationPercent *float64        `json:"activationPercent"`
 	UseRegex          *bool           `json:"useRegex"`
-	BookVersion       *int64          `json:"bookVersion"`
+	BookVersion       json.RawMessage `json:"bookVersion"`
 	Folder            string          `json:"folder"`
 }
 
@@ -80,6 +80,28 @@ func lorebookReferenceOptionalIndex(raw string) (*int64, error) {
 		return nil, store.ErrInvalidLorebookReference
 	}
 	return &value, nil
+}
+
+func lorebookReferenceOptionalBookVersion(raw json.RawMessage) *int64 {
+	value := strings.TrimSpace(string(raw))
+	if value == "" || value == "null" {
+		return nil
+	}
+	if strings.HasPrefix(value, `"`) {
+		var text string
+		if err := json.Unmarshal(raw, &text); err != nil {
+			return nil
+		}
+		value = strings.TrimSpace(text)
+		if value == "" {
+			return nil
+		}
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 func (s *Server) handleLorebookReferenceCurrent(w http.ResponseWriter, r *http.Request) {
@@ -206,7 +228,7 @@ func (s *Server) handleLorebookReferenceSnapshot(w http.ResponseWriter, r *http.
 			Key: entry.Key, SecondKey: entry.SecondKey, Comment: entry.Comment, Content: entry.Content,
 			Mode: entry.Mode, AlwaysActive: entry.AlwaysActive, Selective: entry.Selective,
 			UseRegex: entry.UseRegex, InsertOrder: entry.InsertOrder, ActivationPct: entry.ActivationPercent,
-			BookVersion: entry.BookVersion, Folder: entry.Folder, ExtensionsJSON: extensions,
+			BookVersion: lorebookReferenceOptionalBookVersion(entry.BookVersion), Folder: entry.Folder, ExtensionsJSON: extensions,
 		})
 	}
 	provenance, _ := json.Marshal(map[string]any{

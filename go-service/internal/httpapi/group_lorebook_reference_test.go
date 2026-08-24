@@ -104,6 +104,51 @@ func TestLorebookReferenceSnapshotUsesOfficialShapeAndPreservesObservedFalse(t *
 	}
 }
 
+func TestLorebookReferenceSnapshotToleratesOptionalBookVersionShapes(t *testing.T) {
+	fake := &lorebookReferenceHTTPStore{Store: store.NewNoopStore()}
+	server := &Server{Store: fake}
+	mux := http.NewServeMux()
+	server.registerLorebookReferenceRoutes(mux)
+	body := []byte(`{
+		"contract_version":"lorebook_reference_snapshot.v1",
+		"consent_state":"active",
+		"observation_state":"observed",
+		"complete_snapshot":true,
+		"character_index":4,
+		"chat_index":9,
+		"enabled_module_ids":[],
+		"enabled_modules_observed":true,
+		"entries":[
+			{"id":"numeric","content":"numeric","bookVersion":3},
+			{"id":"numeric-string","content":"numeric string","bookVersion":"2"},
+			{"id":"empty-string","content":"empty string","bookVersion":""},
+			{"id":"invalid-string","content":"invalid string","bookVersion":"legacy"},
+			{"id":"null","content":"null","bookVersion":null},
+			{"id":"missing","content":"missing"}
+		]
+	}`)
+	request := httptest.NewRequest(http.MethodPost, "/sessions/session-a/lorebook-reference/snapshots", bytes.NewReader(body))
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if fake.last == nil || len(fake.last.Entries) != 6 {
+		t.Fatalf("snapshot=%#v", fake.last)
+	}
+	for index, want := range []int64{3, 2} {
+		got := fake.last.Entries[index].BookVersion
+		if got == nil || *got != want {
+			t.Fatalf("entry[%d] bookVersion=%v want=%d", index, got, want)
+		}
+	}
+	for _, index := range []int{2, 3, 4, 5} {
+		if got := fake.last.Entries[index].BookVersion; got != nil {
+			t.Fatalf("entry[%d] bookVersion=%v want=nil", index, *got)
+		}
+	}
+}
+
 func TestLorebookReferenceObservedActiveSnapshotMustBeComplete(t *testing.T) {
 	fake := &lorebookReferenceHTTPStore{Store: store.NewNoopStore()}
 	server := &Server{Store: fake}
