@@ -721,7 +721,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.0.1"`,
+		`const BUILD_NOTES = "Archive Center 4.0.2"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
