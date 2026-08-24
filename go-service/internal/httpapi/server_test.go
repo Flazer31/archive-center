@@ -263,8 +263,8 @@ func TestHandleVersion(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp.Version != "4.0.0" {
-		t.Errorf("Version = %q, want %q", resp.Version, "4.0.0")
+	if resp.Version != "4.0.1" {
+		t.Errorf("Version = %q, want %q", resp.Version, "4.0.1")
 	}
 	if resp.Commit != "unknown" {
 		t.Errorf("Commit = %q, want %q", resp.Commit, "unknown")

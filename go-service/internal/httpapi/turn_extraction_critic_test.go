@@ -1318,6 +1318,8 @@ func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZer
 		"Before omitting this surface, inspect every named in-story entity",
 		"Omitting `subjective_entity_memories` remains valid",
 		"Each subjective memory needs an owner and memory text",
+		`"subjective_entity_memories": [{"owner_entity_name": "", "memory_text": "", "evidence_excerpt": ""}]`,
+		`"belief_updates": [{"perspective_owner": "", "belief": "", "evidence_excerpt": ""}]`,
 		"extract useful source-grounded in-story facts and relationships broadly",
 		"A fact is not omitted merely because another typed lane also records it",
 		"evidence_excerpts are durable citations, not transcript samples",
@@ -1536,6 +1538,61 @@ func TestCriticBeliefTransferCreatesGroundedSubjectiveMemoryPerNamedListener(t *
 	}
 	if !owners["Rowan"] || !owners["Jules"] {
 		t.Fatalf("named listener coverage = %#v", owners)
+	}
+}
+
+func TestCriticBeliefOwnerAliasCreatesClaimSubjectiveMemory(t *testing.T) {
+	claim := "Han-eol's proposal may be larger than Mihyang's current role, but it is not yet trustworthy."
+	excerpt := "Mihyang did not answer and watched Han-eol in silence."
+	normalized := normalizeCriticExtraction(map[string]any{
+		"belief_updates": []any{
+			"malformed optional item",
+			map[string]any{
+				"owner": "Mihyang", "belief": claim, "evidence_excerpt": excerpt,
+			},
+		},
+		"subjective_entity_memories": []any{},
+	})
+	beliefs := sliceFromAny(normalized["belief_updates"])
+	if len(beliefs) != 1 || stringFromMap(mapFromAny(beliefs[0]), "perspective_owner") != "Mihyang" {
+		t.Fatalf("owner alias was not canonicalized without erasing the valid item: %#v", beliefs)
+	}
+	memories := sliceFromAny(normalized["subjective_entity_memories"])
+	if len(memories) != 1 {
+		t.Fatalf("owner-scoped belief did not create one subjective memory: %#v", memories)
+	}
+	memory := mapFromAny(memories[0])
+	if stringFromMap(memory, "owner_entity_name") != "Mihyang" ||
+		stringFromMap(memory, "memory_text") != claim ||
+		stringFromMap(memory, "evidence_excerpt") != excerpt {
+		t.Fatalf("owner-scoped belief projection mismatch: %#v", memory)
+	}
+}
+
+func TestCriticBeliefOwnerEntityNameAliasIsPerspectiveClaimBeforeNormalization(t *testing.T) {
+	excerpt := "Mihyang privately admitted that she did not trust the proposal yet."
+	extraction := map[string]any{
+		"belief_updates": []any{map[string]any{
+			"owner_entity_name": "Mihyang", "belief": "The proposal is not yet trustworthy.",
+			"evidence_excerpt": excerpt,
+		}},
+		"state_claims": []any{
+			map[string]any{
+				"subject": "proposal", "state_slot": "trust", "value": "not yet trustworthy",
+				"evidence_excerpt": excerpt,
+			},
+			map[string]any{
+				"subject": "gate", "state_slot": "access", "value": "open",
+				"evidence_excerpt": "The public gate remained open.",
+			},
+		},
+	}
+	if quarantined := quarantineCriticPerspectiveClaimsFromObjectiveLanes(extraction); quarantined != 1 {
+		t.Fatalf("owner_entity_name belief quarantined=%d, want 1: %#v", quarantined, extraction)
+	}
+	claims := sliceFromAny(extraction["state_claims"])
+	if len(claims) != 1 || stringFromMap(mapFromAny(claims[0]), "subject") != "gate" {
+		t.Fatalf("independent objective item was not preserved: %#v", claims)
 	}
 }
 

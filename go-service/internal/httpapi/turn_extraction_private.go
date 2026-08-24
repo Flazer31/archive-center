@@ -162,6 +162,17 @@ func appendBeliefUpdateSubjectiveMemories(subjective []any, beliefUpdates any) [
 		if !explicitState {
 			state = "unknown"
 		}
+		hasTransferHolder := len(stringsFromAny(item["listener_names"])) > 0 ||
+			len(stringsFromAny(item["knowledge_holders"])) > 0 ||
+			len(stringsFromAny(item["knowers"])) > 0 ||
+			len(sliceFromAny(item["listeners"])) > 0
+		explicitOwnerScoped := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "owner"), stringFromMap(item, "owner_entity_name"),
+		)) != "" || (!hasTransferHolder && strings.TrimSpace(stringFromMap(item, "perspective_owner")) != "")
+		memoryText := extractionFirstNonEmpty(evidence, claim)
+		if explicitOwnerScoped {
+			memoryText = claim
+		}
 		for _, holder := range perspectiveMemoryHolderProposals(item, state, true) {
 			ownerName := strings.TrimSpace(holder.surface)
 			if ownerName == "" {
@@ -173,7 +184,7 @@ func appendBeliefUpdateSubjectiveMemories(subjective []any, beliefUpdates any) [
 			}
 			derived := normalizeSubjectiveEntityMemories([]any{map[string]any{
 				"owner_entity_name": ownerName,
-				"memory_text":       extractionFirstNonEmpty(evidence, claim),
+				"memory_text":       memoryText,
 				"evidence_excerpt":  evidence,
 				"tags":              []any{"belief_fact_transfer", "source_grounded_recollection"},
 			}})
@@ -977,7 +988,13 @@ func (s *Server) saveSubjectiveEntityMemoriesFromExtraction(ctx context.Context,
 	if result == nil {
 		return
 	}
-	items := sliceFromAny(extraction["subjective_entity_memories"])
+	// Fresh Critic results already derive belief-scoped memories during
+	// normalization. Committed replay intentionally does not rewrite its stored
+	// result JSON or hash, so derive the same local projection here as well.
+	items := appendBeliefUpdateSubjectiveMemories(
+		sliceFromAny(extraction["subjective_entity_memories"]),
+		extraction["belief_updates"],
+	)
 	if len(items) == 0 {
 		return
 	}

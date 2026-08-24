@@ -34,6 +34,8 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - Optional numbers: `emotional_intensity`, `narrative_significance`.
 - String arrays: `evidence_excerpts`, `prune_targets`.
 - Object arrays: `kg_triples`, `speaker_attributions`, `interaction_events`, `relationship_observations`, `interaction_boundaries`, `habit_observations`, `character_profile_observations`, `voice_observations`, `user_interaction_profile`, `rp_character_profile`, `world_rules`, `subjective_entity_memories`, `protected_secrets`, `character_identity_accuracy`, `persona_capsule_candidates`, `narrative_events`, `state_claims`, `belief_updates`, `character_deltas`, `physical_conditions`, `entity_conditions`, `reversible_states`, `pending_threads`.
+- Subjective shape: `"subjective_entity_memories": [{"owner_entity_name": "", "memory_text": "", "evidence_excerpt": ""}]`.
+- Belief shape: `"belief_updates": [{"perspective_owner": "", "belief": "", "evidence_excerpt": ""}]`.
 - Objects: `story_clock`, `relationship_memory`, `entities`, `archive_hint`, `world_rule_audit`, `world_state`, `state_deltas`.
 - Keep every durable item focused. One malformed optional item must not erase independent valid fields or items.
 

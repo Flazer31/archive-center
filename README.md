@@ -1,4 +1,4 @@
-# Archive Center 4.0.0
+# Archive Center 4.0.1
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
@@ -8,7 +8,7 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 실제 UI 제공 상태, 추가 검증이 필요한 부분과 3.6 이후 인계는
 [`docs/3.1-3.5-consolidated-release.md`](docs/3.1-3.5-consolidated-release.md)에
 정리되어 있습니다. 3.6부터 4.0까지의 정밀 장기 기억 구현 범위는
-[`docs/3.6-4.0-precision-long-term-memory-roadmap.md`](docs/3.6-4.0-precision-long-term-memory-roadmap.md)
+[`docs/3.6-4.1-precision-long-term-memory-roadmap.md`](docs/3.6-4.1-precision-long-term-memory-roadmap.md)
 한 문서만 권위 로드맵으로 사용합니다.
 
 ## Runtime Architecture

@@ -46,6 +46,32 @@ type adminCanonicalReplayTestStore struct {
 	worldRules []store.WorldRule
 }
 
+type committedSubjectiveReplayStore struct {
+	*memoryAdmissionWorkerStore
+	memories []store.ProtagonistEntityMemory
+}
+
+func (f *committedSubjectiveReplayStore) CreateProtagonistEntityMemory(_ context.Context, item *store.ProtagonistEntityMemory) (*store.ProtagonistEntityMemory, error) {
+	copy := *item
+	copy.ID = int64(len(f.memories) + 1)
+	f.memories = append(f.memories, copy)
+	return &copy, nil
+}
+
+func (f *committedSubjectiveReplayStore) ListProtagonistEntityMemories(_ context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemory, error) {
+	out := []store.ProtagonistEntityMemory{}
+	for _, item := range f.memories {
+		if filter.SourceChatSessionID != "" && item.SourceChatSessionID != filter.SourceChatSessionID {
+			continue
+		}
+		if filter.OwnerEntityKey != "" && item.OwnerEntityKey != filter.OwnerEntityKey {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
 func (f *adminCanonicalReplayTestStore) ListEvidence(context.Context, string) ([]store.DirectEvidence, error) {
 	return append([]store.DirectEvidence(nil), f.evidence...), nil
 }
@@ -824,6 +850,58 @@ func TestAcceptedSourceReplaysValidOldIndexExtractionIntoPublicProjectionWithout
 	if result.CriticTrace["stored_index"] != oldIndex ||
 		result.CriticTrace["target_index"] != memoryAdmissionIndexVersion {
 		t.Fatalf("critic-free replay trace=%#v", result.CriticTrace)
+	}
+}
+
+func TestCommittedReplayDerivesOwnerAliasSubjectiveMemoryWithoutCriticOrDuplicates(t *testing.T) {
+	claim := "Mihyang does not yet trust Han-eol's proposal."
+	excerpt := "Mihyang watched Han-eol without answering."
+	extraction := map[string]any{
+		"turn_summary":     "Mihyang withheld her decision.",
+		"importance_score": 7,
+		"belief_updates": []any{map[string]any{
+			"owner": "Mihyang", "belief": claim, "evidence_excerpt": excerpt,
+		}},
+		"subjective_entity_memories": []any{},
+	}
+	source := &store.MemorySourceRevision{
+		SourceRevision:          "owner-alias-committed-revision",
+		ChatSessionID:           "owner-alias-session",
+		LogicalTurnID:           "turn:47",
+		TurnIndex:               47,
+		UserContent:             "Han-eol made the proposal.",
+		AssistantContent:        excerpt,
+		LifecycleState:          "active",
+		DerivedAdmissionState:   "committed",
+		DerivedAdmissionVersion: store.MemoryAdmissionContract,
+		DerivedExtractorVersion: completeTurnCriticPipelineVersion,
+		DerivedIndexVersion:     memoryAdmissionIndexVersion,
+		DerivedResultJSON:       mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+	}
+	source.DerivedResultHash = memoryAdmissionResultHash(
+		source.SourceRevision, extraction, source.DerivedAdmissionVersion,
+		source.DerivedExtractorVersion, source.DerivedIndexVersion,
+	)
+	base := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), source: source, nextEvidenceID: 100}
+	st := &committedSubjectiveReplayStore{memoryAdmissionWorkerStore: base}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+
+	first := srv.processAcceptedSourceRevisionWithOptions(
+		context.Background(), source, completeTurnExtractionConfig{},
+		acceptedSourceDerivationOptions{CommittedReplayOnly: true},
+	)
+	if first.State != "completed" || first.Failure != "" || first.SaveResult.SubjectiveEntityMemories != 1 || len(st.memories) != 1 {
+		t.Fatalf("first committed replay=%+v memories=%#v", first, st.memories)
+	}
+	if st.memories[0].OwnerEntityName != "Mihyang" || st.memories[0].MemoryText != claim || st.memories[0].EvidenceExcerpt != excerpt {
+		t.Fatalf("committed owner alias projection mismatch: %#v", st.memories[0])
+	}
+	second := srv.processAcceptedSourceRevisionWithOptions(
+		context.Background(), source, completeTurnExtractionConfig{},
+		acceptedSourceDerivationOptions{CommittedReplayOnly: true},
+	)
+	if second.State != "completed" || second.SaveResult.SubjectiveEntityMemories != 0 || len(st.memories) != 1 {
+		t.Fatalf("repeated committed replay duplicated memory: %+v memories=%#v", second, st.memories)
 	}
 }
 

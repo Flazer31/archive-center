@@ -1,5 +1,11 @@
 # Archive Center 기억 주입·서사 가이드 권한 검토
 
+> 현재 지위: 1.0 비교, 권한 검토와 대안 채택·기각을 보존하는 역사적 review다.
+> 4.1~6.0 버전 지도와 확장 제품 이름은
+> [`4.1-6.0-integrated-roadmap.md`](4.1-6.0-integrated-roadmap.md)를 우선한다.
+> 신규 확장 제품은 `AC Ensemble Agent`이며 Recomposer 공동 사용 절은 현재 제품
+> 이름이나 구현 완료 증거가 아니다.
+
 상태: 조사 및 버전별 설계 제안
 
 최초 작성: 2026-07-29

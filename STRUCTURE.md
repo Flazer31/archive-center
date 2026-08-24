@@ -102,7 +102,7 @@ source/
 | [`docs`](docs) | Documentation, audits, and future roadmaps. Claims found only here are **PLANNED**, not implementation proof. | Maintainers. |
 | `_dist*`, `_release*`, `_test-builds`, `_runtime*`, `.tmp*`, `.gocache` | **OBSOLETE.** Generated, packaged, cached, or test output as active source; some are dirty/untracked. | Build/test tools only. |
 | `Archive Center 3.4-C.js`, `Archive Center.js.codex-backup-*` | **OBSOLETE.** Copies relative to the active 4.0.0 source. They can run only if someone separately installs them. | No active source import was found. |
-| `AC Recomposer Agent.js` | **VERIFIED.** Optional separately installed consumer of the active transient `archive_center.recomposer_bridge.v1`; it is not copied or auto-loaded by Archive Center package builders. | Manual installation only; live installation is **UNKNOWN**. |
+| `AC Recomposer Agent.js` | **VERIFIED.** Optional separately installed consumer of the currently implemented `archive_center.recomposer_bridge.v1` contract; it is not copied or auto-loaded by Archive Center package builders. Its Recomposer product identity is historical and is not the current `AC Ensemble Agent` product identity. | Manual installation only; live installation is **UNKNOWN**. Any approved replacement/removal requires an explicit versioned migration and removal condition. |
 | `Risu Output Quality Layer 2.5.js`, `Risu Recomposer - 복사본.js` | **INFERRED.** Standalone/legacy plugins with no active package-copy or import path found. | Separate manual installation, if any. |
 
 ## 5. Runtime and Explicit Tool Entry Points
@@ -510,7 +510,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **VERIFIED:** Go `/prepare-turn` current-input decision, canonical/vector retrieval, exact/lexical eligibility, source-revision hydration, provenance-aware suppression, `memory_recall_plan.v1`, `memory_delivery_plan.v1`, lane budgeting/ordering, lineage, and `payload_application_plan.v1` rendering.
 - **VERIFIED:** Optional bounded Publisher using `publisher_plan.v2`, `response_execution_contract.v1`, `supervisor_support_packet.v2`, and `supervisor_scene_proposal.v3`; it makes one provider request and renders source-backed accepted items from one or both required role shapes without truth/write authority.
 - **VERIFIED:** Default-off Host lorebook reference observation/snapshot route, separate MariaDB ledger/current projection, exact/key/lexical search, `search_only` diagnostics, and conditional `reference_assist` lane with `reference_only` authority. This is source-level implementation, not live-Host proof.
-- **VERIFIED:** Optional source integration for `archive_center.recomposer_enhancement.v1` and the transient `archive_center.recomposer_bridge.v1`; `AC Recomposer Agent.js` is a separately installed consumer, not an auto-loaded package component.
+- **VERIFIED:** Optional source integration for `archive_center.recomposer_enhancement.v1` and the transient `archive_center.recomposer_bridge.v1`; `AC Recomposer Agent.js` is a separately installed historical product-identity consumer of that currently implemented optional Recomposer contract, not the current `AC Ensemble Agent` identity or an auto-loaded package component. The separate `workbench/ac-ensemble-agent` source is standalone-only and outside this active source repository; Archive Center integration remains planned.
 - **VERIFIED:** `/complete-turn` source acceptance, reroll/source revisions, idempotency ledger, separately persisted raw pair, Critic proposal parsing, atomic core memory admission, separately persisted typed projections, reprocessing jobs, and vector outbox.
 - **VERIFIED:** MariaDB store/schema tooling and optional Chroma session/reference collections.
 - **VERIFIED:** Reference library/recall, narrative/persona/status/character projection, timeline/dashboard/presentation ViewModel, session migration, maintenance, canon-pack/source-discovery, and managed-update route families are mounted in source. This does not prove that the plugin invokes every family or that every persistent projection is canonical truth.
@@ -525,7 +525,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 
 ### Planned
 
-- **PLANNED:** `memory_recall_plan.v2` remains proposed in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md), but active source and the current 4.0 owning roadmap use `memory_recall_plan.v1`. Whether the older v2 proposal is still intended is **UNKNOWN** until the roadmaps are reconciled.
+- **HISTORICAL:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled [4.1–6.0 planning index](docs/4.1-6.0-integrated-roadmap.md) preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
 - **PLANNED:** The 4.0 goal of zero JavaScript policy calculations and a fully Go-owned final assembly is not complete while the active helpers listed in sections 3 and 17 remain.
 
 ### Obsolete, inactive, or abandoned
@@ -536,7 +536,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **OBSOLETE:** `publisher_plan.v1` as the active Publisher contract; production source now requires `publisher_plan.v2` and retains v1 only in negative compatibility coverage.
 - **OBSOLETE:** The older `memory_injection_plan.v2` proposal as the current 4.0 delivery/application target; the current 4.0 roadmap explicitly retains `memory_delivery_plan.v1` and `payload_application_plan.v1`.
 - **OBSOLETE:** Historical `_dist*`, `_release*`, `_runtime*`, and `_test-builds` trees as active source.
-- **UNKNOWN:** Whether `AC Recomposer Agent.js` or any other standalone quality-layer copy is currently installed in a live host. The active transient bridge proves optional source integration, not installation or package autoload.
+- **UNKNOWN:** Whether `AC Recomposer Agent.js` or `AC Ensemble Agent` is currently installed in a live host. The active transient Recomposer bridge proves only the historical optional source integration, not Ensemble integration, installation, package autoload, or displayed-final admission.
 
 ## 20. Open Questions and Unverified Areas
 

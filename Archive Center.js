@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.0
+//@display-name Archive Center 4.0.1
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.0
+//@version 4.0.1
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.0";
-  const BUILD_ID = "4.0.0";
+  const VERSION = "4.0.1";
+  const BUILD_ID = "4.0.1";
   const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-23 KST";
-  const BUILD_NOTES = "Archive Center 4.0.0";
+  const BUILD_TIME = "2026-08-24 KST";
+  const BUILD_NOTES = "Archive Center 4.0.1";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -303,6 +303,7 @@
       "settings.lorebookReferenceMode.on": "켜기",
       "settings.lorebookReferenceMode.help": "켜면 관련성이 있는 활성 로어북을 별도 보조 참조로 사용합니다. 꺼도 저장·동기화·조회는 유지됩니다.",
       "settings.btn.refreshLorebookReference": "로어북 새로고침",
+      "lorebook.sync.errorDetails": "로어북 동기화 오류 상세",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
@@ -1462,6 +1463,7 @@
       "settings.lorebookReferenceMode.on": "On",
       "settings.lorebookReferenceMode.help": "Uses relevant active lorebooks as a separate auxiliary reference. Turning it off keeps storage, synchronization, and browsing available.",
       "settings.btn.refreshLorebookReference": "Refresh lorebook",
+      "lorebook.sync.errorDetails": "Lorebook synchronization error details",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
@@ -2621,6 +2623,7 @@
       "settings.lorebookReferenceMode.on": "オン",
       "settings.lorebookReferenceMode.help": "関連性のある有効なロアブックを別の補助参照として使用します。オフにしても保存・同期・閲覧は維持されます。",
       "settings.btn.refreshLorebookReference": "ロアブックを更新",
+      "lorebook.sync.errorDetails": "ロアブック同期エラーの詳細",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
@@ -4393,7 +4396,7 @@
     lastStreamingAfterRequest: { status: "idle", time: null, detail: null },
     // 2.1-4: read-only Critic Archive Ledger operator probe.
     lastCriticLedgerProbe: { status: "idle", time: null, detail: null, sessionId: null, dashboard: null, trace: null },
-    lastLorebookReferenceSync: { status: "idle", time: null, detail: null, itemCount: 0 },
+    lastLorebookReferenceSync: { status: "idle", time: null, detail: null, itemCount: 0, diagnostics: [] },
   };
 
   function updateRuntimeState(key, status, extra = {}) {
@@ -15405,12 +15408,53 @@
     };
   }
 
+  function lorebookReferenceSnapshotPath(sessionId) {
+    return "/sessions/" + encodeURIComponent(String(sessionId || "").trim()) + "/lorebook-reference/snapshots";
+  }
+
+  function lorebookReferenceSnapshotFailureState(path, itemCount) {
+    const recorded = _lastBridgeFailureByPath.get(String(path || "")) || {};
+    const failureKind = String(recorded.kind || "connection_failed").trim() || "connection_failed";
+    const httpStatus = Math.max(0, Number(recorded.status || 0));
+    const transportDetail = String(recorded.detail || "").trim();
+    let backend = {};
+    try {
+      const parsed = JSON.parse(String(recorded.response_body || ""));
+      if (parsed && typeof parsed === "object") backend = parsed;
+    } catch { /* transportDetail still identifies non-JSON failures */ }
+    const backendCode = String(backend.code || backend.error_code || "").trim();
+    const backendDetail = String(backend.error || backend.detail || backend.message || transportDetail).trim();
+    const recordedAt = Number(recorded.at || 0);
+    const diagnostics = [
+      ["failure_kind", failureKind], ["request_path", recorded.path || path], ["method", recorded.method || "POST"],
+      ["configured_url", recorded.configured_url], ["target_url", recorded.target_url], ["route_mode", recorded.route_mode],
+      ["timeout_ms", recorded.timeout_ms], ["elapsed_ms", recorded.elapsed_ms], ["http_status", httpStatus],
+      ["backend_code", backendCode], ["backend_detail", backendDetail],
+      ["transport_detail", transportDetail !== backendDetail ? transportDetail : ""],
+      ["recorded_at", recordedAt > 0 ? new Date(recordedAt).toISOString() : ""],
+    ].filter(function(row) {
+      return row[1] === 0 || (row[1] !== null && row[1] !== undefined && String(row[1]).trim() !== "");
+    }).map(function(row) { return { key: row[0], value: String(row[1]).slice(0, 1000) }; });
+    const summary = [
+      "lorebook_snapshot_store_failed",
+      failureKind,
+      httpStatus > 0 ? "HTTP " + httpStatus : "",
+      backendCode,
+      backendDetail ? truncPreview(backendDetail, 240) : "",
+    ].filter(Boolean).join(" · ");
+    return {
+      detail: summary,
+      itemCount: Math.max(0, Number(itemCount || 0)),
+      diagnostics,
+    };
+  }
+
   async function postLorebookReferenceSnapshot(scope, observation) {
     const sessionId = String(scope && scope.chat_session_id || "").trim();
     if (!sessionId) return null;
     const payload = observation && typeof observation === "object" ? observation : {};
     return await bridgeFetch(
-      "/sessions/" + encodeURIComponent(sessionId) + "/lorebook-reference/snapshots",
+      lorebookReferenceSnapshotPath(sessionId),
       {
         method: "POST",
         timeoutMs: getRequestTimeoutSettingMs(),
@@ -15468,7 +15512,8 @@
         entries,
       });
       if (!result) {
-        updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_snapshot_store_failed", itemCount: entries.length });
+        const failure = lorebookReferenceSnapshotFailureState(lorebookReferenceSnapshotPath(sessionId), entries.length);
+        updateRuntimeState("lastLorebookReferenceSync", "warn", failure);
         return { status: "store_failed", scope };
       }
       _lorebookReferenceSync.syncedScopeKey = scopeKey;
@@ -43342,6 +43387,15 @@
       ? runtimeState.lastLorebookReferenceSync
       : null;
     const syncText = selectedSessionId === activeSessionId ? String(runtimeSync && runtimeSync.detail || "-") : "-";
+    const syncDiagnostics = selectedSessionId === activeSessionId && runtimeSync && runtimeSync.status === "warn" && Array.isArray(runtimeSync.diagnostics)
+      ? runtimeSync.diagnostics
+      : [];
+    const syncDiagnosticsText = syncDiagnostics.map(function(item) {
+      return String(item && item.key || "detail") + "=" + String(item && item.value || "");
+    }).join("\n");
+    const syncDiagnosticsHtml = syncDiagnosticsText
+      ? '<details class="mo-hierarchy-details" open><summary>' + escapeAttr(t("lorebook.sync.errorDetails")) + '</summary><pre class="mo-ex-json">' + escapeAttr(syncDiagnosticsText) + '</pre></details>'
+      : '';
     const snapshotTime = state.latestSnapshot && state.latestSnapshot.observed_at
       ? formatDashboardTimestampLocal(state.latestSnapshot.observed_at, { includeDate: true })
       : "-";
@@ -43359,6 +43413,7 @@
           '<div class="mo-dash-row"><span class="mo-dash-label">Sync</span><span class="mo-dash-value" id="mo-lorebook-reference-status">' + escapeAttr(syncText) + '</span></div>' +
           '<div class="mo-dash-row"><span class="mo-dash-label">Observed</span><span class="mo-dash-value" id="mo-lorebook-reference-observed-at">' + escapeAttr(snapshotTime) + '</span></div>' +
         '</div>' +
+        syncDiagnosticsHtml +
         '<header class="mo-memory-workspace-head"><div class="mo-memory-workspace-title">' + escapeAttr(t('settings.tab.lorebook')) + '</div>' +
           '<div class="mo-memory-workspace-count" id="mo-lorebook-reference-current-count">' + formatExplorerNumber(state.total) + '</div></header>' +
         '<div class="mo-ex-content" id="mo-lorebook-reference-items">' + renderExplorerLorebook() + '</div>' +

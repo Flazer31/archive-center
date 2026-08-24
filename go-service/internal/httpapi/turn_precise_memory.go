@@ -514,7 +514,8 @@ func perspectiveMemoryHolderProposals(item map[string]any, defaultState string, 
 	if len(out) == 0 {
 		add(extractionFirstNonEmpty(
 			stringFromMap(item, "perspective_owner"), stringFromMap(item, "believer"),
-			stringFromMap(item, "knower"),
+			stringFromMap(item, "knower"), stringFromMap(item, "owner"),
+			stringFromMap(item, "owner_entity_name"),
 		), defaultState, stringFromMap(item, "acquisition_mode"), stateExplicit)
 	}
 	return out

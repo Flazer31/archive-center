@@ -2171,7 +2171,7 @@ func criticPerspectiveClaims(extraction map[string]any) []criticPerspectiveClaim
 	}
 	for _, raw := range sliceFromAny(extraction["belief_updates"]) {
 		add("belief", mapFromAny(raw),
-			[]string{"perspective_owner", "knower", "believer", "listener_names", "knowledge_holders"},
+			[]string{"perspective_owner", "owner", "owner_entity_name", "knower", "believer", "listener_names", "knowledge_holders"},
 			[]string{"value", "state_value", "belief", "claim"},
 		)
 	}
@@ -2602,6 +2602,14 @@ func normalizeCriticBeliefUpdates(raw any) []any {
 		}
 		if strings.TrimSpace(stringFromMap(item, "evidence_excerpt")) == "" {
 			item["evidence_excerpt"] = extractionFirstNonEmpty(stringFromMap(item, "evidence"), stringFromMap(item, "source_excerpt"))
+		}
+		if strings.TrimSpace(stringFromMap(item, "perspective_owner")) == "" {
+			owner := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "owner"), stringFromMap(item, "owner_entity_name"),
+			))
+			if owner != "" {
+				item["perspective_owner"] = owner
+			}
 		}
 		listeners := append([]string{}, stringsFromAny(item["listener_names"])...)
 		for _, listener := range []string{

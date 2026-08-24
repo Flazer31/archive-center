@@ -1958,6 +1958,8 @@ func TestLorebookReferenceAdapterReadsOnlyOnScopeChangeOrManualRefresh(t *testin
 	for _, marker := range []string{
 		`lorebookReferenceMode: "reference_assist"`,
 		`merged.lorebookReferenceMode === "off" ? DEFAULT_SETTINGS.lorebookReferenceMode`,
+		`runtimeSync.diagnostics`,
+		`t("lorebook.sync.errorDetails")`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing always-enabled lorebook marker %q", marker)
@@ -1977,6 +1979,8 @@ func TestLorebookReferenceAdapterReadsOnlyOnScopeChangeOrManualRefresh(t *testin
 		extractArchiveCenterJSAsyncFunction(t, src, "observeLorebookReferenceScope") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "lorebookReferenceScopeKey") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "currentLorebookReferencePrepareScope") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "lorebookReferenceSnapshotPath") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "lorebookReferenceSnapshotFailureState") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "postLorebookReferenceSnapshot") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "syncCurrentLorebookReference")
 	script := functions + `
@@ -1990,6 +1994,8 @@ let lorebookReads = 0;
 let shouldFailRead = false;
 const snapshots = [];
 const runtimeUpdates = [];
+const _lastBridgeFailureByPath = new Map();
+let failSnapshotStore = false;
 const R = {
   async getCurrentCharacterIndex(){ return characterIndex; },
   async getCurrentChatIndex(){ return chatIndex; },
@@ -2004,11 +2010,23 @@ const R = {
   }
 };
 function getRequestTimeoutSettingMs(){ return 1000; }
+function truncPreview(value, max){ return String(value || "").slice(0, max); }
 function updateRuntimeState(key, status, extra){ runtimeUpdates.push({key,status,extra}); }
 async function getCurrentChatSessionId(){ return "session-a"; }
 async function bridgeFetch(path, options){
   if (path !== "/sessions/session-a/lorebook-reference/snapshots") throw new Error("unexpected path " + path);
   snapshots.push(options.body);
+  if (failSnapshotStore) {
+    _lastBridgeFailureByPath.set(path, {
+      kind:"http_error", path, method:"POST", configured_url:"http://127.0.0.1:28080",
+      target_url:"http://127.0.0.1:28080" + path, route_mode:"configured", status:500,
+      detail:"Table 'archive_center.lorebook_reference_scopes' doesn't exist",
+      timeout_ms:15000, elapsed_ms:23,
+      response_body:JSON.stringify({status:"error", code:"internal_error", error:"Table 'archive_center.lorebook_reference_scopes' doesn't exist"}),
+      at:Date.parse("2026-08-24T07:47:06Z")
+    });
+    return null;
+  }
   return {status:"ok", snapshot:{lifecycle_action:"current_projection_replaced"}};
 }
 (async function(){
@@ -2059,6 +2077,19 @@ async function bridgeFetch(path, options){
   shouldFailRead = false;
   await syncCurrentLorebookReference({sessionId:"session-a", force:true});
   if (lorebookReads !== 5 || snapshots.length !== 5) throw new Error("reference assist did not refresh the Host lorebook");
+  chatIndex = 5;
+  failSnapshotStore = true;
+  await syncCurrentLorebookReference({sessionId:"session-a"});
+  const storeFailure = runtimeUpdates[runtimeUpdates.length - 1];
+  const failureDetails = Object.fromEntries((storeFailure && storeFailure.extra && storeFailure.extra.diagnostics || []).map((item) => [item.key, item.value]));
+  if (!storeFailure || storeFailure.status !== "warn" ||
+      failureDetails.failure_kind !== "http_error" || failureDetails.http_status !== "500" ||
+      failureDetails.backend_code !== "internal_error" ||
+      !String(storeFailure.extra.detail || "").includes("HTTP 500") ||
+      !Array.isArray(storeFailure.extra.diagnostics) ||
+      !storeFailure.extra.diagnostics.some((item) => item.key === "backend_detail" && String(item.value).includes("lorebook_reference_scopes"))) {
+    throw new Error("snapshot store failure diagnostics were collapsed: " + JSON.stringify(storeFailure));
+  }
 })().catch(function(err){ console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
