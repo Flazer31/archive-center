@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.6"
           check-latest: false
           cache: true
           cache-dependency-path: go-service/go.sum
@@ -110,7 +110,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.6"
           check-latest: false
           cache: true
           cache-dependency-path: go-service/go.sum
