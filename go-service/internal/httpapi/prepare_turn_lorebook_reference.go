@@ -13,19 +13,20 @@ import (
 )
 
 const (
-	prepareTurnLorebookReferenceContractV1 = "lorebook_reference_recall.v1"
-	prepareTurnLorebookScopeContractV1     = "lorebook_reference_scope.v1"
-	prepareTurnLorebookModeOff             = "off" // legacy input normalized to reference_assist
-	prepareTurnLorebookModeSearchOnly      = "search_only"
-	prepareTurnLorebookModeReferenceAssist = "reference_assist"
-	prepareTurnLorebookModeInvalid         = "invalid"
+	prepareTurnLorebookReferenceContractV1    = "lorebook_reference_recall.v1"
+	prepareTurnLorebookSelectionObservationV1 = "lorebook_selection_observation.v1"
+	prepareTurnLorebookScopeContractV1        = "lorebook_reference_scope.v1"
+	prepareTurnLorebookModeOff                = "off" // legacy input normalized to reference_assist
+	prepareTurnLorebookModeSearchOnly         = "search_only"
+	prepareTurnLorebookModeReferenceAssist    = "reference_assist"
+	prepareTurnLorebookModeInvalid            = "invalid"
 )
 
 type prepareTurnLorebookCandidate struct {
-	Entry    store.LorebookReferenceEntryObservation
-	EntryRef string
-	Methods  []string
-	Overlap  int
+	Entry          store.LorebookReferenceEntryObservation
+	EntryRef       string
+	MatchedKeys    []string
+	ContextOverlap int
 }
 
 type prepareTurnLorebookDeliveredItem struct {
@@ -33,28 +34,43 @@ type prepareTurnLorebookDeliveredItem struct {
 	SourceRefs []string
 }
 
+type prepareTurnLorebookObservedText struct {
+	Source string
+	Text   string
+}
+
 type prepareTurnLorebookReferenceResult struct {
-	ContractVersion string           `json:"contract_version"`
-	Mode            string           `json:"mode"`
-	Status          string           `json:"status"`
-	ReasonCode      string           `json:"reason_code"`
-	ScopeStatus     string           `json:"scope_status"`
-	StoreRead       bool             `json:"store_read"`
-	CatalogCount    int              `json:"catalog_count"`
-	CandidateCount  int              `json:"candidate_count"`
-	MethodCounts    map[string]int   `json:"method_counts"`
-	CandidateRefs   []map[string]any `json:"candidate_refs"`
-	SelectedCount   int              `json:"selected_count"`
-	DeferredCount   int              `json:"deferred_count"`
-	DuplicateCount  int              `json:"duplicate_suppressed_count"`
-	BudgetChars     int              `json:"budget_chars"`
-	UsedChars       int              `json:"used_chars"`
-	DeliveryCount   int              `json:"delivery_count"`
-	DeliveryChars   int              `json:"delivery_chars"`
-	PublisherCount  int              `json:"publisher_count"`
-	candidates      []prepareTurnLorebookCandidate
-	deliveryText    string
-	delivered       []prepareTurnLorebookDeliveredItem
+	ContractVersion              string           `json:"contract_version"`
+	Mode                         string           `json:"mode"`
+	Status                       string           `json:"status"`
+	ReasonCode                   string           `json:"reason_code"`
+	ScopeStatus                  string           `json:"scope_status"`
+	StoreRead                    bool             `json:"store_read"`
+	CatalogCount                 int              `json:"catalog_count"`
+	CandidateCount               int              `json:"candidate_count"`
+	CandidateChars               int              `json:"candidate_chars"`
+	CandidateRefs                []map[string]any `json:"candidate_refs"`
+	SelectionObservationContract string           `json:"selection_observation_contract"`
+	AlwaysActiveCandidateCount   int              `json:"always_active_candidate_count"`
+	AlwaysActiveDeliveryCount    int              `json:"always_active_delivery_count"`
+	KeyMatchedCandidateCount     int              `json:"key_matched_candidate_count"`
+	ContextMatchedCandidateCount int              `json:"context_matched_candidate_count"`
+	AlreadyPresentCount          int              `json:"already_present_count"`
+	NoContextMatchCount          int              `json:"no_context_match_count"`
+	CoalescedContentCount        int              `json:"coalesced_content_count"`
+	FinalDispositionCounts       map[string]int   `json:"final_disposition_counts"`
+	SelectedCount                int              `json:"selected_count"`
+	SelectedChars                int              `json:"selected_chars"`
+	DeferredCount                int              `json:"deferred_count"`
+	BudgetDeferredCount          int              `json:"budget_deferred_count"`
+	BudgetChars                  int              `json:"budget_chars"`
+	UsedChars                    int              `json:"used_chars"`
+	DeliveryCount                int              `json:"delivery_count"`
+	DeliveryChars                int              `json:"delivery_chars"`
+	PublisherCount               int              `json:"publisher_count"`
+	candidates                   []prepareTurnLorebookCandidate
+	deliveryText                 string
+	delivered                    []prepareTurnLorebookDeliveredItem
 }
 
 func normalizePrepareTurnLorebookMode(value string) string {
@@ -70,16 +86,17 @@ func normalizePrepareTurnLorebookMode(value string) string {
 
 func newPrepareTurnLorebookReferenceResult(mode string) prepareTurnLorebookReferenceResult {
 	return prepareTurnLorebookReferenceResult{
-		ContractVersion: prepareTurnLorebookReferenceContractV1,
-		Mode:            mode,
-		Status:          "disabled",
-		ReasonCode:      "lorebook_reference_disabled",
-		ScopeStatus:     "unobserved",
-		MethodCounts:    map[string]int{"exact_phrase": 0, "key": 0, "lexical": 0},
-		CandidateRefs:   []map[string]any{},
-		DeliveryCount:   0,
-		DeliveryChars:   0,
-		PublisherCount:  0,
+		ContractVersion:              prepareTurnLorebookReferenceContractV1,
+		Mode:                         mode,
+		Status:                       "disabled",
+		ReasonCode:                   "lorebook_reference_disabled",
+		ScopeStatus:                  "unobserved",
+		CandidateRefs:                []map[string]any{},
+		SelectionObservationContract: prepareTurnLorebookSelectionObservationV1,
+		FinalDispositionCounts:       map[string]int{},
+		DeliveryCount:                0,
+		DeliveryChars:                0,
+		PublisherCount:               0,
 	}
 }
 
@@ -105,91 +122,157 @@ func finalizePrepareTurnLorebookReference(
 	if len(result.candidates) == 0 {
 		return
 	}
-	if !injectionEnabled {
-		result.Status = "deferred"
-		result.ReasonCode = "lorebook_reference_injection_disabled"
-		return
-	}
 	if budgetChars < 0 {
 		budgetChars = 0
 	}
 	result.BudgetChars = budgetChars
-	if budgetChars == 0 {
-		result.Status = "deferred"
-		result.ReasonCode = "lorebook_reference_budget_zero"
-		result.DeferredCount = len(result.candidates)
-		return
-	}
 
-	nativeTexts := make([]string, 0, len(messages)+len(deliveredContextTexts)+1)
+	observed := make([]prepareTurnLorebookObservedText, 0, len(messages)+len(deliveredContextTexts)+1)
 	if strings.TrimSpace(rawUserInput) != "" {
-		nativeTexts = append(nativeTexts, rawUserInput)
+		observed = append(observed, prepareTurnLorebookObservedText{Source: "current_user_input", Text: rawUserInput})
 	}
 	for _, message := range messages {
 		if text := extractionStringFromAny(message["content"]); strings.TrimSpace(text) != "" {
-			nativeTexts = append(nativeTexts, text)
+			observed = append(observed, prepareTurnLorebookObservedText{Source: "risu_request_message", Text: text})
 		}
 	}
 	for _, text := range deliveredContextTexts {
 		if strings.TrimSpace(text) != "" {
-			nativeTexts = append(nativeTexts, text)
+			observed = append(observed, prepareTurnLorebookObservedText{Source: "archive_center_delivery", Text: text})
 		}
 	}
 
-	type groupedCandidate struct {
-		Text              string
-		SourceRefs        []string
-		DirectlyActivated bool
+	type selectedGroup struct {
+		Text             string
+		SourceRefs       []string
+		CandidateIndexes []int
+		KeyMatched       bool
+		ContextOverlap   int
 	}
-	groups := []groupedCandidate{}
-	groupIndex := map[string]int{}
-	for _, candidate := range result.candidates {
+	header := "[Archive Center — Lorebook Reference]"
+	candidateLines := []string{}
+	groups := []selectedGroup{}
+	groupIndexes := map[string]int{}
+	for candidateIndex, candidate := range result.candidates {
 		text := strings.TrimSpace(candidate.Entry.Content)
+		if text == "" {
+			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "deferred_empty_content", "", false)
+			continue
+		}
+		candidateLines = append(candidateLines, "- "+text)
+		if source := prepareTurnLorebookPayloadPresenceSource(text, observed); source != "" {
+			result.AlreadyPresentCount++
+			result.DeferredCount++
+			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_already_present", source, false)
+			continue
+		}
+		if len(candidate.MatchedKeys) == 0 && candidate.ContextOverlap == 0 {
+			result.NoContextMatchCount++
+			result.DeferredCount++
+			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_no_context_match", "", false)
+			continue
+		}
 		normalized := normalizePrepareTurnLorebookText(text)
-		if normalized == "" {
+		if groupIndex, exists := groupIndexes[normalized]; exists {
+			group := &groups[groupIndex]
+			group.SourceRefs = appendUniqueStringValues(group.SourceRefs, candidate.EntryRef)
+			group.CandidateIndexes = append(group.CandidateIndexes, candidateIndex)
+			group.KeyMatched = group.KeyMatched || len(candidate.MatchedKeys) > 0
+			group.ContextOverlap = maxInt(group.ContextOverlap, candidate.ContextOverlap)
+			result.CoalescedContentCount++
 			continue
 		}
-		ref := candidate.EntryRef
-		directlyActivated := false
-		for _, method := range candidate.Methods {
-			if method == "key" {
-				directlyActivated = true
-				break
-			}
-		}
-		if candidate.Entry.AlwaysActive != nil && *candidate.Entry.AlwaysActive {
-			directlyActivated = true
-		}
-		if index, exists := groupIndex[normalized]; exists {
-			groups[index].SourceRefs = appendUniqueStringValues(groups[index].SourceRefs, ref)
-			groups[index].DirectlyActivated = groups[index].DirectlyActivated || directlyActivated
-			result.DuplicateCount++
-			continue
-		}
-		groupIndex[normalized] = len(groups)
-		groups = append(groups, groupedCandidate{
-			Text:              text,
-			SourceRefs:        []string{ref},
-			DirectlyActivated: directlyActivated,
+		groupIndexes[normalized] = len(groups)
+		groups = append(groups, selectedGroup{
+			Text:             text,
+			SourceRefs:       []string{candidate.EntryRef},
+			CandidateIndexes: []int{candidateIndex},
+			KeyMatched:       len(candidate.MatchedKeys) > 0,
+			ContextOverlap:   candidate.ContextOverlap,
 		})
 	}
+	if len(candidateLines) > 0 {
+		result.CandidateChars = len([]rune(header + "\n" + strings.Join(candidateLines, "\n")))
+	}
+	sort.SliceStable(groups, func(i, j int) bool {
+		if groups[i].KeyMatched != groups[j].KeyMatched {
+			return groups[i].KeyMatched
+		}
+		if groups[i].ContextOverlap != groups[j].ContextOverlap {
+			return groups[i].ContextOverlap > groups[j].ContextOverlap
+		}
+		return result.candidates[groups[i].CandidateIndexes[0]].Entry.EntryOrdinal < result.candidates[groups[j].CandidateIndexes[0]].Entry.EntryOrdinal
+	})
+	hasKeyMatchedGroup := false
+	strongestContextOverlap := 0
+	for _, group := range groups {
+		hasKeyMatchedGroup = hasKeyMatchedGroup || group.KeyMatched
+		strongestContextOverlap = maxInt(strongestContextOverlap, group.ContextOverlap)
+	}
+	frontierGroups := make([]selectedGroup, 0, len(groups))
+	for _, group := range groups {
+		insideFrontier := group.ContextOverlap == strongestContextOverlap
+		if hasKeyMatchedGroup {
+			insideFrontier = group.KeyMatched
+		}
+		if insideFrontier {
+			frontierGroups = append(frontierGroups, group)
+			continue
+		}
+		result.DeferredCount++
+		for _, candidateIndex := range group.CandidateIndexes {
+			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_below_relevance_frontier", "", false)
+		}
+	}
+	groups = frontierGroups
+	selectedLines := make([]string, 0, len(groups))
+	for _, group := range groups {
+		selectedLines = append(selectedLines, "- "+group.Text)
+	}
 	result.SelectedCount = len(groups)
+	if len(selectedLines) > 0 {
+		result.SelectedChars = len([]rune(header + "\n" + strings.Join(selectedLines, "\n")))
+	}
+	if len(groups) == 0 {
+		result.Status = "empty"
+		switch {
+		case result.AlreadyPresentCount > 0 && result.NoContextMatchCount == 0:
+			result.ReasonCode = "lorebook_relevant_context_already_present"
+		case result.NoContextMatchCount > 0:
+			result.ReasonCode = "lorebook_no_missing_context_match"
+		default:
+			result.ReasonCode = "lorebook_no_candidates"
+		}
+		return
+	}
+	if !injectionEnabled {
+		result.Status = "deferred"
+		result.ReasonCode = "lorebook_reference_injection_disabled"
+		result.DeferredCount += len(groups)
+		for _, group := range groups {
+			for _, candidateIndex := range group.CandidateIndexes {
+				setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "deferred_injection_disabled", "", false)
+			}
+		}
+		return
+	}
+	if budgetChars == 0 {
+		result.Status = "deferred"
+		result.ReasonCode = "lorebook_reference_budget_zero"
+		result.DeferredCount += len(groups)
+		result.BudgetDeferredCount = len(groups)
+		for _, group := range groups {
+			for _, candidateIndex := range group.CandidateIndexes {
+				setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "deferred_budget_zero", "", false)
+			}
+		}
+		return
+	}
 
-	header := "[Archive Center — Lorebook Reference]"
 	used := 0
 	lines := []string{}
-	activationDeferred := 0
 	budgetDeferred := 0
 	for _, group := range groups {
-		if prepareTurnLorebookExactTextPresent(group.Text, nativeTexts) {
-			result.DuplicateCount++
-			continue
-		}
-		if !group.DirectlyActivated {
-			activationDeferred++
-			result.DeferredCount++
-			continue
-		}
 		line := "- " + group.Text
 		additional := len([]rune(line))
 		if len(lines) == 0 {
@@ -200,6 +283,9 @@ func finalizePrepareTurnLorebookReference(
 		if used+additional > budgetChars {
 			budgetDeferred++
 			result.DeferredCount++
+			for _, candidateIndex := range group.CandidateIndexes {
+				setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "deferred_budget_exhausted", "", false)
+			}
 			continue
 		}
 		used += additional
@@ -208,25 +294,26 @@ func finalizePrepareTurnLorebookReference(
 			Text:       group.Text,
 			SourceRefs: append([]string(nil), group.SourceRefs...),
 		})
+		for sourceIndex, candidateIndex := range group.CandidateIndexes {
+			if result.candidates[candidateIndex].Entry.AlwaysActive != nil && *result.candidates[candidateIndex].Entry.AlwaysActive {
+				result.AlwaysActiveDeliveryCount++
+			}
+			disposition := "delivered"
+			if sourceIndex > 0 {
+				disposition = "delivered_shared_content"
+			}
+			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, disposition, "", true)
+		}
 	}
 	result.UsedChars = used
 	result.DeliveryCount = len(result.delivered)
 	result.DeliveryChars = used
+	result.BudgetDeferredCount = budgetDeferred
 	if len(lines) == 0 {
-		switch {
-		case activationDeferred > 0 && budgetDeferred > 0:
-			result.Status = "deferred"
-			result.ReasonCode = "lorebook_reference_candidates_deferred"
-		case activationDeferred > 0:
-			result.Status = "deferred"
-			result.ReasonCode = "lorebook_reference_not_directly_activated"
-		case budgetDeferred > 0:
+		if budgetDeferred > 0 {
 			result.Status = "deferred"
 			result.ReasonCode = "lorebook_reference_budget_exhausted"
-		case result.DuplicateCount > 0:
-			result.Status = "empty"
-			result.ReasonCode = "lorebook_reference_exact_duplicates_suppressed"
-		default:
+		} else {
 			result.Status = "empty"
 			result.ReasonCode = "lorebook_no_relevant_candidates"
 		}
@@ -237,17 +324,34 @@ func finalizePrepareTurnLorebookReference(
 	result.ReasonCode = "lorebook_reference_delivered"
 }
 
-func prepareTurnLorebookExactTextPresent(content string, haystacks []string) bool {
+func setPrepareTurnLorebookCandidateDisposition(result *prepareTurnLorebookReferenceResult, candidateIndex int, disposition, observedSource string, delivered bool) {
+	if result == nil || candidateIndex < 0 || candidateIndex >= len(result.CandidateRefs) {
+		return
+	}
+	entry := result.CandidateRefs[candidateIndex]
+	if entry == nil {
+		entry = map[string]any{}
+		result.CandidateRefs[candidateIndex] = entry
+	}
+	entry["final_disposition"] = disposition
+	entry["delivered"] = delivered
+	if observedSource != "" {
+		entry["observed_source"] = observedSource
+	}
+	result.FinalDispositionCounts[disposition]++
+}
+
+func prepareTurnLorebookPayloadPresenceSource(content string, observed []prepareTurnLorebookObservedText) string {
 	content = normalizePrepareTurnLorebookText(content)
 	if content == "" {
-		return false
+		return ""
 	}
-	for _, haystack := range haystacks {
-		if normalized := normalizePrepareTurnLorebookText(haystack); normalized != "" && strings.Contains(normalized, content) {
-			return true
+	for _, item := range observed {
+		if text := normalizePrepareTurnLorebookText(item.Text); text != "" && strings.Contains(text, content) {
+			return strings.TrimSpace(item.Source)
 		}
 	}
-	return false
+	return ""
 }
 
 func (result *prepareTurnLorebookReferenceResult) deliveredSourceRefs() []string {
@@ -299,7 +403,7 @@ func attachPrepareTurnLorebookPublisherSupport(executionContract, supportPacket 
 func (s *Server) prepareTurnLorebookReferenceSearch(
 	ctx context.Context,
 	chatSessionID string,
-	rawUserInput string,
+	selectionQuery string,
 	mode string,
 	observation *dto.PrepareTurnLorebookReferenceScopeV1,
 ) prepareTurnLorebookReferenceResult {
@@ -335,12 +439,6 @@ func (s *Server) prepareTurnLorebookReferenceSearch(
 		result.ReasonCode = "lorebook_scope_unobserved"
 		return result
 	}
-	query := normalizePrepareTurnLorebookText(rawUserInput)
-	if query == "" {
-		result.Status = "empty"
-		result.ReasonCode = "lorebook_query_empty"
-		return result
-	}
 	reader, ok := s.Store.(store.LorebookReferenceStore)
 	if !ok {
 		result.Status = "unavailable"
@@ -371,59 +469,47 @@ func (s *Server) prepareTurnLorebookReferenceSearch(
 		return result
 	}
 	result.CatalogCount = len(current.Entries)
-	queryTokens := prepareTurnLorebookTokens(query)
+	query := normalizePrepareTurnLorebookText(selectionQuery)
+	queryTokens := prepareTurnLorebookContextTokens(query)
 	for _, entry := range current.Entries {
-		candidate := prepareTurnLorebookCandidate{
-			Entry:    entry,
-			EntryRef: prepareTurnLorebookEntryRef(current.ScopeID, entry),
+		if strings.TrimSpace(entry.Content) == "" {
+			continue
 		}
-		if entry.AlwaysActive != nil && *entry.AlwaysActive {
-			candidate.Methods = append(candidate.Methods, "always_active")
-			result.MethodCounts["always_active"]++
-		}
-		content := normalizePrepareTurnLorebookText(entry.Content)
-		if content != "" && strings.Contains(query, content) {
-			candidate.Methods = append(candidate.Methods, "exact_phrase")
-			result.MethodCounts["exact_phrase"]++
-		}
-		if prepareTurnLorebookKeyMatch(query, entry.Key, entry.SecondKey) {
-			candidate.Methods = append(candidate.Methods, "key")
-			result.MethodCounts["key"]++
-		}
-		searchText := entry.NormalizedSearch
-		if strings.TrimSpace(searchText) == "" {
+		searchText := strings.TrimSpace(entry.NormalizedSearch)
+		if searchText == "" {
 			searchText = strings.Join([]string{entry.Key, entry.SecondKey, entry.Comment, entry.Content}, "\n")
 		}
-		candidate.Overlap = prepareTurnLorebookTokenOverlap(queryTokens, prepareTurnLorebookTokens(searchText))
-		if candidate.Overlap > 0 {
-			candidate.Methods = append(candidate.Methods, "lexical")
-			result.MethodCounts["lexical"]++
+		candidate := prepareTurnLorebookCandidate{
+			Entry:          entry,
+			EntryRef:       prepareTurnLorebookEntryRef(current.ScopeID, entry),
+			MatchedKeys:    prepareTurnLorebookContextMatchedKeys(query, entry.Key, entry.SecondKey),
+			ContextOverlap: prepareTurnLorebookContextOverlap(queryTokens, prepareTurnLorebookContextTokens(normalizePrepareTurnLorebookText(searchText))),
 		}
-		if len(candidate.Methods) == 0 {
-			continue
+		if len(candidate.MatchedKeys) > 0 {
+			result.KeyMatchedCandidateCount++
+		}
+		if len(candidate.MatchedKeys) > 0 || candidate.ContextOverlap > 0 {
+			result.ContextMatchedCandidateCount++
+		}
+		if entry.AlwaysActive != nil && *entry.AlwaysActive {
+			result.AlwaysActiveCandidateCount++
 		}
 		result.candidates = append(result.candidates, candidate)
 	}
-	sort.SliceStable(result.candidates, func(i, j int) bool {
-		left, right := result.candidates[i], result.candidates[j]
-		if prepareTurnLorebookMethodRank(left.Methods) != prepareTurnLorebookMethodRank(right.Methods) {
-			return prepareTurnLorebookMethodRank(left.Methods) > prepareTurnLorebookMethodRank(right.Methods)
-		}
-		if left.Overlap != right.Overlap {
-			return left.Overlap > right.Overlap
-		}
-		return left.Entry.EntryOrdinal < right.Entry.EntryOrdinal
-	})
 	for _, candidate := range result.candidates {
 		result.CandidateRefs = append(result.CandidateRefs, map[string]any{
-			"entry_ref": candidate.EntryRef,
-			"methods":   append([]string(nil), candidate.Methods...),
+			"entry_ref":         candidate.EntryRef,
+			"always_active":     candidate.Entry.AlwaysActive != nil && *candidate.Entry.AlwaysActive,
+			"matched_keys":      append([]string(nil), candidate.MatchedKeys...),
+			"context_overlap":   candidate.ContextOverlap,
+			"final_disposition": "candidate",
+			"delivered":         false,
 		})
 	}
 	result.CandidateCount = len(result.candidates)
 	if result.CandidateCount == 0 {
 		result.Status = "empty"
-		result.ReasonCode = "lorebook_no_relevant_candidates"
+		result.ReasonCode = "lorebook_no_candidates"
 		return result
 	}
 	if result.ScopeStatus == "partial" {
@@ -440,62 +526,82 @@ func normalizePrepareTurnLorebookText(value string) string {
 	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
 }
 
-func prepareTurnLorebookKeyMatch(query string, values ...string) bool {
+func buildPrepareTurnLorebookSelectionQuery(rawUserInput string, previousCompleted []store.ChatLog, maxContextChars int) string {
+	parts := nonEmptyStrings([]string{strings.TrimSpace(rawUserInput)})
+	remaining := maxInt(0, maxContextChars)
+	for _, item := range previousCompleted {
+		if remaining == 0 {
+			break
+		}
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		if role != "user" && role != "assistant" {
+			continue
+		}
+		content := strings.Join(strings.Fields(item.Content), " ")
+		if content == "" {
+			continue
+		}
+		content = truncateRunes(content, remaining)
+		if content == "" {
+			continue
+		}
+		parts = append(parts, content)
+		remaining -= len([]rune(content))
+	}
+	return strings.Join(parts, "\n")
+}
+
+func prepareTurnLorebookContextMatchedKeys(query string, values ...string) []string {
+	matches := []string{}
 	for _, value := range values {
 		for _, phrase := range strings.FieldsFunc(value, func(r rune) bool {
 			return r == ',' || r == ';' || r == '|' || r == '\n' || r == '\r'
 		}) {
 			phrase = normalizePrepareTurnLorebookText(phrase)
 			if phrase != "" && strings.Contains(query, phrase) {
-				return true
+				matches = appendUniqueStringValues(matches, phrase)
 			}
 		}
 	}
-	return false
+	return matches
 }
 
-func prepareTurnLorebookTokens(value string) map[string]struct{} {
-	result := map[string]struct{}{}
+func prepareTurnLorebookContextTokens(value string) map[string]struct{} {
+	tokens := map[string]struct{}{}
 	for _, token := range strings.FieldsFunc(value, func(r rune) bool {
 		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
 	}) {
 		token = strings.TrimSpace(token)
-		if token != "" {
-			result[token] = struct{}{}
+		if prepareTurnLorebookContextTokenEligible(token) {
+			tokens[token] = struct{}{}
 		}
 	}
-	return result
+	return tokens
 }
 
-func prepareTurnLorebookTokenOverlap(left, right map[string]struct{}) int {
+func prepareTurnLorebookContextTokenEligible(token string) bool {
+	runes := []rune(strings.TrimSpace(token))
+	if len(runes) < 2 {
+		return false
+	}
+	allASCII := true
+	for _, r := range runes {
+		if r > unicode.MaxASCII {
+			allASCII = false
+			break
+		}
+	}
+	return !allASCII || len(runes) >= 4
+}
+
+func prepareTurnLorebookContextOverlap(left, right map[string]struct{}) int {
 	count := 0
 	for token := range left {
-		if _, ok := right[token]; ok {
+		if _, exists := right[token]; exists {
 			count++
 		}
 	}
 	return count
-}
-
-func prepareTurnLorebookMethodRank(methods []string) int {
-	rank := 0
-	for _, method := range methods {
-		switch method {
-		case "exact_phrase":
-			if rank < 3 {
-				rank = 3
-			}
-		case "key":
-			if rank < 2 {
-				rank = 2
-			}
-		case "lexical":
-			if rank < 1 {
-				rank = 1
-			}
-		}
-	}
-	return rank
 }
 
 func prepareTurnLorebookEntryRef(scopeID int64, entry store.LorebookReferenceEntryObservation) string {

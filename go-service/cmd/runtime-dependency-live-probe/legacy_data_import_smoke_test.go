@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -22,6 +23,28 @@ func TestWindowsLegacyDataImportSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	cmd := exec.Command(powerShell, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script)
+	// Go inherits PowerShell 7's PSModulePath in the Codex/build shell. Put the
+	// Windows PowerShell built-in module directory first so this production
+	// script smoke exercises Get-FileHash under the same module set as a normal
+	// powershell.exe package launch.
+	windowsModulePath := filepath.Join(filepath.Dir(powerShell), "Modules")
+	modulePath := windowsModulePath
+	if inherited := strings.TrimSpace(os.Getenv("PSModulePath")); inherited != "" {
+		modulePath += string(os.PathListSeparator) + inherited
+	}
+	env := os.Environ()
+	modulePathReplaced := false
+	for i, entry := range env {
+		key, _, _ := strings.Cut(entry, "=")
+		if strings.EqualFold(key, "PSModulePath") {
+			env[i] = "PSModulePath=" + modulePath
+			modulePathReplaced = true
+		}
+	}
+	if !modulePathReplaced {
+		env = append(env, "PSModulePath="+modulePath)
+	}
+	cmd.Env = env
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("legacy data import smoke failed: %v\n%s", err, output)

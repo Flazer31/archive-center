@@ -983,7 +983,7 @@ type PrepareTurnSettings struct {
 	// DEFAULT: Optional field with default (true): Go handler must apply default when field is absent in request.
 	InputContextEnabled *bool `json:"input_context_enabled,omitempty"`
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
-	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.
+	// DEFAULT: Optional field with default (9000): Go handler must apply default when field is absent in request.
 	MaxInjectionChars *int `json:"max_injection_chars,omitempty"`
 	// MemoryDeliveryBudgetMode selects automatic profile budgets or user-supplied per-class reservations.
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
@@ -992,11 +992,14 @@ type PrepareTurnSettings struct {
 	// LorebookReferenceMode controls the separate read-only Host lorebook reference lane.
 	// Missing values default to reference_assist; the lorebook remains bounded support, not primary memory authority.
 	LorebookReferenceMode *string `json:"lorebook_reference_mode,omitempty"`
+	// PRESENCE: Optional non-null scalar int carrying the independent Host lorebook reference cap.
+	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.
+	LorebookReferenceMaxChars *int `json:"lorebook_reference_max_chars,omitempty"`
 	// PRESENCE: Optional non-null scalar int controlling only the final objective-event memory item ceiling.
 	// DEFAULT: No default: absent callers preserve the legacy character-budget-only delivery behavior.
 	CoreObjectiveMemoryMaxItems *int `json:"core_objective_memory_max_items,omitempty"`
-	// PRESENCE: Optional non-null scalar int carrying the configured memory cap as the reference budget basis.
-	// DEFAULT: No default: absent callers use the effective max_injection_chars for compatibility.
+	// PRESENCE: Optional non-null scalar int carrying the independent original-work reference cap.
+	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.
 	ReferenceInjectionBudgetBasisChars *int `json:"reference_injection_budget_basis_chars,omitempty"`
 	// PRESENCE: Optional non-null scalar int controlling only the reference recall candidate limit.
 	// DEFAULT: No default: absent callers inherit the effective top_k for compatibility; explicit zero disables reference recall candidates.
@@ -1051,12 +1054,20 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 		dto.InputContextEnabled = &v
 	}
 	if dto.MaxInjectionChars == nil {
-		v := 3000
+		v := 9000
 		dto.MaxInjectionChars = &v
 	}
 	if dto.LorebookReferenceMode == nil {
 		v := "reference_assist"
 		dto.LorebookReferenceMode = &v
+	}
+	if dto.LorebookReferenceMaxChars == nil {
+		v := 3000
+		dto.LorebookReferenceMaxChars = &v
+	}
+	if dto.ReferenceInjectionBudgetBasisChars == nil {
+		v := 3000
+		dto.ReferenceInjectionBudgetBasisChars = &v
 	}
 	if dto.MaxInputContextChars == nil {
 		v := 800

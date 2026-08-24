@@ -1441,6 +1441,7 @@ func TestMemoryReprocessingWorkerAuditsTypedCriticFailure(t *testing.T) {
 	}
 	failure, _ := details["failure"].(map[string]any)
 	trace, _ := details["trace"].(map[string]any)
+	callLedger := mapFromAny(trace["provider_call_budget_ledger"])
 	if failure["code"] != "CRITIC_PROVIDER_HTTP_ERROR" ||
 		failure["stage"] != "provider_response" ||
 		failure["retryable"] != true ||
@@ -1450,6 +1451,11 @@ func TestMemoryReprocessingWorkerAuditsTypedCriticFailure(t *testing.T) {
 		trace["http_status"] != float64(http.StatusTooManyRequests) ||
 		strings.TrimSpace(extractionStringFromAny(trace["raw_preview"])) == "" {
 		t.Fatalf("details=%+v", details)
+	}
+	if callLedger["contract_version"] != providerCallBudgetLedgerContractV1 || callLedger["owner"] != "go" ||
+		callLedger["call_kind"] != "critic" || callLedger["status"] != "failed" ||
+		callLedger["failure_stage"] != "provider_response" || intFromAny(callLedger["final_prompt_chars"], 0) <= 0 {
+		t.Fatalf("safe reprocessing call ledger=%#v", callLedger)
 	}
 	if details["job_id"] != float64(9) ||
 		details["source_revision"] != "revision" ||

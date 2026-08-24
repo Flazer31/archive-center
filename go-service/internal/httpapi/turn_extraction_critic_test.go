@@ -301,7 +301,7 @@ func TestCriticProviderPromptKeepsCurrentAndPreviousTurnsWholeAndExcludesHostHis
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     make(http.Header),
-			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"model":"critic-test","choices":[{"message":{"content":%s}}]}`, strconv.Quote(providerResponse)))),
+			Body:       io.NopCloser(strings.NewReader(fmt.Sprintf(`{"model":"critic-test","choices":[{"message":{"content":%s}}],"usage":{"prompt_tokens":321,"completion_tokens":45,"total_tokens":366}}`, strconv.Quote(providerResponse)))),
 		}, nil
 	})}
 	defer func() { proxyHTTPClient = oldClient }()
@@ -347,6 +347,21 @@ func TestCriticProviderPromptKeepsCurrentAndPreviousTurnsWholeAndExcludesHostHis
 		intFromAny(budgetTrace["user_prompt_chars"], 0) != len([]rune(providerUserPrompt)) ||
 		intFromAny(budgetTrace["final_prompt_chars"], 0) != len([]rune(providerSystemPrompt))+len([]rune(providerUserPrompt)) {
 		t.Fatalf("final prompt size trace mismatch: %#v", budgetTrace)
+	}
+	callLedger := mapFromAny(trace["provider_call_budget_ledger"])
+	if callLedger["contract_version"] != providerCallBudgetLedgerContractV1 || callLedger["owner"] != "go" ||
+		callLedger["call_kind"] != "critic" || callLedger["status"] != "succeeded" || callLedger["failure_stage"] != "" {
+		t.Fatalf("critic call ledger contract/status mismatch: %#v", callLedger)
+	}
+	if intFromAny(callLedger["current_turn_chars"], 0) != len([]rune(currentUser))+len([]rune(currentAssistant)) ||
+		intFromAny(callLedger["auxiliary_memory_chars"], 0) <= 0 ||
+		intFromAny(callLedger["original_work_reference_chars"], -1) != 0 || callLedger["original_work_reference_status"] != "not_in_call_contract" ||
+		intFromAny(callLedger["lorebook_reference_chars"], -1) != 0 || callLedger["lorebook_reference_status"] != "not_in_call_contract" ||
+		callLedger["json_schema_output_requirement_accounting"] != "embedded_in_system_prompt_not_separable" {
+		t.Fatalf("critic call ledger lane accounting mismatch: %#v", callLedger)
+	}
+	if callLedger["provider_usage_status"] != "reported" || intFromAny(callLedger["input_tokens"], 0) != 321 || intFromAny(callLedger["output_tokens"], 0) != 45 {
+		t.Fatalf("critic provider usage observation mismatch: %#v", callLedger)
 	}
 	selectionTrace := mapFromAny(trace["context_selection"])
 	if intFromAny(selectionTrace["host_messages_received"], 0) != 1 || intFromAny(selectionTrace["host_messages_used"], -1) != 0 {

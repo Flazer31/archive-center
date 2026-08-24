@@ -335,6 +335,12 @@ func TestMEMDAutomaticDeliversRequiredBeforeEarlierAuxiliaryClass(t *testing.T) 
 	if strings.Contains(finalText, "older supporting excerpt") {
 		t.Fatalf("oversized auxiliary evidence displaced required memory: %q", finalText)
 	}
+	if intFromAny(plan["candidate_chars"], 0) <= intFromAny(plan["selected_chars"], 0) ||
+		intFromAny(plan["selected_chars"], 0) != intFromAny(plan["final_delivery_chars"], -1) ||
+		intFromAny(plan["excluded_count"], 0) != 1 ||
+		prepareTurnPayloadBudgetReasonCounts(plan["exclusion_reasons"])["memory_char_budget"] != 1 {
+		t.Fatalf("memory candidate-to-final budget trace = %#v", plan)
+	}
 	classes, _ := plan["classes"].([]map[string]any)
 	for _, class := range classes {
 		if class["key"] != "direct_evidence" {

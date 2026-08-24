@@ -220,14 +220,23 @@ func (s *Server) handleSupervisor(w http.ResponseWriter, r *http.Request) {
 func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPack map[string]any, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
 	systemPrompt, promptSource, promptErr := readSupervisorSystemPrompt(s.Cfg.PromptDir)
 	if promptErr != nil {
+		callLedger := newProviderCallBudgetLedger("publisher", "", "", providerCallBudgetComponents{
+			OriginalWorkReferenceStatus:           "not_in_call_contract",
+			LorebookReferenceStatus:               "not_in_call_contract",
+			JSONSchemaOutputRequirementAccounting: "not_assembled",
+		})
+		observeProviderCallBudgetResult(callLedger, nil, 0, "not_called", "request_build")
+		callLedger["failure_code"] = "publisher_system_prompt_unavailable"
 		return nil, map[string]any{
-			"prompt_source":  promptSource,
-			"model":          cfg.Model,
-			"failure_code":   "publisher_system_prompt_unavailable",
-			"failure_detail": promptErr.Error(),
+			"prompt_source":               promptSource,
+			"model":                       cfg.Model,
+			"failure_code":                "publisher_system_prompt_unavailable",
+			"failure_detail":              promptErr.Error(),
+			"provider_call_budget_ledger": callLedger,
 		}, promptErr
 	}
 	guideMode := normalizeNarrativeGuideMode(extractionStringFromAny(supervisorPack["guide_mode"]))
+	requiredOutput := "Return one JSON object with contract_version publisher_output.v3 and an items array. Each supported item must contain role, field, text, and exact source_refs copied from a text-bearing entry in supervisor_support_packet; pressure_level items must also contain level. Omit unsupported items instead of emitting empty role objects, null placeholders, or filler. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure."
 	payload := map[string]any{
 		"chat_session_id":             sid,
 		"guide_mode":                  guideMode,
@@ -236,9 +245,30 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		"guide_focus":                 supervisorPack["guide_focus"],
 		"supervisor_support_packet":   supervisorPack["support_packet"],
 		"response_execution_contract": supervisorPack["response_execution_contract"],
-		"required_output":             "Return one JSON object with contract_version publisher_output.v3 and an items array. Each supported item must contain role, field, text, and exact source_refs copied from a text-bearing entry in supervisor_support_packet; pressure_level items must also contain level. Omit unsupported items instead of emitting empty role objects, null placeholders, or filler. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure.",
+		"required_output":             requiredOutput,
 	}
 	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
+	userPrompt := string(userPromptBytes)
+	supportPacket := mapFromAny(supervisorPack["support_packet"])
+	currentTurnChars := providerCallJSONComponentChars(supportPacket["current_input"])
+	auxiliaryMemoryChars := 0
+	for _, key := range []string{"accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context"} {
+		auxiliaryMemoryChars += providerCallJSONComponentChars(supportPacket[key])
+	}
+	lorebookReferenceChars := providerCallJSONComponentChars(supportPacket["delivered_lorebook_reference"])
+	lorebookReferenceStatus := "not_in_call_contract"
+	if lorebookReferenceChars > 0 {
+		lorebookReferenceStatus = "delivered"
+	}
+	callLedger := newProviderCallBudgetLedger("publisher", systemPrompt, userPrompt, providerCallBudgetComponents{
+		CurrentTurnChars:                      currentTurnChars,
+		AuxiliaryMemoryChars:                  auxiliaryMemoryChars,
+		OriginalWorkReferenceStatus:           "not_in_call_contract",
+		LorebookReferenceChars:                lorebookReferenceChars,
+		LorebookReferenceStatus:               lorebookReferenceStatus,
+		JSONSchemaOutputRequirementChars:      len([]rune(requiredOutput)),
+		JSONSchemaOutputRequirementAccounting: "separate_user_payload_field",
+	})
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
 		maxTokens = 1200
@@ -253,7 +283,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		Endpoint:            &cfg.Endpoint,
 		Model:               &cfg.Model,
 		Provider:            &cfg.Provider,
-		Messages:            []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": string(userPromptBytes)}},
+		Messages:            []any{map[string]any{"role": "system", "content": systemPrompt}, map[string]any{"role": "user", "content": userPrompt}},
 		MaxTokens:           &maxTokens,
 		MaxCompletionTokens: &maxCompletionTokens,
 		Temperature:         &temp,
@@ -276,6 +306,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	// Publisher planning is exactly one provider request. A rejected request is
 	// reported explicitly; it is never retried with a different parameter set.
 	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
 	if err != nil {
 		failureCode := "publisher_llm_provider_error"
 		var emptyContentErr *proxyEmptyContentError
@@ -294,20 +325,30 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		case upstreamStatus >= http.StatusInternalServerError:
 			failureCode = "publisher_llm_upstream_unavailable"
 		}
+		failureStage := "provider_call"
+		if upstreamStatus >= http.StatusBadRequest || errors.As(err, &emptyContentErr) {
+			failureStage = "provider_response"
+		}
+		if errors.As(err, &localRequestErr) {
+			failureStage = extractionFirstNonEmpty(strings.TrimSpace(localRequestErr.Stage), "request_build")
+		}
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed", failureStage)
+		callLedger["failure_code"] = failureCode
 		return nil, map[string]any{
-			"prompt_source":   promptSource,
-			"model":           cfg.Model,
-			"failure_code":    failureCode,
-			"failure_detail":  scrubProxySecret(err.Error(), cfg.APIKey),
-			"upstream_status": upstreamStatus,
+			"prompt_source":               promptSource,
+			"model":                       cfg.Model,
+			"failure_code":                failureCode,
+			"failure_detail":              scrubProxySecret(err.Error(), cfg.APIKey),
+			"upstream_status":             upstreamStatus,
+			"provider_call_budget_ledger": callLedger,
 		}, err
 	}
 	trace := map[string]any{
-		"prompt_source": promptSource,
-		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
-		"usage":         upstream["usage"],
+		"prompt_source":               promptSource,
+		"model":                       extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
+		"usage":                       upstream["usage"],
+		"provider_call_budget_ledger": callLedger,
 	}
-	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
 	if len(providerResponse) > 0 {
 		trace["provider_response"] = providerResponse
 	}
@@ -317,6 +358,8 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	content, responseTrace, responseFailure := normalizePublisherResponseContent(upstream)
 	trace["response_normalization"] = responseTrace
 	if responseFailure != "" {
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "provider_response")
+		callLedger["failure_code"] = responseFailure
 		trace["parse_status"] = responseFailure
 		bounded, proposalTrace := buildPublisherFailureResult(supervisorPack, responseFailure)
 		trace["proposal_contract"] = proposalTrace
@@ -330,6 +373,8 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		}
 		trace["parse_status"] = parseStatus
 		trace["parse_failure"] = "strict_json_rejected"
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "json_parse")
+		callLedger["failure_code"] = parseStatus
 		bounded, proposalTrace := buildPublisherFailureResult(supervisorPack, parseStatus)
 		trace["proposal_contract"] = proposalTrace
 		return bounded, trace, nil
@@ -337,6 +382,13 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	trace["parse_status"] = "parsed"
 	bounded, proposalTrace := buildBoundedSupervisorResult(parsed, supervisorPack)
 	trace["proposal_contract"] = proposalTrace
+	proposalStatus := extractionStringFromAny(mapFromAny(mapFromAny(bounded["directive"])["supervisor_scene_proposal"])["status"])
+	if proposalStatus == "publisher_schema_invalid" {
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "schema_validation")
+		callLedger["failure_code"] = proposalStatus
+	} else {
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "succeeded", "")
+	}
 	return bounded, trace, nil
 }
 

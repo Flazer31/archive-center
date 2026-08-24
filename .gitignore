@@ -70,6 +70,8 @@ release/
 deploy/
 _dist/
 _dist-*/
+_release-builds/
+_test-builds/
 _runtime-*/
 _live-test-pack/
 _2.3_build_paths.json

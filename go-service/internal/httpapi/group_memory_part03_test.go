@@ -1229,3 +1229,99 @@ func TestExplorerPatchEvidenceReviewWritesAuditAndChangedAt(t *testing.T) {
 		t.Fatalf("audit details missing history fields: %s", audit.DetailsJSON)
 	}
 }
+
+func TestExplorerPatchEvidenceTextTrimsAuditsAndQueuesVector(t *testing.T) {
+	base := &memoryFakeStore{evidenceItems: []store.DirectEvidence{{
+		ID: 9, ChatSessionID: "sess-edit", EvidenceKind: "dialogue",
+		EvidenceText: "old evidence", TurnAnchor: 4, SourceTurnStart: 4, SourceTurnEnd: 4,
+		ArchiveState: "committed", CaptureVerification: "verified",
+	}}}
+	fake := &explorerManualEditVectorStore{
+		memoryFakeStore: base,
+		sources: []store.MemorySourceRevision{{
+			ChatSessionID: "sess-edit", TurnIndex: 4,
+			SourceRevision: "revision-4", LifecycleState: "active", DerivedAdmissionState: "committed",
+		}},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/explorer/direct-evidence/9", bytes.NewReader([]byte(
+		`{"chat_session_id":"sess-edit","evidence_text":"  corrected evidence  "}`,
+	)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if got := fake.evidenceItems[0].EvidenceText; got != "corrected evidence" {
+		t.Fatalf("evidence_text = %q, want trimmed corrected evidence", got)
+	}
+	if len(fake.queued) != 1 {
+		t.Fatalf("queued vector operations = %d, want 1", len(fake.queued))
+	}
+	queued := fake.queued[0]
+	if queued.Operation != "upsert" || queued.Status != "needs_embedding" || queued.EmbeddingReady ||
+		queued.DocumentID != "evidence:sess-edit:9" || queued.SourceRevision != "revision-4" {
+		t.Fatalf("queued vector operation = %#v", queued)
+	}
+	var document vector.VectorDocument
+	if err := json.Unmarshal([]byte(queued.DocumentJSON), &document); err != nil {
+		t.Fatalf("decode vector document: %v", err)
+	}
+	if !strings.Contains(document.DocumentText, "corrected evidence") || strings.Contains(document.DocumentText, "old evidence") {
+		t.Fatalf("vector document text = %q", document.DocumentText)
+	}
+	if len(fake.auditLogs) != 1 || !strings.Contains(fake.auditLogs[0].DetailsJSON, `"evidence_text":"old evidence"`) ||
+		!strings.Contains(fake.auditLogs[0].DetailsJSON, "corrected evidence") {
+		t.Fatalf("audit does not retain previous and updated evidence text: %#v", fake.auditLogs)
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["status"] != "ok" || mapFromAny(response["vector_sync"])["queued"] != true {
+		t.Fatalf("response = %#v", response)
+	}
+	fields, _ := response["updated_fields"].([]any)
+	if len(fields) != 1 || fields[0] != "evidence_text" {
+		t.Fatalf("updated_fields = %#v", response["updated_fields"])
+	}
+}
+
+func TestExplorerPatchEvidenceTextRejectsBlankValue(t *testing.T) {
+	fake := &memoryFakeStore{evidenceItems: []store.DirectEvidence{{
+		ID: 9, ChatSessionID: "sess-edit", EvidenceText: "old evidence",
+	}}}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPatch, "/explorer/direct-evidence/9", bytes.NewReader([]byte(
+		`{"chat_session_id":"sess-edit","evidence_text":"   "}`,
+	)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.updatedEvidence) != 0 || len(fake.auditLogs) != 0 {
+		t.Fatalf("blank evidence_text mutated state: updates=%d audits=%d", len(fake.updatedEvidence), len(fake.auditLogs))
+	}
+	if got := fake.evidenceItems[0].EvidenceText; got != "old evidence" {
+		t.Fatalf("evidence_text changed to %q", got)
+	}
+}

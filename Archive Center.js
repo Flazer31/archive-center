@@ -1,5 +1,5 @@
 //@name Archive Center
-//@display-name Archive Center Pre-4.0.0
+//@display-name Archive Center 4.0.0
 //@author memory-scaffold
 //@api 3.0
 //@version 4.0.0
@@ -38,10 +38,10 @@
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "4.0.0";
-  const BUILD_ID = "Pre-4.0.0";
-  const BUILD_CHANNEL = "pre-release";
-  const BUILD_TIME = "2026-08-13 KST";
-  const BUILD_NOTES = "Archive Center Pre-4.0.0";
+  const BUILD_ID = "4.0.0";
+  const BUILD_CHANNEL = "release";
+  const BUILD_TIME = "2026-08-23 KST";
+  const BUILD_NOTES = "Archive Center 4.0.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -164,6 +164,8 @@
     auxiliaryInjectionAnchorMarker: "",
     // ── Context Injection Budget (Sprint 3-B, Phase 2-3 revised) ──
     maxInjectionChars: 9000,         // 자동 주입 기본 상한 (약 4,500 추정 토큰)
+    referenceInjectionMaxChars: 3000, // 원작 DB 참조 전용 상한
+    lorebookReferenceMaxChars: 3000,  // 활성 로어북 참조 전용 상한
     injectionBudgetProfileVersion: "p34_9000_base_v1",
     injectionBudgetExtraChars: 0,    // 자동 산정 예산 위에 허용할 추가 상한
     memoryDeliveryBudgetMode: "auto",
@@ -621,6 +623,20 @@
       "dash.preview.critic.notAttempted": "시도 안 함",
       "dash.preview.critic.notTried": "시도 안 함",
       "dash.preview.notApplied": "미적용",
+      "dash.preview.payloadBudget.title": "본문 Payload 예산",
+      "dash.preview.payloadBudget.actual": "실제 전달",
+      "dash.preview.payloadBudget.planned": "전달 예정",
+      "dash.preview.payloadBudget.configured": "설정 상한",
+      "dash.preview.payloadBudget.effective": "활성 상한",
+      "dash.preview.payloadBudget.assembly": "제목·구분자 조립 비용",
+      "dash.preview.payloadBudget.candidate": "후보",
+      "dash.preview.payloadBudget.selected": "선택",
+      "dash.preview.payloadBudget.final": "최종",
+      "dash.preview.payloadBudget.excluded": "제외",
+      "dash.preview.payloadBudget.lane.long_term_memory": "일반 기억",
+      "dash.preview.payloadBudget.lane.original_work": "원작 DB",
+      "dash.preview.payloadBudget.lane.lorebook_reference": "로어북",
+      "dash.preview.payloadBudget.lane.output_guidance": "출판사 안내",
 
       // ── Dashboard Status Rows ──
       "dash.status.plugin": "플러그인",
@@ -795,7 +811,7 @@
       "explorer.directEvidence.reviewConfirmVerified": "Direct evidence #{id} 를 검토 승인하시겠습니까?",
       "explorer.directEvidence.reviewConfirmNeedsReview": "Direct evidence #{id} 를 보류(재검토 필요) 상태로 전환하시겠습니까?",
       "explorer.directEvidence.revalidateConfirm": "Direct evidence #{id} 를 재검증 승격하시겠습니까?",
-      "explorer.directEvidence.editTooltip": "상태 필드 수정",
+      "explorer.directEvidence.editTooltip": "내용 및 상태 수정",
       "explorer.directEvidence.deleteTooltip": "삭제 처리(tombstone)",
       "explorer.directEvidence.deleteConfirm": "Direct evidence #{id} 를 삭제 처리(tombstone)하시겠습니까?\n원문 행은 감사 추적을 위해 남고, 주입/검색에서는 비활성화됩니다.",
       "explorer.directEvidence.actionFailed": "direct evidence 작업 실패",
@@ -1081,7 +1097,9 @@
       "settings.hint.auxiliaryInjectionPlacement": "Archive Center의 큰 기억 블록을 어디에 넣을지 정합니다. 기존 프롬프트 순서에 의존하는 프리셋이면 기존 방식을 사용하세요.",
       "settings.hint.injectionBudgetExtraChars": "자동 주입 예산 위로 추가 허용할 문자 수입니다. 토큰이 아니라 chars 기준이며, 관련 기억이 없으면 높은 한도를 전부 채우지 않습니다.",
       "settings.hint.primaryCanonBaseMaxChars": "0이면 비활성화합니다. 단독(primary) 원작 모드의 원작 총예산 안에서 Canon Base가 사용할 수 있는 하위 상한입니다.",
-      "settings.hint.maxInjectionChars": "보조 컨텍스트 블록(기억/세계/관계)의 전체 길이를 제한합니다. 토큰이 아니라 chars 기준이며, 자동 주입 예산에는 추정 토큰도 함께 표시됩니다.",
+      "settings.hint.maxInjectionChars": "일반 기억·세계·관계 블록의 길이를 제한합니다. 원작 DB와 로어북 예산은 포함하지 않습니다.",
+      "settings.hint.referenceInjectionMaxChars": "원작 DB 참조만 사용하는 독립 상한입니다. 기억이나 로어북의 남은 예산을 빌리지 않습니다.",
+      "settings.hint.lorebookReferenceMaxChars": "활성 로어북 참조만 사용하는 독립 상한입니다. 기억이나 원작 DB의 남은 예산을 빌리지 않습니다.",
       "settings.hint.reasoningEffort": "none이면 생략합니다. low/medium/high처럼 provider가 지원하는 값을 사용하세요.",
       "settings.hint.reasoningPreset": "auto는 모델 이름과 버전을 먼저 확인하고, 식별할 수 없으면 추론 필드를 보내지 않습니다.",
       "settings.label.auxiliaryInjectionAnchorMarker": "기억 앵커 마커",
@@ -1099,7 +1117,9 @@
       "settings.label.primaryCanonBaseMaxChars": "단독 모드 Canon Base 예산 (chars)",
       "settings.label.llmRetryCount": "LLM 재시도 횟수",
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
-      "settings.label.maxInjectionChars": "보조 컨텍스트 길이 제한 (chars)",
+      "settings.label.maxInjectionChars": "일반 기억 예산 (chars)",
+      "settings.label.referenceInjectionMaxChars": "원작 DB 예산 (chars)",
+      "settings.label.lorebookReferenceMaxChars": "로어북 예산 (chars)",
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
       "settings.label.narrativeGuideMode.help": "Auto는 본문 키워드로 장르를 추정하지 않고 Standard로 동작합니다. 특정 장르 모드는 사용자가 직접 선택할 때만 적용됩니다.",
       "settings.label.narrativeGuideStrength": "서사 가이드 강도",
@@ -1490,8 +1510,12 @@
       "settings.label.coreObjectiveMemoryMaxItems.hint": "Maximum objective event summaries delivered after relevance, entity coverage, and deduplication. Direct evidence, secret guards, states, subjective memories, and hierarchy support do not consume this count, but all remain inside the character budget.",
       "settings.label.llmRetryCount": "LLM Retry Count",
       "settings.label.llmRetryCount.hint": "0 = no retry (1 attempt only), 3 = 3 additional attempts on failure",
-      "settings.label.maxInjectionChars": "Helper Context Length Limit (chars)",
-      "settings.hint.maxInjectionChars": "Character limit, not token limit. Estimated tokens are shown in the auto injection budget preview.",
+      "settings.label.maxInjectionChars": "Memory Context Budget (chars)",
+      "settings.hint.maxInjectionChars": "Independent limit for memory, world, and relationship context. Original-work and lorebook budgets are excluded.",
+      "settings.label.referenceInjectionMaxChars": "Original-work DB Budget (chars)",
+      "settings.hint.referenceInjectionMaxChars": "Independent original-work reference limit. It does not borrow unused memory or lorebook capacity.",
+      "settings.label.lorebookReferenceMaxChars": "Lorebook Budget (chars)",
+      "settings.hint.lorebookReferenceMaxChars": "Independent active-lorebook reference limit. It does not borrow unused memory or original-work capacity.",
       "settings.label.injectionBudgetExtraChars": "Additional Memory Budget Ceiling (chars)",
       "settings.hint.injectionBudgetExtraChars": "Extra characters allowed above the automatic injection budget. This is a character limit, not a token limit. A higher ceiling is not filled unless relevant memory exists.",
       "settings.label.primaryCanonBaseMaxChars": "Primary-mode Canon Base budget (chars)",
@@ -1938,6 +1962,20 @@
       "dash.preview.critic.notAttempted": "Not attempted",
       "dash.preview.critic.notTried": "Not attempted",
       "dash.preview.notApplied": "Not applied",
+      "dash.preview.payloadBudget.title": "Main-model Payload Budget",
+      "dash.preview.payloadBudget.actual": "Delivered",
+      "dash.preview.payloadBudget.planned": "Planned delivery",
+      "dash.preview.payloadBudget.configured": "Configured cap",
+      "dash.preview.payloadBudget.effective": "Effective cap",
+      "dash.preview.payloadBudget.assembly": "Title and separator assembly",
+      "dash.preview.payloadBudget.candidate": "Candidate",
+      "dash.preview.payloadBudget.selected": "Selected",
+      "dash.preview.payloadBudget.final": "Final",
+      "dash.preview.payloadBudget.excluded": "Excluded",
+      "dash.preview.payloadBudget.lane.long_term_memory": "Memory",
+      "dash.preview.payloadBudget.lane.original_work": "Original-work DB",
+      "dash.preview.payloadBudget.lane.lorebook_reference": "Lorebook",
+      "dash.preview.payloadBudget.lane.output_guidance": "Publisher guidance",
 
       // ── Dashboard Status Rows ──
       "dash.status.plugin": "Plugin",
@@ -2112,7 +2150,7 @@
       "explorer.directEvidence.reviewConfirmVerified": "Approve direct evidence #{id}?",
       "explorer.directEvidence.reviewConfirmNeedsReview": "Move direct evidence #{id} to needs_review/repair_queue?",
       "explorer.directEvidence.revalidateConfirm": "Revalidate and promote direct evidence #{id}?",
-      "explorer.directEvidence.editTooltip": "Edit state fields",
+      "explorer.directEvidence.editTooltip": "Edit content and state",
       "explorer.directEvidence.deleteTooltip": "Delete as tombstone",
       "explorer.directEvidence.deleteConfirm": "Tombstone direct evidence #{id}?\nThe raw row remains for audit tracking, but it is disabled for injection/search.",
       "explorer.directEvidence.actionFailed": "Direct evidence action failed",
@@ -2631,8 +2669,12 @@
       "settings.label.coreObjectiveMemoryMaxItems.hint": "関連度・人物coverage・重複除去の後に本文へ渡す客観的事件要約の最大数です。直接根拠、秘密guard、状態、主観記憶、階層supportはこの数を消費しませんが、全体の文字予算には従います。",
       "settings.label.llmRetryCount": "LLMリトライ回数",
       "settings.label.llmRetryCount.hint": "0 = リトライなし（1回のみ）、3 = 失敗時3回追加試行",
-      "settings.label.maxInjectionChars": "補助情報の長さ上限（chars）",
-      "settings.hint.maxInjectionChars": "トークン数ではなく文字数の上限です。自動注入予算には推定トークンも表示します。",
+      "settings.label.maxInjectionChars": "一般記憶予算（chars）",
+      "settings.hint.maxInjectionChars": "記憶・世界・関係コンテキスト専用の上限です。原作DBとロアブックの予算は含みません。",
+      "settings.label.referenceInjectionMaxChars": "原作DB予算（chars）",
+      "settings.hint.referenceInjectionMaxChars": "原作参照専用の独立上限です。記憶やロアブックの未使用分を借用しません。",
+      "settings.label.lorebookReferenceMaxChars": "ロアブック予算（chars）",
+      "settings.hint.lorebookReferenceMaxChars": "有効なロアブック参照専用の独立上限です。記憶や原作DBの未使用分を借用しません。",
       "settings.label.injectionBudgetExtraChars": "追加記憶予算の上限（chars）",
       "settings.hint.injectionBudgetExtraChars": "自動注入予算の上に許可する追加文字数です。トークン数ではなく文字数です。関連する記憶がなければ無理に埋めません。",
       "settings.label.primaryCanonBaseMaxChars": "単独モード Canon Base 予算（chars）",
@@ -3045,6 +3087,20 @@
       "dash.preview.critic.notAttempted": "未試行",
       "dash.preview.critic.notTried": "未試行",
       "dash.preview.notApplied": "未適用",
+      "dash.preview.payloadBudget.title": "本文Payload予算",
+      "dash.preview.payloadBudget.actual": "実際の配信",
+      "dash.preview.payloadBudget.planned": "配信予定",
+      "dash.preview.payloadBudget.configured": "設定上限",
+      "dash.preview.payloadBudget.effective": "有効上限",
+      "dash.preview.payloadBudget.assembly": "タイトル・区切り組み立て費用",
+      "dash.preview.payloadBudget.candidate": "候補",
+      "dash.preview.payloadBudget.selected": "選択",
+      "dash.preview.payloadBudget.final": "最終",
+      "dash.preview.payloadBudget.excluded": "除外",
+      "dash.preview.payloadBudget.lane.long_term_memory": "一般記憶",
+      "dash.preview.payloadBudget.lane.original_work": "原作DB",
+      "dash.preview.payloadBudget.lane.lorebook_reference": "ロアブック",
+      "dash.preview.payloadBudget.lane.output_guidance": "パブリッシャー案内",
 
       // ── Dashboard Status Rows ──
       "dash.status.plugin": "プラグイン",
@@ -3219,7 +3275,7 @@
       "explorer.directEvidence.reviewConfirmVerified": "Direct evidence #{id} をレビュー承認しますか？",
       "explorer.directEvidence.reviewConfirmNeedsReview": "Direct evidence #{id} を needs_review/repair_queue に移動しますか？",
       "explorer.directEvidence.revalidateConfirm": "Direct evidence #{id} を再検証して昇格しますか？",
-      "explorer.directEvidence.editTooltip": "状態フィールドを編集",
+      "explorer.directEvidence.editTooltip": "内容と状態を編集",
       "explorer.directEvidence.deleteTooltip": "削除扱い(tombstone)",
       "explorer.directEvidence.deleteConfirm": "Direct evidence #{id} を tombstone 扱いにしますか？\n監査追跡のため原文行は残り、注入/検索では無効化されます。",
       "explorer.directEvidence.actionFailed": "direct evidence 操作に失敗しました",
@@ -11155,6 +11211,8 @@
     merged.requestTimeoutMs = getRequestTimeoutSettingMs(merged.requestTimeoutMs);
     // Sprint 3-B: injection budget
     merged.maxInjectionChars = Math.max(0, Math.floor(Number(merged.maxInjectionChars) || DEFAULT_SETTINGS.maxInjectionChars));
+    merged.referenceInjectionMaxChars = sanitizeNumber(merged.referenceInjectionMaxChars, DEFAULT_SETTINGS.referenceInjectionMaxChars, 0, 30000);
+    merged.lorebookReferenceMaxChars = sanitizeNumber(merged.lorebookReferenceMaxChars, DEFAULT_SETTINGS.lorebookReferenceMaxChars, 0, 30000);
     merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, 0, 0, 15000);
     merged.memoryDeliveryBudgetMode = String(merged.memoryDeliveryBudgetMode || "auto") === "custom" ? "custom" : "auto";
     const rawMemoryDeliveryBudgets = merged.memoryDeliveryBudgets && typeof merged.memoryDeliveryBudgets === "object"
@@ -15460,7 +15518,8 @@
           max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars,
           memory_delivery_budget_mode: settings.memoryDeliveryBudgetMode || "auto",
           memory_delivery_budgets: { ...(settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets) },
-          reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,
+          reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),
+          lorebook_reference_max_chars: Number(settings.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars),
           reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
           reference_injection_enabled: settings.injectionEnabled !== false,
           lorebook_reference_mode: settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode,
@@ -15605,6 +15664,7 @@
           recallResult:       result.recall_result        || null,
           // M-2c: supervisor input pack (persistent guidance + guide/initiative + momentum)
           supervisorInputPack: result.supervisor_input_pack || null,
+          publisherCallBudgetLedger: result.publisher_call_budget_ledger || null,
           // M-3a: injection pack (recall 결과에서 텍스트 블록 조립 — LLM 없음)
           // memory_text / kg_text / episode_text / fallback_text (조건부)
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
@@ -15614,6 +15674,7 @@
           supervisorResult:   result.supervisor_result    || null,
           memoryBudgetResolution: result.memory_budget_resolution || null,
           referenceInjection: result.reference_injection  || null,
+          lorebookReference: result.lorebook_reference || (result.injection_pack && result.injection_pack.lorebook_reference_recall) || null,
           inputTransparencyModel: result.input_transparency_model || null,
           effectiveInputPreview:  result.effective_input_preview  || null,
           responseExecutionContract: result.response_execution_contract || null,
@@ -20670,6 +20731,8 @@
       complete: { status: "pending" },
       critic: { memoryAttempted: false, memorySaved: false, kgAttempted: false, kgSaved: false, detail: "" },
       languageContext: null,
+      lorebookReference: null,
+      providerCallBudgetLedgers: { publisher: null, critic: null },
       responseExecutionContract: { status: "pending", active: false, sourceRefCount: 0, protectedLaneActive: false },
       momentum: { status: "pending", applied: false, packetStatus: null },
       // Sprint 2-D: Input Transparency 데이터
@@ -21986,6 +22049,88 @@
     } catch { return '<div class="mo-note">trace render error</div>'; }
   }
 
+  function renderLorebookSelectionDiagnostics() {
+    try {
+      const lorebook = lastTurnTrace && lastTurnTrace.lorebookReference;
+      if (!lorebook || lorebook.selection_observation_contract !== "lorebook_selection_observation.v1") {
+        return '<div class="mo-note">No lorebook selection observation for the latest turn.</div>';
+      }
+      const row = (label, detail) =>
+        '<div class="mo-dash-row"><span class="mo-dot ' + statusDotClass("ok") + '"></span><span class="mo-dash-label">' + escapeAttr(label) + '</span><span class="mo-dash-value">' + escapeAttr(detail) + '</span></div>';
+      const dispositions = lorebook.final_disposition_counts && typeof lorebook.final_disposition_counts === "object"
+        ? Object.entries(lorebook.final_disposition_counts).filter(function(entry) { return Number(entry[1] || 0) > 0; })
+          .map(function(entry) { return String(entry[0]) + ":" + String(entry[1]); }).join(", ")
+        : "";
+      const rows = [
+        row("Catalog → candidate → selected → delivered", String(lorebook.catalog_count || 0) + " → " + String(lorebook.candidate_count || 0) + " → " + String(lorebook.selected_count || 0) + " → " + String(lorebook.delivery_count || 0)),
+        row("Context match", "key " + String(lorebook.key_matched_candidate_count || 0) + " · key/token " + String(lorebook.context_matched_candidate_count || 0)),
+        row("Supplement decision", "already present " + String(lorebook.already_present_count || 0) + " · no context match " + String(lorebook.no_context_match_count || 0) + " · same content " + String(lorebook.coalesced_content_count || 0)),
+        row("Always Active", "candidate " + String(lorebook.always_active_candidate_count || 0) + " · delivered " + String(lorebook.always_active_delivery_count || 0)),
+        row("Final dispositions", dispositions || "none"),
+        row("Budget", String(lorebook.delivery_chars || 0) + " / " + String(lorebook.budget_chars || 0) + " chars · budget deferred " + String(lorebook.budget_deferred_count || 0)),
+      ];
+      const candidates = Array.isArray(lorebook.candidate_refs) ? lorebook.candidate_refs : [];
+      const visibleCandidates = candidates.filter(function(candidate) {
+        return candidate && typeof candidate === "object";
+      }).slice(0, 60);
+      visibleCandidates.forEach(function(candidate) {
+        const details = [];
+        if (candidate.always_active) details.push("always active");
+        if (Array.isArray(candidate.matched_keys) && candidate.matched_keys.length > 0) details.push("key=" + candidate.matched_keys.join(","));
+        if (Number(candidate.context_overlap || 0) > 0) details.push("overlap=" + String(candidate.context_overlap));
+        if (candidate.observed_source) details.push("present=" + String(candidate.observed_source));
+        details.push(String(candidate.final_disposition || "candidate"));
+        rows.push(row(
+          "Entry " + String(candidate.entry_ref || "?"),
+          details.join(" · ")
+        ));
+      });
+      if (visibleCandidates.length < candidates.length) {
+        rows.push(row("Entry detail", String(candidates.length - visibleCandidates.length) + " entries omitted from DOM"));
+      }
+      return rows.join("");
+    } catch {
+      return '<div class="mo-note">lorebook selection observation render error</div>';
+    }
+  }
+
+  function renderProviderCallBudgetLedgers() {
+    try {
+      const ledgers = lastTurnTrace && lastTurnTrace.providerCallBudgetLedgers;
+      if (!ledgers || typeof ledgers !== "object") {
+        return '<div class="mo-note">No Publisher or Critic call ledger for the latest turn.</div>';
+      }
+      const row = (label, status, detail) =>
+        '<div class="mo-dash-row"><span class="mo-dot ' + statusDotClass(status) + '"></span><span class="mo-dash-label">' + escapeAttr(label) + '</span><span class="mo-dash-value">' + escapeAttr(detail) + '</span></div>';
+      const rows = [];
+      ["publisher", "critic"].forEach(function(kind) {
+        const ledger = ledgers[kind];
+        if (!ledger || ledger.contract_version !== "provider_call_budget_ledger.v1" || ledger.owner !== "go") return;
+        const status = ledger.status === "succeeded" ? "ok" : (ledger.status === "prepared" ? "skipped" : "fail");
+        rows.push(row(kind === "publisher" ? "Publisher call" : "Critic call", status,
+          "prompt " + String(ledger.final_prompt_chars || 0) + " chars · stage " + String(ledger.failure_stage || "complete")
+          + (ledger.failure_code ? " · " + String(ledger.failure_code) : "") + " · HTTP " + String(ledger.http_status || "—")));
+        rows.push(row(kind + " prompt lanes", "ok",
+          "system " + String(ledger.system_prompt_chars || 0)
+          + " · turn " + String(ledger.current_turn_chars || 0)
+          + " · memory " + String(ledger.auxiliary_memory_chars || 0)
+          + " · original " + String(ledger.original_work_reference_chars || 0) + "(" + String(ledger.original_work_reference_status || "unknown") + ")"
+          + " · lorebook " + String(ledger.lorebook_reference_chars || 0) + "(" + String(ledger.lorebook_reference_status || "unknown") + ")"
+          + " · JSON " + String(ledger.json_schema_output_requirement_chars || 0) + "(" + String(ledger.json_schema_output_requirement_accounting || "unknown") + ")"
+          + " · assembly " + String(ledger.assembly_chars || 0)));
+        const usage = ledger.provider_usage_status === "reported"
+          ? "input " + String(ledger.input_tokens || 0) + " · output " + String(ledger.output_tokens || 0)
+            + " · reasoning " + String(ledger.reasoning_tokens || 0) + " · cached " + String(ledger.cached_input_tokens || 0)
+            + " · total " + String(ledger.total_tokens || 0)
+          : "provider did not report token usage";
+        rows.push(row(kind + " provider tokens", ledger.provider_usage_status === "reported" ? "ok" : "skipped", usage));
+      });
+      return rows.length > 0 ? rows.join("") : '<div class="mo-note">No Publisher or Critic call was made for the latest turn.</div>';
+    } catch {
+      return '<div class="mo-note">provider call ledger render error</div>';
+    }
+  }
+
   // E-6: Activity Snapshot 렌더링
   function renderActivitySection() {
     try {
@@ -22652,13 +22797,51 @@
       if (protectionText) {
         parts.push(renderItBlock("Priority and Base Rules", protectionText, false));
       }
+      const payloadBudgetLedger = payloadPlan && payloadPlan.budget_ledger && typeof payloadPlan.budget_ledger === "object"
+        && payloadPlan.budget_ledger.contract_version === "payload_budget_ledger.v1"
+        && payloadPlan.budget_ledger.owner === "go"
+        ? payloadPlan.budget_ledger
+        : null;
+      if (payloadBudgetLedger) {
+        const payloadApplicationObservation = injectionPreview && injectionPreview.payloadApplicationObservation
+          && typeof injectionPreview.payloadApplicationObservation === "object"
+          ? injectionPreview.payloadApplicationObservation
+          : null;
+        const payloadDeliveryLabel = payloadApplicationObservation
+          && payloadApplicationObservation.contract_version === "payload_application_observation.v1"
+          && payloadApplicationObservation.status === "ready"
+          && (payloadApplicationObservation.payload_application_status === "applied"
+            || payloadApplicationObservation.payload_application_status === "empty")
+          ? t('dash.preview.payloadBudget.actual')
+          : t('dash.preview.payloadBudget.planned');
+        const ledgerLines = [
+          payloadDeliveryLabel + " " + String(payloadBudgetLedger.final_delivery_chars ?? 0)
+            + " / " + t('dash.preview.payloadBudget.configured') + " " + String(payloadBudgetLedger.configured_cap_chars ?? 0) + " chars"
+            + " · " + t('dash.preview.payloadBudget.effective') + " " + String(payloadBudgetLedger.effective_cap_chars ?? 0) + " chars",
+        ];
+        const ledgerLanes = Array.isArray(payloadBudgetLedger.lanes) ? payloadBudgetLedger.lanes : [];
+        ledgerLanes.forEach(function(lane) {
+          if (!lane || typeof lane !== "object") return;
+          const key = String(lane.key || "");
+          const labelKey = "dash.preview.payloadBudget.lane." + key;
+          const label = t(labelKey) === labelKey ? String(lane.title || key || "Payload lane") : t(labelKey);
+          const reasons = lane.exclusion_reasons && typeof lane.exclusion_reasons === "object"
+            ? Object.entries(lane.exclusion_reasons).filter(function(entry) { return Number(entry[1] || 0) > 0; })
+              .map(function(entry) { return String(entry[0]) + "=" + String(entry[1]); }).join(", ")
+            : "";
+          ledgerLines.push(
+            label + " " + String(lane.final_delivery_chars ?? 0) + " / " + String(lane.configured_cap_chars ?? 0) + " chars"
+              + " · " + t('dash.preview.payloadBudget.candidate') + " " + String(lane.candidate_chars ?? 0)
+              + " → " + t('dash.preview.payloadBudget.selected') + " " + String(lane.selected_chars ?? 0)
+              + " → " + t('dash.preview.payloadBudget.final') + " " + String(lane.final_delivery_chars ?? 0)
+              + " · " + t('dash.preview.payloadBudget.excluded') + " " + String(lane.excluded_count ?? 0)
+              + (reasons ? " [" + reasons + "]" : "")
+          );
+        });
+        ledgerLines.push(t('dash.preview.payloadBudget.assembly') + " " + String(payloadBudgetLedger.assembly_chars ?? 0) + " chars");
+        parts.push(renderItBlock(t('dash.preview.payloadBudget.title'), ledgerLines.join("\n"), false));
+      }
       if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes)) {
-        const totalUsed = Math.max(0, Number(memoryDeliveryPlan.used_chars || 0));
-        const totalAllocated = Math.max(0, Number(memoryDeliveryPlan.delivery_cap_chars || memoryDeliveryPlan.global_cap_chars || 0));
-        const globalCap = Math.max(0, Number(memoryDeliveryPlan.global_cap_chars || totalAllocated));
-        const totalUsageText = "사용 " + totalUsed + " / 할당 " + totalAllocated + " chars"
-          + (globalCap > totalAllocated ? " · 전체 주입 상한 " + globalCap + " chars" : "");
-        parts.push(renderItBlock("Auxiliary Context Budget", totalUsageText, false));
 		memoryDeliveryPlan.classes.forEach(function(deliveryClass) {
 		  const classTextLines = String(deliveryClass && deliveryClass.text || "").trim().split("\n");
 		  if (classTextLines.length && /^\[[^\]]+\]$/.test(classTextLines[0].trim())) classTextLines.shift();
@@ -28956,6 +29139,8 @@
         meta: orchestrationOptions.freshFirstTurnLightModeMeta || null,
       };
       trace.responseExecutionContract = normalizeResponseExecutionContractTrace(preparedBundle && preparedBundle.responseExecutionContract);
+      trace.lorebookReference = preparedBundle && preparedBundle.lorebookReference || null;
+      trace.providerCallBudgetLedgers.publisher = preparedBundle && preparedBundle.publisherCallBudgetLedger || null;
       applyOrchestrationModuleTransportTraceOr1e(trace, buildOrchestrationModuleTransportStateOr1e({
         prepareTurnSource: _lastPrepareTurnSource,
         preparedBundle: preparedBundle,
@@ -31381,13 +31566,18 @@
       const outputGuidanceLane = laneByKey.output_guidance && typeof laneByKey.output_guidance === "object"
         ? laneByKey.output_guidance
         : null;
+      const payloadBudgetLedger = plan.budget_ledger && typeof plan.budget_ledger === "object"
+        && plan.budget_ledger.contract_version === "payload_budget_ledger.v1"
+        && plan.budget_ledger.owner === "go"
+        ? plan.budget_ledger
+        : null;
       const result = {
         ...emptyResult,
         status: injected ? "applied" : "empty",
         applied: injected,
         injectionTextSource: "go_payload_application_plan.v1",
-        totalChars: Number(plan.auxiliary_chars || auxiliaryText.length),
-        budgetLimit: lanes.reduce(function(total, lane) { return total + Number(lane && lane.budget_chars || 0); }, 0),
+        totalChars: Number(payloadBudgetLedger ? payloadBudgetLedger.final_delivery_chars : (plan.auxiliary_chars || 0)),
+        budgetLimit: Number(payloadBudgetLedger ? payloadBudgetLedger.configured_cap_chars : 0),
         auxiliaryPreview: auxiliaryText.slice(0, 500),
         mainInjectionPreview: String(longTermMemoryLane && longTermMemoryLane.text || ""),
         referenceInjectionPreview: String(originalWorkLane && originalWorkLane.text || ""),
@@ -34463,6 +34653,16 @@
         trace.save = { status: runtimeState.lastSaveStatus?.status || "unknown" };
         trace.complete = { status: runtimeState.lastCompleteStatus?.status || "unknown" };
         trace.critic = extractCriticSummary(completeResult);
+        const criticCallBudgetLedger = _ctResult
+          && _ctResult.trace_handoff
+          && _ctResult.trace_handoff.critic_trace
+          && _ctResult.trace_handoff.critic_trace.provider_call_budget_ledger
+          && typeof _ctResult.trace_handoff.critic_trace.provider_call_budget_ledger === "object"
+          ? _ctResult.trace_handoff.critic_trace.provider_call_budget_ledger
+          : null;
+        trace.providerCallBudgetLedgers = Object.assign({}, trace.providerCallBudgetLedgers || {}, {
+          critic: criticCallBudgetLedger,
+        });
         // Phase 3-2: episode trace
         trace.episode = {
           checked: episodeInfo.checked,
@@ -38691,7 +38891,7 @@
     }
   }
 
-  /** Direct Evidence 상태 필드 수정 PATCH 호출 */
+  /** Direct Evidence 내용 및 상태 필드 수정 PATCH 호출 */
   async function explorerPatchDirectEvidence(recordId) {
     const sid = explorerSessionId();
     if (!sid) {
@@ -38706,6 +38906,7 @@
     try {
       const fields = _explorer.editFields || {};
       const body = { chat_session_id: sid };
+      if (fields.evidence_text !== undefined) body.evidence_text = String(fields.evidence_text || "").trim();
       if (fields.archive_state !== undefined) body.archive_state = String(fields.archive_state || "").trim();
       if (fields.capture_verification !== undefined) body.capture_verification = String(fields.capture_verification || "").trim();
       if (fields.committed_gate !== undefined) body.committed_gate = String(fields.committed_gate || "").trim();
@@ -38721,8 +38922,11 @@
         body,
         timeoutMs: getRequestTimeoutSettingMs(),
       });
-      if (result && result.status === "ok") {
+      if (result && (result.status === "ok" || result.status === "partial_error")) {
         _explorer.editStatus = "success";
+        if (result.status === "partial_error") {
+          debugLog("DirectEvidence #" + recordId + " was updated with a vector-sync warning:", result.vector_sync || result);
+        }
         explorerCancelEdit();
         await explorerLoadTab("direct_evidence", true);
         await refreshExplorerUI();
@@ -41075,6 +41279,10 @@
           ? '<span class="mo-ed-status mo-ed-error">❌ ' + escapeAttr(_explorer.editError) + '</span>'
           : '';
         body = '<div class="mo-ed-form" data-edit-type="de" data-edit-id="' + item.id + '">' +
+          '<div class="mo-ed-field">' +
+            '<label>evidence_text</label>' +
+            '<textarea class="mo-ed-textarea" data-field="evidence_text" rows="6">' + escapeAttr(ef.evidence_text || "") + '</textarea>' +
+          '</div>' +
           '<div class="mo-ed-row">' +
             '<div class="mo-ed-field mo-ed-field-sm"><label>archive_state</label><input type="text" class="mo-ed-input" data-field="archive_state" value="' + escapeAttr(ef.archive_state || "") + '"></div>' +
             '<div class="mo-ed-field mo-ed-field-sm"><label>capture_verification</label><input type="text" class="mo-ed-input" data-field="capture_verification" value="' + escapeAttr(ef.capture_verification || "") + '"></div>' +
@@ -43733,6 +43941,7 @@
             const item = _explorer.directEvidence.items.find(i => i.id === id);
             if (item) {
               explorerStartEdit("de", id, {
+                evidence_text: item.evidence_text || "",
                 archive_state: item.archive_state || item.normalized_archive_state || "",
                 capture_verification: item.capture_verification || item.normalized_capture_verification || "",
                 committed_gate: item.committed_gate || item.normalized_committed_gate || "",
@@ -44757,7 +44966,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-memory-workspace .mo-ex-item-preview{font-size:12px;line-height:1.6;color:#8B909A}
 .mo-memory-workspace .mo-ex-item-full{max-height:none;overflow:visible;font-size:12px;line-height:1.65}
 .mo-memory-workspace .mo-ent-card,.mo-memory-workspace .mo-trust-group,.mo-memory-workspace .mo-world-rule-group{background:transparent;border:0;border-bottom:1px solid rgba(255,255,255,.07);border-radius:0;box-shadow:none;padding:14px 4px;margin:0}
-.mo-memory-workspace .mo-ed-edit-btn{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 9px;border:1px solid rgba(255,255,255,.10);border-radius:8px;color:#F4F5F7;font-size:10px;font-weight:650;cursor:pointer}
+.mo-memory-workspace .mo-ed-edit-btn{display:inline-flex;align-items:center;justify-content:center;min-height:28px;padding:4px 9px;background:#181C24;border:1px solid rgba(255,255,255,.10);border-radius:8px;color:#F4F5F7;font:inherit;font-size:10px;font-weight:650;line-height:1.2;white-space:nowrap;appearance:none;-webkit-appearance:none;cursor:pointer}
 .mo-memory-workspace .mo-ed-edit-btn:hover{background:#181C24;border-color:rgba(255,255,255,.18)}
 /* I-3c: Trust tab */
 .mo-trust-tab{display:flex;flex-direction:column;gap:6px}
@@ -46442,6 +46651,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       };
     } else if (type === "de") {
       _timelineEditState.fields = {
+        evidence_text: item.evidence_text || item.preview || "",
         archive_state: item.archive_state || item.normalized_archive_state || "",
         capture_verification: item.capture_verification || item.normalized_capture_verification || "",
         committed_gate: item.committed_gate || item.normalized_committed_gate || "",
@@ -46514,6 +46724,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         item.title = line;
         item.preview = line;
       } else if (type === "de" && (rawType === "direct_evidence" || rawType === "evidence")) {
+        item.evidence_text = fields.evidence_text;
+        item.preview = fields.evidence_text;
         item.archive_state = fields.archive_state;
         item.normalized_archive_state = fields.archive_state;
         item.capture_verification = fields.capture_verification;
@@ -46570,6 +46782,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       body.valid_to = fields.valid_to === "" || fields.valid_to == null ? null : Number(fields.valid_to);
     } else if (type === "de") {
       path = "/explorer/direct-evidence/" + encodeURIComponent(id);
+      body.evidence_text = String(fields.evidence_text || "").trim();
       body.archive_state = String(fields.archive_state || "").trim();
       body.capture_verification = String(fields.capture_verification || "").trim();
       body.committed_gate = String(fields.committed_gate || "").trim();
@@ -46586,8 +46799,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     refreshTimelineUI();
     try {
       const result = await bridgeFetch(path, { method: "PATCH", body, timeoutMs: getRequestTimeoutSettingMs() });
-      if (!result || result.status !== "ok") {
+      if (!result || (result.status !== "ok" && result.status !== "partial_error")) {
         throw new Error((result && result.detail) || t("explorer.edit.patchFailed"));
+      }
+      if (result.status === "partial_error") {
+        debugLog("Timeline direct evidence #" + id + " was updated with a vector-sync warning:", result.vector_sync || result);
       }
       _timelineEditState.status = "success";
       _timelineEditState.error = "";
@@ -47380,7 +47596,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           '<div class="mo-ed-field mo-ed-field-sm"><label>valid_to</label><input type="number" class="mo-ed-input" data-timeline-edit-field="valid_to" value="' + escapeAttr(String(fields.valid_to ?? "")) + '"></div>' +
         '</div>';
     } else if (type === "de") {
-      body = '<div class="mo-ed-row">' +
+      body = '<div class="mo-ed-field">' +
+          '<label>evidence_text</label>' +
+          '<textarea class="mo-ed-textarea" data-timeline-edit-field="evidence_text" rows="8">' + escapeAttr(fields.evidence_text || "") + '</textarea>' +
+        '</div>' +
+        '<div class="mo-ed-row">' +
           '<div class="mo-ed-field mo-ed-field-sm"><label>archive_state</label><input type="text" class="mo-ed-input" data-timeline-edit-field="archive_state" value="' + escapeAttr(fields.archive_state || "") + '"></div>' +
           '<div class="mo-ed-field mo-ed-field-sm"><label>capture_verification</label><input type="text" class="mo-ed-input" data-timeline-edit-field="capture_verification" value="' + escapeAttr(fields.capture_verification || "") + '"></div>' +
         '</div>' +
@@ -49840,6 +50060,16 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <small>${t('settings.hint.injectionBudgetExtraChars')}</small>
         </div>
         <div class="mo-row mo-range-row">
+          <label>${t('settings.label.referenceInjectionMaxChars')}</label>
+          <input type="number" id="mo-referenceInjectionMaxChars" value="${s.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars}" min="0" max="30000" step="500">
+          <small>${t('settings.hint.referenceInjectionMaxChars')}</small>
+        </div>
+        <div class="mo-row mo-range-row">
+          <label>${t('settings.label.lorebookReferenceMaxChars')}</label>
+          <input type="number" id="mo-lorebookReferenceMaxChars" value="${s.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars}" min="0" max="30000" step="500">
+          <small>${t('settings.hint.lorebookReferenceMaxChars')}</small>
+        </div>
+        <div class="mo-row mo-range-row">
           <label>${t('settings.label.primaryCanonBaseMaxChars')}</label>
           <input type="number" id="mo-primaryCanonBaseMaxChars" value="${s.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars}" min="0" max="30000" step="500">
           <small>${t('settings.hint.primaryCanonBaseMaxChars')}</small>
@@ -49985,6 +50215,18 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         <div class="mo-section-desc">Reads the current session ledger debug surface without saving, vector writes, or LLM calls.</div>
         <div class="mo-dash" id="mo-critic-ledger-probe-root">
           ${renderCriticLedgerProbeDebugSection()}
+        </div>
+
+        <div class="mo-section">Lorebook Selection</div>
+        <div class="mo-section-desc">Backend-observed activation keys, Always Active counts, native-request duplicate suppression, and final delivery dispositions.</div>
+        <div class="mo-dash">
+          ${renderLorebookSelectionDiagnostics()}
+        </div>
+
+        <div class="mo-section">Publisher / Critic Call Budgets</div>
+        <div class="mo-section-desc">Per-call prompt chars and provider-reported token usage. Unreported tokens are not estimated.</div>
+        <div class="mo-dash">
+          ${renderProviderCallBudgetLedgers()}
         </div>
 
         <!-- ▸ Last Turn Trace (E2E) -->
@@ -51014,6 +51256,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
               : "search_only",
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
+            referenceInjectionMaxChars: readValue("mo-referenceInjectionMaxChars", settings.referenceInjectionMaxChars),
+            lorebookReferenceMaxChars: readValue("mo-lorebookReferenceMaxChars", settings.lorebookReferenceMaxChars),
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
             memoryDeliveryBudgets: {
               event_recent: readValue("mo-memoryBudgetEventRecent", settings.memoryDeliveryBudgets.event_recent),

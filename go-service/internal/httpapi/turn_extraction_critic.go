@@ -519,6 +519,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, languageContext, criticArchiveLedgerPromptInput)
 	contextMessagesJSON, _ := json.Marshal(criticContextMessages)
 	archiveLedgerJSON, _ := json.Marshal(criticArchiveLedgerPromptInput)
+	languageContextJSON, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
 	inputBudgetTrace := map[string]any{
 		"contract_version":             completeTurnCriticInputBudgetObservationContract,
 		"user_input_chars":             len([]rune(criticUserInput)),
@@ -532,6 +533,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		"user_prompt_chars":            len([]rune(userPrompt)),
 		"final_prompt_chars":           len([]rune(systemPrompt)) + len([]rune(userPrompt)),
 	}
+	callLedger := newProviderCallBudgetLedger("critic", systemPrompt, userPrompt, providerCallBudgetComponents{
+		CurrentTurnChars:                      len([]rune(criticUserInput)) + len([]rune(criticAssistantContent)),
+		AuxiliaryMemoryChars:                  providerCallJSONComponentChars(criticContextMessages) + providerCallJSONComponentChars(criticArchiveLedgerPromptInput),
+		OriginalWorkReferenceStatus:           "not_in_call_contract",
+		LorebookReferenceStatus:               "not_in_call_contract",
+		LanguageContextChars:                  len([]rune(string(languageContextJSON))),
+		JSONSchemaOutputRequirementAccounting: "embedded_in_system_prompt_not_separable",
+	})
 	providerResponse := map[string]any{}
 	outputObservation := map[string]any{}
 	attachInputBudgetTrace := func(trace map[string]any) map[string]any {
@@ -539,6 +548,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			trace = map[string]any{}
 		}
 		trace["input_budget"] = inputBudgetTrace
+		trace["provider_call_budget_ledger"] = callLedger
 		trace["context_selection"] = contextSelectionTrace
 		trace["critic_archive_ledger"] = criticArchiveLedgerTrace
 		trace["active_world_rule_contract"] = activeWorldRuleTrace
@@ -591,6 +601,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	providerResponse = mapFromAny(upstream[proxyResponseMetadataKey])
 	if err != nil {
 		providerErr := classifyCriticProviderError(err, upstreamStatus)
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed", providerErr.Stage)
+		callLedger["failure_code"] = providerErr.Code
 		firstFailureTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, providerErr, "")
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			firstFailureTrace["request_overrides"] = requestOverrides
@@ -605,6 +617,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	}
 	if strings.TrimSpace(content) == "" {
 		emptyErr := newCriticPipelineError("CRITIC_EMPTY_RESPONSE", "provider_response", true, upstreamStatus, errors.New("critic provider returned no assistant content"))
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed", "provider_response")
+		callLedger["failure_code"] = emptyErr.Code
 		trace := criticFailureTrace(promptSource, cfg, upstreamStatus, emptyErr, "")
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			trace["request_overrides"] = requestOverrides
@@ -620,6 +634,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			code = "CRITIC_JSON_TRUNCATED"
 		}
 		parseErr := newCriticPipelineError(code, "json_parse", true, upstreamStatus, err)
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed", "json_parse")
+		callLedger["failure_code"] = code
 		parseTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, parseErr, content)
 		if requestOverrides := mapFromAny(upstream["_proxy_request_overrides"]); len(requestOverrides) > 0 {
 			parseTrace["request_overrides"] = requestOverrides
@@ -641,6 +657,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	parsed, schemaQuarantineTrace, err := validateCriticExtractionSchema(parsed)
 	if err != nil {
 		schemaErr := newCriticPipelineError("CRITIC_SCHEMA_INVALID", "schema_validation", true, upstreamStatus, err)
+		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed", "schema_validation")
+		callLedger["failure_code"] = schemaErr.Code
 		schemaTrace := criticFailureTrace(promptSource, cfg, upstreamStatus, schemaErr, content)
 		if len(schemaQuarantineTrace) > 0 {
 			schemaTrace["schema_quarantine"] = schemaQuarantineTrace
@@ -661,13 +679,15 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	parsed, quarantineTrace := quarantineCriticProtectedCandidates(parsed, criticUserInput, criticAssistantContent)
 	trustedRPIdentities := s.resolveTrustedRPCharacterIdentities(ctx, sid, parsed)
 	parsed, interactionAdmissionTrace := admitCriticInteractionLanesWithTrustedIdentities(parsed, criticUserInput, criticAssistantContent, trustedRPIdentities)
+	observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "succeeded", "")
 	trace := map[string]any{
-		"prompt_source": promptSource,
-		"model":         extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
-		"provider":      strings.TrimSpace(cfg.Provider),
-		"http_status":   upstreamStatus,
-		"usage":         upstream["usage"],
-		"input_budget":  inputBudgetTrace,
+		"prompt_source":               promptSource,
+		"model":                       extractionFirstNonEmpty(extractionStringFromAny(upstream["model"]), cfg.Model),
+		"provider":                    strings.TrimSpace(cfg.Provider),
+		"http_status":                 upstreamStatus,
+		"usage":                       upstream["usage"],
+		"input_budget":                inputBudgetTrace,
+		"provider_call_budget_ledger": callLedger,
 		"pipeline": map[string]any{
 			"policy_version": completeTurnCriticPipelineVersion,
 			"stages": map[string]any{

@@ -1947,7 +1947,7 @@
         "max_injection_chars": {
           "type": "integer",
           "title": "Max Injection Chars",
-          "default": 3000
+          "default": 9000
         },
         "core_objective_memory_max_items": {
           "type": "integer",
@@ -1957,8 +1957,15 @@
         },
         "reference_injection_budget_basis_chars": {
           "type": "integer",
-          "title": "Reference Injection Budget Basis Chars",
-          "description": "Configured memory injection cap used only as the basis for resolving the independent reference budget. This remains stable when a turn temporarily disables main memory injection."
+          "title": "Original Work Reference Max Chars",
+          "default": 3000,
+          "description": "Independent character cap for original-work reference injection. It does not borrow from or lend capacity to memory or lorebook reference lanes."
+        },
+        "lorebook_reference_max_chars": {
+          "type": "integer",
+          "title": "Lorebook Reference Max Chars",
+          "default": 3000,
+          "description": "Independent character cap for delivered Host lorebook reference. It does not borrow from or lend capacity to memory or original-work reference lanes."
         },
         "reference_recall_limit": {
           "type": "integer",

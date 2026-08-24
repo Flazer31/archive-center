@@ -371,13 +371,16 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		narrativeSupportMaxChars = 0
 	}
 	publisherGuidanceFormat := normalizePublisherGuidanceFormat(stringPtrValue(request.PublisherGuidanceFormat, "standard"))
-	referenceBudgetBasisChars := maxInjectionChars
+	referenceBudgetBasisChars := intPtrValue(defaultSettings.ReferenceInjectionBudgetBasisChars, 3000)
 	if req.Settings.ReferenceInjectionBudgetBasisChars != nil {
 		referenceBudgetBasisChars = *req.Settings.ReferenceInjectionBudgetBasisChars
-		if referenceBudgetBasisChars < 0 {
-			referenceBudgetBasisChars = 0
-		}
 	}
+	referenceBudgetBasisChars = maxInt(0, referenceBudgetBasisChars)
+	lorebookReferenceMaxChars := intPtrValue(defaultSettings.LorebookReferenceMaxChars, 3000)
+	if req.Settings.LorebookReferenceMaxChars != nil {
+		lorebookReferenceMaxChars = *req.Settings.LorebookReferenceMaxChars
+	}
+	lorebookReferenceMaxChars = maxInt(0, lorebookReferenceMaxChars)
 	maxInputContextChars := prepareTurnIntSetting(req.Settings.MaxInputContextChars, defaultSettings.MaxInputContextChars)
 	injectionEnabled := true
 	inputContextEnabled := true
@@ -403,15 +406,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	rawUserInput := stringPtrValue(req.RawUserInput, "")
 	turnIndex := intPtrValue(req.TurnIndex, 0)
-	lorebookReferenceStartedAt := time.Now()
-	lorebookReference := s.prepareTurnLorebookReferenceSearch(
-		r.Context(),
-		sid,
-		rawUserInput,
-		stringPtrValue(req.Settings.LorebookReferenceMode, prepareTurnLorebookModeReferenceAssist),
-		request.LorebookReferenceScope,
-	)
-	timing.addElapsed("lorebook_reference", lorebookReferenceStartedAt)
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
 	perspectiveContext = resolvePrepareTurnPerspectiveIdentity(r.Context(), s.Store, sid, perspectiveContext)
@@ -782,6 +776,17 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	materializationTrace["total_materialized_rows"] = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(charStates) + len(activeStates) + len(canonicalLayers) + len(charEvents)
 	supportRecallLimit = len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(pendingThreads) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories)
 	timing.addElapsed("store_reads", storeReadsStartedAt)
+	previousCompletedContextLogs, previousCompletedContextSource := prepareTurnInputContextChatLogs(request, currentInputDecision, chatLogs)
+	lorebookSelectionQuery := buildPrepareTurnLorebookSelectionQuery(rawUserInput, previousCompletedContextLogs, maxInputContextChars)
+	lorebookReferenceStartedAt := time.Now()
+	lorebookReference := s.prepareTurnLorebookReferenceSearch(
+		r.Context(),
+		sid,
+		lorebookSelectionQuery,
+		stringPtrValue(req.Settings.LorebookReferenceMode, prepareTurnLorebookModeReferenceAssist),
+		request.LorebookReferenceScope,
+	)
+	timing.addElapsed("lorebook_reference", lorebookReferenceStartedAt)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		hostTurn, hostTurnObserved := prepareTurnWorkflowHostOrdinal(request, currentInputDecision)
 		s.TurnWorkflows.setHostTurn(workflowRequestID, hostTurn, hostTurnObserved)
@@ -1031,6 +1036,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	case referenceRecall.BindingCount == 0:
 		primaryCanonBase.Status = "empty"
 	}
+	referenceCandidateRecall := referenceRecall
+	referenceCandidateRecall.InjectionItems = append([]referenceInjectionItem(nil), referenceRecall.InjectionItems...)
 	referenceRecall.InjectionItems = removePrimaryCanonBaseDuplicates(referenceRecall.InjectionItems, primaryCanonBase.selectedSourceKeys)
 	referenceBudgetPolicy.PrimaryCanonBase.UsedChars = primaryCanonBase.UsedChars
 	referenceInjectionEnabled := referenceBudgetPolicy.Status == "resolved" && referenceBudgetPolicy.TotalCapChars > 0 && referenceRecall.LiveBindingCount > 0
@@ -1064,13 +1071,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var inputContextTruncated bool
 	inputContextSource := "disabled"
 	if inputContextEnabled && !degraded {
-		inputContextLogs, source := prepareTurnInputContextChatLogs(request, currentInputDecision, chatLogs)
-		inputContextSource = source
-		inputContextText, inputContextTruncated = buildInputContextText(inputContextLogs, maxInputContextChars)
-	}
-	lorebookReferenceBudget := maxInt(0, referenceBudgetBasisChars-referenceBudgetPolicy.UsedChars)
-	if strings.TrimSpace(referenceText) != "" && lorebookReferenceBudget > 0 {
-		lorebookReferenceBudget = maxInt(0, lorebookReferenceBudget-2)
+		inputContextSource = previousCompletedContextSource
+		inputContextText, inputContextTruncated = buildInputContextText(previousCompletedContextLogs, maxInputContextChars)
 	}
 	finalizePrepareTurnLorebookReference(
 		&lorebookReference,
@@ -1083,7 +1085,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			referenceText,
 		},
 		injectionEnabled,
-		lorebookReferenceBudget,
+		lorebookReferenceMaxChars,
 	)
 	injectionText := strings.Join(nonEmptyStrings([]string{referenceText, memoryAndStateText, lorebookReference.deliveryText}), "\n\n")
 	if injectionAssembly.Counts == nil {
@@ -1418,6 +1420,28 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	guidanceApplicationTrace["requested_budget_chars"] = narrativeSupportMaxChars
 	guidanceApplicationTrace["guide_eligibility"] = guideEligibility
 	payloadApplicationPlan["guidance_application_trace"] = guidanceApplicationTrace
+	attachPrepareTurnPayloadBudgetLedger(
+		payloadApplicationPlan,
+		map[string]int{
+			"long_term_memory":   maxInjectionChars,
+			"original_work":      referenceBudgetBasisChars,
+			"lorebook_reference": lorebookReferenceMaxChars,
+			"output_guidance":    narrativeSupportMaxChars,
+		},
+		map[string]prepareTurnPayloadBudgetLaneStats{
+			"long_term_memory": prepareTurnMemoryPayloadBudgetStats(injectionAssembly.MemoryDeliveryPlan, reversibleStateText),
+			"original_work": prepareTurnOriginalWorkPayloadBudgetStats(
+				referenceCandidateRecall,
+				referenceRecall,
+				primaryCanonBase,
+				referenceInjectedCount,
+				referenceBudgetPolicy,
+				referenceInjectionEnabled,
+			),
+			"lorebook_reference": prepareTurnLorebookPayloadBudgetStats(lorebookReference),
+			"output_guidance":    prepareTurnGuidancePayloadBudgetStats(payloadApplicationPlan),
+		},
+	)
 	payloadApplicationPlan["recomposer_enhancement_contract"] = buildPrepareTurnRecomposerEnhancementContract(
 		sid,
 		turnIndex,
@@ -1555,6 +1579,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		s.TurnWorkflows.awaitFinal(workflowRequestID)
 	}
 	turnWorkflowHUD := s.turnWorkflowHUDSnapshot(workflowRequestID)
+	publisherCallBudgetLedger := nilIfEmptyMap(mapFromAny(mapFromAny(supervisorInputPack["llm_trace"])["provider_call_budget_ledger"]))
 
 	if responseProjection == prepareTurnProductionProjectionV1 {
 		tracePreview["response_projection"] = map[string]any{
@@ -1593,6 +1618,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"request_type":                    requestType,
 			"fallback_reason":                 fallbackReason,
 			"supervisor_result":               supervisorResult,
+			"publisher_call_budget_ledger":    publisherCallBudgetLedger,
 			"injection_pack":                  compactInjectionPack,
 			"payload_application_plan":        payloadApplicationPlan,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
@@ -1638,6 +1664,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"payload_application_plan":        payloadApplicationPlan,
 		"source_to_payload_lineage":       sourceToPayloadLineage,
 		"supervisor_result":               supervisorResult,
+		"publisher_call_budget_ledger":    publisherCallBudgetLedger,
 		"memory_budget_resolution":        memoryBudgetResolution,
 		"language_context":                languageContext,
 		"perspective_context":             perspectiveContext,

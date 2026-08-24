@@ -322,7 +322,7 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 		t.Fatalf("live state = %#v", liveState)
 	}
 	policy := liveState["budget_policy"].(map[string]any)
-	if policy["contract_version"] != referenceInjectionBudgetContractVersion || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(600) || policy["relationship_to_main"] != "additive_non_displacing" {
+	if policy["contract_version"] != referenceInjectionBudgetContractVersion || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(3000) || policy["relationship_to_main"] != "independent_additive_non_borrowing" {
 		t.Fatalf("supplement budget contract = %#v", policy)
 	}
 	pack := live["injection_pack"].(map[string]any)
@@ -456,7 +456,7 @@ func TestPrepareTurnFreshFirstTurnSupplementUsesRawInputWithIndependentReference
 	}
 	state := response["reference_injection"].(map[string]any)
 	policy := state["budget_policy"].(map[string]any)
-	if state["applied"] != true || state["injected_count"].(float64) < 1 || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(600) {
+	if state["applied"] != true || state["injected_count"].(float64) < 1 || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(1200) {
 		t.Fatalf("first-turn supplement state=%#v policy=%#v", state, policy)
 	}
 	pack := response["injection_pack"].(map[string]any)
@@ -659,9 +659,10 @@ func prepareTurnReferenceSettingsResponse(t *testing.T, handler http.Handler, in
 		"raw_user_input":  "Open the gate",
 		"messages":        []map[string]any{{"role": "user", "content": "Open the gate"}},
 		"settings": map[string]any{
-			"injection_enabled":   injectionEnabled,
-			"max_injection_chars": maxInjectionChars,
-			"top_k":               3,
+			"injection_enabled":                      injectionEnabled,
+			"max_injection_chars":                    maxInjectionChars,
+			"reference_injection_budget_basis_chars": maxInjectionChars,
+			"top_k":                                  3,
 		},
 	})
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))

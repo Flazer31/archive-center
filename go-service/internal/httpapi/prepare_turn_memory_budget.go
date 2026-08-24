@@ -236,7 +236,17 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	}
 	classes := []map[string]any{}
 	parts := []string{}
+	candidateParts := []string{}
+	candidateCount := 0
+	selectedCount := 0
+	exclusionReasons := map[string]int{}
 	for _, key := range prepareTurnMemoryDeliveryOrder {
+		candidateText := makePrepareTurnSection("["+prepareTurnMemoryDeliveryTitles[key]+"]", items[key])
+		if candidateText != "" {
+			candidateParts = append(candidateParts, candidateText)
+		}
+		candidateCount += len(items[key])
+		selectedCount += len(selected[key])
 		text := makePrepareTurnSection("["+prepareTurnMemoryDeliveryTitles[key]+"]", selected[key])
 		usedChars := len([]rune(text))
 		if text != "" {
@@ -271,6 +281,19 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		classes = append(classes, classTrace)
 	}
 	finalText := strings.Join(parts, "\n\n")
+	candidateText := strings.Join(candidateParts, "\n\n")
+	deferredByLimitCount := len(coreObjectiveDeferredByLimit)
+	deferredByBudgetCount := 0
+	for _, key := range prepareTurnMemoryDeliveryOrder {
+		deferredByBudgetCount += len(remaining[key])
+	}
+	deferredByBudgetCount = maxInt(0, deferredByBudgetCount-deferredByLimitCount)
+	if deferredByLimitCount > 0 {
+		exclusionReasons["core_objective_item_limit"] = deferredByLimitCount
+	}
+	if deferredByBudgetCount > 0 {
+		exclusionReasons["memory_char_budget"] = deferredByBudgetCount
+	}
 	finalHash := fmt.Sprintf("%x", sha256.Sum256([]byte(finalText)))
 	directEntities := stringsFromAny(out.Counts["directly_referenced_entities"])
 	directMemoryFactKeys := map[string]bool{}
@@ -361,6 +384,10 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 		"contract_version": prepareTurnMemoryDeliveryPlanVersion, "status": "ready", "mode": mode,
 		"final_budget_owner": "go_memory_delivery_plan", "global_cap_chars": maxChars,
 		"delivery_cap_chars": deliveryCap, "host_envelope_reserved_chars": 0,
+		"candidate_count": candidateCount, "candidate_chars": len([]rune(candidateText)),
+		"selected_count": selectedCount, "selected_chars": len([]rune(finalText)),
+		"final_delivery_count": selectedCount, "final_delivery_chars": len([]rune(finalText)),
+		"excluded_count": deferredByLimitCount + deferredByBudgetCount, "exclusion_reasons": exclusionReasons,
 		"used_chars": len([]rune(finalText)), "order": prepareTurnMemoryDeliveryOrder,
 		"automatic_class_quotas":               false,
 		"automatic_selection_order":            []string{"required", "auxiliary"},

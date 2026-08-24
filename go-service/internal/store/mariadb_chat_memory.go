@@ -420,6 +420,10 @@ func (m *mariadbStore) UpdateDirectEvidenceExplorerFields(ctx context.Context, c
 	}
 	set := []string{}
 	args := []any{}
+	if patch.EvidenceText != nil {
+		set = append(set, "evidence_text = ?")
+		args = append(args, *patch.EvidenceText)
+	}
 	if patch.ArchiveState != nil {
 		set = append(set, "archive_state = ?")
 		args = append(args, *patch.ArchiveState)

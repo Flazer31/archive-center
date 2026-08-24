@@ -1,11 +1,15 @@
-# Archive Center Pre-4.0.0 종합 작업 원장
+# Archive Center 4.0.0 종합 작업 원장
 
-상태: `current_worktree_record / UI 재정비 직전 인수인계`
+상태: `current_worktree_record / 4.0.0 source·regression·test package 갱신 / live gate 진행 전`
 
-- 기록 기준일: 2026-08-22 KST
-- 기록 대상: 현재 `source` 작업 트리, 단계 0–9, UI·세계선·기억·공급자·복구·시험 패키지 작업
-- 기준 체크포인트: `eed62ae checkpoint: preserve pre-4.0 stages 0-7`
-- 현재 제품 표기: `Archive Center Pre-4.0.0`
+- 기록 기준일: 2026-08-24 KST
+- 기록 대상: 현재 `source` 작업 트리, 단계 0–9, UI·세계선·기억·공급자·복구·예산·로어북·시험 패키지 작업
+- 보존 체크포인트: `eed62ae checkpoint: preserve pre-4.0 stages 0-7`
+- 현재 HEAD: `eae0b3f diagnose reversible status lock failures`
+- 현재 source 제품 표기: `Archive Center 4.0.0` (2026-08-23 정식판 identity 승격)
+
+파일명에는 기존 문서 링크의 안정성을 위해 `pre-4.0.0`이 남아 있지만, 문서 제목과 최신 판정의
+대상은 현재 `4.0.0`이다. 과거 Pre 단계의 기록과 해시는 역사적 증거로 보존한다.
 
 이 문서는 지금까지의 작업을 다시 추적할 수 있게 만든 종합 원장이다. 기존 3.6–3.9 장부,
 3.9 피드백 작업 로그, 4.0 세계선 설계, 4.0 기억 복원 계약을 대체하지 않는다. 각 문서에
@@ -36,37 +40,42 @@
 ### 2.1 소스와 Git
 
 - 활성 소스: `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`
-- 기준 커밋: `eed62ae` (2026-08-21 19:35:40 KST)
-- 커밋 의미: 단계 0–7을 보존한 로컬 체크포인트
-- 현재 상태: 체크포인트 이후 단계 8–9와 후속 수정이 dirty worktree에 있음
-- 이 문서 기록 시작 전 기존 runtime·test·prompt tracked diff: 36개 파일,
-  `+1,582 / -1,080` (이번 문서 2개 변경은 제외)
-- `Archive Center.js`: `+147 / -39`
-- 확인된 untracked 산출물: `_release-builds/`, `_test-builds/`,
-  `docs/4.0-stage2-aggregate-memory-search-owner.diff`,
-  `prompts/critic_system.pre-first-compression-20260808.txt`
-- 이 문서를 작성하면서 기존 dirty 변경은 정리·되돌림·포맷하지 않았다.
+- 단계 0–7 보존 체크포인트: `eed62ae` (2026-08-21 19:35:40 KST)
+- 현재 HEAD: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`
+- HEAD 의미: reversible status lock failure 진단을 고정한 로컬 checkpoint
+- 현재 상태: HEAD 이후 단계 8–9, UI, 호출 장부, 로어북, 4.0 identity와 후속 수정이 dirty worktree에 있음
+- 2026-08-24 이번 원장 갱신 직전 tracked diff: 46개 파일, `+2,329 / -516`
+- 같은 시점 `Archive Center.js`: `+244 / -20`
+- 확인된 시험 산출물: `_test-builds/Pre-4.0.0-stage9-critic-compact-windows-test`
+- 이 원장 갱신에서는 runtime source, test, prompt를 변경·정리·되돌림·포맷하지 않았다.
 
 ### 2.2 최신 시험 패키지
 
-- 패키지 루트:
+- 외부 패키지 루트:
   `_test-builds/Pre-4.0.0-stage9-critic-compact-windows-test`
-- 폴더:
-  `Archive Center Pre-4.0.0 Windows Auto Install Package`
-- ZIP:
-  `Archive Center Pre-4.0.0 Windows Auto Install Package.zip`
-- manifest 생성 시각: `2026-08-22T11:20:31.1015355Z`
-- manifest 상태: `green`, `release_ready=true`
+- 실제 4.0.0 폴더:
+  `Archive Center 4.0.0 Windows Auto Install Package`
+- 실제 4.0.0 ZIP:
+  `Archive Center 4.0.0 Windows Auto Install Package.zip`
+- manifest 생성 시각: `2026-08-23T16:00:21.7968232Z` (`2026-08-24 01:00:21 KST`)
+- manifest 상태: `green`, `release_ready=true`, `automatic_update_apply=true`
 - package profile: `windows_managed_full_local_auto_install`
 - canonical store: MariaDB
-- vector engine: ChromaDB 1.5.9
+- vector engine: ChromaDB
+- managed files: 46개, manifest hash 불일치 0개
 - 소스와 패키지 `Archive Center.js` SHA-256:
-  `643B29681E0D7F20AF51D5A9AB37C246EACFBB9129F9E5CE17EC48B5D47AB3AE`
+  `9C69DEA34D4E82AE5FFD6FE82B6ED61AB666ED05B62762F82DB8F676ADA839BF`
+- packaged `bin/archive-center-go.exe` SHA-256:
+  `CB2525BB196DD7E19490EF6598EF949D2B985FF9D07F2D6197071F484231EC65`
 - ZIP SHA-256:
-  `8D76E7241F58C61F197AFA078D14F9A143EEA58CAEC5BE0D2FA378FA80E8A6B5`
+  `DA3EA75D35A567433F332F96E7362010003BE46D01DBFBC5816C1E104506CCD1`
+- `SHA256SUMS-4.0.0.txt`: ZIP과 일치
+- 기존 `.env.full.local`: 재빌드 전 보존, 재빌드 후 동일 hash로 복원
+- backend와 package launcher: 갱신 후 종료 상태
 
 `release_ready=true`는 관리 대상 파일이 갖춰진 build manifest 판정이다. 공개 배포 완료 또는 모든
-공급자·OS·장기 세션 검증 완료라는 의미는 아니다.
+공급자·OS·장기 세션 검증 완료라는 의미는 아니다. 이번 패키지는 빌드·manifest 단계까지 검증됐고,
+package-launched `/ready`와 실제 RisuAI 플러그인 재로드·턴 실행은 아직 별도 `LIVE` gate다.
 
 ### 2.3 최근 실사용 기준선
 
@@ -138,6 +147,10 @@ DB만으로 역증명할 수는 없다.
 | 2026-08-22 | 최근 턴 13–14 MariaDB·Vector·HUD 검사 | 평론가 저장 정상, 관계 상태 lane은 관찰 필요 |
 | 2026-08-22 | 로어북 보조 참조를 설정의 On/Off로 단순화 | `플로팅 UI` 바로 위에 배치, 기존 로어북 선택창 제거 |
 | 2026-08-22 | 출판사 동작 설정을 공통 설정에서 분리 | 별도 `출판사 설정`을 공통 설정보다 위에 배치 |
+| 2026-08-23 | DB 경합 진단, 독립 payload/provider 장부, 관계 기억 과주입 제한, 로어북 선택 실험 | sections 26–34에 source·regression·package 증거 기록 |
+| 2026-08-23 | source identity를 `4.0.0` release로 승격 | JS·Go·builder·설치 문서 정렬 |
+| 2026-08-24 | 로어북의 기존 보수 조건을 제거한 뒤 관련도 frontier로 재작성, 새 기본 상한 3,000 적용 | `SOURCE`, `REGRESSION` 완료 |
+| 2026-08-24 | 기존 최신 시험 빌드 경로를 실제 `4.0.0` 폴더·ZIP으로 갱신 | `PACKAGE` 완료, `LIVE`는 미실행 |
 
 ## 5. UI와 정보구조 작업
 
@@ -841,3 +854,669 @@ Production JavaScript는 `+111/-85`, 순증가 26줄이다. 남은 JavaScript �
 
 폴더를 점유하던 종료 잔여 `01_start_archive_center_windows.bat` launcher PID만 종료했다. 패키지
 갱신 뒤 backend는 다시 시작하지 않았으므로 이 기록은 `PACKAGE` 완료이며 `LIVE` 완료 선언이 아니다.
+
+## 26. 2026-08-23 DB 경합 진단과 최소 안정화
+
+### 처리한 범위
+
+3.9.11 사용자가 제보한 간헐적 MariaDB deadlock 가능성을 근거 없이 구조 변경하지 않고 먼저
+식별할 수 있도록, `ApplyReversibleStatusTransition`에서 발생하는 MySQL 1213과 1205 오류에 다음
+식별자를 붙이도록 했다.
+
+- `mysql_error`, `sql_state`
+- `source_revision`, `source_unit_id`
+- `status_key`
+- `owner_scope`, `owner_id`
+
+오류는 원래 `*mysql.MySQLError`를 `%w`로 감싸므로 `errors.Is`/`errors.As` 계열 판정이 유지된다.
+식별자 문자열은 로그가 비정상적으로 커지지 않도록 120 rune으로 제한한다.
+
+### 변경과 고정점
+
+- local checkpoint commit: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`
+- `go-service/internal/store/mariadb_status.go`: `+49/-6`
+- `go-service/internal/store/mariadb_status_test.go`: `+55/-0`
+- 합계: `+98/-6`
+- production 함수: `reversibleStatusTransitionLockDiagnostic`,
+  `boundedStatusLockDiagnosticValue`
+- 회귀: 1213 deadlock과 1205 lock wait timeout 모두에서 MySQL 오류 번호와 source/status/owner
+  식별자가 보존되는지 검증
+
+각 reversible transition이 여는 기존의 작은 트랜잭션 경계는 유지했다. 이미 성공한 항목을 포함한
+전체 습관 근거를 하나의 거대한 트랜잭션으로 합치지 않았고, schema나 table도 추가하지 않았다.
+
+### 의도적으로 하지 않은 변경
+
+실제 MariaDB에서 1213이 재현됐다는 증거가 아직 없으므로 다음은 적용하지 않았다.
+
+- `wakeMemoryWorkers()`의 호출 위치 이동
+- `ApplyReversibleStatusTransition` 내부의 새 자동 재시도
+- 습관 근거 전체의 일괄 transaction화
+- lock 순서나 worker 구조의 추측성 변경
+
+현재 `group_turn_complete.go`는 원문과 source revision이 durable해진 직후 여전히
+`wakeMemoryWorkers()`를 호출한다. 따라서 이번 commit은 진단과 오류 식별의 최소 slice이며,
+deadlock 자체의 해결 완료 선언이 아니다.
+
+### 남은 실 DB 증거
+
+실제 문제가 다시 발생하면 같은 시각의 application log와 `SHOW ENGINE INNODB STATUS`에서 다음을
+같이 확보해야 한다.
+
+1. 1213인지 1205인지
+2. 위 source revision/unit/status/owner 식별자
+3. 맞은편 transaction과 잠근 index/row
+4. worker wake 시점
+
+1213이 확인된 경우에만 조기 wake 이동 또는 항목 단위의 제한된 transaction 재시도를 별도
+slice로 검토한다.
+
+## 27. 독립 참조 예산과 전체 payload 장부
+
+### 정정된 예산 구조
+
+일반 기억 9,000 chars 안에 원작 DB와 로어북을 억지로 합치는 구조가 아니다. 세 레인은 서로
+독립된 ceiling을 가진다.
+
+| 레인 | 기본 설정 상한 | 의미 |
+|---|---:|---|
+| 일반 기억 | 9,000 chars | 기억·근거·관계·상태 등 Archive Center 기억 |
+| 원작 DB | 3,000 chars | 원작 자료 참조 전용 |
+| 로어북 | 3,000 chars | RisuAI 기본 주입을 보완하는 추가 참조 전용 |
+
+사용자가 일반 기억 설정을 12,000으로 올린 세션에서는 전체 설정 상한이
+`12,000 + 3,000 + 3,000 + 출판사 안내 상한`으로 계산된다. 이는 기본값 자체를 12,000으로
+바꿨다는 뜻이 아니다. 각 값은 최대한 채워야 하는 목표량이 아니라 넘지 말아야 하는 상한이다.
+
+2026-08-23의 6,000자 실사용 trace와 당시 장부 수치는 아래에 역사적 관찰로 유지한다. 새 기본값
+3,000은 2026-08-24 source와 package부터 적용된다. 이미 저장된 명시적 6,000과 명시적 0은
+사용자 값을 보존하며, 기존 저장값이 과거 기본인지 사용자 선택인지 추측해 자동 덮어쓰지 않는다.
+
+### Go 소유 장부
+
+`prepare_turn_render.go`의 `attachPrepareTurnPayloadBudgetLedger`가
+`payload_budget_ledger.v1`을 만든다. 장부는 각 레인에 대해 다음을 기록한다.
+
+- 설정 상한과 실제 활성 상한
+- 후보 건수·chars
+- 선택 건수·chars
+- 최종 전달 건수·chars
+- 제외 건수와 reason code별 수치
+- 제목, lane 사이 구분자, 바깥 구분자의 조립 비용
+- 최종 auxiliary system message의 정확한 계획 chars
+
+장부의 정본 범위는 `main_model_auxiliary_system_message`이고 delivery state는
+`planned_exact_payload_text`다. `Archive Center.js`는 이 수치를 다시 계산하지 않고 편집 확인과
+debug UI에 표시한다.
+
+### 실사용 관찰
+
+사용자가 제공한 첫 trace에서는 일반 기억 설정을 12,000으로 둔 상태에서 다음이 관찰됐다.
+
+- 본문 auxiliary 계획: `18,731 / 설정 상한 25,500`, 활성 상한 22,500
+- 일반 기억: `12,008 / 12,000`
+- 원작 DB: `0 / 3,000`
+- 로어북: `5,794 / 6,000`
+- 출판사 안내: `887 / 4,500`
+- 조립 비용: 42
+
+합계 `12,008 + 0 + 5,794 + 887 + 42 = 18,731`로 backend 장부와 일치한다. 다만 일반 기억이
+설정 12,000보다 8 chars 크게 표시된 것은 strict ceiling 완료 증거가 아니다. 현재 source의
+`prepareTurnMemoryPayloadBudgetStats`는 기본 기억 delivery plan 뒤에 reversible-state 보충분을
+별도 합산할 수 있으므로, 이 8 chars가 그 보충분인지 실제 cap 위반인지 다음 동일-turn trace에서
+확인해야 한다. 이는 원작 DB나 로어북 예산이 일반 기억 예산에 합쳐졌다는 뜻은 아니다.
+
+이 관찰은 backend가 만든 계획 수치의 자기 일관성을 입증하지만, Host가 실제 전송한 최종 payload의
+검증 완료를 뜻하지는 않는다. 뒤의 trace에서 pre-request payload verification mismatch가 별도로
+관찰됐기 때문이다.
+
+## 28. 출판사·평론가 호출별 예산 장부
+
+### 계약과 소유권
+
+본문 payload와 서로 다른 LLM 호출인 출판사와 평론가는 별도의
+`provider_call_budget_ledger.v1`로 기록한다. 새 production 파일
+`go-service/internal/httpapi/provider_call_budget_ledger.go`는 142줄이며 다음 함수를 소유한다.
+
+- `newProviderCallBudgetLedger`: system/user/final prompt chars와 구성 요소 계산
+- `observeProviderCallBudgetResult`: 성공·실패 stage, HTTP status, termination, provider usage 기록
+- `safeProviderCallBudgetLedger`: 재처리 trace에 내용 원문 없이 안전한 수치만 전달
+
+### 기록 항목
+
+- 전체 system prompt, user prompt, final prompt chars
+- 현재 turn, auxiliary memory, 언어 context chars
+- 원작 DB·로어북의 전달 chars 또는 `not_in_call_contract`
+- JSON 출력 요구문의 별도/내장 accounting 상태
+- 조립 비용
+- 성공 또는 실패 stage와 code
+- provider가 실제 보고한 input/output/reasoning/cached/total tokens
+
+provider가 usage를 보고하지 않은 경우 토큰을 chars에서 추정하지 않고 `unreported`로 둔다.
+평론가 JSON parse 실패와 provider timeout도 실제 실패 stage에 장부를 붙이며, 재처리 queue에는
+프롬프트 원문이 아니라 허용된 수치와 상태만 보존한다.
+
+`group_proxy.go`와 `turn_extraction_critic.go`가 각각 출판사와 평론가 장부를 연결한다.
+`Archive Center.js`는 backend 장부를 호출별 UI로 표시할 뿐 provider별 계산이나 실패 판정을
+소유하지 않는다.
+
+### 현재 검증 경계
+
+- `publisher_plan_test.go`: 실제 usage 보고와 미보고를 구분하고 미보고 토큰을 추정하지 않음
+- `turn_extraction_critic_test.go`: 평론가 장부와 실패 stage 연결
+- `memory_admission_worker_test.go`: 재처리 trace의 안전한 장부 보존
+- `js-route-variant-smoke`: 출판사·평론가 장부 표시
+
+source와 회귀 검증은 완료됐다. 실제 provider가 usage를 보고하는 성공 호출, usage 미보고 성공
+호출, timeout, JSON parse 실패를 모두 UI에서 대조하는 live matrix는 아직 닫지 않았다.
+
+## 29. 관계 기억 과주입의 제한 복원
+
+### 적용한 범위
+
+3.9.11에서 사용하던 `single_endpoint_only` 관계/KG 제외 규칙을 현재 4.0 경로에 복원했다.
+현재 입력과 KG triple이 두 endpoint 중 하나만 공유하면 관계 자체를 관련 기억으로 보지 않는다.
+
+- `prepare_turn_recall.go`: `prepareTurnKGRecallEligible`이 `single_endpoint_only` 반환
+- `prepare_turn_assembly.go`: 해당 후보를 제외하고
+  `kg_single_endpoint_only_dropped` 진단 수치 증가
+- `group_turn_part06_test.go`, `group_turn_part05_test.go`,
+  `prepare_turn_prompt_hygiene_test.go`: 제외와 count 회귀
+
+branch 상속, 출력 언어, 독립 예산, 개별 기억 구조, 로어북 관찰 계약은 되돌리지 않았다. 중복 제거
+전체를 3.9.11로 되돌리지도 않았다.
+
+### 같은 세션의 사용자 관찰 비교
+
+| 항목 | 복원 전 | 복원 후 |
+|---|---:|---:|
+| 전체 auxiliary 계획 | 18,731 | 14,463 |
+| 일반 기억 | 12,008 | 7,512 |
+| 주관 기억·관계 lane | 4,354 | 1,343 |
+| 로어북 | 5,794 | 5,794 |
+
+일반 기억은 4,496 chars, 주관 기억·관계 lane은 3,011 chars 감소했다. 같은 trace에서 원작 DB는
+0, 출판사 안내는 1,115, 조립 비용은 42였고
+`7,512 + 0 + 5,794 + 1,115 + 42 = 14,463`으로 장부와 일치했다.
+
+이 결과는 관계 레인의 불필요한 단일 endpoint 후보가 감소했다는 `USER_OBSERVED` 증거다. 다만
+trace 상단에 다음 경고가 있었으므로 실제 최종 RisuAI payload parity는 아직 `OPEN`이다.
+
+> The pre-request payload verification did not match.
+
+따라서 이 수치를 “backend 계획과 UI 표시가 감소했다”로 기록하며, Host가 실제 전송한 최종
+payload까지 검증됐다고 확대 해석하지 않는다.
+
+## 30. 로어북 보조 참조의 당시 방향 — `SUPERSEDED 2026-08-24`
+
+이 section은 2026-08-23의 중간 선택 정책과 그 근거를 보존한 역사 기록이다. 아래의
+`Always Active` 일괄 Host 보류, lexical overlap 2 이상, weak lexical 보류, 6,000자 상한은 현재
+source 정책이 아니다. 사용자가 기존 보수 조건 전체를 먼저 삭제하도록 지시한 뒤 선택기를 다시
+작성했으며, 최신 정본은 sections 36–41을 따른다. 과거 trace와 실패 원인을 잃지 않기 위해 본문을
+삭제하거나 현재형으로 다시 쓰지 않는다.
+
+### 문제를 보여준 trace
+
+관계 기억 감소 뒤에도 로어북 수치는 그대로였다.
+
+- 후보: 104,948 chars
+- 선택: 28,486 chars
+- 최종: 5,794 / 6,000 chars
+- 제외: 84건
+  - `lorebook_char_budget=34`
+  - `lorebook_duplicate_suppressed=50`
+
+실제 출력에는 현재 조선 배경과 관계없는 일본 전국시대 항목도 포함됐다. 따라서 6,000 chars를
+상한이 아니라 채우는 목표처럼 쓰는 기존 선택 결과를 그대로 둘 수 없었다.
+
+### 확정한 제품 의미
+
+RisuAI는 활성 로어북을 자체적으로 본문 요청에 주입한다. Archive Center의 로어북 경로는 그
+정본 주입을 복제하는 주력 기억 경로가 아니라, 빠졌을 수 있는 관련 정보만 보충하는 보조 참조다.
+
+이에 따라 현재 source의 `finalizePrepareTurnLorebookReference`는 다음 순서로 동작한다.
+
+1. 현재 user input, RisuAI Host message, 이미 조립된 Archive Center context와 완전 동일한 항목을
+   `suppressed_native_duplicate`로 제외한다.
+2. `Always Active`가 포함된 동일 내용 그룹은 RisuAI Host 소유로 간주하고
+   `deferred_native_always_active_owned_by_host`로 보류한다.
+3. 일반 항목은 key가 직접 맞거나 lexical token overlap이 2 이상일 때만 보조 후보로 전달한다.
+4. 한 token만 겹치는 약한 lexical 후보는 `deferred_weak_lexical_relevance`로 보류한다.
+5. 활성화된 보조 후보에 대해서만 6,000 chars 상한을 적용한다. 빈 공간을 채우기 위한 후보 승격은
+   하지 않는다.
+
+### 관찰 계약
+
+`prepare_turn_lorebook_reference.go`의 `lorebook_selection_observation.v1`은 다음을 기록한다.
+
+- candidate count와 candidate chars
+- key match와 matched key
+- lexical overlap
+- Always Active candidate/activated/delivered count
+- native duplicate source별 count
+- 최종 disposition과 delivered 여부
+- budget 또는 activation 때문에 보류된 수치
+
+JS는 이 backend 관찰값을 그대로 표시한다. 선택 조건, 우선순위, budget은 Go가 소유한다.
+
+### 회귀와 잔여 위험
+
+- key 직접 활성화: 유지
+- strong lexical 보조 참조: 유지
+- weak lexical 보류: 검증
+- Always Active candidate는 관찰되지만 activated/delivered 0: 검증
+- native exact duplicate 억제: 유지
+- 별도 schema, table, cache, hidden retry: 추가하지 않음
+
+현재 tokenizer는 모든 영숫자 token을 동일하게 세므로 `the`, `is` 같은 흔한 두 token만 겹치는
+영문 항목이 strong lexical로 오인될 가능성은 남아 있다. 그러나 이 가능성만으로 stopword 목록,
+희소도 점수, 언어별 사전, 추가 단계 규칙을 넣지 않는다. 최신 source로 실제 한 turn trace를 먼저
+확인하고, false positive가 재현될 때에만 기존 lexical 조건 한 곳을 최소 수정한다.
+
+이것이 2026-08-23 현재 확정 방향이다. “최대한 채우기”도 하지 않고, “조금 불확실하면 모두
+제외”하는 과도한 보호 정책도 추가하지 않는다.
+
+## 31. 2026-08-23 누적 변경량과 검증
+
+### `eae0b3f` 이후 production 누적 diff
+
+다음은 여러 최근 slice가 같은 dirty worktree에 연결돼 있으므로, 개별 slice 수치로 잘못
+분할하지 않고 DB 진단 checkpoint `eae0b3f` 대비 현재 누적치로 기록한다.
+
+| 파일 | + | - | 주 역할 |
+|---|---:|---:|---|
+| `Archive Center.js` | 242 | 15 | backend 장부·로어북 관찰 UI 표시와 Host 전달 |
+| `group_proxy.go` | 67 | 15 | 출판사 호출 장부 |
+| `group_reference_budget.go` | 4 | 4 | 원작 참조 독립 예산 |
+| `group_reference_canon_base.go` | 21 | 0 | 원작 참조 후보 수치 |
+| `group_turn_prepare.go` | 35 | 9 | 독립 lane·장부·호출 trace 연결 |
+| `memory_reprocessing_worker.go` | 3 | 0 | 안전한 평론가 호출 장부 보존 |
+| `output_fidelity_lineage.go` | 1 | 1 | payload lineage 연결 |
+| `prepare_turn_assembly.go` | 6 | 1 | single endpoint 제외 count |
+| `prepare_turn_lorebook_reference.go` | 220 | 76 | 보조 선택과 관찰 계약 |
+| `prepare_turn_memory_budget.go` | 27 | 0 | 기억 후보·선택·제외 수치 |
+| `prepare_turn_recall.go` | 14 | 1 | 관계 recall eligibility |
+| `prepare_turn_render.go` | 255 | 0 | 전체 payload 장부 |
+| `turn_extraction_critic.go` | 26 | 6 | 평론가 호출 장부 |
+| `provider_call_budget_ledger.go` | 142 | 0 | 새 호출별 장부 owner |
+
+production JavaScript 누적 변경은 `+242/-15`다. 이번 문서 작업에서는 JavaScript를 변경하지
+않았다. 남은 JavaScript 역할은 backend 수치 표시, RisuAI payload 적용, Host lifecycle 관찰이다.
+
+관련 contract/DTO freeze와 회귀도 함께 갱신돼 있다. `docs/3.0.md`를 포함한 기존 dirty 변경은
+사용자 작업으로 보존했으며 이번 기록 작업에서 건드리지 않았다.
+
+### 2026-08-23 현재 재검증
+
+- `go test ./internal/store ./internal/httpapi ./cmd/js-route-variant-smoke -count=1`: 통과
+- `node --check "Archive Center.js"`: 통과
+- 최초 Go test는 기본 Windows Go cache의 `Access is denied`로 실행 전에 실패했으며, workspace
+  local `GOCACHE`/`GOTMPDIR`로 다시 실행해 위 세 package가 모두 통과했다.
+- 검증용 local cache/temp 폴더는 통과 후 제거했다.
+
+이 검증은 production 함수와 adapter 회귀가 현재 source에서 통과했다는 뜻이다. 실제 MariaDB,
+실제 provider, 로드된 RisuAI 최종 payload 또는 최신 package 반영을 대신하지 않는다.
+
+## 32. 시험 패키지 최신 snapshot과 정정
+
+기존 경로
+`_test-builds/Pre-4.0.0-stage9-critic-compact-windows-test`는 2026-08-23 14:14 KST에 다시
+생성됐다.
+
+- source commit: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`, dirty source
+- package manifest: `green`, `release_ready=true`
+- managed files: 46개
+- source/package `Archive Center.js` SHA-256:
+  `C1C6B7F2EEF632059B6C2F44DDC513C51DAF1F1DC15DDEDE14180DA30E329AE7`
+- packaged `bin/archive-center-go.exe` SHA-256:
+  `92B98900CC5E32D8B87828FB342A546E8D63E4104568D73962B36D5893EDC344`
+- ZIP SHA-256:
+  `ED14090381BFEABC2B4CA6F26123D05BCBD3DCCF4E4F522FBE5C95616F137992`
+- 외부 `SHA256SUMS-Pre-4.0.0.txt`: ZIP과 일치
+
+이 snapshot은 25.1의 이전 hash 기록을 삭제하지 않고 최신 package 기록으로 정정한다. 독립 예산,
+payload/provider 장부, `single_endpoint_only` 복원은 build 전에 source에 있었으므로 포함된다.
+
+그러나 최신 로어북 `Always Active` Host 소유·weak lexical 보류 patch는 16:36–16:40 KST에
+적용돼 이 package binary보다 늦다. 따라서 JS hash는 현재 source와 같지만 Go binary는 최신
+로어북 선택 patch를 포함하지 않는다. 현재 package 상태는 `PACKAGE_PARTIAL`이며, 최신 로어북
+동작의 package/live 완료 선언이 아니다.
+
+## 33. 당시 남은 작업 — `HISTORICAL SNAPSHOT`
+
+이 목록은 2026-08-23 시점의 gate다. package 갱신과 로어북 정책은 이후 다시 변경됐으므로 완료
+여부와 현재 우선순위는 section 41에서 판정한다. 특히 아래의 6,000자·Always Active·weak lexical
+검증 문구를 현재 source 계약으로 사용하지 않는다.
+
+### 바로 닫아야 할 검증
+
+1. 최신 로어북 source를 기존 stage9 시험 패키지에 다시 반영한다. 새 이름의 병렬 package를
+   만들지 않고 기존 package를 갱신하고 JS, Go binary, ZIP hash를 다시 기록한다.
+2. 갱신된 package로 같은 세션에서 한 turn을 실행해
+   `lorebook_selection_observation.v1`을 확인한다.
+   - `always_active_candidate_count`는 관찰값으로 남을 수 있음
+   - `always_active_activated_count=0`
+   - `always_active_delivery_count=0`
+   - native duplicate와 weak lexical disposition
+   - key/strong lexical 실제 전달 항목
+   - 최종 chars가 6,000을 채우기 위해 증가하지 않는지
+3. 같은 turn의 backend `planned_exact_payload_text`와 RisuAI pre-request 실제 payload를 대조해
+   기존 verification mismatch를 닫는다. 일치하기 전에는 UI의 “실제 전달” 수치를 live verified로
+   기록하지 않는다.
+4. 출판사·평론가 호출별 장부를 실제 provider 성공/실패 사례에서 확인한다. usage 미보고를 0 또는
+   추정 토큰으로 오표시하지 않는지, timeout과 JSON parse 실패 stage가 정확한지 대조한다.
+5. 일반 기억 감소가 다음 turn에도 유지되는지 확인하되 직접 근거·최근 사건·보호 기억이 사라지지
+   않았는지도 함께 본다. 12,000 설정에서 12,008로 보인 reversible-state 보충분도 exact text로
+   대조해 strict ceiling을 넘는지 판정한다. 목표는 적게 넣는 것 자체가 아니라 불필요한 관계
+   후보만 줄이는 것이다.
+
+### 실제 재현이 생길 때만 진행할 작업
+
+6. MariaDB 경합이 다시 발생하면 1213/1205와 `SHOW ENGINE INNODB STATUS`를 확보한다. 실제
+   1213 상대 transaction이 확인될 때에만 wake 위치 이동 또는 제한 재시도를 검토한다.
+7. 최신 로어북 trace에서 흔한 token 두 개만으로 무관 항목이 실제 전달되는 경우에만 lexical 조건
+   한 곳을 최소 조정한다. 재현 전에는 stopword/IDF/언어별 규칙을 추가하지 않는다.
+
+### 별도 후속 backlog
+
+8. 최신 package를 RisuAI에서 다시 불러온 뒤 예산·호출 장부 UI와 긴 세션의 DOM/heap을 실제로
+   검수한다.
+9. section 20의 전체 UI 재정비는 backend 계약을 다시 만들지 않고, 현재 ViewModel을 가볍게
+   표현하는 별도 작업으로 이어간다.
+
+현재 우선순위는 1–5다. 6–7은 증거 조건부이며, 8–9는 이 backend 안정화 검증이 끝난 뒤의 별도
+UI 작업이다.
+
+## 34. 2026-08-23 최신 로어북 source 시험 패키지 갱신
+
+section 32에서 `PACKAGE_PARTIAL`로 남겼던 기존
+`_test-builds/Pre-4.0.0-stage9-critic-compact-windows-test`를 새 이름으로 복제하지 않고 같은
+경로에서 2026-08-23 19:25 KST에 갱신했다.
+
+### 갱신 절차
+
+- 해당 package의 `archive-center-go.exe` PID 3252 종료
+- package 폴더를 점유하던 잔여 `01_start_archive_center_windows.bat` launcher PID 21648 종료
+- `.env.full.local`을 package 밖 같은 output root에 임시 보존
+- `ops/build-full-package.ps1`을 같은 output root·package name에 `-ForceRefresh -Zip`으로 실행
+- 갱신 뒤 `.env.full.local`을 원래 위치에 복원하고 hash 대조
+- 임시 env 사본과 workspace-local Go build cache/temp 제거
+- backend는 다시 시작하지 않음
+
+첫 빌드는 backend 종료 뒤에도 launcher가 폴더를 점유해 target 삭제 단계에서 중단됐다. launcher를
+정확히 식별·종료한 다음 같은 명령을 다시 실행해 성공했다. 실패한 첫 시도는 package 완료 증거로
+사용하지 않는다.
+
+### 갱신 결과
+
+- package manifest: `green`, `release_ready=true`
+- Go toolchain: `go1.26.5 windows/amd64`
+- source commit: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`, dirty source
+- managed manifest: 46개 파일
+- 실제 managed 파일 hash 불일치: 0개
+- source/package `Archive Center.js` SHA-256:
+  `C1C6B7F2EEF632059B6C2F44DDC513C51DAF1F1DC15DDEDE14180DA30E329AE7`
+- packaged `bin/archive-center-go.exe` SHA-256:
+  `54E8F7D18A83FF8D3AC1F94ECA195091437869301DD63306D059AB067B3E5D43`
+- ZIP SHA-256:
+  `137D6707B567DE97C773347967242F9158D713D929A4A6587566870BF39572DC`
+- 외부 `SHA256SUMS-Pre-4.0.0.txt`: ZIP hash와 일치
+- 복원한 `.env.full.local` SHA-256:
+  `DC89554F1CF1F0196B0DEC2C6F0EA7DFA23F76E963ABFDA1365880AFEA03C81A`
+- package `Archive Center.js` 문법 검사: 통과
+
+이 binary는 section 30의 최신 `Always Active` Host 소유, native exact duplicate 억제, weak
+lexical 보류와 `lorebook_selection_observation.v1` source를 포함해 빌드됐다. 따라서 section 33의
+남은 작업 1번 package 갱신은 `PACKAGE` 단계에서 완료됐다.
+
+아직 남은 우선 검증은 section 33의 2–5번이다. 즉, 새 package를 실제 RisuAI에서 불러 한 turn을
+진행하고 로어북 선택 관찰, 실제 pre-request payload parity, provider 호출 장부, 일반 기억의
+12,000/12,008 경계를 확인해야 한다. 이번 기록은 package 갱신 완료이며 `LIVE` 완료 선언이 아니다.
+
+## 35. 2026-08-23 4.0.0 정식판 identity 승격
+
+활성 source의 제품 identity를 `Pre-4.0.0`에서 `4.0.0` 정식판으로 승격했다. 과거 시험 패키지명과
+Pre 단계의 검증 기록은 역사적 증거이므로 이 문서와 로드맵에서 일괄 치환하지 않았다.
+
+### 정렬한 현재 소유 지점
+
+- `Archive Center.js`: display name, `VERSION`, `BUILD_ID`, `BUILD_CHANNEL=release`, build notes
+- Go 기본 `/version`: `4.0.0`
+- Windows/POSIX package builder 기본값과 빈 값 fallback: `4.0.0`
+- root 및 Windows package env example: `AC_BUILD_VERSION=4.0.0`
+- README·신규 설치/이전 안내의 현재 대상 버전: `4.0.0`
+- JS HUD와 Go `/version` 회귀 기대값: `4.0.0`
+
+직접 업데이트 최소 원본 버전 `3.9.9`, Canon Pack의 버전 호환성 경계, 과거 Pre 시험 산출물 기록은
+현재 제품 identity가 아니므로 변경하지 않았다.
+
+### SOURCE 검증
+
+- `node --check "Archive Center.js"`: 통과
+- Windows/POSIX package builder PowerShell AST 구문 검사: 통과
+- `go test ./... -count=1`: 통과
+- 변경 대상 `git diff --check`: 통과
+
+이번 단계는 `SOURCE` identity 승격 완료다. 정식 출시 완료를 선언하려면 별도 `4.0.0` 패키지를 새로
+생성한 뒤 manifest/hash, package-launched `/version`·`/ready`, 실제 RisuAI의 새 플러그인 로드와 한 turn
+처리를 검증해야 한다. 기존 Pre 시험 패키지의 이름이나 manifest만 고쳐 출시 증거로 사용하지 않는다.
+
+## 36. 2026-08-24 현재 상태와 이전 판정의 대체 관계
+
+이 section 이후가 현재 `4.0.0` source와 최신 시험 패키지의 정본 판정이다. 앞의 section은 삭제하지
+않고 당시의 결정, 실패, trace와 hash를 보존한다.
+
+| 이전 기록 | 현재 판정 |
+|---|---|
+| section 27의 로어북 기본 6,000 | 새·누락·잘못된 설정의 기본값은 3,000. 기존 명시값 6,000과 0은 보존 |
+| section 30의 Always Active Host 보류·overlap 2·weak lexical 규칙 | `SUPERSEDED`; 해당 보수 조건은 현재 선택기에 없음 |
+| sections 32·34의 Pre package hash | 역사적 package snapshot; 최신 hash는 section 40 |
+| section 33의 남은 작업 | 역사적 gate; 현재 gate는 section 41 |
+| section 35 마지막의 “4.0.0 package 없음” | section 40의 실제 4.0.0 폴더·ZIP 생성으로 `PACKAGE` 단계에서 종료 |
+
+이 대체 관계는 과거 작업이 없었다는 뜻이 아니다. 보수적 선택기가 실제로 로어북 0개를 만들고,
+다시 완화하면 6,000자를 채우는 진동을 보였기 때문에 삭제 후 재작성했다는 원인과 순서를 보존한다.
+
+## 37. 로어북 기존 조건 삭제와 선택기 재작성
+
+### 37.1 삭제한 현재 비정본 조건
+
+사용자는 로어북 부분만 대상으로 기존의 보호적·보수적 조건을 먼저 제거한 뒤 다시 작성하도록
+지시했다. 현재 `prepare_turn_lorebook_reference.go`에는 다음 중간 정책이 남아 있지 않다.
+
+- `Always Active`라는 이유만으로 Archive Center 보조 참조를 일괄 차단
+- lexical overlap 2 이상을 요구하는 고정 threshold
+- overlap 1을 무조건 weak로 분류하는 별도 gate
+- 관련성이 약한 후보를 남는 예산만큼 승격해 상한을 채우는 동작
+- 조금 불확실하다는 이유로 로어북 lane 전체를 off 또는 0개로 만드는 fallback
+
+`Always Active`는 관찰 count로 남지만 단독 활성화 근거도, 단독 차단 근거도 아니다. RisuAI Host를
+수정하거나 Host의 원래 로어북 주입을 대신하지 않는다.
+
+### 37.2 현재 Go 소유 선택 순서
+
+현재 `prepareTurnLorebookReferenceSearch`와 `finalizePrepareTurnLorebookReference`의 순서는 다음과
+같다.
+
+1. 현재 세션·캐릭터·활성 모듈 scope에서 받은 catalog만 후보로 사용한다.
+2. 관련성 검색 text는 저장된 `NormalizedSearch`를 우선하고, 비어 있으면
+   `Key + SecondKey + Comment + Content`를 사용한다.
+3. 직접 key match와 문맥 token overlap을 관찰하되, exact payload presence를 no-context보다 먼저
+   판정한다.
+4. 현재 user input, RisuAI request message 또는 이미 조립된 Archive Center context에 같은 본문이
+   있으면 `excluded_already_present`로 기록한다.
+5. 남은 후보 중 문맥 근거가 전혀 없는 항목만 `excluded_no_context_match`로 기록한다.
+6. 동일 본문은 하나의 group으로 합치고 모든 source ref를 보존한다.
+7. 직접 key match group이 하나라도 있으면 모든 직접 key group만 relevance frontier로 삼는다.
+8. 직접 key group이 없으면 가장 높은 양수 `ContextOverlap` 동점 group만 frontier로 삼는다.
+9. 더 낮은 tier는 `excluded_below_relevance_frontier`로 기록하고 예산이 남아도 선택하지 않는다.
+10. char 상한은 frontier가 확정된 뒤에만 적용한다. 한 항목을 중간에서 잘라 넣지 않는다.
+
+따라서 3,000은 목표량이 아니라 마지막 hard ceiling이다. 다만 직접 key group 또는 최고 overlap 동점
+group이 매우 많으면 같은 frontier 안에서 3,000에 가까워질 수 있다. 이 잔여 한계를 없애려고 고정
+항목 수나 임의 threshold를 추가하면 다시 유용한 보조 참조가 0개가 될 수 있으므로, 실제 trace 전에는
+추가 규칙을 넣지 않는다.
+
+### 37.3 관찰과 UI
+
+- 후보·선택·최종 전달 count/chars는 서로 분리한다.
+- 낮은 tier 제외 수는 `FinalDispositionCounts[excluded_below_relevance_frontier]`로 남긴다.
+- payload 장부에는 `lorebook_below_relevance_frontier`로 투영한다.
+- exact 중복은 `lorebook_already_present_in_payload`로 구분한다.
+- `Archive Center.js`는 이 수치와 disposition을 표시할 뿐 선택·예산을 다시 계산하지 않는다.
+- Publisher support와 execution contract에는 실제 전달된 lorebook source만 들어간다.
+
+## 38. 로어북 3,000자 독립 상한
+
+### 38.1 변경한 기본값 owner
+
+새·누락·잘못된 설정의 로어북 기본 상한을 6,000에서 3,000으로 변경했다.
+
+- `Archive Center.js`: `DEFAULT_SETTINGS.lorebookReferenceMaxChars=3000`
+- `go-service/internal/dto/types_gen.go`: DTO default와 `ApplyDefaults` 3,000
+- `go-service/internal/httpapi/group_turn_prepare.go`: 방어적 Go fallback 3,000
+- `contracts/openapi-schema-freeze.json`: OpenAPI default 3,000
+- `contracts/go-dto-mapping-plan.json`·`.md`: DTO freeze default 3,000
+- `contracts/turn-contract-freeze.md`: 독립 lorebook cap과 relevance frontier 계약
+- `docs/3.0.md`: 현재 예산·선택 설명
+
+일반 기억 9,000, 원작 DB 3,000, 로어북 3,000은 서로 빌리거나 빌려주지 않는 독립 상한이다.
+출판사와 평론가는 별도 LLM 호출이므로 main-model payload 합계에 억지로 합치지 않는다.
+
+### 38.2 기존 저장값을 자동 변경하지 않은 이유
+
+정상 플러그인 요청은 RisuAI plugin storage의 설정값을 매번 명시 전송한다. 이미 저장된 6,000이
+과거 기본값인지 사용자가 의도적으로 고른 값인지 현재 저장 형식으로 구분할 수 없다. 따라서
+`saved == 6000`이라는 이유만으로 3,000으로 덮는 migration을 만들지 않았다.
+
+- 새 사용자·설정 key 누락·잘못된 값·기본값 복원: 3,000
+- 기존 저장값 6,000: 그대로 6,000
+- 사용자가 명시한 0: 그대로 0
+- 그 밖의 유효한 사용자 값: 그대로 보존
+
+기존 설치에서 새 상한을 시험하려면 UI에서 3,000을 저장하거나 기본값 복원 후 저장해야 한다.
+
+## 39. 2026-08-24 source·regression 검증
+
+### 39.1 회귀 범위
+
+다음 동작을 production path 회귀로 고정했다.
+
+- 누락 기본값 3,000
+- 명시적 6,000 보존
+- 명시적 0 보존
+- `Content` fallback으로 얻은 최고 관련 후보 전달
+- 큰 잔여 예산이 있어도 약한 context tier 제외
+- 직접 key group이 있으면 context-only group 제외
+- 관련성 0이어도 payload에 이미 있는 본문은 `already_present`로 분류
+- frontier 제외 사유의 payload budget ledger 반영
+- 동일 본문 coalescing과 source ref 보존
+- oversized 항목 부분 절단 금지
+- `Always Active` 단독 강제 활성화 금지
+- scope, Publisher support, guide eligibility와 execution source ref 유지
+
+### 39.2 실행 결과
+
+- `go test ./internal/httpapi -run 'Lorebook|PayloadBudget' -count=1`: 통과
+- `go test ./internal/httpapi -count=1`: 통과
+- `go test ./internal/dto -count=1`: 통과
+- `go test ./cmd/js-route-variant-smoke -count=1`: 번들 Node 경로 지정 후 통과
+- 번들 Node `--check "Archive Center.js"`: 통과
+- `openapi-schema-freeze.json`, `go-dto-mapping-plan.json`: JSON parse 통과
+- `gofmt -d` 대상 Go 파일: 출력 없음
+- `git diff --check`: 통과
+
+처음 JS smoke 실행은 시스템 `PATH`에 `node`가 없어 production fixture 네 건이 실행 전 실패했다.
+`ARCHIVE_CENTER_NODE_BINARY`에 workspace 번들 Node를 지정한 재실행은 전체 통과했으므로 코드 실패로
+분류하지 않는다.
+
+이번 로어북 slice에서 `Archive Center.js`는 기존 기본값 literal 한 줄만 `+1/-1`, net 0이다. 새 JS
+선택 정책은 없다. DB schema, table, API field, hidden retry, parallel cache도 추가하지 않았다.
+
+## 40. 2026-08-24 최신 4.0.0 시험 패키지 갱신
+
+### 40.1 갱신 절차
+
+새 병렬 시험 package를 만들지 않고 기존 최신 외부 경로
+`_test-builds/Pre-4.0.0-stage9-critic-compact-windows-test`를 갱신했다. 외부 경로명은 기존 사용자
+동선과 link를 유지하기 위한 역사적 container이고, 실제 package identity는 4.0.0이다.
+
+- 해당 package의 backend PID `24156` 종료
+- 같은 package의 `01_start_archive_center_windows.bat` launcher PID `22632` 종료
+- `.env.full.local`을 외부 output root의 임시 위치에 보존
+- workspace-local `GOCACHE`·`GOTMPDIR` 사용
+- `powershell.exe -NoProfile -ExecutionPolicy Bypass`로 같은 output root에
+  `-PackageKind managed -PackageVersion 4.0.0 -Zip -ForceRefresh` 실행
+- build 성공 뒤 `.env.full.local` 복원과 SHA-256 동일성 확인
+- 임시 env 사본과 이번 Go cache/temp 제거
+- backend와 launcher는 다시 시작하지 않음
+
+### 40.2 패키지 결과
+
+- 실제 folder: `Archive Center 4.0.0 Windows Auto Install Package`
+- 실제 ZIP: `Archive Center 4.0.0 Windows Auto Install Package.zip`
+- build 출력: `Status: green`
+- manifest: `package_version=4.0.0`, `release_ready=true`
+- release status: `automatic_update_apply=true`
+- source commit: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`, dirty source
+- managed files: 46개
+- 실제 manifest hash 불일치: 0개
+- source/package `Archive Center.js` SHA-256:
+  `9C69DEA34D4E82AE5FFD6FE82B6ED61AB666ED05B62762F82DB8F676ADA839BF`
+- packaged `bin/archive-center-go.exe` SHA-256:
+  `CB2525BB196DD7E19490EF6598EF949D2B985FF9D07F2D6197071F484231EC65`
+- ZIP SHA-256:
+  `DA3EA75D35A567433F332F96E7362010003BE46D01DBFBC5816C1E104506CCD1`
+- `SHA256SUMS-4.0.0.txt`: ZIP과 일치
+- ZIP size: 11,848,718 bytes
+- package local env: 복원 확인
+
+이 증거로 section 35의 “4.0.0 package를 별도로 생성해야 한다”는 항목은 `PACKAGE` 단계에서
+종료됐다. 그러나 package-launched backend, `/ready`, MariaDB·Chroma, 실제 updater 적용, 로드된
+RisuAI와 한 turn은 이번 갱신에서 실행하지 않았으므로 `LIVE` 완료는 아니다.
+
+## 41. 현재 통합 상태와 남은 gate
+
+### 41.1 지금까지의 작업 묶음
+
+| 영역 | 현재 결과 | 증거 | 현재 경계 |
+|---|---|---|---|
+| 영구 JS/Go 경계 | Go가 정책·선택·예산·저장·ViewModel, JS가 Host 관찰·적용·UI | sections 3, 23–30, 37–39 | 현재 source 정본 |
+| UI·정보구조 | near-black 제품 UI, 세계선·기억·기억 관리·추가 기능·설정, 설정 재배치 | sections 5, 20, 23–25 | 실제 긴 세션 DOM/heap 검수 남음 |
+| 세계선·branch | 현재 세션 필터, turn node, branch ancestry·다중 branch 정합성 | sections 6–7 | branch/reroll/delete 장기 live matrix 남음 |
+| 기억 관리·수정 | 세션 작업 공간, DB 연결·이동·복사·삭제, 수동 수정과 원본 계보 | sections 15, 23 | 실제 대량 DB UI 반응 검수 남음 |
+| 기억·로어북 열람 성능 | 20개 page, 누적 append, stale request 차단, 이미 받은 펼침 내용 재사용, session별 lorebook scope | sections 7, 18, 25 | 장시간 누적 DOM/heap과 다중 session 혼합 방지 live 확인 남음 |
+| HypaMemory | 현재 Risu chat의 Hypa 요약을 명시 import하고 Critic·기억·근거·KG 경로에 연결 | section 7.3 | 실제 Risu Hypa data shape별 import 남음 |
+| 입력 재작성 | 검토 후 입력 재작성, 표시·추적·legacy 이름 정리 | section 24 | provider별 live 사용 확인 남음 |
+| 출력 언어 | 최종 출력 언어만 평론가 기억 언어 계약에 사용 | section 8 | 다국어 장기 세션 확인 계속 |
+| 출판사·평론가 단계 0–9 | provider-neutral parsing, 부분 수용, fail-open, 재처리, compact·추론 제어 | sections 9–13, 28 | 실제 provider 성공·timeout·JSON 실패 matrix 남음 |
+| recovery·HUD | recovery source revision 충돌 처리와 성공/실패 HUD 표시 | sections 10, 16 | 실제 여러 실패 유형 UI 확인 남음 |
+| DB 경합 | source revision/status lock 진단 정보와 최소 retry 경계 | section 26 | 실제 1213/1205와 InnoDB 상대 transaction 필요 |
+| 전체 payload 장부 | 기억·원작·로어북·안내·조립 비용과 candidate→selected→final 분리 | sections 27–29 | Host 실제 pre-request payload parity 남음 |
+| 로어북 보조 참조 | 기존 조건 삭제, frontier 재작성, 기본 3,000, 빈 공간 비채움 | sections 36–39 | 최신 package로 실제 2–3턴 trace 필요 |
+| updater | running backend version 정본, 누적 migration inventory, 직접 3.9.9→4.x 계약 | sections 21, 35, 40 | 게시된 4.0.0 asset으로 3.9.11 UI 적용 확인 남음 |
+| 4.0 identity·package | source release identity, managed folder·ZIP·manifest·checksum | sections 35, 40 | package-launched live와 실제 updater 적용 남음 |
+
+### 41.2 다음 실행 순서
+
+1. 기존 RisuAI plugin storage에 6,000이 남아 있으면 3,000으로 저장하거나 기본값 복원 후 저장한다.
+2. section 40 package의 `Archive Center.js`를 RisuAI에서 다시 불러온다.
+3. 같은 세션으로 2–3턴을 실행해 다음 수치를 보존한다.
+   - catalog·candidate count/chars
+   - selected count/chars
+   - final delivery count/chars
+   - `lorebook_below_relevance_frontier`
+   - `lorebook_already_present_in_payload`
+   - `lorebook_no_context_match`
+4. 관련 항목이 있을 때 다시 0개가 되지 않는지, 무관한 낮은 tier로 3,000을 채우지 않는지 확인한다.
+5. backend `planned_exact_payload_text`와 실제 RisuAI pre-request payload를 대조한다.
+6. 출판사·평론가 호출 장부를 실제 provider 성공, usage 미보고, timeout, JSON parse 실패에서 확인한다.
+7. 게시된 4.0.0 bundle이 준비되면 3.9.11 UI updater에서 실제 갱신·DB·설정 보존을 확인한다.
+8. MariaDB 경합이 재현될 때만 1213/1205, source revision/status key/owner와
+   `SHOW ENGINE INNODB STATUS`를 수집해 wake 이동 또는 제한 재시도를 판단한다.
+9. backend 안정화 live gate 뒤에 전체 UI·긴 세션 DOM/heap 개선을 별도 작업으로 이어간다.
+
+최고 관련도 동점 또는 직접 key group 자체가 매우 많으면 로어북이 3,000에 가까워질 수 있다. 실제
+trace에서 이 경우가 재현되기 전에는 고정 개수, stopword allowlist, 언어별 사전, IDF, 별도 LLM
+판정기를 추가하지 않는다. 현재 목표는 “무조건 적게”가 아니라 Host 기본 로어북에서 빠질 수 있는
+관련 정보만 보조하면서, 낮은 관련도로 빈 공간을 채우지 않는 것이다.

@@ -20,6 +20,28 @@ func TestNoopStoreImplementsInterface(t *testing.T) {
 	var _ Store = NewNoopStore()
 }
 
+func TestMariaDBUpdateDirectEvidenceExplorerFieldsWritesEvidenceText(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	value := "corrected evidence"
+	mock.ExpectExec(regexp.QuoteMeta(`
+		UPDATE direct_evidence_records
+		SET evidence_text = ?
+		WHERE id = ? AND chat_session_id = ?
+	`)).WithArgs(value, int64(9), "sess-edit").WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if err := m.UpdateDirectEvidenceExplorerFields(context.Background(), "sess-edit", 9, DirectEvidenceExplorerPatch{EvidenceText: &value}); err != nil {
+		t.Fatalf("update direct evidence: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("sql expectations: %v", err)
+	}
+}
+
 func TestNoopStoreSaveChatLog(t *testing.T) {
 	s := NewNoopStore()
 	if err := s.SaveChatLog(context.Background(), &ChatLog{ChatSessionID: "s1", TurnIndex: 1, Role: "user", Content: "hi"}); err != nil {

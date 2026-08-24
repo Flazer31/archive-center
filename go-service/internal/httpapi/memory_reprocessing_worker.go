@@ -530,6 +530,9 @@ func (s *Server) recordMemoryReprocessingCriticFailure(
 			safeTrace[key] = value
 		}
 	}
+	if callLedger := safeProviderCallBudgetLedger(criticTrace["provider_call_budget_ledger"]); len(callLedger) > 0 {
+		safeTrace["provider_call_budget_ledger"] = callLedger
+	}
 	if preview := strings.TrimSpace(stringFromMap(criticTrace, "raw_preview")); preview != "" {
 		apiKey := s.runtimeConfigSnapshot().CriticAPIKey
 		safeTrace["raw_preview"] = truncateRunes(

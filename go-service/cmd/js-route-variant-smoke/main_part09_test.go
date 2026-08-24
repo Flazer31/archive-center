@@ -21,6 +21,33 @@ func TestArchiveCenterJSSeq20P258Q20mTemporalAmbiguitySupportNotePreparatoryMark
 	}
 }
 
+func TestArchiveCenterJSDirectEvidenceContentEditContract(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`body.evidence_text = String(fields.evidence_text || "").trim();`,
+		`data-field="evidence_text"`,
+		`data-timeline-edit-field="evidence_text"`,
+		`evidence_text: item.evidence_text || ""`,
+		`evidence_text: item.evidence_text || item.preview || ""`,
+		`item.evidence_text = fields.evidence_text;`,
+		`result.status === "ok" || result.status === "partial_error"`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js is missing direct-evidence edit marker %q", marker)
+		}
+	}
+	for _, marker := range []string{
+		`.mo-memory-workspace .mo-ed-edit-btn{`,
+		`background:#181C24`,
+		`color:#F4F5F7`,
+		`appearance:none`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js is missing edit-button contrast marker %q", marker)
+		}
+	}
+}
+
 // SEQ-20-P259: q20m.v1 temporal ambiguity support note contract marker.
 func TestArchiveCenterJSSeq20P259Q20mV1TemporalAmbiguitySupportNoteMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)

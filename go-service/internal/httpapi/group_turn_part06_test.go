@@ -613,16 +613,16 @@ func TestRecentPrepareTurnRawTurnKeepsOnlyPreviousLogicalTurn(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnRelationshipRecallKeepsSingleEndpointHistory(t *testing.T) {
+func TestPrepareTurnRelationshipRecallRejectsSingleEndpointHistory(t *testing.T) {
 	query := "Alice and Eve inspect the sealed gate."
-	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "met", Object: "Rowan"}); !ok || reason != "single_endpoint_current" {
-		t.Fatalf("single-endpoint historical edge was discarded: ok=%v reason=%q", ok, reason)
+	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "met", Object: "Rowan"}); ok || reason != "single_endpoint_only" {
+		t.Fatalf("single-endpoint historical edge accepted: ok=%v reason=%q", ok, reason)
 	}
 	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "trusts", Object: "Eve"}); !ok || reason != "both_endpoints_current" {
 		t.Fatalf("current two-endpoint edge rejected: ok=%v reason=%q", ok, reason)
 	}
-	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "carries", Object: "sealed key"}); !ok || reason != "single_endpoint_current" {
-		t.Fatalf("single-endpoint event edge rejected: ok=%v reason=%q", ok, reason)
+	if ok, reason := prepareTurnKGRecallEligible(query, store.KGTriple{Subject: "Alice", Predicate: "carries", Object: "sealed key"}); !ok || reason != "endpoint_plus_relation_evidence" {
+		t.Fatalf("endpoint plus event evidence rejected: ok=%v reason=%q", ok, reason)
 	}
 
 	raw := `{"Eve":{"trust":74},"Rowan":{"trust":20}}`

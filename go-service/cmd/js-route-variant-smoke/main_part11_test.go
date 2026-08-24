@@ -884,8 +884,14 @@ func TestTurnWorkflowHUDTransportFailureClassificationAndPersistenceRuntime(t *t
 	if !strings.Contains(watch, `turnWorkflowHUDHasHostWarning(normalizedRequestId)`) {
 		t.Fatal("HUD stream cleanup can still erase a recorded host transport warning")
 	}
-	if count := strings.Count(presentation, `+ turnWorkflowHUDWarningListHTML(view)`); count != 4 {
-		t.Fatalf("HUD warning list must be rendered in all four presentation modes; count=%d", count)
+	recoveringStart := strings.Index(presentation, `if (view.status === "recovering")`)
+	failedStart := strings.Index(presentation, `if (view.status === "failed" || severity === "error")`)
+	if recoveringStart < 0 || failedStart <= recoveringStart ||
+		!strings.Contains(presentation[recoveringStart:failedStart], `+ turnWorkflowHUDWarningListHTML(view)`) {
+		t.Fatal("recovering HUD mode does not preserve the host warning list")
+	}
+	if count := strings.Count(presentation, `+ turnWorkflowHUDWarningListHTML(view)`); count != 5 {
+		t.Fatalf("HUD warning list must be rendered in all five presentation modes; count=%d", count)
 	}
 	for _, marker := range []string{
 		`kind: String(kind || "unknown")`,
@@ -1759,7 +1765,7 @@ const settings = {
   lorebookReferenceMode: "reference_assist",
   embeddingApiKey: "", embeddingEndpoint: "", embeddingModel: "", embeddingProvider: "off", embeddingTimeout: 1
 };
-const DEFAULT_SETTINGS = {maxInjectionChars: 1000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off", lorebookReferenceMode: "reference_assist"};
+const DEFAULT_SETTINGS = {maxInjectionChars: 1000, referenceInjectionMaxChars: 3000, lorebookReferenceMaxChars: 3000, topK: 3, episodeIntervalTurns: 10, embeddingProvider: "off", lorebookReferenceMode: "reference_assist"};
 function normalizeNarrativeGuideStrength(value) { return value === "none" ? "none" : "weak"; }
 function getPayloadMessageRoleAndText(message) { return {role: message.role || "", text: message.content || ""}; }
 function sanitizeTopKSetting(value) { return Number(value || 0); }
@@ -1890,14 +1896,14 @@ async function bridgeFetch(path, options) {
   if (fullBody.host_observations !== hostObservations || fullBody.bootstrap_observation !== bootstrapObservation) {
     throw new Error("full prepare did not repeat the correlated host observations");
   }
-  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.injection_enabled !== true || Object.prototype.hasOwnProperty.call(fullBody.settings, "input_context_enabled")) {
+  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.reference_injection_budget_basis_chars !== 3000 || fullBody.settings.lorebook_reference_max_chars !== 3000 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.injection_enabled !== true || Object.prototype.hasOwnProperty.call(fullBody.settings, "input_context_enabled")) {
     throw new Error("fresh-first-turn memory recall was not suppressed independently from guide and Go-default input context");
   }
   await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
   const existingSessionBody = capturedBodies[capturedBodies.length - 1];
-  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "input_context_enabled")) {
+  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || existingSessionBody.settings.reference_injection_budget_basis_chars !== 3000 || existingSessionBody.settings.lorebook_reference_max_chars !== 3000 || Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "input_context_enabled")) {
     throw new Error("existing-session prepare budget regressed");
   }
   settings.injectionBudgetExtraChars = 2500;

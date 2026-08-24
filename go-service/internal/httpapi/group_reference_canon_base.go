@@ -18,6 +18,11 @@ type primaryCanonBaseResult struct {
 	EffectiveSubbudgetChars  int      `json:"effective_subbudget_chars"`
 	BudgetScope              string   `json:"budget_scope"`
 	ReferenceTotalCapChars   int      `json:"reference_total_cap_chars"`
+	CandidateCount           int      `json:"candidate_count"`
+	CandidateChars           int      `json:"candidate_chars"`
+	SelectedCount            int      `json:"selected_count"`
+	SelectedChars            int      `json:"selected_chars"`
+	DeferredCount            int      `json:"deferred_count"`
 	UsedChars                int      `json:"used_chars"`
 	Truncated                bool     `json:"truncated"`
 	MissingFields            []string `json:"missing_fields"`
@@ -266,6 +271,18 @@ func (s *Server) buildPrimaryCanonBase(ctx context.Context, sid, sceneQuery stri
 		}
 		return candidates[i].sourceID < candidates[j].sourceID
 	})
+	var candidateBuilder strings.Builder
+	candidateBuilder.WriteString("[Primary Canon Base]\n")
+	for _, line := range identityLines {
+		candidateBuilder.WriteString(line)
+	}
+	for _, candidate := range candidates {
+		candidateBuilder.WriteString(fmt.Sprintf("- [%s] %s\n", candidate.referenceKind, candidate.text))
+	}
+	result.CandidateCount = len(identityLines) + len(candidates)
+	if result.CandidateCount > 0 {
+		result.CandidateChars = utf8.RuneCountInString(strings.TrimSpace(candidateBuilder.String()))
+	}
 
 	var builder strings.Builder
 	appendWithinBudget := func(text string) bool {
@@ -287,6 +304,7 @@ func (s *Server) buildPrimaryCanonBase(ctx context.Context, sid, sceneQuery stri
 			result.MissingFields = append(result.MissingFields, "work_identity")
 			break
 		}
+		result.SelectedCount++
 	}
 	for _, candidate := range candidates {
 		line := fmt.Sprintf("- [%s] %s\n", candidate.referenceKind, candidate.text)
@@ -297,9 +315,12 @@ func (s *Server) buildPrimaryCanonBase(ctx context.Context, sid, sceneQuery stri
 		key := referenceCoverageSourceKey(candidate.bindingID, candidate.referenceKind, candidate.sourceID)
 		result.selectedSourceKeys[key] = true
 		result.SelectedSourceIDs = append(result.SelectedSourceIDs, candidate.referenceKind+":"+candidate.sourceID)
+		result.SelectedCount++
 	}
 	result.Text = strings.TrimSpace(builder.String())
 	result.UsedChars = utf8.RuneCountInString(result.Text)
+	result.SelectedChars = result.UsedChars
+	result.DeferredCount = maxInt(0, result.CandidateCount-result.SelectedCount)
 	if len(result.SelectedSourceIDs) == 0 {
 		result.Status = "undercovered"
 		result.MissingFields = appendPrimaryCanonBaseMissing(result.MissingFields, "canon_context")

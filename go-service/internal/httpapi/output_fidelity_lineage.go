@@ -175,7 +175,7 @@ func attachPrepareTurnOutputFidelityLineage(
 	payloadPlan["archive_center_request_correlation_id"] = nilIfEmpty(correlationID)
 	payloadPlan["official_risu_request_id_state"] = "official_risu_request_id_not_exposed"
 	payloadPlan["generation_id_state"] = "unobserved"
-	payloadPlan["auxiliary_observation_hash"] = prepareOR1CHash("[Archive Center — Auxiliary Context]\n\n" + extractionStringFromAny(payloadPlan["auxiliary_text"]))
+	payloadPlan["auxiliary_observation_hash"] = prepareOR1CHash(prepareTurnAuxiliaryMessageHeader + "\n\n" + extractionStringFromAny(payloadPlan["auxiliary_text"]))
 	payloadPlan["input_context_observation_hash"] = prepareOR1CHash("[Archive Center — Input Context]\n\n" + extractionStringFromAny(payloadPlan["input_context_text"]))
 	payloadPlan["observation_hash_algorithm"] = "or1c_utf16_djb2.v1"
 

@@ -92,9 +92,10 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `takeover_mode` | str | `"off"` | `"off"`, `"prompt"`, `"auto"` |
 | `injection_enabled` | bool | `true` | Enable memory injection |
 | `input_context_enabled` | bool | `true` | Enable input context |
-| `max_injection_chars` | int | `3000` | Injection length cap |
+| `max_injection_chars` | int | `9000` | Independent main memory, world, and relationship injection cap |
 | `core_objective_memory_max_items` | int | none | Optional final-delivery ceiling for distinct objective event summaries; absent preserves legacy delivery; minimum 1; does not reinterpret `top_k` or count separately budgeted support lanes |
-| `reference_injection_budget_basis_chars` | int | none | Configured memory cap used as the independent reference budget basis; remains stable when a turn temporarily suppresses main memory injection |
+| `reference_injection_budget_basis_chars` | int | `3000` | Independent original-work reference cap; does not borrow from memory or lorebook lanes |
+| `lorebook_reference_max_chars` | int | `3000` | Independent Host lorebook reference cap; does not borrow from memory or original-work lanes |
 | `reference_recall_limit` | int | none | Candidate limit used only by original-work recall; absent inherits `top_k`, explicit 0 disables reference candidates, negative clamps to 0 |
 | `reference_injection_enabled` | bool | none | Controls only the independent reference lane; absent callers inherit `injection_enabled` |
 | `primary_canon_base_max_chars` | int | none | Primary Canon Base subbudget inside the resolved reference total; absent/0 disables the base |
@@ -133,24 +134,96 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `canonical_ledger` | dict | null | Canonical ledger |
 | `recall_result` | dict | null | Recall search result |
 | `supervisor_input_pack` | dict | null | Supervisor input |
+| `publisher_call_budget_ledger` | dict | null | Go-owned Publisher call prompt/token observation; present only when a Publisher call was prepared |
 | `injection_pack` | dict | null | Injection assembly |
 | `packet_composition` | dict | null | Packet composition metadata |
 | `long_session_health` | dict | null | Long-session health snapshot |
 
-`reference_injection.budget_policy` uses contract `reference_injection_budget.v1`.
-Let `M = max(0, reference_injection_budget_basis_chars)` when supplied, otherwise
-fall back to the effective `max_injection_chars`. The host supplies the configured
-memory cap and `reference_injection_enabled` separately, so first-turn main
-suppression (`injection_enabled=false`, `max_injection_chars=0`) does not disable
-the independent reference lane. With reference injection disabled, no
-binding, an unknown-only binding set, or `M=0`, the reference total `R` is 0.
-Supplement-only bindings resolve `R=floor(M/2)`. If any primary binding is
-present (including mixed binding sets), primary wins and `R=M`. The reference
-lane is additive and non-displacing: it never reduces or retrims the main
-memory lane. Primary Canon Base is assembled first with effective subbudget
+`reference_injection.budget_policy` uses contract `reference_injection_budget.v2`.
+Let `R = max(0, reference_injection_budget_basis_chars)`, defaulting to `3000`.
+`R` is the independent original-work reference cap for both supplement and
+primary bindings. If any primary binding is present (including mixed binding
+sets), primary still wins for authority and rendering, but it does not change
+the cap. The original-work lane is additive and non-displacing: it never
+reduces or retrims the main memory or lorebook lanes. Primary Canon Base is
+assembled first with effective subbudget
 `min(max(0, primary_canon_base_max_chars), R)`; scene reference uses the
-remaining `R-primary_used`, so unused base capacity is reusable. The invariant
-is `primary_used + scene_used <= R`.
+remaining `R-primary_used`. Unused base capacity remains reusable only inside
+this original-work lane. The invariant is
+`primary_used + scene_used <= R`.
+
+Let `L = max(0, lorebook_reference_max_chars)`, defaulting to `3000`. The Host
+lorebook lane uses only `L`; original-work usage never reduces it and unused
+original-work capacity never increases it. Likewise, unused lorebook capacity
+is not transferred to original work or main memory. First-turn main-memory
+suppression does not alter either independent reference cap.
+
+#### 3.3.1 Main-model payload budget ledger
+
+`payload_application_plan.budget_ledger` uses contract
+`payload_budget_ledger.v1` and is owned entirely by Go. It accounts only for
+the auxiliary system message prepared for the main-model request. Publisher
+and Critic provider calls are separate calls and MUST NOT be combined into this
+ledger.
+
+The ledger exposes independent lanes for `long_term_memory`, `original_work`,
+`lorebook_reference`, and `output_guidance`. Each lane reports its configured
+and effective cap, candidate, selected, and final-delivery counts and chars,
+plus exclusion or truncation reason counts. The top level reports the sum of
+configured and effective caps, candidate and selected chars, lane-content
+chars, outer title/separator assembly chars, and the exact final auxiliary
+payload chars. Internal lane titles are included in their lane chars; only the
+outer auxiliary title and separators are counted as top-level assembly cost.
+
+`final_delivery_chars` is the exact prepared payload length, not by itself
+proof that RisuAI applied the message. Actual host application is confirmed by
+the existing `payload_application_observation.v1`; the UI may label the backend
+number as delivered only when that observation is ready and applied (or empty),
+and otherwise labels it as planned. JavaScript MUST NOT recompute caps, lane
+totals, candidates, exclusions, or assembly cost.
+
+#### 3.3.2 Lorebook selection observation
+
+`lorebook_reference` keeps the selection policy under the existing
+`lorebook_reference_recall.v1` owner and adds
+`selection_observation_contract=lorebook_selection_observation.v1`. It reports
+catalog, candidate, selected, deferred, and delivered counts; `Always Active`
+counts at candidate and delivery boundaries; matched keys and context overlap;
+final candidate dispositions; and exact-text duplicate suppression classified
+as current user input, Risu host message, or Archive Center context.
+
+After exact-payload suppression and same-content coalescing, direct-key groups
+form the relevance frontier when any exist. Otherwise, only groups tied at the
+highest positive context overlap form the frontier. Context overlap uses the
+stored normalized search text, falling back to key, secondary key, comment, and
+content when that stored text is absent. Lower relevance groups remain excluded
+even when the 3000-character cap has spare capacity. JavaScript may render the
+backend observation but MUST NOT infer activation, recalculate dispositions, or
+select additional entries. A matching Risu host message proves that the Host request already
+contains the exact text; the observation does not guess which native Host
+feature produced that message.
+
+#### 3.3.3 Publisher and Critic call budget ledger
+
+Every actual Publisher or Critic provider call uses
+`provider_call_budget_ledger.v1`. This ledger is separate from the main-model
+`payload_budget_ledger.v1` and reports exact Unicode character counts for the
+assembled call: system prompt, current turn, auxiliary memory, original-work
+reference, lorebook reference, language context, JSON/output requirement,
+assembly, user prompt, and final prompt. A lane that is not part of that call's
+contract is recorded as `0` with status `not_in_call_contract`; it is not
+silently reclassified from another lane.
+
+Provider tokens are copied only from normalized provider response metadata when
+`usage_reported=true`. Otherwise `provider_usage_status=unreported`; chars MUST
+NOT be converted into estimated tokens. The ledger also records HTTP status,
+termination kind, call status, and the exact failure stage such as
+`provider_call`, `provider_response`, `json_parse`, or `schema_validation`.
+Critic keeps its existing detailed `input_budget` trace and adds this common
+ledger. Because the Critic JSON/output contract is embedded in the single
+system prompt file, its separate text length is reported as
+`embedded_in_system_prompt_not_separable` instead of being guessed by parsing
+prompt prose.
 
 **Go DTO**: `internal/dto.PrepareTurnResponse` (auto-generated from OpenAPI)
 

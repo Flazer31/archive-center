@@ -152,8 +152,9 @@ type KGTripleExplorerPatch struct {
 }
 
 // DirectEvidenceExplorerPatch is the bounded manual edit surface for evidence
-// review state transitions.
+// content and review state transitions.
 type DirectEvidenceExplorerPatch struct {
+	EvidenceText        *string
 	ArchiveState        *string
 	CaptureVerification *string
 	CommittedGate       *string

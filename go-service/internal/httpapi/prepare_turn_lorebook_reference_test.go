@@ -10,6 +10,7 @@ import (
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
 type prepareTurnLorebookReferenceStore struct {
@@ -18,6 +19,22 @@ type prepareTurnLorebookReferenceStore struct {
 	readErr   error
 	readCount int
 	lastScope store.LorebookReferenceScope
+}
+
+type prepareTurnSplitReferenceBudgetStore struct {
+	*referenceBindingHTTPStore
+	current *store.LorebookReferenceCurrent
+}
+
+func (f *prepareTurnSplitReferenceBudgetStore) ApplyLorebookReferenceSnapshot(context.Context, *store.LorebookReferenceSnapshot) (*store.LorebookReferenceSnapshotResult, error) {
+	return nil, errors.New("unexpected lorebook snapshot write during prepare-turn")
+}
+
+func (f *prepareTurnSplitReferenceBudgetStore) GetLorebookReferenceCurrent(context.Context, store.LorebookReferenceScope) (*store.LorebookReferenceCurrent, error) {
+	if f.current == nil {
+		return nil, store.ErrNotFound
+	}
+	return f.current, nil
 }
 
 func (f *prepareTurnLorebookReferenceStore) ApplyLorebookReferenceSnapshot(context.Context, *store.LorebookReferenceSnapshot) (*store.LorebookReferenceSnapshotResult, error) {
@@ -36,7 +53,7 @@ func (f *prepareTurnLorebookReferenceStore) GetLorebookReferenceCurrent(_ contex
 	return f.current, nil
 }
 
-func TestPrepareTurnLorebookSearchOnlyUsesExactKeyAndLexicalWithoutDelivery(t *testing.T) {
+func TestPrepareTurnLorebookSearchOnlyListsScopedCatalogWithoutDelivery(t *testing.T) {
 	fake := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
 		current: &store.LorebookReferenceCurrent{
@@ -67,14 +84,8 @@ func TestPrepareTurnLorebookSearchOnlyUsesExactKeyAndLexicalWithoutDelivery(t *t
 	}`)
 
 	result := mapFromAny(response["lorebook_reference"])
-	if result["status"] != "ready" || intFromAny(result["candidate_count"], 0) != 3 {
+	if result["status"] != "ready" || intFromAny(result["candidate_count"], 0) != 4 {
 		t.Fatalf("lorebook search=%#v", result)
-	}
-	methods := mapFromAny(result["method_counts"])
-	for _, method := range []string{"exact_phrase", "key", "lexical"} {
-		if intFromAny(methods[method], 0) == 0 {
-			t.Fatalf("method %s was not observed: %#v", method, methods)
-		}
 	}
 	if intFromAny(result["delivery_count"], -1) != 0 || intFromAny(result["publisher_count"], -1) != 0 {
 		t.Fatalf("search_only delivered lorebook material: %#v", result)
@@ -115,11 +126,10 @@ func TestPrepareTurnLorebookLegacyOffEnablesReferenceAssistAndSearchOnlyDoesNotD
 		return response
 	}
 
-	alwaysActive := true
 	legacyStore := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
 		current: &store.LorebookReferenceCurrent{ScopeID: 2, Entries: []store.LorebookReferenceEntryObservation{
-			{HostEntryID: "legacy-entry", EntryOrdinal: 0, Key: "한얼", Content: "한얼은 유생이다", AlwaysActive: &alwaysActive},
+			{HostEntryID: "legacy-entry", EntryOrdinal: 0, Key: "한얼", Content: "한얼은 유생이다"},
 		}},
 	}
 	legacy := request("off", legacyStore)
@@ -148,11 +158,10 @@ func TestPrepareTurnLorebookLegacyOffEnablesReferenceAssistAndSearchOnlyDoesNotD
 }
 
 func TestPrepareTurnLorebookMissingModeDefaultsToReferenceAssist(t *testing.T) {
-	alwaysActive := true
 	fake := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
 		current: &store.LorebookReferenceCurrent{ScopeID: 4, Entries: []store.LorebookReferenceEntryObservation{
-			{HostEntryID: "default-entry", EntryOrdinal: 0, Key: "한얼", Content: "한얼은 유생이다", AlwaysActive: &alwaysActive},
+			{HostEntryID: "default-entry", EntryOrdinal: 0, Key: "한얼", Content: "한얼은 유생이다"},
 		}},
 	}
 	srv := setupTestServer()
@@ -289,7 +298,7 @@ func TestPrepareTurnLorebookReferenceAssistAddsSeparateLaneAndPublisherSupport(t
 	}`)
 
 	result := mapFromAny(response["lorebook_reference"])
-	if result["status"] != "ready" || intFromAny(result["delivery_count"], 0) != 1 || intFromAny(result["publisher_count"], 0) != 1 {
+	if result["status"] != "ready" || intFromAny(result["delivery_count"], 0) != 1 || intFromAny(result["publisher_count"], 0) != 1 || intFromAny(result["budget_chars"], 0) != 3000 {
 		t.Fatalf("reference assist result=%#v", result)
 	}
 	plan := mapFromAny(response["payload_application_plan"])
@@ -315,93 +324,237 @@ func TestPrepareTurnLorebookReferenceAssistAddsSeparateLaneAndPublisherSupport(t
 	}
 }
 
-func TestPrepareTurnLorebookReferenceAssistSuppressesOnlyExactDisplayedDuplicate(t *testing.T) {
+func TestPrepareTurnLorebookReferenceAssistPreservesExplicitBudgetValues(t *testing.T) {
+	request := func(sessionID, maxChars string) map[string]any {
+		t.Helper()
+		srv := setupTestServer()
+		srv.Store = &prepareTurnLorebookReferenceStore{
+			Store: store.NewNoopStore(),
+			current: &store.LorebookReferenceCurrent{ScopeID: 119, Entries: []store.LorebookReferenceEntryObservation{
+				{HostEntryID: "explicit-budget", EntryOrdinal: 0, Key: "archive", Content: "The archive opens only at dusk."},
+			}},
+		}
+		_, response := prepareTurnPerfRequest(t, srv, `{
+			"chat_session_id":"`+sessionID+`",
+			"raw_user_input":"Return to the archive.",
+			"lorebook_reference_scope":{
+				"contract_version":"lorebook_reference_scope.v1",
+				"observation_state":"observed",
+				"character_index":1,
+				"chat_index":2,
+				"enabled_module_ids":[],
+				"enabled_modules_observed":true
+			},
+			"settings":{
+				"guide_strength":"none",
+				"lorebook_reference_mode":"reference_assist",
+				"lorebook_reference_max_chars":`+maxChars+`
+			}
+		}`)
+		return mapFromAny(response["lorebook_reference"])
+	}
+
+	t.Run("explicit 6000", func(t *testing.T) {
+		result := request("lore-explicit-6000", "6000")
+		if intFromAny(result["budget_chars"], 0) != 6000 || intFromAny(result["delivery_count"], 0) != 1 || result["status"] != "ready" {
+			t.Fatalf("explicit 6000 lorebook budget was not preserved: %#v", result)
+		}
+	})
+	t.Run("explicit zero", func(t *testing.T) {
+		result := request("lore-explicit-zero", "0")
+		if intFromAny(result["budget_chars"], -1) != 0 || intFromAny(result["delivery_count"], -1) != 0 ||
+			result["status"] != "deferred" || result["reason_code"] != "lorebook_reference_budget_zero" {
+			t.Fatalf("explicit zero lorebook budget was not preserved: %#v", result)
+		}
+	})
+}
+
+func TestPrepareTurnLorebookReferenceAssistUsesContentFallbackForStrongestMatch(t *testing.T) {
+	const loreText = "달의 궤도와 별자리 관측 기록이다."
 	fake := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
 		current: &store.LorebookReferenceCurrent{ScopeID: 20, Entries: []store.LorebookReferenceEntryObservation{
-			{HostEntryID: "native-copy", EntryOrdinal: 0, Key: "한얼", Content: "한얼의 신분은 양반 유생이다."},
+			{HostEntryID: "single-anchor", EntryOrdinal: 0, Content: loreText},
 		}},
 	}
 	srv := setupTestServer()
 	srv.Store = fake
 	_, response := prepareTurnPerfRequest(t, srv, `{
-		"chat_session_id":"lore-g5-native",
-		"raw_user_input":"한얼은 무엇을 할까?",
-		"messages":[{"role":"system","content":"한얼의 신분은 양반 유생이다."}],
+		"chat_session_id":"lore-single-context-anchor",
+		"raw_user_input":"별자리 기록을 확인한다.",
 		"lorebook_reference_scope":{
 			"contract_version":"lorebook_reference_scope.v1",
 			"observation_state":"observed",
-			"character_index":1,"chat_index":2,
-			"enabled_module_ids":[],"enabled_modules_observed":true
+			"character_index":1,
+			"chat_index":2,
+			"enabled_module_ids":[],
+			"enabled_modules_observed":true
 		},
-		"settings":{"guide_strength":"none","max_injection_chars":9000,"reference_injection_budget_basis_chars":9000,"lorebook_reference_mode":"reference_assist"}
+		"settings":{"guide_strength":"none","lorebook_reference_mode":"reference_assist"}
 	}`)
+
 	result := mapFromAny(response["lorebook_reference"])
-	if intFromAny(result["delivery_count"], -1) != 0 || intFromAny(result["duplicate_suppressed_count"], 0) != 1 {
-		t.Fatalf("exact native duplicate was not display-only suppressed: %#v", result)
+	if result["status"] != "ready" || intFromAny(result["candidate_count"], 0) != 1 ||
+		intFromAny(result["selected_count"], -1) != 1 || intFromAny(result["delivery_count"], -1) != 1 ||
+		intFromAny(result["no_context_match_count"], -1) != 0 {
+		t.Fatalf("content fallback did not deliver its strongest match: %#v", result)
+	}
+	candidates := outputFidelityLineageSlice(result["candidate_refs"])
+	if len(candidates) != 1 || intFromAny(mapFromAny(candidates[0])["context_overlap"], 0) <= 0 ||
+		extractionStringFromAny(mapFromAny(candidates[0])["final_disposition"]) != "delivered" {
+		t.Fatalf("content-fallback selection observation=%#v", candidates)
 	}
 	plan := mapFromAny(response["payload_application_plan"])
-	if strings.Contains(extractionStringFromAny(plan["auxiliary_text"]), "한얼의 신분은 양반 유생이다.") {
-		t.Fatalf("Archive lorebook copy remained duplicated in auxiliary text: %#v", plan)
+	if !strings.Contains(extractionStringFromAny(plan["auxiliary_text"]), loreText) {
+		t.Fatalf("content-fallback lorebook entry did not reach the payload plan: %#v", plan)
+	}
+	support := mapFromAny(mapFromAny(response["supervisor_input_pack"])["support_packet"])
+	items := outputFidelityLineageSlice(support["delivered_lorebook_reference"])
+	if len(items) != 1 {
+		t.Fatalf("delivered content-fallback lorebook entry did not reach Publisher support: %#v", support)
 	}
 }
 
-func TestFinalizeLorebookReferenceKeepsSimilarTextAndAggregatesOnlyExactLoreCopies(t *testing.T) {
-	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
-	result.Status = "ready"
-	result.ScopeStatus = "observed"
-	result.candidates = []prepareTurnLorebookCandidate{
-		{Entry: store.LorebookReferenceEntryObservation{Content: "한얼은 유생이다."}, EntryRef: "host_entry:first", Methods: []string{"key"}},
-		{Entry: store.LorebookReferenceEntryObservation{Content: " 한얼은   유생이다. "}, EntryRef: "host_entry:second", Methods: []string{"key"}},
-	}
-	finalizePrepareTurnLorebookReference(
-		&result,
-		"한얼의 다음 행동은?",
-		nil,
-		[]string{"한얼은 유생으로서 과거 시험을 준비한다."},
-		true,
-		9000,
-	)
-	if result.DeliveryCount != 1 || result.DuplicateCount != 1 {
-		t.Fatalf("exact lore copies were not grouped once: %#v", result)
-	}
-	if len(result.delivered) != 1 || len(result.delivered[0].SourceRefs) != 2 {
-		t.Fatalf("exact duplicate provenance was lost: %#v", result.delivered)
-	}
-	if !strings.Contains(result.deliveryText, "한얼은 유생이다.") {
-		t.Fatalf("similar memory text incorrectly removed lorebook text: %q", result.deliveryText)
-	}
-}
-
-func TestFinalizeLorebookReferenceDoesNotPartiallyCutOversizedItem(t *testing.T) {
-	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
-	result.Status = "ready"
-	result.ScopeStatus = "observed"
-	result.candidates = []prepareTurnLorebookCandidate{{
-		Entry:    store.LorebookReferenceEntryObservation{Content: "한얼은 과거 시험을 준비하는 양반 유생이다."},
-		EntryRef: "host_entry:large",
-		Methods:  []string{"key"},
-	}}
-	finalizePrepareTurnLorebookReference(&result, "한얼은 무엇을 할까?", nil, nil, true, 8)
-	if result.DeliveryCount != 0 || result.DeferredCount != 1 || result.deliveryText != "" {
-		t.Fatalf("oversized lorebook item was partially cut or force-filled: %#v text=%q", result, result.deliveryText)
-	}
-}
-
-func TestPrepareTurnLorebookReferenceAssistDefersLexicalOnlyCandidateWithoutDelivery(t *testing.T) {
-	const loreText = "Han-eol prepares for the examination in the eastern hall."
+func TestFinalizeLorebookReferenceExcludesWeakerContextBelowFrontierWithSpareBudget(t *testing.T) {
 	fake := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
-		current: &store.LorebookReferenceCurrent{ScopeID: 31, Entries: []store.LorebookReferenceEntryObservation{
-			{HostEntryID: "lexical-only", EntryOrdinal: 0, Content: loreText},
+		current: &store.LorebookReferenceCurrent{ScopeID: 120, Entries: []store.LorebookReferenceEntryObservation{
+			{HostEntryID: "strong-context", EntryOrdinal: 0, NormalizedSearch: "archive silver seal", Content: "The silver archive seal opens the restricted stacks."},
+			{HostEntryID: "weak-context", EntryOrdinal: 1, NormalizedSearch: "archive route", Content: "The southern road passes an abandoned watchtower."},
 		}},
 	}
 	srv := setupTestServer()
 	srv.Store = fake
+	characterIndex, chatIndex := int64(1), int64(2)
+	const query = "Inspect the archive silver seal before departure."
+	result := srv.prepareTurnLorebookReferenceSearch(context.Background(), "lore-context-frontier", query, prepareTurnLorebookModeReferenceAssist, &dto.PrepareTurnLorebookReferenceScopeV1{
+		ContractVersion:        prepareTurnLorebookScopeContractV1,
+		ObservationState:       "observed",
+		CharacterIndex:         &characterIndex,
+		ChatIndex:              &chatIndex,
+		EnabledModuleIDs:       []string{},
+		EnabledModulesObserved: true,
+	})
+	finalizePrepareTurnLorebookReference(&result, query, nil, nil, true, 30000)
+	if result.SelectedCount != 1 || result.DeliveryCount != 1 || result.DeferredCount != 1 ||
+		result.FinalDispositionCounts["excluded_below_relevance_frontier"] != 1 {
+		t.Fatalf("weaker context filled spare lorebook capacity: %#v", result)
+	}
+	dispositions := map[string]string{}
+	for _, candidate := range result.CandidateRefs {
+		dispositions[extractionStringFromAny(candidate["entry_ref"])] = extractionStringFromAny(candidate["final_disposition"])
+	}
+	if dispositions["host_entry:strong-context"] != "delivered" || dispositions["host_entry:weak-context"] != "excluded_below_relevance_frontier" {
+		t.Fatalf("context frontier dispositions=%#v", dispositions)
+	}
+	stats := prepareTurnLorebookPayloadBudgetStats(result)
+	if stats.ExclusionReason["lorebook_below_relevance_frontier"] != 1 {
+		t.Fatalf("context frontier was absent from the payload budget ledger stats: %#v", stats)
+	}
+}
+
+func TestFinalizeLorebookReferenceKeyFrontierExcludesContextOnlyGroupWithSpareBudget(t *testing.T) {
+	fake := &prepareTurnLorebookReferenceStore{
+		Store: store.NewNoopStore(),
+		current: &store.LorebookReferenceCurrent{ScopeID: 121, Entries: []store.LorebookReferenceEntryObservation{
+			{HostEntryID: "direct-key", EntryOrdinal: 0, Key: "eastern archive", Content: "The eastern archive opens only at dawn."},
+			{HostEntryID: "context-only", EntryOrdinal: 1, NormalizedSearch: "eastern archive route", Content: "The western gate leads toward the old bridge."},
+		}},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	characterIndex, chatIndex := int64(1), int64(2)
+	const query = "Return to the eastern archive."
+	result := srv.prepareTurnLorebookReferenceSearch(context.Background(), "lore-key-frontier", query, prepareTurnLorebookModeReferenceAssist, &dto.PrepareTurnLorebookReferenceScopeV1{
+		ContractVersion:        prepareTurnLorebookScopeContractV1,
+		ObservationState:       "observed",
+		CharacterIndex:         &characterIndex,
+		ChatIndex:              &chatIndex,
+		EnabledModuleIDs:       []string{},
+		EnabledModulesObserved: true,
+	})
+	finalizePrepareTurnLorebookReference(&result, query, nil, nil, true, 30000)
+	if result.KeyMatchedCandidateCount != 1 || result.SelectedCount != 1 || result.DeliveryCount != 1 ||
+		result.FinalDispositionCounts["excluded_below_relevance_frontier"] != 1 {
+		t.Fatalf("context-only group crossed the direct-key frontier: %#v", result)
+	}
+	dispositions := map[string]string{}
+	for _, candidate := range result.CandidateRefs {
+		dispositions[extractionStringFromAny(candidate["entry_ref"])] = extractionStringFromAny(candidate["final_disposition"])
+	}
+	if dispositions["host_entry:direct-key"] != "delivered" || dispositions["host_entry:context-only"] != "excluded_below_relevance_frontier" {
+		t.Fatalf("key frontier dispositions=%#v", dispositions)
+	}
+}
+
+func TestPrepareTurnLorebookReferenceAssistUsesPreviousCompletedTurnWithoutFillingFromUnrelatedEntries(t *testing.T) {
+	alwaysActive := true
+	const relevantLore = "영산포는 세곡 물류의 중심이다."
+	const unrelatedLore = "달의 궤도와 별자리 관측 기록이다."
+	fake := &prepareTurnLorebookReferenceStore{
+		Store: store.NewNoopStore(),
+		current: &store.LorebookReferenceCurrent{ScopeID: 21, Entries: []store.LorebookReferenceEntryObservation{
+			{HostEntryID: "previous-context", EntryOrdinal: 0, Key: "영산포", Content: relevantLore},
+			{HostEntryID: "unrelated-always", EntryOrdinal: 1, Content: unrelatedLore, AlwaysActive: &alwaysActive},
+		}},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	query := buildPrepareTurnLorebookSelectionQuery("도착하자마자 움직였다.", []store.ChatLog{
+		{TurnIndex: 25, Role: "user", Content: "호남의 곡창을 살펴보자."},
+		{TurnIndex: 25, Role: "assistant", Content: "영산포에서 세곡선을 확인했다."},
+	}, 4000)
+	characterIndex, chatIndex := int64(1), int64(2)
+	result := srv.prepareTurnLorebookReferenceSearch(context.Background(), "lore-previous-completed-context", query, prepareTurnLorebookModeReferenceAssist, &dto.PrepareTurnLorebookReferenceScopeV1{
+		ContractVersion:        prepareTurnLorebookScopeContractV1,
+		ObservationState:       "observed",
+		CharacterIndex:         &characterIndex,
+		ChatIndex:              &chatIndex,
+		EnabledModuleIDs:       []string{},
+		EnabledModulesObserved: true,
+	})
+	finalizePrepareTurnLorebookReference(&result, "도착하자마자 움직였다.", nil, nil, true, 6000)
+	if result.Status != "ready" || result.CandidateCount != 2 || result.ContextMatchedCandidateCount != 1 ||
+		result.SelectedCount != 1 || result.DeliveryCount != 1 || result.NoContextMatchCount != 1 {
+		t.Fatalf("previous-turn supplemental selection=%#v", result)
+	}
+	dispositions := map[string]string{}
+	for _, candidate := range result.CandidateRefs {
+		dispositions[extractionStringFromAny(candidate["entry_ref"])] = extractionStringFromAny(candidate["final_disposition"])
+	}
+	if dispositions["host_entry:previous-context"] != "delivered" || dispositions["host_entry:unrelated-always"] != "excluded_no_context_match" {
+		t.Fatalf("previous-turn dispositions=%#v", dispositions)
+	}
+	if !strings.Contains(result.deliveryText, relevantLore) || strings.Contains(result.deliveryText, unrelatedLore) {
+		t.Fatalf("supplement delivery included unrelated lorebook content: %q", result.deliveryText)
+	}
+}
+
+func TestPrepareTurnOriginalWorkUsageDoesNotReduceLorebookBudget(t *testing.T) {
+	referenceStore := newReferenceBindingHTTPStore()
+	referenceStore.works = []store.ReferenceWork{{WorkID: "work-1", Title: "Archive Work", Status: "ready"}}
+	referenceStore.continuities = []store.ReferenceContinuity{{ContinuityID: "continuity-1", WorkID: "work-1", Status: "active"}}
+	referenceStore.timeline = []store.ReferenceTimelineNode{{NodeID: "node-budget", WorkID: "work-1", ContinuityID: "continuity-1", Label: "Current", Ordinal: 1, BranchKey: "main", ReviewStatus: "approved"}}
+	referenceStore.claims = []store.ReferenceClaim{{ClaimID: "claim-budget", WorkID: "work-1", ContinuityID: "continuity-1", ClaimText: "The archive opens only at dusk.", TemporalScope: "timeless", BranchKey: "main", KnowledgeScope: "public_world", ReviewStatus: "approved"}}
+	referenceStore.bindings = []store.SessionReferenceBinding{{BindingID: "binding-budget", ChatSessionID: "split-budget", WorkID: "work-1", ContinuityID: "continuity-1", Enabled: true, InjectionEnabled: true, CurrentNodeID: "node-budget", ReferenceMode: referenceModePrimary}}
+
+	embeddingServer, _ := referenceVectorEmbeddingServer(t)
+	defer embeddingServer.Close()
+	vectorStore := &referenceVectorTestStore{exactResults: []vector.ExactQueryResult{{
+		Document:   referenceRecallVectorDocument("claim", "claim-budget"),
+		ChromaRank: 1,
+	}}}
+	srv := referenceRecallTestServer(referenceStore, vectorStore, embeddingServer.URL)
+	srv.Store = &prepareTurnSplitReferenceBudgetStore{
+		referenceBindingHTTPStore: referenceStore,
+		current: &store.LorebookReferenceCurrent{ScopeID: 77, Entries: []store.LorebookReferenceEntryObservation{{
+			HostEntryID: "lore-budget", EntryOrdinal: 0, Key: "archive", Content: "The archive keeper carries a silver seal.",
+		}}},
+	}
+
 	_, response := prepareTurnPerfRequest(t, srv, `{
-		"chat_session_id":"lore-on-demand-lexical",
-		"raw_user_input":"What examination is Han-eol preparing for?",
-		"response_projection":"prepare_turn.production_compact.v1",
+		"chat_session_id":"split-budget",
+		"raw_user_input":"What happens at the archive?",
 		"lorebook_reference_scope":{
 			"contract_version":"lorebook_reference_scope.v1",
 			"observation_state":"observed",
@@ -412,36 +565,154 @@ func TestPrepareTurnLorebookReferenceAssistDefersLexicalOnlyCandidateWithoutDeli
 		},
 		"settings":{
 			"guide_strength":"none",
-			"max_injection_chars":9000,
-			"reference_injection_budget_basis_chars":9000,
-			"lorebook_reference_mode":"reference_assist"
+			"reference_recall_limit":3,
+			"lorebook_reference_mode":"reference_assist",
+			"primary_canon_base_max_chars":3000
 		}
 	}`)
 
-	result := mapFromAny(response["lorebook_reference"])
-	if result["status"] != "deferred" || result["reason_code"] != "lorebook_reference_not_directly_activated" ||
-		intFromAny(result["candidate_count"], 0) != 1 || intFromAny(result["deferred_count"], 0) != 1 ||
-		intFromAny(result["delivery_count"], -1) != 0 || intFromAny(result["publisher_count"], -1) != 0 {
-		t.Fatalf("lexical-only lorebook candidate was not retained as deferred: %#v", result)
+	referenceInjection := mapFromAny(response["reference_injection"])
+	policy := mapFromAny(referenceInjection["budget_policy"])
+	if policy["contract_version"] != "reference_injection_budget.v2" || intFromAny(policy["main_injection_cap_chars"], 0) != 9000 || intFromAny(policy["total_cap_chars"], 0) != 3000 || intFromAny(policy["used_chars"], 0) <= 0 {
+		t.Fatalf("original-work budget was not independently applied: policy=%#v recall=%#v", policy, response["reference_recall"])
 	}
-	plan := mapFromAny(response["payload_application_plan"])
-	if strings.Contains(extractionStringFromAny(plan["auxiliary_text"]), loreText) {
-		t.Fatalf("lexical-only lorebook candidate was injected: %#v", plan)
+	lorebook := mapFromAny(response["lorebook_reference"])
+	if lorebook["status"] != "ready" || intFromAny(lorebook["budget_chars"], 0) != 3000 || intFromAny(lorebook["delivery_count"], 0) != 1 {
+		t.Fatalf("original-work usage reduced the lorebook cap: %#v", lorebook)
 	}
-	support := mapFromAny(mapFromAny(response["supervisor_input_pack"])["support_packet"])
-	if len(outputFidelityLineageSlice(support["delivered_lorebook_reference"])) != 0 {
-		t.Fatalf("deferred lorebook candidate reached Publisher: %#v", support)
+	payloadPlan := mapFromAny(response["payload_application_plan"])
+	lanes := outputFidelityLineageSlice(payloadPlan["lanes"])
+	budgets := map[string]int{}
+	for _, raw := range lanes {
+		lane := mapFromAny(raw)
+		budgets[extractionStringFromAny(lane["key"])] = intFromAny(lane["budget_chars"], 0)
 	}
-	criticJSON, err := json.Marshal(response["critic_input_pack"])
-	if err != nil {
-		t.Fatal(err)
+	if budgets["original_work"] != 3000 || budgets["lorebook_reference"] != 3000 {
+		t.Fatalf("payload lane budgets borrowed from each other: %#v", budgets)
 	}
-	if strings.Contains(string(criticJSON), loreText) {
-		t.Fatalf("deferred lorebook candidate reached Critic: %s", criticJSON)
+	ledger := mapFromAny(payloadPlan["budget_ledger"])
+	if ledger["contract_version"] != "payload_budget_ledger.v1" || ledger["owner"] != "go" {
+		t.Fatalf("payload budget ledger contract = %#v", ledger)
+	}
+	ledgerLanes := map[string]map[string]any{}
+	configuredTotal := 0
+	effectiveTotal := 0
+	laneContentTotal := 0
+	for _, raw := range outputFidelityLineageSlice(ledger["lanes"]) {
+		lane := mapFromAny(raw)
+		ledgerLanes[extractionStringFromAny(lane["key"])] = lane
+		configuredTotal += intFromAny(lane["configured_cap_chars"], 0)
+		effectiveTotal += intFromAny(lane["effective_cap_chars"], 0)
+		laneContentTotal += intFromAny(lane["final_delivery_chars"], 0)
+	}
+	if intFromAny(ledgerLanes["long_term_memory"]["configured_cap_chars"], 0) != 9000 ||
+		intFromAny(ledgerLanes["original_work"]["configured_cap_chars"], 0) != 3000 ||
+		intFromAny(ledgerLanes["lorebook_reference"]["configured_cap_chars"], 0) != 3000 {
+		t.Fatalf("independent configured caps = %#v", ledgerLanes)
+	}
+	if intFromAny(ledgerLanes["long_term_memory"]["effective_cap_chars"], 0) != 9000 ||
+		intFromAny(ledgerLanes["original_work"]["effective_cap_chars"], 0) != 3000 ||
+		intFromAny(ledgerLanes["lorebook_reference"]["effective_cap_chars"], 0) != 3000 ||
+		intFromAny(ledgerLanes["output_guidance"]["effective_cap_chars"], -1) != 0 {
+		t.Fatalf("effective caps did not preserve independent active lanes: %#v", ledgerLanes)
+	}
+	for _, key := range []string{"original_work", "lorebook_reference"} {
+		lane := ledgerLanes[key]
+		if intFromAny(lane["candidate_chars"], 0) <= 0 || intFromAny(lane["selected_chars"], 0) <= 0 || intFromAny(lane["final_delivery_chars"], 0) <= 0 {
+			t.Fatalf("%s candidate-to-final ledger = %#v", key, lane)
+		}
+	}
+	auxiliary := extractionStringFromAny(payloadPlan["auxiliary_text"])
+	expectedFinal := len([]rune(prepareTurnAuxiliaryMessageHeader + "\n\n" + auxiliary))
+	if intFromAny(ledger["configured_cap_chars"], 0) != configuredTotal ||
+		intFromAny(ledger["effective_cap_chars"], 0) != effectiveTotal ||
+		intFromAny(ledger["lane_content_chars"], 0) != laneContentTotal ||
+		intFromAny(ledger["final_delivery_chars"], 0) != expectedFinal ||
+		intFromAny(ledger["assembly_chars"], 0) != expectedFinal-laneContentTotal {
+		t.Fatalf("payload title/separator ledger = %#v plan=%#v", ledger, payloadPlan)
 	}
 }
 
-func TestFinalizeLorebookReferenceAlwaysActiveCanSupplyMissingContext(t *testing.T) {
+func TestPrepareTurnLorebookReferenceAssistSkipsRelevantEntryAlreadyPresentInRisuRequest(t *testing.T) {
+	fake := &prepareTurnLorebookReferenceStore{
+		Store: store.NewNoopStore(),
+		current: &store.LorebookReferenceCurrent{ScopeID: 20, Entries: []store.LorebookReferenceEntryObservation{
+			{HostEntryID: "native-copy", EntryOrdinal: 0, NormalizedSearch: "unrelated index", Content: "한얼의 신분은 양반 유생이다."},
+		}},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	_, response := prepareTurnPerfRequest(t, srv, `{
+		"chat_session_id":"lore-g5-native",
+		"raw_user_input":"무엇을 할까?",
+		"messages":[{"role":"system","content":"한얼의 신분은 양반 유생이다."}],
+		"lorebook_reference_scope":{
+			"contract_version":"lorebook_reference_scope.v1",
+			"observation_state":"observed",
+			"character_index":1,"chat_index":2,
+			"enabled_module_ids":[],"enabled_modules_observed":true
+		},
+		"settings":{"guide_strength":"none","max_injection_chars":9000,"reference_injection_budget_basis_chars":9000,"lorebook_reference_mode":"reference_assist"}
+	}`)
+	result := mapFromAny(response["lorebook_reference"])
+	if intFromAny(result["delivery_count"], -1) != 0 || intFromAny(result["already_present_count"], 0) != 1 ||
+		intFromAny(result["no_context_match_count"], -1) != 0 || result["reason_code"] != "lorebook_relevant_context_already_present" {
+		t.Fatalf("Risu-delivered lorebook content was injected a second time: %#v", result)
+	}
+	candidates := outputFidelityLineageSlice(result["candidate_refs"])
+	if len(candidates) != 1 || extractionStringFromAny(mapFromAny(candidates[0])["final_disposition"]) != "excluded_already_present" ||
+		extractionStringFromAny(mapFromAny(candidates[0])["observed_source"]) != "risu_request_message" {
+		t.Fatalf("already-present decision was not observable: %#v", candidates)
+	}
+	plan := mapFromAny(response["payload_application_plan"])
+	if strings.Contains(extractionStringFromAny(plan["auxiliary_text"]), "한얼의 신분은 양반 유생이다.") {
+		t.Fatalf("already-present lorebook content remained in the Archive Center lane: %#v", plan)
+	}
+}
+
+func TestFinalizeLorebookReferenceCoalescesIdenticalSelectedEntriesWithoutLosingSources(t *testing.T) {
+	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
+	result.Status = "ready"
+	result.ScopeStatus = "observed"
+	result.candidates = []prepareTurnLorebookCandidate{
+		{Entry: store.LorebookReferenceEntryObservation{Content: "한얼은 유생이다."}, EntryRef: "host_entry:first", ContextOverlap: 1},
+		{Entry: store.LorebookReferenceEntryObservation{Content: "한얼은 유생이다."}, EntryRef: "host_entry:second", ContextOverlap: 1},
+	}
+	finalizePrepareTurnLorebookReference(
+		&result,
+		"한얼의 다음 행동은?",
+		nil,
+		[]string{"한얼은 유생으로서 과거 시험을 준비한다."},
+		true,
+		9000,
+	)
+	if result.DeliveryCount != 1 || result.SelectedCount != 1 || result.CoalescedContentCount != 1 {
+		t.Fatalf("identical selected lorebook entries were not coalesced once: %#v", result)
+	}
+	if len(result.delivered) != 1 || !reflect.DeepEqual(result.delivered[0].SourceRefs, []string{"host_entry:first", "host_entry:second"}) {
+		t.Fatalf("coalesced lorebook provenance was lost: %#v", result.delivered)
+	}
+	if strings.Count(result.deliveryText, "한얼은 유생이다.") != 1 {
+		t.Fatalf("identical lorebook content was delivered more than once: %q", result.deliveryText)
+	}
+}
+
+func TestFinalizeLorebookReferenceDoesNotPartiallyCutOversizedItem(t *testing.T) {
+	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
+	result.Status = "ready"
+	result.ScopeStatus = "observed"
+	result.candidates = []prepareTurnLorebookCandidate{{
+		Entry:          store.LorebookReferenceEntryObservation{Content: "한얼은 과거 시험을 준비하는 양반 유생이다."},
+		EntryRef:       "host_entry:large",
+		ContextOverlap: 1,
+	}}
+	finalizePrepareTurnLorebookReference(&result, "한얼은 무엇을 할까?", nil, nil, true, 8)
+	if result.DeliveryCount != 0 || result.DeferredCount != 1 || result.deliveryText != "" {
+		t.Fatalf("oversized lorebook item was partially cut or force-filled: %#v text=%q", result, result.deliveryText)
+	}
+}
+
+func TestFinalizeLorebookReferenceAlwaysActiveHasNoSeparateActivationGate(t *testing.T) {
 	alwaysActive := true
 	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
 	result.Status = "ready"
@@ -451,17 +722,21 @@ func TestFinalizeLorebookReferenceAlwaysActiveCanSupplyMissingContext(t *testing
 			Content:      "The eastern archive opens only at dawn.",
 			AlwaysActive: &alwaysActive,
 		},
-		EntryRef: "host_entry:always-active",
-		Methods:  []string{"lexical"},
+		EntryRef:       "host_entry:always-active",
+		ContextOverlap: 1,
 	}}
 
 	finalizePrepareTurnLorebookReference(&result, "Continue at the eastern archive.", nil, nil, true, 9000)
-	if result.Status != "ready" || result.DeliveryCount != 1 || result.DeferredCount != 0 {
-		t.Fatalf("observed always-active lorebook context was not supplied: %#v", result)
+	if result.Status != "ready" || result.DeliveryCount != 1 || result.DeferredCount != 0 ||
+		result.AlwaysActiveDeliveryCount != 1 {
+		t.Fatalf("always-active lorebook entry did not pass through: %#v", result)
+	}
+	if len(result.CandidateRefs) != 0 {
+		t.Fatalf("manual finalizer fixture unexpectedly exposed candidate refs: %#v", result.CandidateRefs)
 	}
 }
 
-func TestPrepareTurnLorebookSearchIncludesAlwaysActiveWithoutQueryOverlap(t *testing.T) {
+func TestPrepareTurnLorebookAlwaysActiveAloneDoesNotForceSupplementDelivery(t *testing.T) {
 	alwaysActive := true
 	fake := &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
@@ -476,7 +751,7 @@ func TestPrepareTurnLorebookSearchIncludesAlwaysActiveWithoutQueryOverlap(t *tes
 	srv := setupTestServer()
 	srv.Store = fake
 	characterIndex, chatIndex := int64(1), int64(2)
-	result := srv.prepareTurnLorebookReferenceSearch(context.Background(), "lore-always", "A completely unrelated request.", prepareTurnLorebookModeReferenceAssist, &dto.PrepareTurnLorebookReferenceScopeV1{
+	result := srv.prepareTurnLorebookReferenceSearch(context.Background(), "lore-always", "Continue the scene.", prepareTurnLorebookModeReferenceAssist, &dto.PrepareTurnLorebookReferenceScopeV1{
 		ContractVersion:        prepareTurnLorebookScopeContractV1,
 		ObservationState:       "observed",
 		CharacterIndex:         &characterIndex,
@@ -484,52 +759,40 @@ func TestPrepareTurnLorebookSearchIncludesAlwaysActiveWithoutQueryOverlap(t *tes
 		EnabledModuleIDs:       []string{},
 		EnabledModulesObserved: true,
 	})
-	if result.CandidateCount != 1 || intFromAny(result.MethodCounts["always_active"], 0) != 1 {
-		t.Fatalf("always-active entry was not recognized without query overlap: %#v", result)
+	if result.CandidateCount != 1 || result.AlwaysActiveCandidateCount != 1 {
+		t.Fatalf("always-active entry was not listed from the scoped catalog: %#v", result)
 	}
-	finalizePrepareTurnLorebookReference(&result, "A completely unrelated request.", nil, nil, true, 9000)
-	if result.DeliveryCount != 1 || result.Status != "ready" {
-		t.Fatalf("recognized always-active entry was not delivered: %#v", result)
+	finalizePrepareTurnLorebookReference(&result, "Continue the scene.", nil, nil, true, 9000)
+	if result.DeliveryCount != 0 || result.Status != "empty" || result.NoContextMatchCount != 1 {
+		t.Fatalf("always-active flag forced unrelated supplemental delivery: %#v", result)
+	}
+	if result.AlwaysActiveDeliveryCount != 0 {
+		t.Fatalf("always-active candidate/activation/delivery counts=%#v", result)
+	}
+	if len(result.CandidateRefs) != 1 || extractionStringFromAny(result.CandidateRefs[0]["final_disposition"]) != "excluded_no_context_match" {
+		t.Fatalf("always-active final disposition missing: %#v", result.CandidateRefs)
 	}
 }
 
-func TestFinalizeLorebookReferenceSuppressesOnlyActuallyDeliveredDuplicate(t *testing.T) {
-	newResult := func() prepareTurnLorebookReferenceResult {
-		result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
-		result.Status = "ready"
-		result.ScopeStatus = "observed"
-		result.candidates = []prepareTurnLorebookCandidate{{
-			Entry:    store.LorebookReferenceEntryObservation{Content: "Han-eol carries the bronze pass."},
-			EntryRef: "host_entry:bronze-pass",
-			Methods:  []string{"key"},
-		}}
-		return result
-	}
-
-	deliveredMemory := newResult()
+func TestFinalizeLorebookReferenceSkipsEntryAlreadyInArchiveCenterDelivery(t *testing.T) {
+	result := newPrepareTurnLorebookReferenceResult(prepareTurnLorebookModeReferenceAssist)
+	result.Status = "ready"
+	result.ScopeStatus = "observed"
+	result.candidates = []prepareTurnLorebookCandidate{{
+		Entry:          store.LorebookReferenceEntryObservation{Content: "Han-eol carries the bronze pass."},
+		EntryRef:       "host_entry:bronze-pass",
+		ContextOverlap: 1,
+	}}
 	finalizePrepareTurnLorebookReference(
-		&deliveredMemory,
+		&result,
 		"What does Han-eol carry?",
 		nil,
 		[]string{"Han-eol carries the bronze pass."},
 		true,
 		9000,
 	)
-	if deliveredMemory.DeliveryCount != 0 || deliveredMemory.DuplicateCount != 1 {
-		t.Fatalf("actually delivered duplicate was not suppressed from lorebook only: %#v", deliveredMemory)
-	}
-
-	selectedButUndelivered := newResult()
-	finalizePrepareTurnLorebookReference(
-		&selectedButUndelivered,
-		"What does Han-eol carry?",
-		nil,
-		nil,
-		true,
-		9000,
-	)
-	if selectedButUndelivered.DeliveryCount != 1 || selectedButUndelivered.DuplicateCount != 0 {
-		t.Fatalf("an undelivered memory incorrectly suppressed the lorebook fallback: %#v", selectedButUndelivered)
+	if result.DeliveryCount != 0 || result.AlreadyPresentCount != 1 || result.ReasonCode != "lorebook_relevant_context_already_present" {
+		t.Fatalf("Archive Center-delivered content was injected again: %#v", result)
 	}
 }
 
@@ -563,14 +826,14 @@ func TestFinalizeLorebookReferencePreservesNoCandidateReason(t *testing.T) {
 	}
 }
 
-func TestPrepareTurnDeferredLorebookDoesNotChangeMemoryPlanOrLineage(t *testing.T) {
+func TestPrepareTurnLorebookDeliveryDoesNotChangeMemoryPlanOrLineage(t *testing.T) {
 	request := func(mode string, fake *prepareTurnLorebookReferenceStore) map[string]any {
 		t.Helper()
 		srv := setupTestServer()
 		srv.Store = fake
 		_, response := prepareTurnPerfRequest(t, srv, `{
 			"chat_session_id":"lore-memory-invariant",
-			"raw_user_input":"What examination is Han-eol preparing for?",
+			"raw_user_input":"과거 이야기를 계속해줘.",
 			"response_projection":"prepare_turn.production_compact.v1",
 			"lorebook_reference_scope":{
 				"contract_version":"lorebook_reference_scope.v1",
@@ -589,12 +852,12 @@ func TestPrepareTurnDeferredLorebookDoesNotChangeMemoryPlanOrLineage(t *testing.
 	assist := request("reference_assist", &prepareTurnLorebookReferenceStore{
 		Store: store.NewNoopStore(),
 		current: &store.LorebookReferenceCurrent{ScopeID: 32, Entries: []store.LorebookReferenceEntryObservation{
-			{HostEntryID: "lexical-only", EntryOrdinal: 0, Content: "Han-eol prepares for the examination in the eastern hall."},
+			{HostEntryID: "lexical-only", EntryOrdinal: 0, Content: "한얼은 동쪽 서고에서 과거 시험을 준비한다."},
 		}},
 	})
 	for _, key := range []string{"memory_delivery_plan", "memory_delivery_lineage", "memory_recall_plan"} {
 		if !reflect.DeepEqual(searchOnly[key], assist[key]) {
-			t.Fatalf("deferred lorebook changed %s\nsearch_only=%#v\nassist=%#v", key, searchOnly[key], assist[key])
+			t.Fatalf("lorebook delivery changed %s\nsearch_only=%#v\nassist=%#v", key, searchOnly[key], assist[key])
 		}
 	}
 }
@@ -633,35 +896,34 @@ func TestPrepareTurnGuideEligibilityUsesOnlyDeliveredLorebookSupport(t *testing.
 		return response
 	}
 
-	alwaysActive := true
 	delivered := request("lore-guide-delivered", store.LorebookReferenceEntryObservation{
-		HostEntryID: "always-only", EntryOrdinal: 0,
-		Content: "The eastern archive opens only at dawn.", AlwaysActive: &alwaysActive,
+		HostEntryID: "key-match", EntryOrdinal: 0, Key: "eastern archive",
+		Content: "The eastern archive opens only at dawn.",
 	})
 	deliveredLorebook := mapFromAny(delivered["lorebook_reference"])
 	deliveredEligibility := mapFromAny(mapFromAny(delivered["payload_application_plan"])["guide_eligibility"])
 	if intFromAny(deliveredLorebook["delivery_count"], 0) != 1 || deliveredEligibility["status"] != "eligible" ||
-		!stringSliceContains(stringSliceFromAny(deliveredEligibility["source_refs"]), "host_entry:always-only") {
+		!stringSliceContains(stringSliceFromAny(deliveredEligibility["source_refs"]), "host_entry:key-match") {
 		t.Fatalf("delivered lorebook-only support was not guide eligible: lorebook=%#v eligibility=%#v", deliveredLorebook, deliveredEligibility)
 	}
 	deliveredSourceRefs := mapFromAny(mapFromAny(delivered["response_execution_contract"])["source_refs"])
-	if !stringSliceContains(stringSliceFromAny(deliveredSourceRefs["lorebook_reference"]), "host_entry:always-only") {
+	if !stringSliceContains(stringSliceFromAny(deliveredSourceRefs["lorebook_reference"]), "host_entry:key-match") {
 		t.Fatalf("delivered lorebook ref missing from execution contract: %#v", deliveredSourceRefs)
 	}
 
-	deferred := request("lore-guide-deferred", store.LorebookReferenceEntryObservation{
-		HostEntryID: "lexical-only", EntryOrdinal: 0,
-		Content: "The eastern archive contains the old examination register.",
+	unmatched := request("lore-guide-unmatched", store.LorebookReferenceEntryObservation{
+		HostEntryID: "lexical-only", EntryOrdinal: 0, NormalizedSearch: "sealed registry",
+		Content: "The old examination register remains sealed.",
 	})
-	deferredLorebook := mapFromAny(deferred["lorebook_reference"])
-	deferredEligibility := mapFromAny(mapFromAny(deferred["payload_application_plan"])["guide_eligibility"])
-	if intFromAny(deferredLorebook["candidate_count"], 0) != 1 || intFromAny(deferredLorebook["deferred_count"], 0) != 1 ||
-		intFromAny(deferredLorebook["delivery_count"], -1) != 0 || deferredEligibility["status"] != "no_support" ||
-		len(stringSliceFromAny(deferredEligibility["source_refs"])) != 0 {
-		t.Fatalf("candidate or deferred lorebook became guide support: lorebook=%#v eligibility=%#v", deferredLorebook, deferredEligibility)
+	unmatchedLorebook := mapFromAny(unmatched["lorebook_reference"])
+	unmatchedEligibility := mapFromAny(mapFromAny(unmatched["payload_application_plan"])["guide_eligibility"])
+	if intFromAny(unmatchedLorebook["candidate_count"], 0) != 1 || intFromAny(unmatchedLorebook["no_context_match_count"], 0) != 1 ||
+		intFromAny(unmatchedLorebook["delivery_count"], -1) != 0 || unmatchedEligibility["status"] != "no_support" ||
+		len(stringSliceFromAny(unmatchedEligibility["source_refs"])) != 0 {
+		t.Fatalf("unmatched lorebook became delivered guide support: lorebook=%#v eligibility=%#v", unmatchedLorebook, unmatchedEligibility)
 	}
-	deferredSourceRefs := mapFromAny(mapFromAny(deferred["response_execution_contract"])["source_refs"])
-	if len(stringSliceFromAny(deferredSourceRefs["lorebook_reference"])) != 0 {
-		t.Fatalf("deferred lorebook ref reached execution contract: %#v", deferredSourceRefs)
+	unmatchedSourceRefs := mapFromAny(mapFromAny(unmatched["response_execution_contract"])["source_refs"])
+	if len(stringSliceFromAny(unmatchedSourceRefs["lorebook_reference"])) != 0 {
+		t.Fatalf("unmatched lorebook ref reached execution contract: %#v", unmatchedSourceRefs)
 	}
 }

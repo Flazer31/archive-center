@@ -282,6 +282,9 @@ func (f *memoryFakeStore) UpdateDirectEvidenceExplorerFields(ctx context.Context
 	f.updatedEvidence = append(f.updatedEvidence, patch)
 	for i := range f.evidenceItems {
 		if f.evidenceItems[i].ID == recordID && f.evidenceItems[i].ChatSessionID == sid {
+			if patch.EvidenceText != nil {
+				f.evidenceItems[i].EvidenceText = *patch.EvidenceText
+			}
 			if patch.ArchiveState != nil {
 				f.evidenceItems[i].ArchiveState = *patch.ArchiveState
 			}

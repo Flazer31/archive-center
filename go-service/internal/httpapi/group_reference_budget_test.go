@@ -22,13 +22,16 @@ func TestResolveReferenceInjectionBudget(t *testing.T) {
 		{name: "reference injection disabled", maxChars: mainCap, bindingCount: 1, modes: map[string]int{referenceModePrimary: 1}, wantMode: "off", wantSource: "reference_injection_disabled", wantDenominator: 1},
 		{name: "non-positive budget basis", maxChars: 0, enabled: true, bindingCount: 1, modes: map[string]int{referenceModePrimary: 1}, wantMode: "off", wantSource: "reference_budget_basis_non_positive", wantDenominator: 1},
 		{name: "unknown mode only", maxChars: mainCap, enabled: true, bindingCount: 1, modes: map[string]int{referenceModeUnknown: 1}, wantMode: "off", wantSource: "no_active_reference_mode", wantDenominator: 1},
-		{name: "supplement uses floor half", maxChars: mainCap, enabled: true, bindingCount: 1, modes: map[string]int{referenceModeSupplement: 1}, wantMode: referenceModeSupplement, wantSource: "supplement_reference_mode", wantTotal: mainCap / 2, wantNumerator: 1, wantDenominator: 2},
+		{name: "supplement uses independent full cap", maxChars: mainCap, enabled: true, bindingCount: 1, modes: map[string]int{referenceModeSupplement: 1}, wantMode: referenceModeSupplement, wantSource: "supplement_reference_mode", wantTotal: mainCap, wantNumerator: 1, wantDenominator: 1},
 		{name: "primary uses full main cap", maxChars: mainCap, enabled: true, bindingCount: 1, modes: map[string]int{referenceModePrimary: 1}, wantMode: referenceModePrimary, wantSource: "primary_reference_mode", wantTotal: mainCap, wantNumerator: 1, wantDenominator: 1, wantPrimaryLimit: primaryCap},
 		{name: "primary dominates mixed modes", maxChars: mainCap, enabled: true, bindingCount: 2, modes: map[string]int{referenceModeSupplement: 1, referenceModePrimary: 1}, wantMode: referenceModePrimary, wantSource: "primary_reference_mode", wantTotal: mainCap, wantNumerator: 1, wantDenominator: 1, wantPrimaryLimit: primaryCap},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			policy := resolveReferenceInjectionBudget(test.maxChars, test.maxChars, test.enabled, test.bindingCount, test.modes, &primaryCap)
+			if policy.ContractVersion != "reference_injection_budget.v2" || policy.RelationshipToMain != "independent_additive_non_borrowing" {
+				t.Fatalf("independent budget contract = %#v", policy)
+			}
 			if policy.Mode != test.wantMode || policy.Source != test.wantSource || policy.TotalCapChars != test.wantTotal {
 				t.Fatalf("policy = %#v", policy)
 			}
@@ -56,5 +59,17 @@ func TestResolveReferenceInjectionBudgetUsesConfiguredBasisWhenMainTurnCapIsZero
 	policy := resolveReferenceInjectionBudget(0, basis, true, 1, map[string]int{referenceModePrimary: 1}, intPointer(300))
 	if policy.MainInjectionCapChars != 0 || policy.BudgetBasisChars != basis || policy.TotalCapChars != basis {
 		t.Fatalf("independent first-turn reference basis = %#v", policy)
+	}
+}
+
+func TestResolveReferenceInjectionBudgetDoesNotBorrowFromMemoryCap(t *testing.T) {
+	const originalWorkCap = 3000
+	for _, memoryCap := range []int{0, 9000, 24000} {
+		for _, mode := range []string{referenceModeSupplement, referenceModePrimary} {
+			policy := resolveReferenceInjectionBudget(memoryCap, originalWorkCap, true, 1, map[string]int{mode: 1}, intPointer(originalWorkCap))
+			if policy.MainInjectionCapChars != memoryCap || policy.TotalCapChars != originalWorkCap || policy.BudgetBasisChars != originalWorkCap {
+				t.Fatalf("memory=%d mode=%s policy=%#v", memoryCap, mode, policy)
+			}
+		}
 	}
 }

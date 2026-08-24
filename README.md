@@ -1,4 +1,4 @@
-# Archive Center 3.9.11
+# Archive Center 4.0.0
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.

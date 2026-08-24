@@ -424,8 +424,11 @@ func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *
 		t.Fatalf("stale current-state relationship lane survived: character=%q canonical=%q",
 			assembly.CharacterRelationshipText, assembly.CanonRelationshipText)
 	}
-	if !strings.Contains(assembly.KGText, "Han-eol --demonstrated_to--> Bae") {
-		t.Fatalf("historical semantic KG memory was deleted because only one endpoint was current: %q", assembly.KGText)
+	if strings.Contains(assembly.KGText, "Han-eol --demonstrated_to--> Bae") {
+		t.Fatalf("single-endpoint historical KG edge survived without current relation evidence: %q", assembly.KGText)
+	}
+	if got := intFromAny(assembly.Counts["kg_single_endpoint_only_dropped"], 0); got != 1 {
+		t.Fatalf("kg_single_endpoint_only_dropped=%d, want 1; counts=%#v", got, assembly.Counts)
 	}
 	if strings.Contains(assembly.CanonWorldText, "old workshop") || strings.Contains(assembly.CanonWorldText, "old bellows") {
 		t.Fatalf("stale volatile world state survived: %q", assembly.CanonWorldText)

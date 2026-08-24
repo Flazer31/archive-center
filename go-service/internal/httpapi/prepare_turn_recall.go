@@ -808,6 +808,10 @@ func prepareTurnDirectEntityMentionRank(rawUserInput, characterName string, alia
 	return 0
 }
 
+// A knowledge-graph edge is not current merely because one endpoint appears in
+// the scene. It needs both endpoints, or an endpoint plus corroborating relation
+// or event terms. This prevents every historical edge of a current character
+// from consuming the relationship budget.
 func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, string) {
 	subjectMatched := prepareTurnRecallContainsAnchor(query, triple.Subject)
 	objectMatched := prepareTurnRecallContainsAnchor(query, triple.Object)
@@ -815,7 +819,16 @@ func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, str
 		return true, "both_endpoints_current"
 	}
 	if subjectMatched || objectMatched {
-		return true, "single_endpoint_current"
+		complementaryEvidence := strings.TrimSpace(triple.Predicate)
+		if subjectMatched {
+			complementaryEvidence = strings.TrimSpace(complementaryEvidence + " " + triple.Object)
+		} else {
+			complementaryEvidence = strings.TrimSpace(triple.Subject + " " + complementaryEvidence)
+		}
+		if prepareTurnSupportRecallEligible(query, complementaryEvidence) {
+			return true, "endpoint_plus_relation_evidence"
+		}
+		return false, "single_endpoint_only"
 	}
 	line := strings.TrimSpace(triple.Subject + " " + triple.Predicate + " " + triple.Object)
 	if prepareTurnSupportRecallEligible(query, line) {

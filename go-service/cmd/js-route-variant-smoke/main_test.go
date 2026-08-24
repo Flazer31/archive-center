@@ -163,13 +163,22 @@ func TestArchiveCenterJSCanonPackAndDiscoveryUIMarkers(t *testing.T) {
 func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
-		`reference_injection_budget_basis_chars: settings.maxInjectionChars || DEFAULT_SETTINGS.maxInjectionChars,`,
+		`reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),`,
+		`lorebook_reference_max_chars: Number(settings.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars),`,
 		`reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),`,
 		`reference_injection_enabled: settings.injectionEnabled !== false,`,
 		`payloadApplicationPlan: result.payload_application_plan`,
+		`publisherCallBudgetLedger: result.publisher_call_budget_ledger || null`,
+		`lorebookReference: result.lorebook_reference || (result.injection_pack && result.injection_pack.lorebook_reference_recall) || null`,
+		`plan.budget_ledger.contract_version === "payload_budget_ledger.v1"`,
+		`payloadBudgetLedger.final_delivery_chars`,
 		`const auxiliaryText = String(plan.auxiliary_text || "")`,
 		`injectAuxiliaryBlock(finalPayload, auxiliaryText)`,
 		`referenceIncluded: !!(laneByKey.original_work && laneByKey.original_work.applied)`,
+		`function renderLorebookSelectionDiagnostics()`,
+		`function renderProviderCallBudgetLedgers()`,
+		`ledger.contract_version !== "provider_call_budget_ledger.v1"`,
+		`provider did not report token usage`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing primary Canon Base host-consumption marker %q", marker)
@@ -177,6 +186,58 @@ func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testi
 	}
 	if strings.Contains(src, "await runSupervisor(") {
 		t.Fatal("host adapter must not create a second supervisor path")
+	}
+	if strings.Contains(src, `budgetLimit: lanes.reduce(`) || strings.Contains(src, `renderItBlock("Auxiliary Context Budget"`) {
+		t.Fatal("JavaScript must not recompute or retain the memory-only payload budget summary")
+	}
+}
+
+func TestArchiveCenterJSRendersLorebookAndProviderCallObservations(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for selection/call-ledger runtime smoke")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractJSFunctionBlockForTest(t, src, "function renderLorebookSelectionDiagnostics()") + "\n" +
+		extractJSFunctionBlockForTest(t, src, "function renderProviderCallBudgetLedgers()") + `
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+function statusDotClass(value) { return value; }
+function escapeAttr(value) { return String(value == null ? "" : value); }
+const lastTurnTrace = {
+  lorebookReference: {
+    selection_observation_contract:"lorebook_selection_observation.v1",
+    catalog_count:40,candidate_count:3,selected_count:1,delivery_count:1,
+    key_matched_candidate_count:1,context_matched_candidate_count:2,
+    already_present_count:1,no_context_match_count:1,coalesced_content_count:0,
+    always_active_candidate_count:1,always_active_delivery_count:0,
+    final_disposition_counts:{delivered:1,excluded_already_present:1,excluded_no_context_match:1},
+    delivery_chars:120,budget_chars:6000,budget_deferred_count:0,
+    candidate_refs:[
+      {entry_ref:"host_entry:relevant",always_active:false,matched_keys:["한얼"],context_overlap:1,final_disposition:"delivered",delivered:true},
+      {entry_ref:"host_entry:present",always_active:true,matched_keys:[],context_overlap:1,observed_source:"risu_request_message",final_disposition:"excluded_already_present",delivered:false}
+    ]
+  },
+  providerCallBudgetLedgers: {
+    publisher:{contract_version:"provider_call_budget_ledger.v1",owner:"go",status:"succeeded",final_prompt_chars:2000,system_prompt_chars:700,current_turn_chars:100,auxiliary_memory_chars:500,original_work_reference_chars:0,original_work_reference_status:"not_in_call_contract",lorebook_reference_chars:200,lorebook_reference_status:"delivered",json_schema_output_requirement_chars:100,json_schema_output_requirement_accounting:"separate_user_payload_field",assembly_chars:400,provider_usage_status:"reported",input_tokens:500,output_tokens:100,total_tokens:600},
+    critic:{contract_version:"provider_call_budget_ledger.v1",owner:"go",status:"failed",failure_stage:"json_parse",failure_code:"CRITIC_JSON_PARSE_FAILED",final_prompt_chars:4000,system_prompt_chars:1600,current_turn_chars:500,auxiliary_memory_chars:1200,original_work_reference_chars:0,original_work_reference_status:"not_in_call_contract",lorebook_reference_chars:0,lorebook_reference_status:"not_in_call_contract",json_schema_output_requirement_chars:0,json_schema_output_requirement_accounting:"embedded_in_system_prompt_not_separable",assembly_chars:700,provider_usage_status:"unreported"}
+  }
+};
+const lorebookHTML = renderLorebookSelectionDiagnostics();
+assert(lorebookHTML.includes("40 → 3 → 1 → 1"), "candidate-to-selection-to-delivery counts missing");
+assert(lorebookHTML.includes("key=한얼") && lorebookHTML.includes("present=risu_request_message"), "selection evidence missing");
+const callHTML = renderProviderCallBudgetLedgers();
+assert(callHTML.includes("input 500") && callHTML.includes("output 100"), "reported provider tokens missing");
+assert(callHTML.includes("provider did not report token usage"), "unreported usage was not explicit");
+assert(callHTML.includes("CRITIC_JSON_PARSE_FAILED") && callHTML.includes("json_parse"), "critic failure point missing");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("selection/call-ledger runtime smoke failed: %v\n%s", err, out)
 	}
 }
 
@@ -200,7 +261,25 @@ function composeEffectiveInputFromTransparency() { return "REFERENCE\n\nMAIN"; }
 function isBackendEffectiveInputPreview(value) { return !!(value && value.contract_version === "effective_input_preview.v1"); }
 function computeOrchestrationDirtyHashOr1c(value) { return String(value == null ? "" : value); }
 function formatLanguageContextBlock() { return ""; }
-function t(key) { return key; }
+function t(key) {
+  const labels = {
+    "dash.preview.payloadBudget.title":"Payload Ledger",
+    "dash.preview.payloadBudget.actual":"Delivered",
+    "dash.preview.payloadBudget.planned":"Planned delivery",
+    "dash.preview.payloadBudget.configured":"Configured",
+    "dash.preview.payloadBudget.effective":"Effective",
+    "dash.preview.payloadBudget.assembly":"Assembly",
+    "dash.preview.payloadBudget.candidate":"Candidate",
+    "dash.preview.payloadBudget.selected":"Selected",
+    "dash.preview.payloadBudget.final":"Final",
+    "dash.preview.payloadBudget.excluded":"Excluded",
+    "dash.preview.payloadBudget.lane.long_term_memory":"Memory",
+    "dash.preview.payloadBudget.lane.original_work":"Original DB",
+    "dash.preview.payloadBudget.lane.lorebook_reference":"Lorebook",
+    "dash.preview.payloadBudget.lane.output_guidance":"Publisher guidance"
+  };
+  return labels[key] || key;
+}
 function escapeAttr(value) { return String(value == null ? "" : value); }
 function truncPreview(value) { return String(value == null ? "" : value); }
 function renderItBlockRaw(title, html) { return '<RAW title="' + title + '">' + html + '</RAW>'; }
@@ -242,7 +321,22 @@ currentTrace = {_inputTransparency: {
         {key:"lorebook_reference",title:"Lorebook Reference",text:"LORE",applied:true},
         {key:"output_guidance",title:"Output Guidance Context",text:"GUIDANCE",applied:true}
       ],
+      budget_ledger: {
+        contract_version:"payload_budget_ledger.v1",owner:"go",
+        final_delivery_chars:14200,configured_cap_chars:21000,effective_cap_chars:18000,assembly_chars:120,
+        lanes:[
+          {key:"long_term_memory",title:"Long-term Memory Context",configured_cap_chars:9000,candidate_chars:9800,selected_chars:8500,final_delivery_chars:8500,excluded_count:2,exclusion_reasons:{memory_char_budget:2}},
+          {key:"original_work",title:"Original Work Context",configured_cap_chars:3000,candidate_chars:2100,selected_chars:1700,final_delivery_chars:1700,excluded_count:1,exclusion_reasons:{original_work_char_budget:1}},
+          {key:"lorebook_reference",title:"Lorebook Reference",configured_cap_chars:6000,candidate_chars:4300,selected_chars:4300,final_delivery_chars:4000,excluded_count:1,exclusion_reasons:{lorebook_char_budget:1}},
+          {key:"output_guidance",title:"Output Guidance Context",configured_cap_chars:3000,candidate_chars:0,selected_chars:0,final_delivery_chars:0,excluded_count:0,exclusion_reasons:{}}
+        ]
+      },
       input_context_text:"INPUT CONTEXT"
+    },
+    payloadApplicationObservation: {
+      contract_version:"payload_application_observation.v1",
+      status:"ready",
+      payload_application_status:"applied"
     },
     protection: {text: "PRIORITY"},
     memoryDeliveryPlan: {used_chars:45,delivery_cap_chars:600,global_cap_chars:600,classes: memoryClassFixtures}
@@ -253,7 +347,9 @@ const canonicalMemoryPlanBeforeRender = JSON.stringify(currentTrace._inputTransp
 html = renderEffectiveInputSection();
 assert(html.includes('<BLOCK title="Actual User Input">ACTUAL USER</BLOCK>'), "actual user pane is missing");
 assert(html.includes('<BLOCK title="Priority and Base Rules">PRIORITY</BLOCK>'), "priority pane is missing");
-assert(html.includes('<BLOCK title="Auxiliary Context Budget">') && html.includes('45') && html.includes('600 chars</BLOCK>'), "memory delivery budget summary is missing");
+assert(html.includes('<BLOCK title="Payload Ledger">') && html.includes('Delivered 14200 / Configured 21000 chars') && html.includes('Assembly 120 chars'), "backend payload ledger summary is missing");
+assert(html.includes('Memory 8500 / 9000 chars') && html.includes('Candidate 9800 → Selected 8500 → Final 8500') && html.includes('memory_char_budget=2'), "backend lane ledger was not rendered verbatim");
+assert(!html.includes('Auxiliary Context Budget'), "legacy memory-only budget summary survived");
 let previousPaneIndex = -1;
 memoryClassFixtures.forEach(function(deliveryClass) {
   const paneIndex = html.indexOf('title="' + deliveryClass.title);
@@ -625,7 +721,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center Pre-4.0.0"`,
+		`const BUILD_NOTES = "Archive Center 4.0.0"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {

@@ -1,6 +1,6 @@
 package httpapi
 
-const referenceInjectionBudgetContractVersion = "reference_injection_budget.v1"
+const referenceInjectionBudgetContractVersion = "reference_injection_budget.v2"
 
 type referencePrimaryCanonBaseBudget struct {
 	Scope              string `json:"scope"`
@@ -41,7 +41,7 @@ func resolveReferenceInjectionBudget(maxInjectionChars, budgetBasisChars int, in
 		Source:                "no_active_reference_mode",
 		ResolutionRule:        "primary_if_any",
 		Rounding:              "floor",
-		RelationshipToMain:    "additive_non_displacing",
+		RelationshipToMain:    "independent_additive_non_borrowing",
 		MainInjectionCapChars: mainCap,
 		BudgetBasisChars:      maxReferenceBudget(budgetBasisChars, 0),
 		RatioNumerator:        0,
@@ -75,9 +75,9 @@ func resolveReferenceInjectionBudget(maxInjectionChars, budgetBasisChars int, in
 		policy.Status = "resolved"
 		policy.Mode = referenceModeSupplement
 		policy.Source = "supplement_reference_mode"
-		policy.TotalCapChars = policy.BudgetBasisChars / 2
+		policy.TotalCapChars = policy.BudgetBasisChars
 		policy.RatioNumerator = 1
-		policy.RatioDenominator = 2
+		policy.RatioDenominator = 1
 	}
 	return policy
 }

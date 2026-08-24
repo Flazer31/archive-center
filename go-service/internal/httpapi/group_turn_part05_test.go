@@ -1259,6 +1259,7 @@ func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *t
 		[]store.KGTriple{
 			{ID: 1, Subject: "Alice", Predicate: "carries", Object: "sealed key"},
 			{ID: 2, Subject: "Bob", Predicate: "visits", Object: "market"},
+			{ID: 3, Subject: "Alice", Predicate: "met", Object: "Rowan"},
 		},
 		nil, nil,
 		[]store.Storyline{
@@ -1284,7 +1285,7 @@ func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *t
 		5, 12000, "Alice opens the sealed gate.", "default", nil, nil, nil, perspective,
 	)
 	for _, text := range []string{assembly.KGText, assembly.StorylineText, assembly.CharacterText, assembly.PendingThreadText, assembly.EpisodeText} {
-		if strings.Contains(text, "Bob") || strings.Contains(text, "market") {
+		if strings.Contains(text, "Bob") || strings.Contains(text, "market") || strings.Contains(text, "Rowan") {
 			t.Fatalf("unrelated support row survived relevance gate: %q", text)
 		}
 	}
@@ -1293,8 +1294,23 @@ func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *t
 			t.Fatalf("assembly missing supported continuity %q: %s", wanted, assembly.Text)
 		}
 	}
+	relationshipClassFound := false
+	for _, rawClass := range prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryPlan["classes"]) {
+		class := mapFromAny(rawClass)
+		if extractionStringFromAny(class["key"]) != "subjective_relationship" {
+			continue
+		}
+		relationshipClassFound = true
+		if intFromAny(class["eligible_count"], 0) != 1 || intFromAny(class["selected_count"], 0) != 1 || intFromAny(class["used_chars"], 0) <= 0 {
+			t.Fatalf("relationship lane candidate/selected/final chars mismatch: %#v", class)
+		}
+	}
+	if !relationshipClassFound {
+		t.Fatalf("relationship lane diagnostics missing: %#v", assembly.MemoryDeliveryPlan)
+	}
 	for key, want := range map[string]int{
-		"kg_irrelevant_dropped":              1,
+		"kg_irrelevant_dropped":              2,
+		"kg_single_endpoint_only_dropped":    1,
 		"storyline_irrelevant_dropped":       1,
 		"character_state_irrelevant_dropped": 1,
 		"pending_thread_irrelevant_dropped":  1,

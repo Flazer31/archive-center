@@ -339,6 +339,39 @@ func TestPublisherTruncatedJSONFailsOpenAfterOneProviderCall(t *testing.T) {
 	if metadata["termination_kind"] != "length" || intFromAny(metadata["output_tokens"], 0) != 20 {
 		t.Fatalf("Publisher provider response metadata=%#v", metadata)
 	}
+	ledger := mapFromAny(trace["provider_call_budget_ledger"])
+	if ledger["contract_version"] != providerCallBudgetLedgerContractV1 || ledger["owner"] != "go" ||
+		ledger["call_kind"] != "publisher" || ledger["status"] != "failed_open" || ledger["failure_stage"] != "json_parse" {
+		t.Fatalf("Publisher call ledger failure classification=%#v", ledger)
+	}
+	if intFromAny(ledger["base_prompt_chars"], 0) != intFromAny(ledger["system_prompt_chars"], 0) ||
+		intFromAny(ledger["system_prompt_chars"], 0) <= 0 || intFromAny(ledger["final_prompt_chars"], 0) <= intFromAny(ledger["system_prompt_chars"], 0) ||
+		intFromAny(ledger["json_schema_output_requirement_chars"], 0) <= 0 || ledger["provider_usage_status"] != "reported" ||
+		intFromAny(ledger["input_tokens"], 0) != 100 || intFromAny(ledger["output_tokens"], 0) != 20 {
+		t.Fatalf("Publisher call ledger sizes or usage=%#v", ledger)
+	}
+}
+
+func TestProviderCallBudgetLedgerDoesNotEstimateUnreportedTokens(t *testing.T) {
+	ledger := newProviderCallBudgetLedger("publisher", "SYSTEM", "USER", providerCallBudgetComponents{
+		CurrentTurnChars:                      2,
+		AuxiliaryMemoryChars:                  1,
+		OriginalWorkReferenceStatus:           "not_in_call_contract",
+		LorebookReferenceStatus:               "not_in_call_contract",
+		JSONSchemaOutputRequirementAccounting: "separate_user_payload_field",
+	})
+	observeProviderCallBudgetResult(ledger, map[string]any{
+		"usage_reported":   false,
+		"termination_kind": "complete",
+	}, http.StatusOK, "succeeded", "")
+	if ledger["provider_usage_status"] != "unreported" {
+		t.Fatalf("unreported provider usage was reclassified: %#v", ledger)
+	}
+	for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "total_tokens"} {
+		if _, exists := ledger[key]; exists {
+			t.Fatalf("unreported provider usage gained estimated %s: %#v", key, ledger)
+		}
+	}
 }
 
 func TestPublisherOllamaSingleCallPreservesInputStrengthModelAndReasoning(t *testing.T) {
@@ -440,7 +473,7 @@ func TestPublisherAllowsOnlyDeliveredLorebookReferenceExactRefs(t *testing.T) {
 	defer provider.Close()
 
 	srv := setupTestServer()
-	result, _, err := srv.runSupervisorLLM(context.Background(), "publisher-lorebook-reference", pack, completeTurnLLMConfig{
+	result, trace, err := srv.runSupervisorLLM(context.Background(), "publisher-lorebook-reference", pack, completeTurnLLMConfig{
 		Provider: "openai", APIKey: "test-publisher-key", Endpoint: provider.URL,
 		Model: "test-publisher", TimeoutMs: 2000, MaxTokens: 1200,
 	})
@@ -453,6 +486,11 @@ func TestPublisherAllowsOnlyDeliveredLorebookReferenceExactRefs(t *testing.T) {
 	guidance := supervisorSceneProposalGuidanceItems(result, "standard")
 	if len(guidance) != 1 || !reflect.DeepEqual(guidance[0].SourceRefs, []string{lorebookRef}) {
 		t.Fatalf("Publisher did not retain the exact delivered lorebook ref: %#v", guidance)
+	}
+	ledger := mapFromAny(trace["provider_call_budget_ledger"])
+	if intFromAny(ledger["lorebook_reference_chars"], 0) <= 0 || ledger["lorebook_reference_status"] != "delivered" ||
+		intFromAny(ledger["original_work_reference_chars"], -1) != 0 || ledger["original_work_reference_status"] != "not_in_call_contract" {
+		t.Fatalf("Publisher reference-lane call ledger=%#v", ledger)
 	}
 }
 

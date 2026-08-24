@@ -262,6 +262,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))
 	kgClosedDropped := 0
 	kgIrrelevantDropped := 0
+	kgSingleEndpointDropped := 0
 	kgReferenceTurn := prepareTurnMaxObservedTurn(chatLogs, nil)
 	for _, t := range kgTriples {
 		if len(kgLines) >= recallLimit {
@@ -275,9 +276,12 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if line == "-->" {
 			continue
 		}
-		eligible, _ := prepareTurnKGRecallEligible(relationshipQuery, t)
+		eligible, reason := prepareTurnKGRecallEligible(relationshipQuery, t)
 		if !eligible {
 			kgIrrelevantDropped++
+			if reason == "single_endpoint_only" {
+				kgSingleEndpointDropped++
+			}
 			continue
 		}
 		kgLines = append(kgLines, line)
@@ -954,6 +958,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["kg_bound"] = len(kgLines)
 	out.Counts["kg_closed_or_not_yet_valid_dropped"] = kgClosedDropped
 	out.Counts["kg_irrelevant_dropped"] = kgIrrelevantDropped
+	out.Counts["kg_single_endpoint_only_dropped"] = kgSingleEndpointDropped
 	out.Counts["storyline_irrelevant_dropped"] = storylineIrrelevantDropped
 	out.Counts["world_rule_irrelevant_dropped"] = worldRuleIrrelevantDropped
 	out.Counts["world_rule_persistent_selected"] = worldRulePersistentSelected

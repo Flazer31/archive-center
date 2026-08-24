@@ -148,7 +148,7 @@ func TestPrimaryCanonBaseSupplementPrepareDoesNotRunAdditionalPrimaryReads(t *te
 		t.Fatalf("supplement base = %#v", base)
 	}
 	policy := response["reference_injection"].(map[string]any)["budget_policy"].(map[string]any)
-	if policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(150) || policy["source"] != "supplement_reference_mode" {
+	if policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(300) || policy["source"] != "supplement_reference_mode" {
 		t.Fatalf("supplement reference budget policy = %#v", policy)
 	}
 	if fake.bindingListReads != 1 {
@@ -172,6 +172,11 @@ func TestPrimaryCanonBaseConfiguredCapIsBoundedByReferenceTotal(t *testing.T) {
 	}
 	if base["used_chars"].(float64) > base["effective_subbudget_chars"].(float64) {
 		t.Fatalf("primary base exceeded reference subbudget: %#v", base)
+	}
+	if intFromAny(base["candidate_count"], 0) <= intFromAny(base["selected_count"], 0) ||
+		intFromAny(base["candidate_chars"], 0) <= intFromAny(base["selected_chars"], 0) ||
+		intFromAny(base["deferred_count"], 0) == 0 {
+		t.Fatalf("bounded primary candidate-to-selected trace = %#v", base)
 	}
 }
 
@@ -303,9 +308,10 @@ func primaryCanonBaseVectorDocument(kind, sourceID string) vector.VectorDocument
 func preparePrimaryCanonBase(t *testing.T, handler http.Handler, injectionEnabled bool, mainBudget int, baseBudget *int) map[string]any {
 	t.Helper()
 	settings := map[string]any{
-		"injection_enabled":   injectionEnabled,
-		"max_injection_chars": mainBudget,
-		"top_k":               4,
+		"injection_enabled":                      injectionEnabled,
+		"max_injection_chars":                    mainBudget,
+		"reference_injection_budget_basis_chars": mainBudget,
+		"top_k":                                  4,
 	}
 	if baseBudget != nil {
 		settings["primary_canon_base_max_chars"] = *baseBudget

@@ -4146,7 +4146,7 @@
     {
       "schema_name": "PrepareTurnSettings",
       "go_type_name": "PrepareTurnSettings",
-      "field_count": 16,
+      "field_count": 17,
       "required_count": 0,
       "blocker_count": 0,
       "fields": [
@@ -4230,9 +4230,9 @@
           "blockers": [],
           "mapping_strategy": "direct",
           "has_default": true,
-          "default_value": 3000,
+          "default_value": 9000,
           "decode_presence_note": "Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
-          "default_application_note": "Optional field with default (3000): Go handler must apply default when field is absent in request."
+          "default_application_note": "Optional field with default (9000): Go handler must apply default when field is absent in request."
         },
         {
           "name": "reference_injection_budget_basis_chars",
@@ -4243,10 +4243,24 @@
           "proposed_go_type": "int",
           "blockers": [],
           "mapping_strategy": "direct",
-          "has_default": false,
-          "default_value": null,
-          "decode_presence_note": "Optional non-null scalar int carrying the configured memory cap as the independent reference budget basis.",
-          "default_application_note": "No default: absent callers use the effective max_injection_chars; the host sends the configured value so first-turn memory suppression does not disable reference injection."
+          "has_default": true,
+          "default_value": 3000,
+          "decode_presence_note": "Optional non-null scalar int carrying the independent original-work reference injection cap.",
+          "default_application_note": "Optional field with default (3000): Go owns an original-work cap that does not borrow from memory or lorebook reference lanes."
+        },
+        {
+          "name": "lorebook_reference_max_chars",
+          "go_field_name": "LorebookReferenceMaxChars",
+          "json_tag": "lorebook_reference_max_chars,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "int",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": 3000,
+          "decode_presence_note": "Optional non-null scalar int carrying the independent Host lorebook reference injection cap.",
+          "default_application_note": "Optional field with default (3000): Go owns a lorebook cap that does not borrow from memory or original-work reference lanes."
         },
         {
           "name": "reference_injection_enabled",
