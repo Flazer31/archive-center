@@ -73,7 +73,7 @@ func (s *Server) resolveCommittedMemoryAdmissionExtraction(
 		result.ErrorDetails = append(result.ErrorDetails, "ResolveMemoryAdmission: "+err.Error())
 		return extraction, false
 	}
-	if mustCompactJSON(normalizePreciseMemoryValue(extraction)) != storedJSON {
+	if memoryAdmissionCanonicalResultJSON(extraction) != storedJSON {
 		result.Warnings = append(result.Warnings, "memory_admission_committed_result_reused")
 	}
 	return committed, true
@@ -327,11 +327,11 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		}
 	}
 
-	resultHash := memoryAdmissionResultHash(
-		source.Revision, extraction, store.MemoryAdmissionContract,
+	resultJSON := memoryAdmissionCanonicalResultJSON(extraction)
+	resultHash := memoryAdmissionResultHashFromCanonicalJSON(
+		source.Revision, resultJSON, store.MemoryAdmissionContract,
 		completeTurnCriticPipelineVersion, memoryAdmissionIndexVersion,
 	)
-	resultJSON := mustCompactJSON(normalizePreciseMemoryValue(extraction))
 	admission := &store.MemoryAdmission{
 		ContractVersion:   store.MemoryAdmissionContract,
 		ChatSessionID:     sid,
@@ -571,12 +571,32 @@ func memoryAdmissionResultHash(
 	extractorVersion string,
 	indexVersion string,
 ) string {
+	return memoryAdmissionResultHashFromCanonicalJSON(
+		sourceRevision,
+		memoryAdmissionCanonicalResultJSON(extraction),
+		derivationVersion,
+		extractorVersion,
+		indexVersion,
+	)
+}
+
+func memoryAdmissionCanonicalResultJSON(extraction map[string]any) string {
+	return mustCompactJSON(normalizePreciseMemoryValue(extraction))
+}
+
+func memoryAdmissionResultHashFromCanonicalJSON(
+	sourceRevision string,
+	canonicalResultJSON string,
+	derivationVersion string,
+	extractorVersion string,
+	indexVersion string,
+) string {
 	material := strings.Join([]string{
 		strings.TrimSpace(sourceRevision),
 		strings.TrimSpace(derivationVersion),
 		strings.TrimSpace(extractorVersion),
 		strings.TrimSpace(indexVersion),
-		mustCompactJSON(normalizePreciseMemoryValue(extraction)),
+		strings.TrimSpace(canonicalResultJSON),
 	}, "\x1f")
 	return fmt.Sprintf("%x", sha256.Sum256([]byte(material)))
 }

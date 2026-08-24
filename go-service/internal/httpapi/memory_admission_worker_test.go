@@ -931,6 +931,72 @@ func TestCommittedReplayOnlyRejectsInvalidStoredResultWithoutCriticGuess(t *test
 	}
 }
 
+func TestCommittedReplayAcceptsTypedStringSlicesAfterJSONRoundTrip(t *testing.T) {
+	extraction := map[string]any{
+		"turn_summary":     "Mina compared two reports.",
+		"importance_score": 7,
+		"evidence_excerpts": []string{
+			"Zulu evidence.",
+			"  Alpha   evidence.  ",
+		},
+		"belief_updates": []any{map[string]any{
+			"owner":          "Mina",
+			"belief":         "The reports conflict.",
+			"listener_names": []string{"Rowan", "  Mina  "},
+		}},
+	}
+	fake := &memoryAdmissionWorkerStore{Store: store.NewNoopStore()}
+	srv := &Server{Cfg: config.Default(), Store: fake}
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "typed-string-slice-revision",
+		LogicalTurnID:   "turn:12",
+	})
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "typed-string-slice-session", 12, extraction,
+		"Zulu evidence. Alpha evidence.", "Mina compared two reports.", "", memorySearchTextBuild{},
+		completeTurnEmbeddingConfig{}, "", "", nil, nil, nil, nil, time.Unix(1200, 0), &result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+
+	admission := fake.admissions[0]
+	legacyResultJSON := mustCompactJSON(normalizePreciseMemoryValue(extraction))
+	legacyMaterial := strings.Join([]string{
+		admission.SourceRevision,
+		admission.DerivationVersion,
+		admission.ExtractorVersion,
+		admission.IndexVersion,
+		legacyResultJSON,
+	}, "\x1f")
+	legacyResultHash := fmt.Sprintf("%x", sha256.Sum256([]byte(legacyMaterial)))
+	if admission.ResultJSON != legacyResultJSON || admission.ResultHash != legacyResultHash {
+		t.Fatalf("write compatibility changed: json=%s hash=%s", admission.ResultJSON, admission.ResultHash)
+	}
+	source := &store.MemorySourceRevision{
+		SourceRevision:          admission.SourceRevision,
+		ChatSessionID:           admission.ChatSessionID,
+		TurnIndex:               admission.TurnIndex,
+		DerivedAdmissionState:   "committed",
+		DerivedAdmissionVersion: admission.DerivationVersion,
+		DerivedExtractorVersion: admission.ExtractorVersion,
+		DerivedIndexVersion:     admission.IndexVersion,
+		DerivedResultHash:       admission.ResultHash,
+		DerivedResultJSON:       admission.ResultJSON,
+	}
+	reloaded, present, failure := storedMemoryAdmissionExtraction(source)
+	if !present || failure != "" || reloaded == nil {
+		t.Fatalf("stored replay rejected committed result: present=%t failure=%q json=%s hash=%s", present, failure, admission.ResultJSON, admission.ResultHash)
+	}
+
+	source.DerivedResultJSON = strings.Replace(source.DerivedResultJSON, "Zulu evidence.", "Tampered evidence.", 1)
+	if _, present, failure := storedMemoryAdmissionExtraction(source); !present || failure != "committed_derived_result_hash_mismatch" {
+		t.Fatalf("tampered committed result was not rejected: present=%t failure=%q", present, failure)
+	}
+}
+
 func TestAcceptedSourceReplaysPendingExtractionWithoutCriticConfiguration(t *testing.T) {
 	extraction := map[string]any{
 		"turn_summary":      "Mina found the brass key.",

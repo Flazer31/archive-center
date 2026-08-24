@@ -499,9 +499,9 @@ func storedMemoryAdmissionExtraction(source *store.MemorySourceRevision) (map[st
 	if err := json.Unmarshal([]byte(source.DerivedResultJSON), &extraction); err != nil || extraction == nil {
 		return nil, true, "committed_derived_result_invalid"
 	}
-	if memoryAdmissionResultHash(
+	if memoryAdmissionResultHashFromCanonicalJSON(
 		source.SourceRevision,
-		extraction,
+		strings.TrimSpace(source.DerivedResultJSON),
 		source.DerivedAdmissionVersion,
 		source.DerivedExtractorVersion,
 		source.DerivedIndexVersion,
