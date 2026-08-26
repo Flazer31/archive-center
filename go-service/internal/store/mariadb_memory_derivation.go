@@ -673,7 +673,7 @@ func enqueueKnownVectorDeletesTx(ctx context.Context, tx *sql.Tx, sid string, re
 	for _, delete := range deletes {
 		item := &MemoryVectorOutboxItem{
 			ContractVersion:     MemoryVectorOutboxContract,
-			OperationKey:        memoryVectorOperationKey("delete", sid, delete.sourceRevision, delete.documentID),
+			OperationKey:        memoryVectorOperationKey("delete:inactive", sid, delete.sourceRevision, delete.documentID),
 			Operation:           "delete",
 			ChatSessionID:       sid,
 			SourceRevision:      delete.sourceRevision,

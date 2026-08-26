@@ -10,8 +10,8 @@ only for continuity. Use only text-bearing entries in
 exactly as supplied. Do not infer hidden memory or use a ref whose text was not
 delivered.
 
-Use `guide_strength` and `publisher_strength_profile` only to control how
-explicitly the current-response guidance is written:
+Use `guide_strength` only to control how explicitly the current-response
+guidance is written:
 
 - `weak`: gentle continuity, behavior, and subtext guidance.
 - `medium`: balanced scene direction and clearly stated supported goals.

@@ -1020,7 +1020,7 @@ func enqueueAdmissionVectorDeleteTx(
 ) (bool, error) {
 	item := &MemoryVectorOutboxItem{
 		ContractVersion:     MemoryVectorOutboxContract,
-		OperationKey:        memoryAdmissionVectorOperationKey("delete:"+reason, admission, documentID),
+		OperationKey:        memoryAdmissionVectorOperationKey("delete:"+requiredSourceState, admission, documentID),
 		Operation:           "delete",
 		ChatSessionID:       admission.ChatSessionID,
 		SourceRevision:      admission.SourceRevision,
@@ -1038,7 +1038,7 @@ func enqueueAdmissionVectorDeleteTx(
 func memoryAdmissionVectorOperationKey(operation string, admission *MemoryAdmission, documentID string) string {
 	if strings.HasPrefix(strings.TrimSpace(operation), "delete") {
 		return memoryVectorOperationKey(
-			"delete",
+			operation,
 			admission.ChatSessionID,
 			admission.SourceRevision,
 			documentID,

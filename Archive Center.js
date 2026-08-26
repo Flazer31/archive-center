@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.4
+//@display-name Archive Center 4.0.5
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.4
+//@version 4.0.5
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.4";
-  const BUILD_ID = "4.0.4";
+  const VERSION = "4.0.5";
+  const BUILD_ID = "4.0.5";
   const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-25 KST";
-  const BUILD_NOTES = "Archive Center 4.0.4";
+  const BUILD_TIME = "2026-08-26 KST";
+  const BUILD_NOTES = "Archive Center 4.0.5";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -20383,6 +20383,7 @@
 
   async function executeAutoRollback(sessionId, turnIndex, reason, detail, options = {}) {
     const requestSource = options && options.requestSource ? String(options.requestSource) : "auto";
+    const manualRequest = requestSource === "manual";
     const updateAutoState = !(options && options.updateAutoState === false);
     try {
       debugLog("executeAutoRollback: session=", sessionId, "turn=", turnIndex, "reason=", reason, "source=", requestSource);
@@ -20396,6 +20397,9 @@
             requestedTurnIndex: turnIndex,
             decision: decision || null,
           });
+        }
+        if (manualRequest) {
+          throw new Error(String(decision && decision.reason || "rollback_decision_unavailable"));
         }
         return false;
       }
@@ -20489,6 +20493,12 @@
           });
         }
         warnLog("executeAutoRollback: API returned non-ok", result);
+        if (manualRequest) {
+          throw new Error(String(
+            result && (result.detail || result.error || result.code)
+            || "rollback_api_failed"
+          ));
+        }
         return false;
       }
     } catch (err) {
@@ -20499,6 +20509,7 @@
         });
       }
       warnLog("executeAutoRollback failed (non-fatal):", err.message);
+      if (manualRequest) throw err;
       return false;
     }
   }
@@ -20610,8 +20621,19 @@
       const backendLatest = Math.max(0, Number(latestBackendTurn || 0));
       if (!Number.isFinite(completedCount) || !Number.isFinite(backendLatest) || backendLatest <= completedCount) return null;
 
-      const commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, currentList);
-      if (commonPrefixLen !== currentList.length) return null;
+      let verifiedCurrentList = currentList;
+      let commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, verifiedCurrentList);
+      let pendingCurrentUserExcluded = false;
+      if (commonPrefixLen !== verifiedCurrentList.length) {
+        const currentTail = verifiedCurrentList.length > 0
+          ? verifiedCurrentList[verifiedCurrentList.length - 1]
+          : null;
+        if (!currentTail || currentTail.role !== "user") return null;
+        verifiedCurrentList = verifiedCurrentList.slice(0, -1);
+        commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, verifiedCurrentList);
+        if (commonPrefixLen !== verifiedCurrentList.length) return null;
+        pendingCurrentUserExcluded = true;
+      }
 
       const removedEntries = entries.slice(commonPrefixLen);
       const removedAssistantCount = removedEntries.reduce(function(count, entry) {
@@ -20636,8 +20658,10 @@
         ledgerTrackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
         ledgerMessageCount: entries.length,
         currentMessageCount: currentList.length,
+        verifiedCurrentMessageCount: verifiedCurrentList.length,
+        pendingCurrentUserExcluded,
         commonPrefixLen,
-        removedMessageCount: Math.max(0, entries.length - currentList.length),
+        removedMessageCount: removedEntries.length,
         removedAssistantCount,
         removedUserCount,
         currentTailHash: computeTailHash(currentList),

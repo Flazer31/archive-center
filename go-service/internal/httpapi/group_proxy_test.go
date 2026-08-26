@@ -2329,6 +2329,9 @@ func TestProxyPublisherJSONPolicyUsesJSONObjectForOpenAICompatibleAdapters(t *te
 	}{
 		{provider: "ollama", wantFormat: "json_object", wantApplied: true},
 		{provider: "custom", wantFormat: "json_object", wantApplied: true},
+		{provider: "openrouter", wantFormat: "json_object", wantApplied: true},
+		{provider: "llmgateway", wantFormat: "json_object", wantApplied: true},
+		{provider: "vercel", wantFormat: "json_object", wantApplied: true},
 	} {
 		t.Run(test.provider, func(t *testing.T) {
 			oldClient := proxyHTTPClient
@@ -2392,7 +2395,7 @@ func TestProxyPublisherJSONPolicyUsesJSONObjectForOpenAICompatibleAdapters(t *te
 }
 
 func TestProxyPublisherJSONPolicyUsesPublisherSchemaWithoutCriticFields(t *testing.T) {
-	for _, provider := range []string{"openai", "openrouter", "llmgateway", "vercel"} {
+	for _, provider := range []string{"openai"} {
 		t.Run(provider, func(t *testing.T) {
 			oldClient := proxyHTTPClient
 			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
@@ -2433,6 +2436,88 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaWithoutCriticFields(t *testi
 	}
 }
 
+func TestProxyPublisherStrictSchemaSeparatesOptionalPressureLevel(t *testing.T) {
+	schema := proxyPublisherTopLevelJSONSchema()
+	items := mapFromAny(mapFromAny(schema["properties"])["items"])
+	variants := sliceFromAny(mapFromAny(items["items"])["anyOf"])
+	if len(variants) != 2 {
+		t.Fatalf("publisher item schema variants=%d, want standard and pressure variants: %#v", len(variants), items)
+	}
+
+	standard := mapFromAny(variants[0])
+	standardProperties := mapFromAny(standard["properties"])
+	if _, exists := standardProperties["level"]; exists {
+		t.Fatalf("standard publisher item unexpectedly requires pressure level: %#v", standard)
+	}
+	standardRequired := stringSliceFromAny(standard["required"])
+	for _, key := range []string{"role", "field", "text", "source_refs"} {
+		if !containsString(standardRequired, key) {
+			t.Fatalf("standard publisher item missing required field %q: %#v", key, standard)
+		}
+	}
+
+	pressure := mapFromAny(variants[1])
+	pressureProperties := mapFromAny(pressure["properties"])
+	pressureRequired := stringSliceFromAny(pressure["required"])
+	if _, exists := pressureProperties["level"]; !exists || !containsString(pressureRequired, "level") {
+		t.Fatalf("pressure publisher item does not require level: %#v", pressure)
+	}
+	if fields := stringSliceFromAny(mapFromAny(pressureProperties["field"])["enum"]); len(fields) != 1 || fields[0] != "pressure_level" {
+		t.Fatalf("pressure publisher item fields=%v, want pressure_level only", fields)
+	}
+}
+
+func TestProxyPublisherLLMGatewaySoftJSONAvoidsUnsupportedStrictSchema(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		format := mapFromAny(body["response_format"])
+		if format["type"] == "json_schema" {
+			return &http.Response{
+				StatusCode: http.StatusBadRequest,
+				Status:     "400 Bad Request",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"does not support JSON schema output mode"}}`)),
+			}, nil
+		}
+		if format["type"] != "json_object" {
+			t.Fatalf("LLM Gateway publisher response_format=%+v, want json_object", format)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"glm-5.3","choices":[{"message":{"content":"{}"}}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("sk-test"),
+		Endpoint: strPtr("https://api.llmgateway.io/v1"),
+		Model:    strPtr("glm-5.3"),
+		Provider: strPtr("llmgateway"),
+		Messages: []any{map[string]any{"role": "user", "content": "return publisher JSON"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if upstreamCalls != 1 {
+		t.Fatalf("upstream calls=%d, want exactly one", upstreamCalls)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_format"] != "json_object" ||
+		trace["json_response_schema_contract"] != publisherWireContractVersion+"_prompt_validated" ||
+		trace["json_response_schema_source"] != "system_prompt" {
+		t.Fatalf("LLM Gateway publisher compatibility trace=%#v", trace)
+	}
+}
+
 func TestProxyPublisherJSONPolicyUsesPublisherSchemaForClaudeAndGemini(t *testing.T) {
 	for _, provider := range []string{"claude", "gemini"} {
 		t.Run(provider, func(t *testing.T) {
@@ -2470,6 +2555,135 @@ func TestProxyPublisherJSONPolicyUsesPublisherSchemaForClaudeAndGemini(t *testin
 			}
 			if trace := mapFromAny(resp["_proxy_request_overrides"]); trace["json_response_schema_contract"] != publisherWireContractVersion {
 				t.Fatalf("publisher schema trace = %+v", trace)
+			}
+		})
+	}
+}
+
+func TestProxyPublisherOpenAIOverrideCannotDowngradeOrReplaceSchema(t *testing.T) {
+	policy := proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"}
+	for _, provider := range []string{"openai"} {
+		t.Run(provider+" rejects json object downgrade", func(t *testing.T) {
+			body := map[string]any{"response_format": map[string]any{"type": "json_object"}}
+			trace := map[string]any{}
+			err := proxyApplyOpenAIJSONResponsePolicy(body, trace, provider, policy)
+			if err == nil || !strings.Contains(err.Error(), "json_response_schema_conflict") || trace["json_response_conflict"] != true || trace["json_response_applied"] != false {
+				t.Fatalf("%s Publisher json_object downgrade was not rejected: err=%v trace=%#v", provider, err, trace)
+			}
+		})
+	}
+
+	for _, provider := range []string{"custom", "ollama", "openrouter", "llmgateway", "vercel"} {
+		t.Run(provider+" retains json object compatibility", func(t *testing.T) {
+			body := map[string]any{"response_format": map[string]any{"type": "json_object"}}
+			trace := map[string]any{}
+			if err := proxyApplyOpenAIJSONResponsePolicy(body, trace, provider, policy); err != nil {
+				t.Fatalf("%s Publisher json_object compatibility was rejected: %v", provider, err)
+			}
+			if trace["json_response_applied"] != true || trace["json_response_format"] != "json_object" {
+				t.Fatalf("%s Publisher json_object trace=%#v", provider, trace)
+			}
+		})
+	}
+
+	t.Run("matching schema retained", func(t *testing.T) {
+		body := map[string]any{"response_format": map[string]any{
+			"type":        "json_schema",
+			"json_schema": map[string]any{"name": "publisher", "schema": proxyPublisherTopLevelJSONSchema()},
+		}}
+		trace := map[string]any{}
+		if err := proxyApplyOpenAIJSONResponsePolicy(body, trace, "llmgateway", policy); err != nil {
+			t.Fatalf("matching Publisher schema was rejected: %v", err)
+		}
+		if trace["json_response_schema_contract"] != publisherWireContractVersion || trace["json_response_schema_source"] != "extra_body_json" {
+			t.Fatalf("matching Publisher schema trace=%#v", trace)
+		}
+	})
+
+	t.Run("wrong schema rejected", func(t *testing.T) {
+		body := map[string]any{"response_format": map[string]any{
+			"type":        "json_schema",
+			"json_schema": map[string]any{"name": "publisher", "schema": map[string]any{"type": "object", "properties": map[string]any{}}},
+		}}
+		trace := map[string]any{}
+		err := proxyApplyOpenAIJSONResponsePolicy(body, trace, "llmgateway", policy)
+		if err == nil || !strings.Contains(err.Error(), "json_response_schema_conflict") || trace["json_response_conflict"] != true {
+			t.Fatalf("wrong Publisher schema was not rejected: err=%v trace=%#v", err, trace)
+		}
+	})
+}
+
+func TestProxyPublisherStrictSchemaConflictStopsBeforeUpstreamCall(t *testing.T) {
+	oldClient := proxyHTTPClient
+	upstreamCalls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		upstreamCalls++
+		return nil, fmt.Errorf("unexpected upstream call")
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	extraBody := `{"response_format":{"type":"json_object"}}`
+	resp, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:        strPtr("sk-test"),
+		Endpoint:      strPtr("https://api.example.com/v1"),
+		Model:         strPtr("provider-neutral-model"),
+		Provider:      strPtr("openai"),
+		ExtraBodyJSON: &extraBody,
+		Messages:      []any{map[string]any{"role": "user", "content": "return publisher json"}},
+	}, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+	if err == nil || status != http.StatusBadRequest || !strings.Contains(err.Error(), "json_response_schema_conflict") {
+		t.Fatalf("status=%d err=%v, want explicit Publisher schema conflict", status, err)
+	}
+	if upstreamCalls != 0 {
+		t.Fatalf("upstream calls=%d, want zero after local schema conflict", upstreamCalls)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["json_response_conflict"] != true || trace["json_response_source"] != "extra_body_json" {
+		t.Fatalf("Publisher schema conflict trace=%#v", trace)
+	}
+}
+
+func TestProxyPublisherClaudeAndGeminiOverridesRequireExactSchema(t *testing.T) {
+	policy := proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"}
+	tests := []struct {
+		name  string
+		apply func(map[string]any, map[string]any) error
+		body  func(any) map[string]any
+	}{
+		{
+			name: "claude",
+			apply: func(body, trace map[string]any) error {
+				return proxyApplyClaudeJSONResponsePolicy(body, trace, policy)
+			},
+			body: func(schema any) map[string]any {
+				return map[string]any{"output_config": map[string]any{"format": map[string]any{"type": "json_schema", "schema": schema}}}
+			},
+		},
+		{
+			name: "gemini",
+			apply: func(body, trace map[string]any) error {
+				return proxyApplyJSONResponsePolicy(body, trace, policy)
+			},
+			body: func(schema any) map[string]any {
+				return map[string]any{"generationConfig": map[string]any{"responseMimeType": "application/json", "responseJsonSchema": schema}}
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name+" matching", func(t *testing.T) {
+			trace := map[string]any{}
+			if err := test.apply(test.body(proxyPublisherTopLevelJSONSchema()), trace); err != nil {
+				t.Fatalf("matching %s Publisher schema was rejected: %v", test.name, err)
+			}
+			if trace["json_response_schema_contract"] != publisherWireContractVersion || trace["json_response_schema_source"] != "extra_body_json" {
+				t.Fatalf("matching %s Publisher schema trace=%#v", test.name, trace)
+			}
+		})
+		t.Run(test.name+" wrong", func(t *testing.T) {
+			trace := map[string]any{}
+			err := test.apply(test.body(map[string]any{"type": "object", "properties": map[string]any{}}), trace)
+			if err == nil || !strings.Contains(err.Error(), "json_response_schema_conflict") || trace["json_response_conflict"] != true {
+				t.Fatalf("wrong %s Publisher schema was not rejected: err=%v trace=%#v", test.name, err, trace)
 			}
 		})
 	}
@@ -3416,10 +3630,13 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 		}
 		if !strings.Contains(userPrompt, "response_execution_contract") ||
 			!strings.Contains(userPrompt, "supervisor_support_packet") ||
-			!strings.Contains(userPrompt, "guide_focus") ||
-			!strings.Contains(userPrompt, "publisher_output.v3") ||
-			!strings.Contains(userPrompt, "publisher_strength_profile.v1") {
+			!strings.Contains(userPrompt, "guide_focus") {
 			t.Fatalf("supervisor request body missing bounded memory guidance inputs: %s", userPrompt)
+		}
+		for _, removed := range []string{"required_output", "publisher_strength_profile", "publisher_strength_profile.v1"} {
+			if strings.Contains(userPrompt, removed) {
+				t.Fatalf("supervisor compact request retained duplicate field %q: %s", removed, userPrompt)
+			}
 		}
 		if strings.Contains(userPrompt, "supervisor_proposal_coverage") {
 			t.Fatalf("supervisor request body still exposes the legacy proposal vocabulary: %s", userPrompt)

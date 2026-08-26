@@ -578,6 +578,13 @@ func proxyApplyJSONResponsePolicy(body map[string]any, trace map[string]any, pol
 		generationConfig["responseJsonSchema"] = proxyPublisherTopLevelJSONSchema()
 		trace["json_response_schema_source"] = "backend_policy"
 	} else {
+		if !proxyPublisherSchemaMatches(generationConfig["responseJsonSchema"]) {
+			trace["json_response_applied"] = false
+			trace["json_response_schema_source"] = "extra_body_json"
+			trace["json_response_conflict"] = true
+			trace["json_response_conflict_reason"] = "generationConfig.responseJsonSchema must match publisher_output.v3"
+			return fmt.Errorf("json_response_schema_conflict: generationConfig.responseJsonSchema must match publisher_output.v3")
+		}
 		trace["json_response_schema_source"] = "extra_body_json"
 	}
 	trace["json_response_schema_contract"] = publisherWireContractVersion
@@ -598,16 +605,18 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 
 	providerSupportsNativeJSON := proxyProviderSupportsAutomaticOpenAIJSONResponse(provider)
 	providerSupportsPublisherJSONObject := proxyJSONResponsePurposeIsPublisher(policy)
+	providerUsesStrictPublisherSchema := providerSupportsPublisherJSONObject && proxyProviderUsesStrictPublisherSchemaByDefault(provider)
 
 	const requiredType = "json_object"
 	existing, exists := body["response_format"]
 	if !exists {
-		if providerSupportsPublisherJSONObject && !providerSupportsNativeJSON {
+		if providerSupportsPublisherJSONObject && !providerUsesStrictPublisherSchema {
 			body["response_format"] = map[string]any{"type": requiredType}
 			trace["json_response_applied"] = true
 			trace["json_response_source"] = "backend_policy"
 			trace["json_response_format"] = requiredType
 			trace["json_response_schema_contract"] = publisherWireContractVersion + "_prompt_validated"
+			trace["json_response_schema_source"] = "system_prompt"
 			return nil
 		}
 		if !providerSupportsNativeJSON {
@@ -617,7 +626,7 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 			return nil
 		}
 		appliedType := requiredType
-		if proxyJSONResponsePurposeIsPublisher(policy) || strings.EqualFold(strings.TrimSpace(provider), "vercel") {
+		if providerUsesStrictPublisherSchema || strings.EqualFold(strings.TrimSpace(provider), "vercel") {
 			appliedType = "json_schema"
 			schemaName, schema := proxyJSONResponseSchema(policy)
 			jsonSchema := map[string]any{
@@ -639,6 +648,7 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_format"] = appliedType
 		if proxyJSONResponsePurposeIsPublisher(policy) {
 			trace["json_response_schema_contract"] = publisherWireContractVersion
+			trace["json_response_schema_source"] = "backend_policy"
 		}
 		return nil
 	}
@@ -656,6 +666,29 @@ func proxyApplyOpenAIJSONResponsePolicy(body map[string]any, trace map[string]an
 	formatType = strings.ToLower(strings.TrimSpace(formatType))
 	vercelLegacyJSON := strings.EqualFold(strings.TrimSpace(provider), "vercel") && formatType == "json"
 	if isString && (formatType == requiredType || formatType == "json_schema" || vercelLegacyJSON) {
+		if providerUsesStrictPublisherSchema && formatType == requiredType {
+			trace["json_response_applied"] = false
+			trace["json_response_source"] = "extra_body_json"
+			trace["json_response_conflict"] = true
+			trace["json_response_conflict_reason"] = "publisher response_format.type=json_object would replace the required publisher_output.v3 schema"
+			return fmt.Errorf("json_response_schema_conflict: publisher response_format.type=json_object would replace the required publisher_output.v3 schema")
+		}
+		if proxyJSONResponsePurposeIsPublisher(policy) && formatType == "json_schema" {
+			jsonSchema := mapFromAny(format["json_schema"])
+			if len(jsonSchema) == 0 || !proxyPublisherSchemaMatches(jsonSchema["schema"]) {
+				trace["json_response_applied"] = false
+				trace["json_response_source"] = "extra_body_json"
+				trace["json_response_conflict"] = true
+				trace["json_response_conflict_reason"] = "response_format.json_schema.schema must match publisher_output.v3"
+				return fmt.Errorf("json_response_schema_conflict: response_format.json_schema.schema must match publisher_output.v3")
+			}
+			trace["json_response_schema_contract"] = publisherWireContractVersion
+			trace["json_response_schema_source"] = "extra_body_json"
+		}
+		if proxyJSONResponsePurposeIsPublisher(policy) && formatType == requiredType && !providerUsesStrictPublisherSchema {
+			trace["json_response_schema_contract"] = publisherWireContractVersion + "_prompt_validated"
+			trace["json_response_schema_source"] = "system_prompt"
+		}
 		trace["json_response_applied"] = true
 		trace["json_response_source"] = "extra_body_json"
 		trace["json_response_format"] = formatType
@@ -687,6 +720,15 @@ func proxyProviderSupportsAutomaticOpenAIJSONResponse(provider string) bool {
 	}
 }
 
+// Aggregating gateways expose JSON-schema capability per model/provider
+// mapping, not for every model behind the gateway. Publisher defaults therefore
+// use the portable json_object contract on those routes. A caller may still
+// supply the exact publisher_output.v3 json_schema explicitly when that exact
+// mapping is known to support it.
+func proxyProviderUsesStrictPublisherSchemaByDefault(provider string) bool {
+	return strings.EqualFold(strings.TrimSpace(provider), "openai")
+}
+
 func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]any, policy proxyRequestPolicy) error {
 	if !policy.JSONResponse {
 		return nil
@@ -712,6 +754,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_format"] = "json_schema"
 		if proxyJSONResponsePurposeIsPublisher(policy) {
 			trace["json_response_schema_contract"] = publisherWireContractVersion
+			trace["json_response_schema_source"] = "backend_policy"
 		}
 		return nil
 	}
@@ -732,6 +775,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_format"] = "json_schema"
 		if proxyJSONResponsePurposeIsPublisher(policy) {
 			trace["json_response_schema_contract"] = publisherWireContractVersion
+			trace["json_response_schema_source"] = "backend_policy"
 		}
 		return nil
 	}
@@ -744,7 +788,7 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		return fmt.Errorf("json_response_format_conflict: output_config.format must be a JSON object")
 	}
 	formatType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(format["type"])))
-	_, schemaOK := format["schema"].(map[string]any)
+	schema, schemaOK := format["schema"].(map[string]any)
 	if formatType != "json_schema" || !schemaOK {
 		trace["json_response_applied"] = false
 		trace["json_response_source"] = "extra_body_json"
@@ -752,11 +796,20 @@ func proxyApplyClaudeJSONResponsePolicy(body map[string]any, trace map[string]an
 		trace["json_response_conflict_reason"] = "output_config.format requires type json_schema and object schema"
 		return fmt.Errorf("json_response_format_conflict: output_config.format requires type json_schema and object schema")
 	}
+	if proxyJSONResponsePurposeIsPublisher(policy) && !proxyPublisherSchemaMatches(schema) {
+		trace["json_response_applied"] = false
+		trace["json_response_source"] = "extra_body_json"
+		trace["json_response_schema_source"] = "extra_body_json"
+		trace["json_response_conflict"] = true
+		trace["json_response_conflict_reason"] = "output_config.format.schema must match publisher_output.v3"
+		return fmt.Errorf("json_response_schema_conflict: output_config.format.schema must match publisher_output.v3")
+	}
 	trace["json_response_applied"] = true
 	trace["json_response_source"] = "extra_body_json"
 	trace["json_response_format"] = "json_schema"
 	if proxyJSONResponsePurposeIsPublisher(policy) {
 		trace["json_response_schema_contract"] = publisherWireContractVersion
+		trace["json_response_schema_source"] = "extra_body_json"
 	}
 	return nil
 }
@@ -773,30 +826,52 @@ func proxyJSONResponseSchema(policy proxyRequestPolicy) (string, map[string]any)
 }
 
 func proxyPublisherTopLevelJSONSchema() map[string]any {
-	item := map[string]any{
+	commonProperties := func(fieldValues []string) map[string]any {
+		return map[string]any{
+			"role":  map[string]any{"type": "string", "enum": []string{"book_author", "director"}},
+			"field": map[string]any{"type": "string", "enum": fieldValues},
+			"text":  map[string]any{"type": "string", "minLength": 1},
+			"source_refs": map[string]any{
+				"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1,
+			},
+		}
+	}
+	standardItem := map[string]any{
 		"type": "object",
-		"properties": map[string]any{
-			"role": map[string]any{"type": "string", "enum": []string{"book_author", "director"}},
-			"field": map[string]any{"type": "string", "enum": []string{
-				"current_arc", "narrative_goal", "next_beats", "guardrails",
-				"scene_mandate", "required_outcomes", "forbidden_moves", "pressure_level",
-			}},
-			"text":        map[string]any{"type": "string", "minLength": 1},
-			"source_refs": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "minItems": 1},
-			"level":       map[string]any{"type": "string", "enum": []string{"quiet", "low", "medium", "high"}},
-		},
+		"properties": commonProperties([]string{
+			"current_arc", "narrative_goal", "next_beats", "guardrails",
+			"scene_mandate", "required_outcomes", "forbidden_moves",
+		}),
 		"required":             []string{"role", "field", "text", "source_refs"},
+		"additionalProperties": false,
+	}
+	pressureProperties := commonProperties([]string{"pressure_level"})
+	pressureProperties["role"] = map[string]any{"type": "string", "enum": []string{"director"}}
+	pressureProperties["level"] = map[string]any{"type": "string", "enum": []string{"quiet", "low", "medium", "high"}}
+	pressureItem := map[string]any{
+		"type":                 "object",
+		"properties":           pressureProperties,
+		"required":             []string{"role", "field", "text", "source_refs", "level"},
 		"additionalProperties": false,
 	}
 	return map[string]any{
 		"type": "object",
 		"properties": map[string]any{
 			"contract_version": map[string]any{"type": "string", "enum": []string{publisherWireContractVersion}},
-			"items":            map[string]any{"type": "array", "items": item},
+			"items": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"anyOf": []any{standardItem, pressureItem}},
+			},
 		},
 		"required":             []string{"contract_version", "items"},
 		"additionalProperties": false,
 	}
+}
+
+func proxyPublisherSchemaMatches(candidate any) bool {
+	actual, actualErr := json.Marshal(candidate)
+	expected, expectedErr := json.Marshal(proxyPublisherTopLevelJSONSchema())
+	return actualErr == nil && expectedErr == nil && bytes.Equal(actual, expected)
 }
 
 func proxyCriticTopLevelJSONSchema() map[string]any {

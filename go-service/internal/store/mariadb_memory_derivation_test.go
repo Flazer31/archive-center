@@ -869,7 +869,7 @@ func TestMariaDBInvalidationQueuesEachVectorDocumentOnceWithNewestCausalFence(t 
 		mock.ExpectExec("INSERT INTO memory_vector_outbox").
 			WithArgs(
 				MemoryVectorOutboxContract,
-				memoryVectorOperationKey("delete", sid, revision, documentID),
+				memoryVectorOperationKey("delete:inactive", sid, revision, documentID),
 				"delete", sid, revision, documentID, memoryVectorDeleteAuditJSON(reason), true, "inactive",
 				"pending", 0, nil, nil, nil, nil, now, now,
 			).
@@ -895,8 +895,8 @@ func TestMariaDBInvalidationQueuesEachVectorDocumentOnceWithNewestCausalFence(t 
 	if err := m.InvalidateSourceRevisions(context.Background(), sid, 3, "invalidated", reason, now); err != nil {
 		t.Fatalf("invalidate source revisions: %v", err)
 	}
-	if memoryVectorOperationKey("delete", sid, oldRevision, "precise_memory:session:shared") ==
-		memoryVectorOperationKey("delete", sid, newRevision, "precise_memory:session:shared") {
+	if memoryVectorOperationKey("delete:inactive", sid, oldRevision, "precise_memory:session:shared") ==
+		memoryVectorOperationKey("delete:inactive", sid, newRevision, "precise_memory:session:shared") {
 		t.Fatal("test setup did not distinguish the completed old delete key from the new causal fence")
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {

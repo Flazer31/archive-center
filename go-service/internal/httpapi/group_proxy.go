@@ -236,20 +236,19 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		}, promptErr
 	}
 	guideMode := normalizeNarrativeGuideMode(extractionStringFromAny(supervisorPack["guide_mode"]))
-	requiredOutput := "Return one JSON object with contract_version publisher_output.v3 and an items array. Each supported item must contain role, field, text, and exact source_refs copied from a text-bearing entry in supervisor_support_packet; pressure_level items must also contain level. Omit unsupported items instead of emitting empty role objects, null placeholders, or filler. Do not add prose, markdown, defaults, legacy fields, invented refs, facts, user actions, relationship changes, scene jumps, or event closure."
+	modelSupportPacket := publisherModelSupportPacket(mapFromAny(supervisorPack["support_packet"]))
+	modelExecutionContract := publisherModelExecutionContract(mapFromAny(supervisorPack["response_execution_contract"]))
 	payload := map[string]any{
 		"chat_session_id":             sid,
 		"guide_mode":                  guideMode,
 		"guide_strength":              extractionStringFromAny(supervisorPack["guide_strength"]),
-		"publisher_strength_profile":  publisherStrengthProfile(extractionStringFromAny(supervisorPack["guide_strength"])),
 		"guide_focus":                 supervisorPack["guide_focus"],
-		"supervisor_support_packet":   supervisorPack["support_packet"],
-		"response_execution_contract": supervisorPack["response_execution_contract"],
-		"required_output":             requiredOutput,
+		"supervisor_support_packet":   modelSupportPacket,
+		"response_execution_contract": modelExecutionContract,
 	}
-	userPromptBytes, _ := json.MarshalIndent(payload, "", "  ")
+	userPromptBytes, _ := json.Marshal(payload)
 	userPrompt := string(userPromptBytes)
-	supportPacket := mapFromAny(supervisorPack["support_packet"])
+	supportPacket := modelSupportPacket
 	currentTurnChars := providerCallJSONComponentChars(supportPacket["current_input"])
 	auxiliaryMemoryChars := 0
 	for _, key := range []string{"accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context"} {
@@ -260,14 +259,22 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	if lorebookReferenceChars > 0 {
 		lorebookReferenceStatus = "delivered"
 	}
+	supportPacketChars := providerCallJSONComponentChars(modelSupportPacket)
+	supportPacketTextChars := publisherModelTextChars(modelSupportPacket)
+	executionContractChars := providerCallJSONComponentChars(modelExecutionContract)
+	executionInstructionChars := publisherModelInstructionChars(modelExecutionContract)
 	callLedger := newProviderCallBudgetLedger("publisher", systemPrompt, userPrompt, providerCallBudgetComponents{
 		CurrentTurnChars:                      currentTurnChars,
 		AuxiliaryMemoryChars:                  auxiliaryMemoryChars,
 		OriginalWorkReferenceStatus:           "not_in_call_contract",
 		LorebookReferenceChars:                lorebookReferenceChars,
 		LorebookReferenceStatus:               lorebookReferenceStatus,
-		JSONSchemaOutputRequirementChars:      len([]rune(requiredOutput)),
-		JSONSchemaOutputRequirementAccounting: "separate_user_payload_field",
+		JSONSchemaOutputRequirementChars:      0,
+		JSONSchemaOutputRequirementAccounting: "system_prompt_and_provider_schema",
+		SupportPacketTextChars:                supportPacketTextChars,
+		SupportPacketMetadataChars:            maxInt(0, supportPacketChars-supportPacketTextChars),
+		ExecutionInstructionChars:             executionInstructionChars,
+		ExecutionMetadataChars:                maxInt(0, executionContractChars-executionInstructionChars),
 	})
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
@@ -307,6 +314,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	// reported explicitly; it is never retried with a different parameter set.
 	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
 	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
+	observeProviderJSONResponsePolicy(callLedger, upstream)
 	if err != nil {
 		failureCode := "publisher_llm_provider_error"
 		var emptyContentErr *proxyEmptyContentError
@@ -373,6 +381,9 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		}
 		trace["parse_status"] = parseStatus
 		trace["parse_failure"] = "strict_json_rejected"
+		for key, value := range publisherJSONFailureDiagnostics(content, parseErr, cfg.APIKey) {
+			trace[key] = value
+		}
 		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "json_parse")
 		callLedger["failure_code"] = parseStatus
 		bounded, proposalTrace := buildPublisherFailureResult(supervisorPack, parseStatus)
@@ -390,6 +401,122 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "succeeded", "")
 	}
 	return bounded, trace, nil
+}
+
+func publisherModelSupportPacket(packet map[string]any) map[string]any {
+	out := map[string]any{}
+	if current := publisherModelSupportItem(mapFromAny(packet["current_input"]), []string{"source_ref", "raw_text"}); len(current) > 0 {
+		out["current_input"] = current
+	}
+	lanes := map[string][]string{
+		"accepted_recent_context":      {"source_ref", "final_text", "role", "authority"},
+		"delivered_memory":             {"source_ref", "final_text", "protected_guard", "authority"},
+		"delivered_character_memory":   {"source_ref", "final_text", "class", "kind", "privacy_guard", "authority"},
+		"delivered_context":            {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
+		"delivered_lorebook_reference": {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
+	}
+	for lane, keys := range lanes {
+		items := make([]any, 0)
+		for _, raw := range outputFidelityLineageSlice(packet[lane]) {
+			if item := publisherModelSupportItem(mapFromAny(raw), keys); len(item) > 0 {
+				items = append(items, item)
+			}
+		}
+		out[lane] = items
+	}
+	return out
+}
+
+func publisherModelSupportItem(item map[string]any, keys []string) map[string]any {
+	out := map[string]any{}
+	for _, key := range keys {
+		if value, ok := item[key]; ok && value != nil {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func publisherModelExecutionContract(contract map[string]any) map[string]any {
+	out := map[string]any{
+		"planner_support_language": extractionStringFromAny(contract["planner_support_language"]),
+		"concealment_active":       boolFromAny(mapFromAny(contract["concealment_guard"])["active"]),
+	}
+	for _, key := range []string{"must_preserve", "must_respond", "must_account", "must_not_assert"} {
+		rawItems := contract[key]
+		if wrapped := mapFromAny(rawItems); len(wrapped) > 0 {
+			rawItems = wrapped["items"]
+		}
+		items := make([]any, 0)
+		for _, raw := range outputFidelityLineageSlice(rawItems) {
+			item := mapFromAny(raw)
+			projected := publisherModelSupportItem(item, []string{"instruction", "source_ref", "source_refs"})
+			if len(projected) > 0 {
+				items = append(items, projected)
+			}
+		}
+		out[key] = items
+	}
+	return out
+}
+
+func publisherModelTextChars(packet map[string]any) int {
+	total := 0
+	for _, lane := range []string{"current_input", "accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context", "delivered_lorebook_reference"} {
+		values := outputFidelityLineageSlice(packet[lane])
+		if lane == "current_input" {
+			values = []any{packet[lane]}
+		}
+		for _, raw := range values {
+			item := mapFromAny(raw)
+			for _, key := range []string{"raw_text", "final_text"} {
+				total += len([]rune(extractionStringFromAny(item[key])))
+			}
+		}
+	}
+	return total
+}
+
+func publisherModelInstructionChars(contract map[string]any) int {
+	total := 0
+	for _, key := range []string{"must_preserve", "must_respond", "must_account", "must_not_assert"} {
+		for _, raw := range outputFidelityLineageSlice(contract[key]) {
+			total += len([]rune(extractionStringFromAny(mapFromAny(raw)["instruction"])))
+		}
+	}
+	return total
+}
+
+func observeProviderJSONResponsePolicy(ledger map[string]any, upstream map[string]any) {
+	if ledger == nil {
+		return
+	}
+	overrides := mapFromAny(upstream["_proxy_request_overrides"])
+	for _, key := range []string{"json_response_format", "json_response_source", "json_response_schema_contract", "json_response_schema_source"} {
+		if value, ok := overrides[key]; ok {
+			ledger[key] = value
+		}
+	}
+}
+
+func publisherJSONFailureDiagnostics(content string, parseErr error, apiKey string) map[string]any {
+	objects, incomplete := publisherTopLevelJSONObjectRanges(strings.TrimSpace(strings.TrimPrefix(content, "\ufeff")))
+	out := map[string]any{
+		"parser_error":           scrubProxySecret(parseErr.Error(), apiKey),
+		"top_level_object_count": len(objects),
+		"json_incomplete":        incomplete,
+		"raw_response_chars":     len([]rune(content)),
+		"raw_preview":            truncateRunes(scrubProxySecret(strings.TrimSpace(content), apiKey), 1000),
+	}
+	var syntaxErr *json.SyntaxError
+	if errors.As(parseErr, &syntaxErr) {
+		out["syntax_offset"] = syntaxErr.Offset
+	}
+	var duplicateErr *publisherDuplicateKeyError
+	if errors.As(parseErr, &duplicateErr) {
+		out["duplicate_key_name"] = duplicateErr.Key
+	}
+	return out
 }
 
 func publisherStrengthProfile(strength string) map[string]any {
@@ -615,7 +742,7 @@ func decodePublisherJSONValue(decoder *json.Decoder) (any, error) {
 				return nil, fmt.Errorf("publisher JSON object key is invalid")
 			}
 			if _, duplicate := seen[key]; duplicate {
-				return nil, fmt.Errorf("publisher JSON contains duplicate key %q", key)
+				return nil, &publisherDuplicateKeyError{Key: key}
 			}
 			seen[key] = struct{}{}
 			value, err := decodePublisherJSONValue(decoder)
@@ -646,6 +773,14 @@ func decodePublisherJSONValue(decoder *json.Decoder) (any, error) {
 	default:
 		return nil, fmt.Errorf("publisher JSON delimiter is invalid")
 	}
+}
+
+type publisherDuplicateKeyError struct {
+	Key string
+}
+
+func (e *publisherDuplicateKeyError) Error() string {
+	return fmt.Sprintf("publisher JSON contains duplicate key %q", e.Key)
 }
 
 type publisherFieldSpec struct {

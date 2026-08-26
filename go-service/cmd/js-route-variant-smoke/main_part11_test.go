@@ -5596,6 +5596,7 @@ let result = buildLedgerVerifiedTailRollback("s", [], 0, 1);
 if (!result || result.status !== "incomplete_user_only_tail_candidate" || result.rollbackFrom !== 1 || result.removedUserCount !== 1 || result.removedAssistantCount !== 0) {
   throw new Error("user-only tail was not recognized: " + JSON.stringify(result));
 }
+
 fixture = {trackedTurnIndex:2,entries:[{role:"user",turnIndex:1},{role:"user",turnIndex:2}]};
 result = buildLedgerVerifiedTailRollback("s", [], 0, 2);
 if (result !== null) throw new Error("multi-message deletion must not become an incomplete-tail candidate: " + JSON.stringify(result));
@@ -5605,6 +5606,53 @@ if (result !== null) throw new Error("multi-message deletion must not become an 
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("incomplete user-only tail JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestLedgerTailDeleteIgnoresOnlyTrailingPendingCurrentUser(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for pending-user tail rollback fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildLedgerVerifiedTailRollback")
+	script := functionBody + `
+const ledgerEntries = [];
+for (let turn = 1; turn <= 15; turn += 1) {
+  ledgerEntries.push({role:"user",content:"u"+turn});
+  ledgerEntries.push({role:"assistant",content:"a"+turn});
+}
+function loadRollbackTurnLedgerOr1f() { return {trackedTurnIndex:15,entries:ledgerEntries}; }
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function computeLedgerCurrentPrefixLengthOr1f(ledger, current) {
+  let index = 0;
+  while (index < Math.min(ledger.entries.length, current.length)) {
+    if (ledger.entries[index].role !== current[index].role || ledger.entries[index].content !== current[index].content) break;
+    index += 1;
+  }
+  return index;
+}
+function computeTailHash() { return "pending-user"; }
+function debugLog() {}
+const current = ledgerEntries.slice(0, 26).concat([{role:"user",content:"new-u14"}]);
+const result = buildLedgerVerifiedTailRollback("s", current, 13, 15);
+if (!result || result.status !== "verified_tail_delete" || result.rollbackFrom !== 14 || result.removedAssistantCount !== 2 || result.removedUserCount !== 2 || result.removedMessageCount !== 4 || result.pendingCurrentUserExcluded !== true || result.verifiedCurrentMessageCount !== 26) {
+  throw new Error("two-turn deletion with pending user was not verified: " + JSON.stringify(result));
+}
+const mismatched = ledgerEntries.slice(0, 25).concat([{role:"assistant",content:"wrong"},{role:"user",content:"new-u14"}]);
+if (buildLedgerVerifiedTailRollback("s", mismatched, 13, 15) !== null) {
+  throw new Error("pending user exclusion hid an earlier ledger mismatch");
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("pending-user tail rollback JS runtime fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -5675,6 +5723,7 @@ async function explorerFetchSessions() {
   await new Promise(function(resolve) { setTimeout(resolve, 25); });
   sessionRefreshCompleted = true;
 }
+
 async function explorerFetchChatLogs(reset) {
   if (reset !== true) throw new Error("chat logs were not reset");
   chatRefreshObservedConcurrentStart = !sessionRefreshCompleted;
@@ -5699,6 +5748,88 @@ function alert(message) { throw new Error("unexpected alert: " + message); }
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("Explorer delete refresh fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestExplorerManualDeleteShowsBackendBlockReason(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Explorer manual delete error fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "explorerDeleteChatLogTurn")
+	script := functionBody + `
+let alertMessage = "";
+function explorerSessionId() { return "session-1"; }
+async function captureChatLogRestoreSnapshot() { return 0; }
+async function executeAutoRollback() { throw new Error("manual_target_not_owned"); }
+async function explorerFetchSessions() { throw new Error("unexpected refresh"); }
+async function explorerFetchChatLogs() { throw new Error("unexpected refresh"); }
+async function refreshExplorerUI() { throw new Error("unexpected refresh"); }
+function debugLog() {}
+function warnLog() {}
+function t(key) { return key; }
+function alert(message) { alertMessage = message; }
+(async function() {
+  const ok = await explorerDeleteChatLogTurn(14);
+  if (ok || !alertMessage.includes("manual_target_not_owned")) {
+    throw new Error("manual delete reason was hidden: " + JSON.stringify({ok, alertMessage}));
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("Explorer manual delete error fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestExecuteManualRollbackPreservesBackendBlockReason(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for manual rollback decision fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "executeAutoRollback")
+	script := functionBody + `
+async function requestBackendRollbackDecision() {
+  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"manual_target_not_owned"};
+}
+function debugLog() {}
+function warnLog() {}
+function updateRuntimeState() { throw new Error("manual request must not update auto state"); }
+(async function() {
+  let observed = "";
+  try {
+    await executeAutoRollback("session-1", 14, "explorer_chat_log_delete", {}, {requestSource:"manual",updateAutoState:false});
+  } catch (err) {
+    observed = String(err && err.message || err);
+  }
+  if (observed !== "manual_target_not_owned") {
+    throw new Error("backend block reason was not preserved: " + observed);
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("manual rollback decision fixture failed: %v\n%s", err, out)
 	}
 }
 

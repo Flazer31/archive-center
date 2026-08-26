@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -346,9 +347,14 @@ func TestPublisherTruncatedJSONFailsOpenAfterOneProviderCall(t *testing.T) {
 	}
 	if intFromAny(ledger["base_prompt_chars"], 0) != intFromAny(ledger["system_prompt_chars"], 0) ||
 		intFromAny(ledger["system_prompt_chars"], 0) <= 0 || intFromAny(ledger["final_prompt_chars"], 0) <= intFromAny(ledger["system_prompt_chars"], 0) ||
-		intFromAny(ledger["json_schema_output_requirement_chars"], 0) <= 0 || ledger["provider_usage_status"] != "reported" ||
+		intFromAny(ledger["json_schema_output_requirement_chars"], -1) != 0 || ledger["json_schema_output_requirement_accounting"] != "system_prompt_and_provider_schema" ||
+		intFromAny(ledger["support_packet_text_chars"], 0) <= 0 || intFromAny(ledger["support_packet_metadata_chars"], 0) <= 0 || ledger["provider_usage_status"] != "reported" ||
 		intFromAny(ledger["input_tokens"], 0) != 100 || intFromAny(ledger["output_tokens"], 0) != 20 {
 		t.Fatalf("Publisher call ledger sizes or usage=%#v", ledger)
+	}
+	if trace["parser_error"] == "" || trace["json_incomplete"] != true || intFromAny(trace["top_level_object_count"], -1) != 0 ||
+		len([]rune(extractionStringFromAny(trace["raw_preview"]))) > 1000 {
+		t.Fatalf("Publisher parse diagnostics=%#v", trace)
 	}
 }
 
@@ -405,7 +411,11 @@ func TestPublisherOllamaSingleCallPreservesInputStrengthModelAndReasoning(t *tes
 			t.Fatalf("messages = %#v", messages)
 		}
 		userPrompt := extractionStringFromAny(mapFromAny(messages[1])["content"])
-		if !strings.Contains(userPrompt, `"guide_strength": "maximum"`) || !strings.Contains(userPrompt, "Continue the current scene.") {
+		var publisherInput map[string]any
+		if err := json.Unmarshal([]byte(userPrompt), &publisherInput); err != nil {
+			t.Fatalf("decode compact Publisher input: %v; payload=%s", err, userPrompt)
+		}
+		if publisherInput["guide_strength"] != "maximum" || !strings.Contains(userPrompt, "Continue the current scene.") {
 			t.Fatalf("Publisher input or strength omitted: %s", userPrompt)
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -430,6 +440,135 @@ func TestPublisherOllamaSingleCallPreservesInputStrengthModelAndReasoning(t *tes
 	}
 	if len(supervisorSceneProposalGuidanceItems(result, "standard")) != 1 {
 		t.Fatalf("valid Publisher plan was not retained: %#v", result)
+	}
+}
+
+func TestPublisherProviderReceivesCompactProjectionWithoutMutatingInternalContracts(t *testing.T) {
+	pack := supervisorBoundaryTestPack("strong")
+	supportPacket := mapFromAny(pack["support_packet"])
+	supportPacket["contract_version"] = "supervisor_support_packet.v2"
+	supportPacket["status"] = "ready"
+	supportPacket["delivered_memory_count"] = 1
+	supportPacket["undelivered_candidates_included"] = false
+	memoryItem := mapFromAny(anySliceFromAny(supportPacket["delivered_memory"])[0])
+	memoryItem["protected_guard"] = true
+	memoryItem["visibility_boundary"] = "main_model_visible"
+
+	executionContract := mapFromAny(pack["response_execution_contract"])
+	executionContract["planner_support_language"] = "ko"
+	executionContract["would_write"] = false
+	executionContract["would_call_llm"] = true
+	executionContract["concealment_guard"] = map[string]any{"active": true, "count": 2}
+	executionContract["must_preserve"] = map[string]any{
+		"items": []any{map[string]any{"instruction": "Preserve delivered continuity.", "source_refs": []string{"memory:delivered"}, "status": "ready"}},
+		"count": 1,
+	}
+	executionContract["must_respond"] = map[string]any{"items": []any{}, "count": 0}
+	executionContract["must_account"] = map[string]any{"items": []any{}, "count": 0}
+	executionContract["must_not_assert"] = map[string]any{"items": []any{}, "count": 0}
+	before, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		messages := anySliceFromAny(request["messages"])
+		userPrompt := extractionStringFromAny(mapFromAny(messages[1])["content"])
+		var modelInput map[string]any
+		if err := json.Unmarshal([]byte(userPrompt), &modelInput); err != nil {
+			t.Fatalf("decode model input: %v; input=%s", err, userPrompt)
+		}
+		for _, removed := range []string{"required_output", "publisher_strength_profile"} {
+			if _, exists := modelInput[removed]; exists {
+				t.Fatalf("compact Publisher input retained %s: %#v", removed, modelInput)
+			}
+		}
+		modelSupport := mapFromAny(modelInput["supervisor_support_packet"])
+		for _, removed := range []string{"contract_version", "status", "delivered_memory_count", "undelivered_candidates_included"} {
+			if _, exists := modelSupport[removed]; exists {
+				t.Fatalf("model support packet retained audit field %s: %#v", removed, modelSupport)
+			}
+		}
+		projectedMemory := mapFromAny(anySliceFromAny(modelSupport["delivered_memory"])[0])
+		if projectedMemory["source_ref"] != "memory:delivered" || projectedMemory["final_text"] != "A delivered continuity fact." || projectedMemory["protected_guard"] != true {
+			t.Fatalf("model support packet lost semantic fields: %#v", projectedMemory)
+		}
+		if _, exists := projectedMemory["visibility_boundary"]; exists {
+			t.Fatalf("model support packet retained redundant visibility metadata: %#v", projectedMemory)
+		}
+		modelExecution := mapFromAny(modelInput["response_execution_contract"])
+		if modelExecution["planner_support_language"] != "ko" || modelExecution["concealment_active"] != true || len(modelExecution) != 6 {
+			t.Fatalf("model execution projection=%#v", modelExecution)
+		}
+		preserve := mapFromAny(anySliceFromAny(modelExecution["must_preserve"])[0])
+		if preserve["instruction"] != "Preserve delivered continuity." || !reflect.DeepEqual(stringSliceFromAny(preserve["source_refs"]), []string{"memory:delivered"}) {
+			t.Fatalf("model execution instruction lost semantics: %#v", preserve)
+		}
+		if _, exists := preserve["status"]; exists {
+			t.Fatalf("model execution instruction retained processing metadata: %#v", preserve)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(publisherV3OpenAIResponse("input:latest", "Keep the current request central.")))
+	}))
+	defer provider.Close()
+
+	srv := setupTestServer()
+	result, trace, err := srv.runSupervisorLLM(context.Background(), "publisher-compact-projection", pack, completeTurnLLMConfig{
+		Provider: "openai", APIKey: "test-publisher-key", Endpoint: provider.URL,
+		Model: "test-publisher", TimeoutMs: 2000, MaxTokens: 1200,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(supervisorSceneProposalGuidanceItems(result, "standard")) != 1 {
+		t.Fatalf("valid compact Publisher plan was not retained: %#v", result)
+	}
+	after, err := json.Marshal(pack)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("model projection mutated internal contracts: before=%s after=%s", before, after)
+	}
+	ledger := mapFromAny(trace["provider_call_budget_ledger"])
+	if ledger["json_schema_output_requirement_accounting"] != "system_prompt_and_provider_schema" ||
+		intFromAny(ledger["json_schema_output_requirement_chars"], -1) != 0 ||
+		intFromAny(ledger["support_packet_text_chars"], 0) <= 0 || intFromAny(ledger["execution_instruction_chars"], 0) <= 0 ||
+		ledger["json_response_format"] != "json_schema" || ledger["json_response_schema_contract"] != publisherWireContractVersion {
+		t.Fatalf("compact Publisher ledger=%#v", ledger)
+	}
+}
+
+func TestPublisherJSONFailureDiagnosticsAreBoundedAndIdentifyDuplicateKey(t *testing.T) {
+	content := `{"contract_version":"publisher_output.v3","contract_version":"publisher_output.v3","items":[]}` + strings.Repeat(" secret-token", 200)
+	_, parseErr := parsePublisherJSONObject(content)
+	if parseErr == nil {
+		t.Fatal("duplicate Publisher key was accepted")
+	}
+	diagnostics := publisherJSONFailureDiagnostics(content, parseErr, "secret-token")
+	if diagnostics["duplicate_key_name"] != "contract_version" || diagnostics["parser_error"] == "" ||
+		intFromAny(diagnostics["top_level_object_count"], 0) != 1 || diagnostics["json_incomplete"] != false {
+		t.Fatalf("duplicate Publisher diagnostics=%#v", diagnostics)
+	}
+	preview := extractionStringFromAny(diagnostics["raw_preview"])
+	if len([]rune(preview)) > 1000 || strings.Contains(preview, "secret-token") {
+		t.Fatalf("Publisher preview was unbounded or unsanitized: %q", preview)
+	}
+}
+
+func TestPublisherJSONFailureDiagnosticsReportSyntaxOffsetWhenAvailable(t *testing.T) {
+	content := `{"contract_version":"publisher_output.v3","items":[,]}`
+	_, parseErr := parsePublisherJSONObject(content)
+	if parseErr == nil {
+		t.Fatal("malformed Publisher array was accepted")
+	}
+	diagnostics := publisherJSONFailureDiagnostics(content, parseErr, "")
+	if intFromAny(diagnostics["syntax_offset"], 0) <= 0 || diagnostics["json_incomplete"] != false {
+		t.Fatalf("Publisher syntax diagnostics=%#v", diagnostics)
 	}
 }
 

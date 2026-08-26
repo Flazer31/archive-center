@@ -22,6 +22,7 @@ type durableRoutingBaselineStore struct {
 type rollbackDecisionChatLogStore struct {
 	store.Store
 	logs             []store.ChatLog
+	baseline         *store.SessionRoutingBaseline
 	latestTurnCalls  int
 	listChatLogsFrom int
 	listChatLogsTo   int
@@ -507,6 +508,10 @@ func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string,
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func (s *rollbackDecisionChatLogStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
+	return s.baseline, nil
 }
 
 func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
@@ -1541,6 +1546,7 @@ func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 	decisionStore := &rollbackDecisionChatLogStore{
 		Store: store.NewNoopStore(),
 		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 5, Role: "user", Content: "target"},
 			{ChatSessionID: sid, TurnIndex: 6, Role: "user", Content: "u"},
 			{ChatSessionID: sid, TurnIndex: 6, Role: "assistant", Content: "a"},
 		},
@@ -1569,6 +1575,85 @@ func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 	}
 	if decisionStore.latestTurnCalls != 1 {
 		t.Fatalf("latest turn calls=%d, want 1", decisionStore.latestTurnCalls)
+	}
+}
+
+func TestRollbackDecisionHandlerAllowsSequentialOwnedManualTailDeletesAcrossImportedBaseline(t *testing.T) {
+	const sid = "char_1_cid_manual_sequential"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		baseline: &store.SessionRoutingBaseline{
+			SourceSessionID:     "parent-session",
+			TargetSessionID:     sid,
+			ImportedThroughTurn: 14,
+			Mode:                store.SessionMigrationModeCopyKeepSource,
+		},
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 14, Role: "user", Content: "u14"},
+			{ChatSessionID: sid, TurnIndex: 14, Role: "assistant", Content: "a14"},
+			{ChatSessionID: sid, TurnIndex: 15, Role: "user", Content: "u15"},
+			{ChatSessionID: sid, TurnIndex: 15, Role: "assistant", Content: "a15"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	requestDecision := func(turn int) rollbackDecisionResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(fmt.Sprintf(`{
+			"chat_session_id":%q,
+			"request_source":"manual",
+			"candidate_from_turn":%d,
+			"deletion_observed":true,
+			"allow_manual_candidate":true,
+			"lifecycle_action_observation":"deleted"
+		}`, sid, turn)))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		var response rollbackDecisionResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+			t.Fatalf("decode turn %d response: %v", turn, err)
+		}
+		return response
+	}
+
+	first := requestDecision(15)
+	if !first.Allowed || first.FromTurn != 15 || first.BaselineApplied || first.DecisionToken == "" {
+		t.Fatalf("manual turn 15 decision=%+v", first)
+	}
+	decisionStore.logs = decisionStore.logs[:2]
+	second := requestDecision(14)
+	if !second.Allowed || second.FromTurn != 14 || second.BaselineApplied || second.DecisionToken == "" {
+		t.Fatalf("manual turn 14 decision=%+v", second)
+	}
+}
+
+func TestRollbackDecisionHandlerBlocksManualTargetNotOwnedByCurrentSession(t *testing.T) {
+	const sid = "char_1_cid_manual_not_owned"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs:  []store.ChatLog{{ChatSessionID: "parent-session", TurnIndex: 14, Role: "assistant", Content: "parent only"}},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"manual",
+		"candidate_from_turn":14,
+		"deletion_observed":true,
+		"allow_manual_candidate":true,
+		"lifecycle_action_observation":"deleted"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Allowed || response.Reason != "manual_target_not_owned" || response.DecisionToken != "" {
+		t.Fatalf("non-owned manual target decision=%+v", response)
 	}
 }
 

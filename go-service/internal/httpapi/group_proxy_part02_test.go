@@ -174,13 +174,11 @@ func TestNarrativeGuideModesControlledReplayDiverges(t *testing.T) {
 		}
 		userMessage, _ := messages[1].(map[string]any)
 		body := extractionStringFromAny(userMessage["content"])
-		mode := "off"
-		for _, candidate := range []string{"romantic", "action", "mature_soft"} {
-			if strings.Contains(body, `"guide_mode": "`+candidate+`"`) {
-				mode = candidate
-				break
-			}
+		var publisherInput map[string]any
+		if err := json.Unmarshal([]byte(body), &publisherInput); err != nil {
+			t.Fatalf("decode compact Publisher input: %v; body=%s", err, body)
 		}
+		mode := extractionFirstNonEmpty(extractionStringFromAny(publisherInput["guide_mode"]), "off")
 		callByMode[mode]++
 		capturedPromptByMode[mode] = body
 		responseText := map[string]string{

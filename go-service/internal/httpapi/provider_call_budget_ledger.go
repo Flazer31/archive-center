@@ -14,6 +14,10 @@ type providerCallBudgetComponents struct {
 	LanguageContextChars                  int
 	JSONSchemaOutputRequirementChars      int
 	JSONSchemaOutputRequirementAccounting string
+	SupportPacketTextChars                int
+	SupportPacketMetadataChars            int
+	ExecutionInstructionChars             int
+	ExecutionMetadataChars                int
 }
 
 func newProviderCallBudgetLedger(callKind, systemPrompt, userPrompt string, components providerCallBudgetComponents) map[string]any {
@@ -49,6 +53,10 @@ func newProviderCallBudgetLedger(callKind, systemPrompt, userPrompt string, comp
 		"language_context_chars":                    components.LanguageContextChars,
 		"json_schema_output_requirement_chars":      components.JSONSchemaOutputRequirementChars,
 		"json_schema_output_requirement_accounting": components.JSONSchemaOutputRequirementAccounting,
+		"support_packet_text_chars":                 components.SupportPacketTextChars,
+		"support_packet_metadata_chars":             components.SupportPacketMetadataChars,
+		"execution_instruction_chars":               components.ExecutionInstructionChars,
+		"execution_metadata_chars":                  components.ExecutionMetadataChars,
 		"assembly_chars":                            assemblyChars,
 		"user_prompt_chars":                         userPromptChars,
 		"final_prompt_chars":                        finalPromptChars,
@@ -130,6 +138,9 @@ func safeProviderCallBudgetLedger(value any) map[string]any {
 		"original_work_reference_chars", "original_work_reference_status",
 		"lorebook_reference_chars", "lorebook_reference_status", "language_context_chars",
 		"json_schema_output_requirement_chars", "json_schema_output_requirement_accounting",
+		"support_packet_text_chars", "support_packet_metadata_chars",
+		"execution_instruction_chars", "execution_metadata_chars",
+		"json_response_format", "json_response_source", "json_response_schema_contract", "json_response_schema_source",
 		"assembly_chars", "user_prompt_chars", "final_prompt_chars", "provider_usage_status",
 		"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "total_tokens",
 		"status", "failure_stage", "failure_code", "http_status", "termination_kind",

@@ -57,6 +57,8 @@ type rollbackDecisionRequest struct {
 	LifecycleActionObservation    string               `json:"lifecycle_action_observation"`
 	AllowManualCandidate          bool                 `json:"allow_manual_candidate"`
 	Baseline                      *routingTurnBaseline `json:"baseline,omitempty"`
+	ManualTargetOwnershipObserved bool                 `json:"-"`
+	ManualTargetOwned             bool                 `json:"-"`
 }
 
 type rollbackDecisionResponse struct {
@@ -165,6 +167,24 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 			backendLatestAuthoritative = true
 		}
 	}
+	manualCandidate := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual") && req.AllowManualCandidate
+	if manualCandidate && req.CandidateFromTurn > 0 && s.Store != nil {
+		logs, err := s.Store.ListChatLogs(
+			r.Context(),
+			strings.TrimSpace(req.ChatSessionID),
+			req.CandidateFromTurn,
+			req.CandidateFromTurn,
+		)
+		if err == nil {
+			req.ManualTargetOwnershipObserved = true
+			for _, item := range logs {
+				if item.TurnIndex == req.CandidateFromTurn && strings.TrimSpace(item.ChatSessionID) == strings.TrimSpace(req.ChatSessionID) {
+					req.ManualTargetOwned = true
+					break
+				}
+			}
+		}
+	}
 	if req.IncompleteTailCandidate &&
 		req.DeletionObserved &&
 		req.RemovedAssistantCount == 0 &&
@@ -262,6 +282,20 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	if !req.DeletionObserved && !(manual && req.AllowManualCandidate) {
 		return resp
 	}
+	if manual && req.AllowManualCandidate {
+		if req.CandidateFromTurn <= 0 {
+			resp.Reason = "missing_delete_anchor"
+			return resp
+		}
+		if !req.ManualTargetOwnershipObserved {
+			resp.Reason = "manual_target_ownership_unavailable"
+			return resp
+		}
+		if !req.ManualTargetOwned {
+			resp.Reason = "manual_target_not_owned"
+			return resp
+		}
+	}
 	if req.IncompleteTailCandidate && !req.BackendIncompleteTailVerified {
 		resp.Reason = "incomplete_tail_not_verified"
 		return resp
@@ -270,7 +304,7 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 	effectiveCompleted := maxInt(0, req.VisibleCompletedTurns)
 	protectedBefore, minFrom := 0, 0
 	baselineApplied := false
-	if baseline := req.Baseline; baseline != nil && routingBaselineReasonSupported(baseline.Reason) && baseline.BackendTurnAtRoute > 0 {
+	if baseline := req.Baseline; !manual && baseline != nil && routingBaselineReasonSupported(baseline.Reason) && baseline.BackendTurnAtRoute > 0 {
 		localBase := maxInt(0, baseline.LocalPairsAtRoute)
 		backendBase := maxInt(0, baseline.BackendTurnAtRoute)
 		effectiveCompleted = backendBase + maxInt(0, req.VisibleCompletedTurns-localBase)

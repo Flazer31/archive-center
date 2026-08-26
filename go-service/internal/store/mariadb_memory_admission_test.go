@@ -383,7 +383,7 @@ func TestReplayPrivateAggregateCancelsPendingUpsertAndQueuesDeleteWithoutFakeMod
 	}
 }
 
-func TestAdmissionDeleteOperationKeyIgnoresReasonAndResultHash(t *testing.T) {
+func TestAdmissionDeleteOperationKeyIgnoresResultHashAndSeparatesLifecycleFence(t *testing.T) {
 	first := &MemoryAdmission{
 		ChatSessionID: "session", SourceRevision: "revision",
 		ResultHash: strings.Repeat("a", 64),
@@ -393,14 +393,16 @@ func TestAdmissionDeleteOperationKeyIgnoresReasonAndResultHash(t *testing.T) {
 		ResultHash: strings.Repeat("b", 64),
 	}
 	documentID := "memory:session:17"
-	want := memoryVectorOperationKey("delete", "session", "revision", documentID)
-	for _, operation := range []string{"delete", "delete:no_public_memory_projection", "delete:retired_evidence"} {
-		if got := memoryAdmissionVectorOperationKey(operation, first, documentID); got != want {
-			t.Fatalf("operation=%q key=%q, want canonical delete key %q", operation, got, want)
-		}
-		if got := memoryAdmissionVectorOperationKey(operation, second, documentID); got != want {
-			t.Fatalf("result hash changed delete key: operation=%q key=%q want=%q", operation, got, want)
-		}
+	want := memoryVectorOperationKey("delete:active", "session", "revision", documentID)
+	if got := memoryAdmissionVectorOperationKey("delete:active", first, documentID); got != want {
+		t.Fatalf("active delete key=%q, want %q", got, want)
+	}
+	if got := memoryAdmissionVectorOperationKey("delete:active", second, documentID); got != want {
+		t.Fatalf("result hash changed active delete key: key=%q want=%q", got, want)
+	}
+	inactive := memoryAdmissionVectorOperationKey("delete:inactive", first, documentID)
+	if inactive == want {
+		t.Fatal("active cleanup and inactive source invalidation must not share a delete key")
 	}
 	if memoryAdmissionVectorOperationKey("upsert", first, documentID) ==
 		memoryAdmissionVectorOperationKey("upsert", second, documentID) {
@@ -413,18 +415,17 @@ func TestAdmissionDeleteOperationKeysRemainBoundedAcross112TurnRegeneration(t *t
 	for turn := 1; turn <= 112; turn++ {
 		revision := fmt.Sprintf("revision-%03d", turn)
 		documentID := fmt.Sprintf("memory:session:%d", turn)
-		for cycle, reason := range []string{
-			"no_public_memory_projection", "retired_evidence", "turn_deleted", "rollback_replay",
-		} {
+		for cycle := range 4 {
 			admission := &MemoryAdmission{
 				ChatSessionID: "session", SourceRevision: revision,
 				ResultHash: fmt.Sprintf("%064x", turn*10+cycle),
 			}
-			keys[memoryAdmissionVectorOperationKey("delete:"+reason, admission, documentID)] = struct{}{}
+			keys[memoryAdmissionVectorOperationKey("delete:active", admission, documentID)] = struct{}{}
+			keys[memoryAdmissionVectorOperationKey("delete:inactive", admission, documentID)] = struct{}{}
 		}
 	}
-	if len(keys) != 112 {
-		t.Fatalf("delete operation keys=%d, want one per source revision and document", len(keys))
+	if len(keys) != 224 {
+		t.Fatalf("delete operation keys=%d, want one per source revision, document, and lifecycle fence", len(keys))
 	}
 }
 
@@ -559,7 +560,7 @@ func TestAdmissionDeleteReplayUsesOneExistingRowAcrossTwoForcePasses(t *testing.
 		ResultHash: strings.Repeat("a", 64), CreatedAt: now,
 	}
 	item := &MemoryVectorOutboxItem{
-		OperationKey: memoryAdmissionVectorOperationKey("delete:reason-a", admission, "memory:session:17"),
+		OperationKey: memoryAdmissionVectorOperationKey("delete:active", admission, "memory:session:17"),
 		Operation:    "delete", ChatSessionID: "session", SourceRevision: "revision",
 		DocumentID: "memory:session:17", DocumentJSON: memoryVectorDeleteAuditJSON("reason-a"),
 		EmbeddingReady: true, RequiredSourceState: "active", Status: "pending", UpdatedAt: now,
