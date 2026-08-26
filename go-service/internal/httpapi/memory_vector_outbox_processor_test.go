@@ -22,6 +22,7 @@ type memoryVectorProcessorStore struct {
 	store.Store
 	items            []*store.MemoryVectorOutboxItem
 	completed        []int64
+	materialized     []store.MemoryVectorMaterialization
 	failed           []int64
 	failureRetryAt   []time.Time
 	failurePermanent []bool
@@ -67,6 +68,12 @@ func (f *memoryVectorProcessorStore) ClaimMemoryVectorOperations(_ context.Conte
 
 func (f *memoryVectorProcessorStore) CompleteMemoryVectorOperation(_ context.Context, id int64, _ string, _ time.Time) error {
 	f.completed = append(f.completed, id)
+	return f.completeErr
+}
+
+func (f *memoryVectorProcessorStore) CompleteMemoryVectorMaterializedOperation(_ context.Context, id int64, _ string, _ time.Time, materialization store.MemoryVectorMaterialization) error {
+	f.completed = append(f.completed, id)
+	f.materialized = append(f.materialized, materialization)
 	return f.completeErr
 }
 
@@ -725,6 +732,60 @@ func TestMemoryVectorProcessorMaterializesDeferredEmbedding(t *testing.T) {
 		len(vec.upserts) != 1 || len(vec.upserts[0]) != 1 ||
 		len(vec.upserts[0][0].Embedding) != 2 {
 		t.Fatalf("result=%+v completed=%v upserts=%+v", result, st.completed, vec.upserts)
+	}
+}
+
+func TestMemoryVectorProcessorPersistsVerifiedDeferredMemoryEmbeddingBeforeCompletion(t *testing.T) {
+	now := time.Date(2026, 8, 26, 2, 0, 0, 0, time.UTC)
+	document := vector.VectorDocument{
+		ID: "memory:session:17", ChatSessionID: "session",
+		Tier: "memory", SourceTable: "memories", SourceRowID: "17",
+		SchemaVersion: "memory.v2", DocumentText: "Mina kept the active promise.",
+	}
+	document = verifiedMemoryVectorProcessorDocument(document, "sar_active")
+	documentJSON, err := json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st := &memoryVectorProcessorStore{
+		Store: store.NewNoopStore(),
+		items: []*store.MemoryVectorOutboxItem{{
+			ID: 15, Operation: "upsert", ChatSessionID: "session",
+			SourceRevision: "sar_active", DocumentID: document.ID,
+			DocumentJSON: string(documentJSON), EmbeddingReady: false,
+			RequiredSourceState: "active", Status: "needs_embedding",
+		}},
+	}
+	vec := &memoryVectorProcessorVector{VectorStore: vector.NewFakeVectorStore()}
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		payload := `{"model":"embedding-resolved","data":[{"embedding":[0.2,0.4]}]}`
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header), Body: io.NopCloser(strings.NewReader(payload)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+	server := &Server{
+		Store: st, Vector: vec,
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, EmbeddingProvider: "openai", EmbeddingAPIKey: "test-key",
+			EmbeddingEndpoint: "https://example.invalid/v1", EmbeddingModel: "embedding-requested",
+			EmbeddingTimeoutSec: 30, FailedQueueMaxAttempts: 4,
+		},
+	}
+	result, err := server.processMemoryVectorOutboxOnce(context.Background(), "worker", now, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.CanonicalState != "completed" || len(st.materialized) != 1 {
+		t.Fatalf("result=%+v completed=%v materialized=%+v", result, st.completed, st.materialized)
+	}
+	got := st.materialized[0]
+	if got.ChatSessionID != "session" || got.SourceRevision != "sar_active" ||
+		got.DocumentID != document.ID || got.SourceRowID != 17 ||
+		got.EmbeddingJSON != "[0.2,0.4]" || got.EmbeddingModel != "embedding-resolved" {
+		t.Fatalf("materialization=%+v", got)
 	}
 }
 

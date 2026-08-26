@@ -212,3 +212,32 @@ type MemoryVectorOutboxStore interface {
 	CompleteMemoryVectorOperation(ctx context.Context, outboxID int64, leaseOwner string, now time.Time) error
 	FailMemoryVectorOperation(ctx context.Context, outboxID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
 }
+
+// MemoryVectorMaterialization is the verified public memory vector that must
+// converge into MariaDB before its outbox operation can be completed.
+type MemoryVectorMaterialization struct {
+	ChatSessionID  string
+	SourceRevision string
+	DocumentID     string
+	SourceRowID    int64
+	EmbeddingJSON  string
+	EmbeddingModel string
+}
+
+type MemoryVectorMaterializedCompletionStore interface {
+	CompleteMemoryVectorMaterializedOperation(
+		ctx context.Context,
+		outboxID int64,
+		leaseOwner string,
+		now time.Time,
+		materialization MemoryVectorMaterialization,
+	) error
+}
+
+type MemoryVectorOutboxMaintenanceStore interface {
+	CoalesceInactiveMemoryVectorDeleteOperations(
+		ctx context.Context,
+		chatSessionID string,
+		now time.Time,
+	) (staleRejected int64, err error)
+}

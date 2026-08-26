@@ -354,6 +354,16 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 	background := completeTurnBoolFromAny(req["background"])
 	meta := mapFromAny(req["client_meta"])
 	cfg := s.completeTurnExtractionConfig(meta)
+	staleDeleteOperationsRejected := int64(0)
+	if !dryRun {
+		if maintenance, ok := s.Store.(store.MemoryVectorOutboxMaintenanceStore); ok {
+			rejected, cleanupErr := maintenance.CoalesceInactiveMemoryVectorDeleteOperations(ctx, sid, time.Now().UTC())
+			if cleanupErr != nil && !errors.Is(cleanupErr, store.ErrNotEnabled) {
+				return nil, cleanupErr
+			}
+			staleDeleteOperationsRejected = rejected
+		}
+	}
 
 	memories, err := s.Store.ListMemories(ctx, sid, 0, 0)
 	if err != nil {
@@ -403,6 +413,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			"background":             background,
 			"note":                   "reindex skipped because the canonical vector candidate count and stored ChromaDB documents are already current",
 		}
+		result["duplicate_deletes_rejected"] = staleDeleteOperationsRejected
 		if progress != nil {
 			progress(map[string]any{
 				"status":           "completed",
@@ -685,6 +696,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 			"upserted":                    upserted,
 			"canonical_replays_completed": canonicalReplaysCompleted,
 			"vector_replays_queued":       vectorReplaysQueued,
+			"duplicate_deletes_rejected":  staleDeleteOperationsRejected,
 			"skipped":                     skipped,
 			"embedding_model":             strings.TrimSpace(cfg.Embedder.Model),
 			"embedding_provider":          strings.TrimSpace(cfg.Embedder.Provider),
@@ -723,6 +735,7 @@ func (s *Server) runAdminReindexJob(ctx context.Context, sid string, req map[str
 		"upserted":                    upserted,
 		"canonical_replays_completed": canonicalReplaysCompleted,
 		"vector_replays_queued":       vectorReplaysQueued,
+		"duplicate_deletes_rejected":  staleDeleteOperationsRejected,
 		"vector_delivery_pending":     vectorReplaysQueued > 0,
 		"post_integrity_status":       postIntegrityStatus,
 		"skipped":                     skipped,

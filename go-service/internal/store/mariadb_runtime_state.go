@@ -210,9 +210,6 @@ func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) 
 			priority = NULLIF(?, 0),
 			hook_type = COALESCE(?, hook_type),
 			hook_metadata_json = COALESCE(?, hook_metadata_json),
-			pinned = ?,
-			suppressed = ?,
-			user_corrected = ?,
 			updated_at = ?
 		WHERE chat_session_id = ? AND thread_key = ? AND status <> 'resolved'
 		ORDER BY id DESC
@@ -220,7 +217,7 @@ func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) 
 	`, nullableString(p.Description), nullableString(firstNonEmptyString(p.Status, "open")),
 		p.ResolvedTurn, p.SourceTurn, p.Priority, nullableString(p.HookType),
 		nullableString(firstNonEmptyString(p.HookMetadataJSON, p.DetailsJSON)),
-		p.Pinned, p.Suppressed, p.UserCorrected, now, p.ChatSessionID, p.ThreadKey)
+		now, p.ChatSessionID, p.ThreadKey)
 	if err != nil {
 		return err
 	}

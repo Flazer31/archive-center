@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.2
+//@display-name Archive Center 4.0.4
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.2
+//@version 4.0.4
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.2";
-  const BUILD_ID = "4.0.2";
+  const VERSION = "4.0.4";
+  const BUILD_ID = "4.0.4";
   const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-24 KST";
-  const BUILD_NOTES = "Archive Center 4.0.2";
+  const BUILD_TIME = "2026-08-25 KST";
+  const BUILD_NOTES = "Archive Center 4.0.4";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -3986,16 +3986,24 @@
       : subject + " —(" + predicate + ")→ " + object;
   }
 
-  // pluginStorage: RisuAI 제공 영속 저장소 (재시작/새로고침 후에도 유지).
-  // localStorage:  동기 캐시 (빠른 읽기용, iframe 세션 내에서만 유지).
+  // getLocalPluginStorage: 설정의 장치별 영속 저장소.
+  // pluginStorage: 세이브별 큐/복구 저장소이자 기존 설정 이관용 mirror.
+  // localStorage: 동기 캐시 (빠른 읽기용, iframe 세션 내에서만 유지).
   // 인메모리 _mem: localStorage도 차단될 때의 최후 fallback.
   //
-  // 쓰기: pluginStorage (영속) + localStorage/인메모리 (캐시) 둘 다 기록.
-  // 읽기: 동기 시 localStorage/인메모리 캐시, 비동기 시 pluginStorage 우선.
+  // 설정 쓰기: 장치 로컬 저장소를 검증한 뒤 기존 pluginStorage에 mirror.
+  // 그 외 키: 기존 pluginStorage 소유권과 동기 캐시 동작을 유지.
   // ──────────────────────────────────────────────────────────────
   const _mem = {};
   const _persistentKnownValues = new Map();
   const _persistentPendingWrites = new Map();
+  // RisuAI API v3 storage baseline: kwaroran/Risuai
+  // c0ed1026de4b06a1c4600b79c789fea0616c297c, inspected 2026-08-25.
+  // Archive Center settings are device-local configuration. pluginStorage is
+  // retained only as the legacy/save-file migration source and compatibility
+  // mirror. Queue and session recovery keys keep their existing ownership.
+  let _localSettingsStoragePromise = null;
+  let _settingsStorageStatus = { mode: "uninitialized", detail: "" };
   let _storageOk = false;
   try { localStorage.setItem("__test", "1"); localStorage.removeItem("__test"); _storageOk = true; } catch {}
 
@@ -4006,6 +4014,140 @@
   /** pluginStorage가 사용 가능한지 여부 */
   function _hasPluginStorage() {
     return !!(R && R.pluginStorage && typeof R.pluginStorage.getItem === "function");
+  }
+
+  async function getLocalSettingsStorage() {
+    if (!R || typeof R.getLocalPluginStorage !== "function") return null;
+    if (!_localSettingsStoragePromise) {
+      _localSettingsStoragePromise = Promise.resolve(R.getLocalPluginStorage()).catch(function(err) {
+        _localSettingsStoragePromise = null;
+        throw err;
+      });
+    }
+    const storage = await _localSettingsStoragePromise;
+    if (!storage || typeof storage.getItem !== "function" || typeof storage.setItem !== "function") {
+      return null;
+    }
+    return storage;
+  }
+
+  function isSettingsStoragePayload(value) {
+    if (value == null || String(value).trim() === "") return false;
+    try {
+      const parsed = JSON.parse(String(value));
+      return !!parsed && typeof parsed === "object" && !Array.isArray(parsed);
+    } catch {
+      return false;
+    }
+  }
+
+  async function writeVerifiedStorageValue(storage, key, storageValue) {
+    await storage.setItem(key, storageValue);
+    const readBack = await storage.getItem(key);
+    if (readBack == null || normalizePersistentValue(readBack) !== storageValue) {
+      throw new Error("persistent_storage_readback_mismatch");
+    }
+    return true;
+  }
+
+  async function readSettingsPersistentValue() {
+    let localStorageHandle = null;
+    let localFailure = "";
+    try {
+      localStorageHandle = await getLocalSettingsStorage();
+      if (localStorageHandle) {
+        const localValue = await localStorageHandle.getItem(SETTINGS_KEY);
+        if (isSettingsStoragePayload(localValue)) {
+          const storageValue = normalizePersistentValue(localValue);
+          safeStorageSet(SETTINGS_KEY, storageValue);
+          _persistentKnownValues.set(SETTINGS_KEY, storageValue);
+          _settingsStorageStatus = { mode: "device_local", detail: "restored" };
+          return storageValue;
+        }
+        if (localValue != null && String(localValue).trim() !== "") {
+          localFailure = "device_local_payload_invalid";
+        }
+      }
+    } catch (err) {
+      localFailure = "device_local_read_failed:" + String((err && err.message) || err || "unknown");
+      warnLog("local settings storage read failed:", (err && err.message) || err);
+    }
+
+    if (_hasPluginStorage()) {
+      try {
+        const legacyValue = await R.pluginStorage.getItem(SETTINGS_KEY);
+        if (isSettingsStoragePayload(legacyValue)) {
+          const storageValue = normalizePersistentValue(legacyValue);
+          safeStorageSet(SETTINGS_KEY, storageValue);
+          _persistentKnownValues.set(SETTINGS_KEY, storageValue);
+          if (localStorageHandle) {
+            try {
+              await writeVerifiedStorageValue(localStorageHandle, SETTINGS_KEY, storageValue);
+              _settingsStorageStatus = { mode: "device_local", detail: "migrated_from_plugin_storage" };
+            } catch (err) {
+              warnLog("legacy settings migration failed:", (err && err.message) || err);
+              _settingsStorageStatus = { mode: "plugin_storage_legacy", detail: "migration_failed" };
+            }
+          } else {
+            _settingsStorageStatus = { mode: "plugin_storage_legacy", detail: "local_api_unavailable" };
+          }
+          return storageValue;
+        }
+      } catch (err) {
+        warnLog("pluginStorage.getItem failed:", err.message);
+        if (!localFailure) localFailure = "plugin_storage_read_failed:" + String(err.message || "unknown");
+      }
+    }
+
+    const cached = safeStorageGet(SETTINGS_KEY);
+    if (isSettingsStoragePayload(cached)) {
+      _settingsStorageStatus = { mode: "iframe_cache", detail: localFailure || "durable_value_missing" };
+      return cached;
+    }
+    _settingsStorageStatus = { mode: "default", detail: localFailure || "no_saved_settings" };
+    return null;
+  }
+
+  async function writeSettingsPersistentValue(value) {
+    const storageValue = normalizePersistentValue(value);
+    safeStorageSet(SETTINGS_KEY, storageValue);
+    let localFailure = null;
+    try {
+      const localStorageHandle = await getLocalSettingsStorage();
+      if (localStorageHandle) {
+        await writeVerifiedStorageValue(localStorageHandle, SETTINGS_KEY, storageValue);
+        _persistentKnownValues.set(SETTINGS_KEY, storageValue);
+        _settingsStorageStatus = { mode: "device_local", detail: "verified_write" };
+        if (_hasPluginStorage() && typeof R.pluginStorage.setItem === "function") {
+          try {
+            await R.pluginStorage.setItem(SETTINGS_KEY, storageValue);
+          } catch (err) {
+            warnLog("pluginStorage settings mirror failed:", (err && err.message) || err);
+          }
+        }
+        return true;
+      }
+    } catch (err) {
+      localFailure = err;
+      warnLog("local settings storage write failed:", (err && err.message) || err);
+    }
+
+    if (_hasPluginStorage() && typeof R.pluginStorage.setItem === "function") {
+      try {
+        await writeVerifiedStorageValue(R.pluginStorage, SETTINGS_KEY, storageValue);
+        _persistentKnownValues.set(SETTINGS_KEY, storageValue);
+        _settingsStorageStatus = {
+          mode: "plugin_storage_legacy",
+          detail: localFailure ? "device_local_failed" : "local_api_unavailable",
+        };
+        return true;
+      } catch (err) {
+        warnLog("pluginStorage.setItem failed:", err.message);
+        throw err;
+      }
+    }
+    _settingsStorageStatus = { mode: "unavailable", detail: "durable_storage_unavailable" };
+    throw localFailure || new Error("persistent_storage_unavailable");
   }
 
   /** 동기 캐시에서 읽기 (즉시 반환, 초기화 전 fallback용) */
@@ -4025,6 +4167,7 @@
 
   /** pluginStorage + 동기 캐시 둘 다에 쓰기 (비동기) */
   async function persistentSet(key, value) {
+    if (key === SETTINGS_KEY) return await writeSettingsPersistentValue(value);
     const storageValue = normalizePersistentValue(value);
     // 동기 캐시 즉시 갱신
     safeStorageSet(key, storageValue);
@@ -4066,6 +4209,7 @@
 
   /** pluginStorage에서 읽기 시도 → 실패 시 동기 캐시 fallback (비동기) */
   async function persistentGet(key) {
+    if (key === SETTINGS_KEY) return await readSettingsPersistentValue();
     if (_hasPluginStorage()) {
       try {
         const val = await R.pluginStorage.getItem(key);
@@ -10449,9 +10593,18 @@
     if (!url || typeof url !== "string") return DEFAULT_SETTINGS.bridgeUrl;
     let trimmed = url.trim().replace(/\/+$/, "");
     if (!trimmed) return DEFAULT_SETTINGS.bridgeUrl;
-    // 최소한 http:// 또는 https://로 시작하는지 확인
-    if (!/^https?:\/\/.+/i.test(trimmed)) return DEFAULT_SETTINGS.bridgeUrl;
+    if (!isValidBridgeUrlInput(trimmed)) return DEFAULT_SETTINGS.bridgeUrl;
     return trimmed;
+  }
+
+  function isValidBridgeUrlInput(url) {
+    if (!url || typeof url !== "string") return false;
+    try {
+      const parsed = new URL(url.trim());
+      return (parsed.protocol === "http:" || parsed.protocol === "https:") && !!parsed.hostname;
+    } catch {
+      return false;
+    }
   }
 
   function parseBridgeUrl(url) {
@@ -11382,7 +11535,7 @@
     return merged;
   }
 
-  /** 설정 로드 — pluginStorage(영속) 우선, 없으면 동기 캐시, 둘 다 없으면 기본값 */
+  /** 설정 로드 — 장치 로컬 저장소 우선, 기존 pluginStorage 자동 이관, 캐시는 읽기 전용 fallback */
   async function loadSettings() {
     try {
       const raw = await persistentGet(SETTINGS_KEY);
@@ -11428,7 +11581,10 @@
           detail: "settings_saved_locally_backend_unsynced",
           reason_code: syncAck.code,
         });
-        return false;
+        // Persistence and backend reachability are separate results. A stopped
+        // or newly configured backend must not make a verified local write look
+        // like a failed settings save.
+        return true;
       }
       updateRuntimeState("lastConfigSync", "ok", { detail: "settings_runtime_synced" });
       return true;
@@ -49511,6 +49667,19 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       const memoryBudgets = s.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
       const rs = runtimeState;
       const effectiveCritic = resolveEffectiveCriticConfig(s);
+      const settingsStorageMode = String((_settingsStorageStatus && _settingsStorageStatus.mode) || "uninitialized");
+      const settingsStorageLabel = ({
+        device_local: "device-local (verified)",
+        plugin_storage_legacy: "pluginStorage (compatibility)",
+        iframe_cache: "iframe cache only",
+        default: "default (not restored)",
+        unavailable: "unavailable",
+        uninitialized: "not initialized",
+      })[settingsStorageMode] || settingsStorageMode;
+      const settingsStorageDot = settingsStorageMode === "device_local"
+        ? "mo-dot-ok"
+        : (settingsStorageMode === "plugin_storage_legacy" ? "mo-dot-warn" : "mo-dot-skipped");
+      const settingsStorageDetail = String((_settingsStorageStatus && _settingsStorageStatus.detail) || "");
       if (!s.debug && _settingsActiveTab === "debug") {
         _settingsActiveTab = "settings";
       }
@@ -49690,7 +49859,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       <div class="mo-dash-row"><span class="mo-dot ${s.pluginMainEndpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.directorLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.pluginMainEndpoint, s.pluginMainModel))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${effectiveCritic.endpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.criticLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(effectiveCritic.endpoint, effectiveCritic.model))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${s.embeddingEndpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.embeddingLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.embeddingEndpoint, s.embeddingModel))}</span></div>
-      <div class="mo-dash-row"><span class="mo-dot ${_storageOk ? "mo-dot-ok" : "mo-dot-skipped"}"></span><span class="mo-dash-label">Storage</span><span class="mo-dash-value">${_storageOk ? "localStorage" : "in-memory (session only)"}</span></div>
+      <div class="mo-dash-row"><span class="mo-dot ${settingsStorageDot}"></span><span class="mo-dash-label">Storage</span><span class="mo-dash-value" title="${escapeAttr(settingsStorageDetail)}">${escapeAttr(settingsStorageLabel)}</span></div>
     </div>
 
     <!-- ▸ 연결/호출 테스트 -->
@@ -51287,6 +51456,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const prevTurnWorkflowHUDEnabled = settings.turnWorkflowHUDEnabled !== false;
           const prevLorebookReferenceMode = String(settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
           const rawBridgeUrl = $("mo-bridgeUrl").value;
+          if (!isValidBridgeUrlInput(rawBridgeUrl)) {
+            throw new Error("bridge_url_invalid");
+          }
           const readValue = (id, fallback = "", trim = false) => {
             const el = $(id);
             if (!el) return fallback;

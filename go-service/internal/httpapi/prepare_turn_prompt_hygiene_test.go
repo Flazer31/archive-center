@@ -135,6 +135,47 @@ func TestPrepareTurnPendingThreadNeedsDescriptionOverlapNotOwnerNameOnly(t *test
 	}
 }
 
+func TestPrepareTurnPinnedOpenPromiseSurvivesWithoutCurrentQueryOverlap(t *testing.T) {
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil, nil,
+		[]store.PendingThread{
+			{
+				ThreadKey:   "daily-cube-rendezvous",
+				Status:      "open",
+				Description: "The companion uses the gifted teleport cube to rendezvous every morning.",
+				Pinned:      true,
+			},
+			{
+				ThreadKey:   "paused-promise",
+				Status:      "paused",
+				Description: "A paused unrelated promise must not bypass relevance.",
+				Pinned:      true,
+			},
+			{
+				ThreadKey:   "suppressed-promise",
+				Status:      "open",
+				Description: "A suppressed unrelated promise must not be delivered.",
+				Pinned:      true,
+				Suppressed:  true,
+			},
+		},
+		nil, nil, nil, nil, nil,
+		5, 9000, "Mira calibrates the brass wheel at the forge.", "default", nil, nil, nil,
+	)
+	if !strings.Contains(assembly.PendingThreadText, "teleport cube") {
+		t.Fatalf("pinned open promise was dropped without query overlap: %q", assembly.PendingThreadText)
+	}
+	if strings.Contains(assembly.PendingThreadText, "paused unrelated") || strings.Contains(assembly.PendingThreadText, "suppressed unrelated") {
+		t.Fatalf("inactive pinned promise bypassed eligibility: %q", assembly.PendingThreadText)
+	}
+	if got := intFromAny(assembly.Counts["pending_thread_pinned_active_selected"], 0); got != 1 {
+		t.Fatalf("pinned active selected count = %d, want 1", got)
+	}
+	if got := intFromAny(assembly.Counts["pending_thread_suppressed_dropped"], 0); got != 1 {
+		t.Fatalf("suppressed dropped count = %d, want 1", got)
+	}
+}
+
 func TestPrepareTurnRelationshipSurfacesDoNotLeakOffSceneMarriageBundle(t *testing.T) {
 	const rawInput = "한얼은 월하방에서 세종의 판단을 듣는다."
 	perspective := prepareTurnPerspectiveWithNarrativeState(

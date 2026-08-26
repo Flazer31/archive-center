@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -231,7 +232,7 @@ func prepareVoyageMemoryVectorOperations(ctx context.Context, embeddingCfg compl
 	if len(candidates) == 0 {
 		return prepared, failures
 	}
-	grouped, _, err := callDocumentEmbeddings(ctx, embeddingCfg, contextChunks)
+	grouped, resolvedModel, err := callDocumentEmbeddings(ctx, embeddingCfg, contextChunks)
 	if err != nil {
 		for _, candidate := range candidates {
 			failures[candidate.item.ID] = memoryVectorPreparationFailure{Failure: "embedding materialization failed"}
@@ -246,6 +247,15 @@ func prepareVoyageMemoryVectorOperations(ctx context.Context, embeddingCfg compl
 		}
 		delete(candidate.document.Metadata, "contextualized_embedding_inputs")
 		delete(candidate.document.Metadata, "contextualized_embedding_index")
+		if strings.TrimSpace(resolvedModel) == "" {
+			resolvedModel = strings.TrimSpace(embeddingCfg.Model)
+		}
+		if strings.TrimSpace(resolvedModel) != "" {
+			if candidate.document.Metadata == nil {
+				candidate.document.Metadata = map[string]any{}
+			}
+			candidate.document.Metadata["embedding_model"] = strings.TrimSpace(resolvedModel)
+		}
 		prepared[candidate.item.ID] = candidate.document
 	}
 	return prepared, failures
@@ -266,6 +276,8 @@ func (s *Server) processClaimedMemoryVectorOperation(
 	switch item.Operation {
 	case "upsert":
 		var document vector.VectorDocument
+		embeddingCfg := s.completeTurnExtractionConfig(nil).Embedder
+		resolvedEmbeddingModel := ""
 		if preparedDocument != nil {
 			document = *preparedDocument
 		} else if err := json.Unmarshal([]byte(item.DocumentJSON), &document); err != nil {
@@ -279,8 +291,10 @@ func (s *Server) processClaimedMemoryVectorOperation(
 		if strings.TrimSpace(document.ChatSessionID) == "" {
 			document.ChatSessionID = item.ChatSessionID
 		}
+		if document.Metadata != nil {
+			resolvedEmbeddingModel = strings.TrimSpace(extractionStringFromAny(document.Metadata["embedding_model"]))
+		}
 		if len(document.Embedding) == 0 {
-			embeddingCfg := s.completeTurnExtractionConfig(nil).Embedder
 			if !embeddingCfg.hasConfig() {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding configuration is not available"
@@ -291,19 +305,28 @@ func (s *Server) processClaimedMemoryVectorOperation(
 				result.Failure = "materialized vector document has no searchable text"
 				return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, result.Failure)
 			}
-			embeddingJSON := ""
-			embeddingJSON, _, embedErr := callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
+			embeddingJSON, resolvedModel, embedErr := callEmbedding(vectorCtx, embeddingCfg, document.DocumentText)
 			if embedErr != nil {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding materialization failed"
 				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
 			}
+			resolvedEmbeddingModel = resolvedModel
 			document.Embedding = parseFloat32JSONList(embeddingJSON)
 			if len(document.Embedding) == 0 {
 				result.CanonicalState = "retryable"
 				result.Failure = "embedding materialization returned no vector"
 				return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
 			}
+		}
+		if resolvedEmbeddingModel == "" {
+			resolvedEmbeddingModel = strings.TrimSpace(embeddingCfg.Model)
+		}
+		if resolvedEmbeddingModel != "" {
+			if document.Metadata == nil {
+				document.Metadata = map[string]any{}
+			}
+			document.Metadata["embedding_model"] = resolvedEmbeddingModel
 		}
 		delete(document.Metadata, "contextualized_embedding_inputs")
 		delete(document.Metadata, "contextualized_embedding_index")
@@ -329,6 +352,29 @@ func (s *Server) processClaimedMemoryVectorOperation(
 			result.Failure = verifyErr.Error()
 			return result, s.retryMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, &result, result.Failure)
 		}
+		if materialization, ok, materializationErr := memoryVectorMaterializationFromDocument(item, document, resolvedEmbeddingModel); materializationErr != nil {
+			result.CanonicalState = "permanent"
+			result.Failure = materializationErr.Error()
+			return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, materializationErr.Error())
+		} else if ok {
+			completion, supported := outbox.(store.MemoryVectorMaterializedCompletionStore)
+			if !supported {
+				return result, fmt.Errorf("memory vector materialized completion is not supported")
+			}
+			result.VectorApplied = true
+			if err := completion.CompleteMemoryVectorMaterializedOperation(ctx, item.ID, leaseOwner, now, materialization); err != nil {
+				if errors.Is(err, store.ErrSourceRevisionStale) {
+					if deleter, deleteOK := s.Vector.(vector.DocumentDeleter); deleteOK {
+						_ = deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID})
+					}
+					result.CanonicalState = "stale_rejected"
+					return result, nil
+				}
+				return result, err
+			}
+			result.CanonicalState = "completed"
+			return result, nil
+		}
 	default:
 		result.CanonicalState = "permanent"
 		result.Failure = "unknown vector operation"
@@ -347,6 +393,36 @@ func (s *Server) processClaimedMemoryVectorOperation(
 	}
 	result.CanonicalState = "completed"
 	return result, nil
+}
+
+func memoryVectorMaterializationFromDocument(item *store.MemoryVectorOutboxItem, document vector.VectorDocument, resolvedModel string) (store.MemoryVectorMaterialization, bool, error) {
+	if !strings.EqualFold(strings.TrimSpace(document.SourceTable), "memories") &&
+		!strings.EqualFold(strings.TrimSpace(document.Tier), "memory") {
+		return store.MemoryVectorMaterialization{}, false, nil
+	}
+	rowID, err := strconv.ParseInt(strings.TrimSpace(document.SourceRowID), 10, 64)
+	if err != nil || rowID <= 0 {
+		return store.MemoryVectorMaterialization{}, false, fmt.Errorf("materialized memory vector source row is invalid")
+	}
+	embeddingJSON, err := json.Marshal(document.Embedding)
+	if err != nil || len(document.Embedding) == 0 {
+		return store.MemoryVectorMaterialization{}, false, fmt.Errorf("materialized memory vector embedding is invalid")
+	}
+	resolvedModel = strings.TrimSpace(resolvedModel)
+	if resolvedModel == "" {
+		resolvedModel = strings.TrimSpace(extractionStringFromAny(document.Metadata["embedding_model"]))
+	}
+	if resolvedModel == "" {
+		return store.MemoryVectorMaterialization{}, false, fmt.Errorf("materialized memory vector model is missing")
+	}
+	return store.MemoryVectorMaterialization{
+		ChatSessionID:  strings.TrimSpace(item.ChatSessionID),
+		SourceRevision: strings.TrimSpace(item.SourceRevision),
+		DocumentID:     strings.TrimSpace(item.DocumentID),
+		SourceRowID:    rowID,
+		EmbeddingJSON:  string(embeddingJSON),
+		EmbeddingModel: resolvedModel,
+	}, true, nil
 }
 
 func (s *Server) failClaimedMemoryVectorOperationGroup(

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -382,6 +383,51 @@ func TestReplayPrivateAggregateCancelsPendingUpsertAndQueuesDeleteWithoutFakeMod
 	}
 }
 
+func TestAdmissionDeleteOperationKeyIgnoresReasonAndResultHash(t *testing.T) {
+	first := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision",
+		ResultHash: strings.Repeat("a", 64),
+	}
+	second := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision",
+		ResultHash: strings.Repeat("b", 64),
+	}
+	documentID := "memory:session:17"
+	want := memoryVectorOperationKey("delete", "session", "revision", documentID)
+	for _, operation := range []string{"delete", "delete:no_public_memory_projection", "delete:retired_evidence"} {
+		if got := memoryAdmissionVectorOperationKey(operation, first, documentID); got != want {
+			t.Fatalf("operation=%q key=%q, want canonical delete key %q", operation, got, want)
+		}
+		if got := memoryAdmissionVectorOperationKey(operation, second, documentID); got != want {
+			t.Fatalf("result hash changed delete key: operation=%q key=%q want=%q", operation, got, want)
+		}
+	}
+	if memoryAdmissionVectorOperationKey("upsert", first, documentID) ==
+		memoryAdmissionVectorOperationKey("upsert", second, documentID) {
+		t.Fatal("upsert key must continue to distinguish result hashes")
+	}
+}
+
+func TestAdmissionDeleteOperationKeysRemainBoundedAcross112TurnRegeneration(t *testing.T) {
+	keys := map[string]struct{}{}
+	for turn := 1; turn <= 112; turn++ {
+		revision := fmt.Sprintf("revision-%03d", turn)
+		documentID := fmt.Sprintf("memory:session:%d", turn)
+		for cycle, reason := range []string{
+			"no_public_memory_projection", "retired_evidence", "turn_deleted", "rollback_replay",
+		} {
+			admission := &MemoryAdmission{
+				ChatSessionID: "session", SourceRevision: revision,
+				ResultHash: fmt.Sprintf("%064x", turn*10+cycle),
+			}
+			keys[memoryAdmissionVectorOperationKey("delete:"+reason, admission, documentID)] = struct{}{}
+		}
+	}
+	if len(keys) != 112 {
+		t.Fatalf("delete operation keys=%d, want one per source revision and document", len(keys))
+	}
+}
+
 func TestReplayRetiredEvidenceCancelsPendingUpsertBeforeDelete(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -484,7 +530,7 @@ func TestAdmissionVectorReplayReusesExactCompletedOperation(t *testing.T) {
 			}).AddRow(44, item.Operation, item.ChatSessionID, item.SourceRevision,
 				item.DocumentID, item.RequiredSourceState, "completed", nil, "active"))
 		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
-			WithArgs(item.DocumentID, int64(44)).
+			WithArgs(item.ChatSessionID, item.DocumentID, int64(44)).
 			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 		mock.ExpectExec("UPDATE memory_vector_outbox").
 			WithArgs(item.DocumentJSON, true, "pending", now, item.OperationKey, sqlmock.AnyArg()).
@@ -494,6 +540,49 @@ func TestAdmissionVectorReplayReusesExactCompletedOperation(t *testing.T) {
 		)
 		if err != nil || !inserted {
 			t.Fatalf("replay %d inserted=%v err=%v", replay, inserted, err)
+		}
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAdmissionDeleteReplayUsesOneExistingRowAcrossTwoForcePasses(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	now := time.Date(2026, 8, 26, 3, 30, 0, 0, time.UTC)
+	admission := &MemoryAdmission{
+		ChatSessionID: "session", SourceRevision: "revision",
+		ResultHash: strings.Repeat("a", 64), CreatedAt: now,
+	}
+	item := &MemoryVectorOutboxItem{
+		OperationKey: memoryAdmissionVectorOperationKey("delete:reason-a", admission, "memory:session:17"),
+		Operation:    "delete", ChatSessionID: "session", SourceRevision: "revision",
+		DocumentID: "memory:session:17", DocumentJSON: memoryVectorDeleteAuditJSON("reason-a"),
+		EmbeddingReady: true, RequiredSourceState: "active", Status: "pending", UpdatedAt: now,
+	}
+	for replay := 0; replay < 2; replay++ {
+		mock.ExpectQuery("SELECT o.id, o.operation").
+			WithArgs(item.OperationKey).
+			WillReturnRows(sqlmock.NewRows([]string{
+				"id", "operation", "chat_session_id", "source_revision", "document_id",
+				"required_source_state", "status", "lease_until", "lifecycle_state",
+			}).AddRow(81, "delete", "session", "revision", "memory:session:17",
+				"active", "completed", nil, "active"))
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
+			WithArgs("session", "memory:session:17", int64(81)).
+			WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
+		mock.ExpectExec("UPDATE memory_vector_outbox").
+			WithArgs(item.DocumentJSON, true, "pending", now, item.OperationKey, sqlmock.AnyArg()).
+			WillReturnResult(sqlmock.NewResult(0, 1))
+		inserted, err := enqueueAdmissionVectorOperation(
+			WithMemoryAdmissionVectorReplay(context.Background(), true, true), db, item,
+		)
+		if err != nil || !inserted {
+			t.Fatalf("force replay %d inserted=%v err=%v", replay, inserted, err)
 		}
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -552,7 +641,7 @@ func TestAdmissionVectorReplayReclaimsExpiredLease(t *testing.T) {
 		}).AddRow(46, item.Operation, item.ChatSessionID, item.SourceRevision,
 			item.DocumentID, item.RequiredSourceState, "leased", time.Now().Add(-time.Hour), "active"))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
-		WithArgs(item.DocumentID, int64(46)).
+		WithArgs(item.ChatSessionID, item.DocumentID, int64(46)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
 	mock.ExpectExec("UPDATE memory_vector_outbox").
 		WithArgs(item.DocumentJSON, false, "needs_embedding", now, item.OperationKey, sqlmock.AnyArg()).
@@ -599,7 +688,7 @@ func TestAdmissionVectorReplayRejectsSupersededOrUnchangedOperation(t *testing.T
 				}).AddRow(47, item.Operation, item.ChatSessionID, item.SourceRevision,
 					item.DocumentID, item.RequiredSourceState, "completed", nil, "active"))
 			mock.ExpectQuery("SELECT COUNT\\(\\*\\)").
-				WithArgs(item.DocumentID, int64(47)).
+				WithArgs(item.ChatSessionID, item.DocumentID, int64(47)).
 				WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(tt.newer))
 			if tt.affected >= 0 {
 				mock.ExpectExec("UPDATE memory_vector_outbox").

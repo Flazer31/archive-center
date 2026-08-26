@@ -603,9 +603,15 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 
 	pendingLines := make([]string, 0, minInt(len(pendingThreads), recallLimit))
 	pendingIrrelevantDropped := 0
+	pendingPinnedActiveSelected := 0
+	pendingSuppressedDropped := 0
 	for _, pt := range pendingThreads {
 		if len(pendingLines) >= recallLimit {
 			break
+		}
+		if pt.Suppressed {
+			pendingSuppressedDropped++
+			continue
 		}
 		rawDescription := strings.TrimSpace(pt.Description)
 		desc := compactPrepareTurnLine(rawDescription, 170)
@@ -614,11 +620,15 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			desc = compactPrepareTurnLine("status="+status+"; "+desc, 190)
 		}
 		if desc != "" {
-			if !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
+			pinnedActive := pt.Pinned && strings.EqualFold(status, "open")
+			if !pinnedActive && !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
 				pendingIrrelevantDropped++
 				continue
 			}
 			pendingLines = append(pendingLines, "- "+desc)
+			if pinnedActive {
+				pendingPinnedActiveSelected++
+			}
 		}
 	}
 	out.PendingThreadText = makePrepareTurnSection("[Pending Threads]", pendingLines)
@@ -972,6 +982,8 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["typed_voice_projection_deferred_to_3_9_e"] = typedVoiceProjectionDeferred
 	out.Counts["character_memory_delivery"] = out.CharacterMemorySupport
 	out.Counts["pending_thread_irrelevant_dropped"] = pendingIrrelevantDropped
+	out.Counts["pending_thread_pinned_active_selected"] = pendingPinnedActiveSelected
+	out.Counts["pending_thread_suppressed_dropped"] = pendingSuppressedDropped
 	out.Counts["episode_irrelevant_dropped"] = episodeIrrelevantDropped
 	out.Counts["direct_evidence_bound"] = len(directEvidenceLines)
 

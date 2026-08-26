@@ -1,8 +1,8 @@
 # Archive Center 기억 주입·서사 가이드 권한 검토
 
 > 현재 지위: 1.0 비교, 권한 검토와 대안 채택·기각을 보존하는 역사적 review다.
-> 4.1~6.0 버전 지도와 확장 제품 이름은
-> [`4.1-6.0-integrated-roadmap.md`](4.1-6.0-integrated-roadmap.md)를 우선한다.
+> 4.1~7.0 버전 지도와 확장 제품 이름은
+> [`4.1-7.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-7.0-integrated-roadmap.md)를 우선한다.
 > 신규 확장 제품은 `AC Ensemble Agent`이며 Recomposer 공동 사용 절은 현재 제품
 > 이름이나 구현 완료 증거가 아니다.
 
@@ -84,12 +84,12 @@ RisuAI lifecycle·HUD 고정 빌드 확인, 3.7-G 전체 환경 행렬과 3.8 lo
 해석하지 않는다.
 
 과거 단일 범위 초안에 임시로 붙어 있던 4.2~4.7 단계 번호는 더 이상 버전 배정이 아니다.
-그 주된 기능은 4.6~5.0에 위 표대로 재배치했다. 새 통합 인덱스의 4.1 Locator와 4.2 정리는
-배정 후보이며, 4.3~4.5의 역할별 기억·별도 플러그인 전후처리 방향은 확정 계획이다.
+새 통합 인덱스는 사용자 기억 문제를 4.1~5.0에 먼저 배치하고, 역할별 기억 packet과 별도
+플러그인의 Integrated 실제 연극을 5.1~6.0에 배치한다.
 
 이 문서 아래의 과거 Recomposer 공동 사용안 가운데 Archive Center Publisher plan을
 별도 플러그인 전처리에 다시 전달하거나 같은 요청에서 둘을 fallback으로 교대시키는 설명은
-현재 4.3~4.5 방향에 의해 대체된다. 연동 전처리가 요청을 소유하면 Archive Center
+현재 5.1~5.5 방향에 의해 대체된다. Integrated stage가 요청을 소유하면 Archive Center
 Publisher는 자동 OFF이고, 연동하지 않은 요청에서만 Archive Center Publisher가 동작한다.
 
 ## 1. 결론
@@ -2772,10 +2772,11 @@ GPT 하위 에이전트 4개가 권한 구조, 실패·보안 시험, source-vs-
 ## 16. 폐기된 과거안 — Standalone Recomposer와 Archive Center 출판사 공동 사용 계약
 
 > 이 절은 과거 비교 근거를 남기기 위한 기록이다. Archive Center publisher plan을 별도
-> 플러그인에 넘기거나 두 전처리를 fallback으로 교대하는 아래 설계는 현재 4.3~4.5 계획이
-> 아니다. 현재 정본은 이 문서 12~24행과
-> [`3.9-5.0-integrated-roadmap.md`](3.9-5.0-integrated-roadmap.md),
-> [`4.3-character-subjective-memory-story-context-roadmap.md`](4.3-character-subjective-memory-story-context-roadmap.md)다.
+> 플러그인에 넘기거나 두 전처리를 fallback으로 교대하는 아래 설계는 현재 5.1~5.5 계획이
+> 아니다. 현재 정본은
+> [`4.1-7.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-7.0-integrated-roadmap.md)이며,
+> [`4.3-character-subjective-memory-story-context-roadmap.md`](4.3-character-subjective-memory-story-context-roadmap.md)는
+> 역사적 번호를 가진 상세 근거로만 사용한다.
 
 ### 목표
 

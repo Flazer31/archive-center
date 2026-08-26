@@ -1128,7 +1128,7 @@ func TestMariaDBSavePendingThreadUpdatesExistingOpenHook(t *testing.T) {
 	ctx := context.Background()
 
 	mock.ExpectExec("UPDATE pending_threads").
-		WithArgs("Ask Mira why she hesitated", "open", 0, 9, 0, "open_question", `{"title":"Ask Mira why she hesitated"}`, false, false, false, sqlmock.AnyArg(), "sess-1", "thread_ask_mira").
+		WithArgs("Ask Mira why she hesitated", "open", 0, 9, 0, "open_question", `{"title":"Ask Mira why she hesitated"}`, sqlmock.AnyArg(), "sess-1", "thread_ask_mira").
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	err = m.SavePendingThread(ctx, &PendingThread{
@@ -1145,6 +1145,50 @@ func TestMariaDBSavePendingThreadUpdatesExistingOpenHook(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestMariaDBSavePendingThreadDoesNotOverwriteManualTrustFlags(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	ctx := context.Background()
+
+	query := `
+		UPDATE pending_threads
+		SET description = COALESCE(?, description),
+			status = COALESCE(?, status),
+			resolved_turn = NULLIF(?, 0),
+			source_turn = NULLIF(?, 0),
+			priority = NULLIF(?, 0),
+			hook_type = COALESCE(?, hook_type),
+			hook_metadata_json = COALESCE(?, hook_metadata_json),
+			updated_at = ?
+		WHERE chat_session_id = ? AND thread_key = ? AND status <> 'resolved'
+		ORDER BY id DESC
+		LIMIT 1
+	`
+	mock.ExpectExec(query).
+		WithArgs("Daily cube rendezvous", "open", 0, 10, 0, "promise", `{"title":"Daily cube rendezvous"}`, sqlmock.AnyArg(), "sess-1", "thread_daily_cube").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	err = m.SavePendingThread(ctx, &PendingThread{
+		ChatSessionID:    "sess-1",
+		ThreadKey:        "thread_daily_cube",
+		Description:      "Daily cube rendezvous",
+		Status:           "open",
+		SourceTurn:       10,
+		HookType:         "promise",
+		HookMetadataJSON: `{"title":"Daily cube rendezvous"}`,
+	})
+	if err != nil {
+		t.Fatalf("SavePendingThread: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("automatic pending-thread save changed the trust-owned update shape: %v", err)
 	}
 }
 

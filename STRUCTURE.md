@@ -525,7 +525,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 
 ### Planned
 
-- **HISTORICAL:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled [4.1–6.0 planning index](docs/4.1-6.0-integrated-roadmap.md) preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
+- **HISTORICAL:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled [4.1–7.0 planning index](../_archive/future-reference/4.1-7.0-integrated-roadmap.md) preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
 - **PLANNED:** The 4.0 goal of zero JavaScript policy calculations and a fully Go-owned final assembly is not complete while the active helpers listed in sections 3 and 17 remain.
 
 ### Obsolete, inactive, or abandoned

@@ -5200,6 +5200,8 @@ func TestPersistentSetPropagatesDurableStorageFailure(t *testing.T) {
 	functions := extractArchiveCenterJSFunction(t, src, "normalizePersistentValue") +
 		extractArchiveCenterJSAsyncFunction(t, src, "persistentSet")
 	script := functions + `
+const SETTINGS_KEY="settings";
+async function writeSettingsPersistentValue() { throw new Error("unexpected settings path"); }
 let pluginEnabled=true;
 let _storageOk=true;
 const _persistentKnownValues=new Map();
@@ -5227,6 +5229,140 @@ function warnLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("persistent storage fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestSettingsStorageUsesDeviceLocalWithVerifiedLegacyFallback(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for settings storage fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "normalizePersistentValue"),
+		extractArchiveCenterJSFunction(t, src, "_hasPluginStorage"),
+		extractArchiveCenterJSAsyncFunction(t, src, "getLocalSettingsStorage"),
+		extractArchiveCenterJSFunction(t, src, "isSettingsStoragePayload"),
+		extractArchiveCenterJSAsyncFunction(t, src, "writeVerifiedStorageValue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "readSettingsPersistentValue"),
+		extractArchiveCenterJSAsyncFunction(t, src, "writeSettingsPersistentValue"),
+	}, "\n")
+	script := `
+const SETTINGS_KEY="settings";
+let R=null;
+let _localSettingsStoragePromise=null;
+let _settingsStorageStatus={mode:"uninitialized",detail:""};
+const _persistentKnownValues=new Map();
+const cache=new Map();
+function safeStorageSet(key,value) { cache.set(key,String(value)); }
+function safeStorageGet(key) { return cache.has(key) ? cache.get(key) : null; }
+function warnLog() {}
+function makeStorage(initial, behavior) {
+  const values=new Map(Object.entries(initial || {}));
+  behavior=behavior || {};
+  return {
+    values,
+    async getItem(key) {
+      if(behavior.getError) throw new Error(behavior.getError);
+      if(behavior.forceMissing) return null;
+      return values.has(key) ? values.get(key) : null;
+    },
+    async setItem(key,value) {
+      if(behavior.setError) throw new Error(behavior.setError);
+      if(!behavior.ignoreSet) values.set(key,String(value));
+    }
+  };
+}
+function reset(localStore, pluginStore) {
+  _localSettingsStoragePromise=null;
+  _settingsStorageStatus={mode:"uninitialized",detail:""};
+  _persistentKnownValues.clear();
+  cache.clear();
+  R={
+    getLocalPluginStorage: localStore === undefined ? undefined : async function() { return localStore; },
+    pluginStorage: pluginStore || null,
+  };
+}
+function assert(condition,message) { if(!condition) throw new Error(message); }
+` + "\n" + functions + `
+(async function() {
+  const first=JSON.stringify({bridgeUrl:"http://device:28080",enabled:true});
+  const local=makeStorage();
+  const plugin=makeStorage();
+  reset(local,plugin);
+  assert(await writeSettingsPersistentValue(first),"device-local write was not acknowledged");
+  assert(local.values.get(SETTINGS_KEY)===first,"device-local settings were not written");
+  assert(plugin.values.get(SETTINGS_KEY)===first,"legacy compatibility mirror was not written");
+  assert(_settingsStorageStatus.mode==="device_local","device-local write was not reported");
+  assert(await readSettingsPersistentValue()===first,"device-local settings were not restored");
+
+  const legacy=JSON.stringify({bridgeUrl:"http://legacy:28080",enabled:false});
+  const emptyLocal=makeStorage();
+  const legacyPlugin=makeStorage({[SETTINGS_KEY]:legacy});
+  reset(emptyLocal,legacyPlugin);
+  assert(await readSettingsPersistentValue()===legacy,"legacy settings were not restored");
+  assert(emptyLocal.values.get(SETTINGS_KEY)===legacy,"legacy settings were not migrated to device-local storage");
+  assert(_settingsStorageStatus.mode==="device_local" && _settingsStorageStatus.detail==="migrated_from_plugin_storage","legacy migration status was not reported");
+
+  const brokenLocal=makeStorage({}, {ignoreSet:true,forceMissing:true});
+  const fallbackPlugin=makeStorage();
+  reset(brokenLocal,fallbackPlugin);
+  assert(await writeSettingsPersistentValue(first),"verified pluginStorage fallback was not acknowledged");
+  assert(fallbackPlugin.values.get(SETTINGS_KEY)===first,"pluginStorage fallback did not persist settings");
+  assert(_settingsStorageStatus.mode==="plugin_storage_legacy","fallback storage mode was not reported");
+
+  const invalidLocal=makeStorage({[SETTINGS_KEY]:"not-json"});
+  const validPlugin=makeStorage({[SETTINGS_KEY]:legacy});
+  reset(invalidLocal,validPlugin);
+  assert(await readSettingsPersistentValue()===legacy,"invalid device-local payload blocked the valid legacy value");
+
+  reset(undefined,null);
+  cache.set(SETTINGS_KEY,legacy);
+  assert(await readSettingsPersistentValue()===legacy,"iframe cache was not available as a read-only startup fallback");
+  assert(_settingsStorageStatus.mode==="iframe_cache","iframe cache was reported as durable storage");
+  let failed=false;
+  try { await writeSettingsPersistentValue(first); } catch(err) { failed=String(err.message)==="persistent_storage_unavailable"; }
+  assert(failed,"memory-only settings write was reported as durable");
+})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("settings storage compatibility fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestBridgeURLValidationKeepsExplicitCrossDeviceEndpoints(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for bridge URL fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := extractArchiveCenterJSFunction(t, src, "isValidBridgeUrlInput")
+	script := functions + `
+function assert(condition,message) { if(!condition) throw new Error(message); }
+assert(isValidBridgeUrlInput("http://127.0.0.1:28080"),"loopback URL rejected");
+assert(isValidBridgeUrlInput("http://100.96.60.55:28080"),"LAN or tailnet URL rejected");
+assert(isValidBridgeUrlInput("https://archive.example.test"),"HTTPS URL rejected");
+assert(isValidBridgeUrlInput("http://[::1]:28080"),"IPv6 loopback URL rejected");
+assert(!isValidBridgeUrlInput("127.0.0.1:28080"),"scheme-less URL accepted");
+assert(!isValidBridgeUrlInput("javascript:alert(1)"),"non-HTTP URL accepted");
+assert(!isValidBridgeUrlInput("/relative"),"relative URL accepted");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("bridge URL compatibility fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -5910,7 +6046,7 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
   assert(bindRawInputObservationToRequest("missing", "request-3") === null, "missing correlation synthesized a raw observation");
 
   const failedSave = await saveSettings();
-  assert(failedSave === false, "backend sync failure was reported as a successful save");
+  assert(failedSave === true, "verified local save was reported as failed only because the backend was unreachable");
   assert(persisted.length === 1, "local settings were not retained on backend sync failure");
   assert(runtimeStates.some(function(item) {
     return item.key === "lastConfigSync" && item.status === "fail" &&

@@ -859,6 +859,26 @@ func (d *dualWriteStore) CompleteMemoryVectorOperation(ctx context.Context, id i
 	return ErrNotEnabled
 }
 
+func (d *dualWriteStore) CompleteMemoryVectorMaterializedOperation(ctx context.Context, id int64, owner string, now time.Time, materialization MemoryVectorMaterialization) error {
+	if primary, ok := d.primary.(MemoryVectorMaterializedCompletionStore); ok {
+		return primary.CompleteMemoryVectorMaterializedOperation(ctx, id, owner, now, materialization)
+	}
+	if shadow, ok := d.shadow.(MemoryVectorMaterializedCompletionStore); ok {
+		return shadow.CompleteMemoryVectorMaterializedOperation(ctx, id, owner, now, materialization)
+	}
+	return ErrNotEnabled
+}
+
+func (d *dualWriteStore) CoalesceInactiveMemoryVectorDeleteOperations(ctx context.Context, chatSessionID string, now time.Time) (int64, error) {
+	if primary, ok := d.primary.(MemoryVectorOutboxMaintenanceStore); ok {
+		return primary.CoalesceInactiveMemoryVectorDeleteOperations(ctx, chatSessionID, now)
+	}
+	if shadow, ok := d.shadow.(MemoryVectorOutboxMaintenanceStore); ok {
+		return shadow.CoalesceInactiveMemoryVectorDeleteOperations(ctx, chatSessionID, now)
+	}
+	return 0, ErrNotEnabled
+}
+
 func (d *dualWriteStore) FailMemoryVectorOperation(ctx context.Context, id int64, owner string, now, retryAfter time.Time, permanent bool, failure string) error {
 	if primary, ok := d.primary.(MemoryVectorOutboxStore); ok {
 		return primary.FailMemoryVectorOperation(ctx, id, owner, now, retryAfter, permanent, failure)
