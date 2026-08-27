@@ -1208,7 +1208,7 @@ func TestMemoryReprocessingWorkerRetriesBelowConfiguredLimit(t *testing.T) {
 	if result.State != "retryable" || result.Failure != "critic_config_missing" ||
 		len(st.failedJobs) != 1 ||
 		len(st.failedPermanent) != 1 || st.failedPermanent[0] ||
-		len(st.completedJobs) != 0 || !st.failedRetryAt[0].Equal(now) {
+		len(st.completedJobs) != 0 || !st.failedRetryAt[0].After(now) {
 		t.Fatalf("result=%+v failed=%v permanent=%v completed=%v retry=%v",
 			result, st.failedJobs, st.failedPermanent, st.completedJobs, st.failedRetryAt)
 	}
@@ -1390,19 +1390,22 @@ func TestMemoryWorkerRetryWaitsForNextRealWake(t *testing.T) {
 	firstWake := time.Date(2026, 7, 30, 1, 0, 0, 0, time.UTC)
 	srv.processMemoryWorkerWake(context.Background(), "worker", firstWake)
 	claims, completed, failed, _ := eventStore.vectorState()
-	if claims != 2 || len(completed) != 0 || len(failed) != 1 ||
+	if claims != 3 || len(completed) != 0 || len(failed) != 1 ||
 		item.Attempts != 1 || item.Status != "retryable" ||
-		!item.RetryAfter.Equal(firstWake) {
+		!item.RetryAfter.After(firstWake) {
 		t.Fatalf(
 			"after first wake claims=%d completed=%v failed=%v item=%+v",
 			claims, completed, failed, item,
 		)
 	}
 	vec.deleteErr = nil
+	eventStore.mu.Lock()
+	item.RetryAfter = time.Now().UTC().Add(-time.Second)
+	eventStore.mu.Unlock()
 	secondWake := firstWake.Add(time.Second)
 	srv.processMemoryWorkerWake(context.Background(), "worker", secondWake)
 	claims, completed, failed, _ = eventStore.vectorState()
-	if claims != 4 || len(completed) != 1 || completed[0] != item.ID ||
+	if claims != 6 || len(completed) != 1 || completed[0] != item.ID ||
 		len(failed) != 1 || item.Attempts != 2 {
 		t.Fatalf(
 			"after second wake claims=%d completed=%v failed=%v item=%+v",
@@ -1499,7 +1502,7 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 	if callCount != 2 || len(st.failedJobs) != 1 || st.failedJobs[0] != 1 ||
 		len(st.completedJobs) != 1 || st.completedJobs[0] != 2 ||
 		len(st.admissions) != 1 || len(st.queue) != 1 ||
-		st.queue[0].ID != 1 || !st.queue[0].RetryAfter.Equal(wakeTime) {
+		st.queue[0].ID != 1 || !st.queue[0].RetryAfter.After(wakeTime) {
 		t.Fatalf(
 			"calls=%d failed=%v completed=%v admissions=%d queue=%+v",
 			callCount, st.failedJobs, st.completedJobs, len(st.admissions), st.queue,

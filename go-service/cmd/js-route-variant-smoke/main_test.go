@@ -615,8 +615,9 @@ func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
 		"method: \"DELETE\"",
 		"requestSource = options && options.requestSource ? String(options.requestSource) : \"auto\"",
 		"assistant_deleted_before_next_user_turn",
-		"single_assistant_msg_removed",
-		"msg_decrease_and_tail_change",
+		"user_message_removed_turn_retained",
+		"assistant_output_range_removed",
+		"assistant_output_not_removed",
 		"duplicate_rollback_blocked",
 	}
 	for _, needle := range required {
@@ -721,7 +722,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.0.5"`,
+		`const BUILD_NOTES = "Archive Center 4.0.7"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {

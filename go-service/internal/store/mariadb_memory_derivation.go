@@ -13,6 +13,7 @@ import (
 
 const (
 	memoryVectorDeleteClaimBatchSize    = 128
+	memoryVectorUpsertClaimBatchSize    = 32
 	memoryVectorDeleteCoalesceBatchSize = 512
 )
 
@@ -402,6 +403,7 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 		SELECT source_revision, chat_session_id, logical_turn_id, turn_index,
 		       source_message_id, source_generation_id, branch_id, branch_state,
 		       raw_user_content, raw_assistant_content, combined_content_hash,
+		       assistant_observed_content_hash, hash_algorithm,
 		       host_observed_at_ms, lifecycle_state
 		FROM memory_source_revisions
 		WHERE `+where+`
@@ -415,11 +417,13 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 	for rows.Next() {
 		var item MemorySourceRevision
 		var sourceMessageID, sourceGenerationID, branchID sql.NullString
+		var assistantObservedContentHash, hashAlgorithm sql.NullString
 		if err := rows.Scan(
 			&item.SourceRevision, &item.ChatSessionID, &item.LogicalTurnID,
 			&item.TurnIndex, &sourceMessageID, &sourceGenerationID,
 			&branchID, &item.BranchState, &item.UserContent,
 			&item.AssistantContent, &item.CombinedContentHash,
+			&assistantObservedContentHash, &hashAlgorithm,
 			&item.HostObservedAtMS, &item.LifecycleState,
 		); err != nil {
 			return nil, err
@@ -428,6 +432,8 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 		item.SourceMessageID = sourceMessageID.String
 		item.SourceGenerationID = sourceGenerationID.String
 		item.BranchID = branchID.String
+		item.AssistantObservedContentHash = assistantObservedContentHash.String
+		item.HashAlgorithm = hashAlgorithm.String
 		out = append(out, item)
 	}
 	return out, rows.Err()
@@ -1130,6 +1136,18 @@ func enqueueMemoryVectorOperation(ctx context.Context, exec memoryDerivationSQLE
 }
 
 func (m *mariadbStore) ClaimMemoryVectorOperations(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) ([]*MemoryVectorOutboxItem, error) {
+	return m.claimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration, "")
+}
+
+func (m *mariadbStore) ClaimMemoryVectorOperationsByOperation(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration, operation string) ([]*MemoryVectorOutboxItem, error) {
+	operation = strings.ToLower(strings.TrimSpace(operation))
+	if operation != "upsert" && operation != "delete" {
+		return nil, fmt.Errorf("invalid vector outbox operation lane")
+	}
+	return m.claimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration, operation)
+}
+
+func (m *mariadbStore) claimMemoryVectorOperations(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration, operation string) ([]*MemoryVectorOutboxItem, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
@@ -1162,7 +1180,7 @@ func (m *mariadbStore) ClaimMemoryVectorOperations(ctx context.Context, leaseOwn
 	`, now); err != nil {
 		return nil, err
 	}
-	item, err := selectMemoryVectorOperationForLease(ctx, tx, now)
+	item, err := selectMemoryVectorOperationForLease(ctx, tx, now, operation)
 	if err != nil {
 		return nil, err
 	}
@@ -1196,7 +1214,13 @@ func (m *mariadbStore) ClaimMemoryVectorOperations(ctx context.Context, leaseOwn
 	return items, nil
 }
 
-func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now time.Time) (*MemoryVectorOutboxItem, error) {
+func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now time.Time, operation string) (*MemoryVectorOutboxItem, error) {
+	operationClause := ""
+	args := []any{now, now, now}
+	if operation != "" {
+		operationClause = " AND o.operation = ?"
+		args = append(args, operation)
+	}
 	row := tx.QueryRowContext(ctx, `
 		SELECT o.id, o.contract_version, o.operation_key, o.operation,
 		       o.chat_session_id, o.source_revision, o.document_id,
@@ -1230,10 +1254,10 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		      AND prior.document_id = o.document_id
 		      AND prior.id < o.id
 		      AND prior.status IN ('pending', 'leased', 'retryable', 'needs_embedding')
-		  )
+		  )`+operationClause+`
 		ORDER BY o.created_at, o.id
 		LIMIT 1 FOR UPDATE
-	`, now, now, now)
+	`, args...)
 	item, err := scanMemoryVectorOutboxItem(row)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -1260,7 +1284,8 @@ func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx
 		  AND o.required_source_state = 'active'
 		  AND s.lifecycle_state = 'active'`
 	args := []any{seed.SourceRevision, seed.ChatSessionID, seed.ID, now, now}
-	limitClause := ""
+	limitClause := " LIMIT ?"
+	args = append(args, memoryVectorUpsertClaimBatchSize-1)
 	if seed.Operation == "delete" {
 		where = `o.chat_session_id = ?
 		  AND o.id <> ?

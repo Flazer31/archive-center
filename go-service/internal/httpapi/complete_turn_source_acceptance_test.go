@@ -984,3 +984,15 @@ func TestCompleteTurnRerollReplacesCanonicalTailAndDeletesSupersededVector(t *te
 		t.Fatalf("repeat status=%d replacements=%d vector deletes=%d critic calls=%d body=%s", repeated.Code, len(storage.logicalTurnReplacements), vectors.deleteDocumentCalls, criticCalls, repeated.Body.String())
 	}
 }
+
+func TestCompleteTurnSourceWorkerWaitHasExplicitDeadline(t *testing.T) {
+	original := completeTurnSourceWorkerStopTimeout
+	completeTurnSourceWorkerStopTimeout = 10 * time.Millisecond
+	defer func() { completeTurnSourceWorkerStopTimeout = original }()
+	blocked := make(chan struct{})
+	started := time.Now()
+	err := waitForCompleteTurnSourceWorkers([]<-chan struct{}{blocked})
+	if err == nil || time.Since(started) > time.Second {
+		t.Fatalf("worker wait err=%v elapsed=%s", err, time.Since(started))
+	}
+}

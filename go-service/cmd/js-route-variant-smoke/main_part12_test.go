@@ -62,9 +62,9 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
 	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) ||
-		!strings.Contains(src, `const BUILD_ID = "4.0.5"`) ||
+		!strings.Contains(src, `const BUILD_ID = "4.0.7"`) ||
 		!strings.Contains(src, `const BUILD_CHANNEL = "release"`) {
-		t.Fatal("4.0.5 release build identity is not visible in the HUD")
+		t.Fatal("4.0.7 release build identity is not visible in the HUD")
 	}
 	for _, expected := range []string{
 		`critic_input_budget_observation: {`,

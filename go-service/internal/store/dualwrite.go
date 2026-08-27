@@ -849,6 +849,16 @@ func (d *dualWriteStore) ClaimMemoryVectorOperations(ctx context.Context, owner 
 	return nil, ErrNotEnabled
 }
 
+func (d *dualWriteStore) ClaimMemoryVectorOperationsByOperation(ctx context.Context, owner string, now time.Time, lease time.Duration, operation string) ([]*MemoryVectorOutboxItem, error) {
+	if primary, ok := d.primary.(MemoryVectorOutboxLaneStore); ok {
+		return primary.ClaimMemoryVectorOperationsByOperation(ctx, owner, now, lease, operation)
+	}
+	if shadow, ok := d.shadow.(MemoryVectorOutboxLaneStore); ok {
+		return shadow.ClaimMemoryVectorOperationsByOperation(ctx, owner, now, lease, operation)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) CompleteMemoryVectorOperation(ctx context.Context, id int64, owner string, now time.Time) error {
 	if primary, ok := d.primary.(MemoryVectorOutboxStore); ok {
 		return primary.CompleteMemoryVectorOperation(ctx, id, owner, now)

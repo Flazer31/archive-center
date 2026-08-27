@@ -2497,17 +2497,200 @@ async function bridgeFetch(path, options) {
   await requestBackendRollbackDecision("char_1_cid_target", 9, "assistant_deleted_output_removed", {
     visibleCompletedTurnCount: 0,
     activeCompletedTurnCount: 8,
-    backendLatestTurnIndex: 9
+    backendLatestTurnIndex: 9,
+    assistantObservationScope: "full_active_chat",
+    currentAssistantObservations: [
+      {message_id:"assistant-1",generation_id:"generation-1",content_hash:"or1c_a1",message_index:1}
+    ]
   }, "auto");
   if (!capturedBody) throw new Error("rollback request body was not captured");
   if (capturedBody.visible_completed_turns !== 0) {
     throw new Error("visible_completed_turns=" + capturedBody.visible_completed_turns + ", want 0");
+  }
+  if (capturedBody.assistant_observation_scope !== "full_active_chat" ||
+      !Array.isArray(capturedBody.assistant_observations) ||
+      capturedBody.assistant_observations.length !== 1 ||
+      capturedBody.assistant_observations[0].message_id !== "assistant-1") {
+    throw new Error("assistant observations were not transported: " + JSON.stringify(capturedBody));
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("rollback request runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestRollbackAssistantObservationsUseRisuMetadataAndContentHash(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for rollback assistant observation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildRollbackAssistantObservations")
+	script := functionBody + `
+function extractComparableMessageRoleAndContent(message) { return {role:message.role,content:message.content}; }
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || ""); }
+const observations = buildRollbackAssistantObservations([
+  {role:"user",content:"user",raw:{chatId:"user-message"},risuMessageIndex:0},
+  {role:"assistant",content:"assistant one",raw:{chatId:"assistant-1",generationInfo:{generationId:"generation-1"}},risuMessageIndex:1},
+  {role:"assistant",content:"assistant two",raw:{},risuMessageIndex:3},
+]);
+if (observations.length !== 2) throw new Error("assistant observation count="+observations.length);
+if (observations[0].message_id !== "assistant-1" || observations[0].generation_id !== "generation-1" || observations[0].message_index !== 1) {
+  throw new Error("Risu metadata was not preserved: "+JSON.stringify(observations[0]));
+}
+if (observations[0].content_hash !== "hash:assistant one" || observations[1].content_hash !== "hash:assistant two") {
+  throw new Error("content hash fallback was not preserved: "+JSON.stringify(observations));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rollback assistant observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestPersistedLedgerFallbackDoesNotRollbackWhenOnlyMiddleUserInputDisappears(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for persisted ledger user-delete fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildRollbackFromPersistedLedgerFallbackOr1f")
+	script := functionBody + `
+const ledgerEntries = [
+  {role:"user",turnIndex:1,fingerprint:"user:u1"},
+  {role:"assistant",turnIndex:1,fingerprint:"assistant:a1"},
+  {role:"user",turnIndex:2,fingerprint:"user:u2"},
+  {role:"assistant",turnIndex:2,fingerprint:"assistant:a2"},
+  {role:"user",turnIndex:3,fingerprint:"user:u3"},
+  {role:"assistant",turnIndex:3,fingerprint:"assistant:a3"},
+];
+function loadRollbackTurnLedgerOr1f() { return {trackedTurnIndex:3,entries:ledgerEntries}; }
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function computeLedgerCurrentPrefixLengthOr1f() { return 2; }
+function resolveRollbackTurnAnchorOr1f() { return 2; }
+function computeTailHash() { return "current"; }
+function buildRollbackDuplicateSignatureOr1f() { return "signature"; }
+function computeTailHashFromSnapshotMessages(messages) {
+  const item = messages[0] || {};
+  return String(item.role || "") + ":" + String(item.content || "");
+}
+function debugLog() {}
+const current = [
+  {role:"user",content:"u1"},
+  {role:"assistant",content:"a1"},
+  {role:"assistant",content:"a2"},
+  {role:"user",content:"u3"},
+  {role:"assistant",content:"a3"},
+];
+const result = buildRollbackFromPersistedLedgerFallbackOr1f("s", current);
+if (result !== null) {
+  throw new Error("user-only middle deletion became rollback: " + JSON.stringify(result));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("persisted ledger user-delete fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestColdStartFirstObservationDoesNotRollbackFromPersistedLedgerAlone(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for cold-start rollback fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "detectRollbackNeed")
+	script := functionBody + `
+let _lastAutoRollbackSignature = null;
+function getSessionSnapshot() { return null; }
+function getRecentRisuHistoryTrimGuard() { return null; }
+function buildPersistedLedgerHistoryTrimGuardOr1f() { return null; }
+function buildRollbackFromPersistedLedgerFallbackOr1f() {
+  throw new Error("first observation must not authorize rollback from a persisted ledger");
+}
+const result = detectRollbackNeed("cold-start-session", [
+  {role:"user",content:"u7"},
+  {role:"assistant",content:"a7"},
+]);
+if (result.shouldRollback || result.reason !== "no_previous_snapshot") {
+  throw new Error("cold-start first observation became rollback: " + JSON.stringify(result));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cold-start first-observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestSnapshotRollbackDetectionRetainsTurnWhenOnlyUserInputDisappears(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for snapshot user-delete fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "detectRollbackNeed")
+	script := functionBody + `
+let _lastAutoRollbackSignature = null;
+function getSessionSnapshot() {
+  return {msgCount:6,turnIndex:3,lastRole:"assistant",tailHash:"previous",messagesPreview:[]};
+}
+function compactSnapshotMessages(messages) { return Array.isArray(messages) ? messages : []; }
+function extractSnapshotTailMessages(messages) { return messages.slice(-4); }
+function computeTailHash() { return "current"; }
+function analyzeTailDeletePattern() {
+  return {commonPrefixLen:2,removedMsgCount:1,appendedMsgCount:0,isReliable:false,appendedUserAfterDelete:false};
+}
+function buildRollbackDetectionStateOr1f() {
+  return {commonSuffixLen:3,removedMsgCount:1,insertedMsgCount:0,deletedFromMiddle:true,ledgerAvailable:true,ledgerAnchorTurnIndex:2,policyVersion:"fixture",detectionSourcesUsed:[],primaryResolver:"fixture"};
+}
+function buildAssistantOutputDeletionStateOr1f() {
+  return {previousAssistantCount:3,currentAssistantCount:3,removedAssistantCount:0,insertedAssistantCount:0,firstRemovedTurnIndex:null,previousAssistantTailHash:"same",currentAssistantTailHash:"same",deletionDetected:false};
+}
+function buildRollbackDuplicateSignatureOr1f() { return "signature"; }
+function getRecentRisuHistoryTrimGuard() { return null; }
+function buildSnapshotHistoryTrimGuardOr1f() { return null; }
+function buildRollbackFromPersistedLedgerFallbackOr1f() { return null; }
+function buildAmbiguousHistoryTrimGuardOr1f() { return null; }
+function recordRisuHistoryTrimGuard() { return null; }
+const current = [
+  {role:"user",content:"u1"},{role:"assistant",content:"a1"},
+  {role:"assistant",content:"a2"},
+  {role:"user",content:"u3"},{role:"assistant",content:"a3"},
+];
+const result = detectRollbackNeed("s", current);
+if (result.shouldRollback || result.reason !== "user_message_removed_turn_retained") {
+  throw new Error("user-only deletion was not retained: " + JSON.stringify(result));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("snapshot user-delete fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -3071,6 +3254,16 @@ function assertEqual(actual, expected, label) {
   assertEqual(Object.prototype.hasOwnProperty.call(captured, "local_turn_index"), false, "adapter must not send a calculated local turn");
   assertEqual(Object.prototype.hasOwnProperty.call(captured, "visible_completed_turns"), false, "adapter must not send a calculated visible turn count");
   assertEqual(result.localTurnIndex, 7, "backend local turn is applied");
+  await requestBackendSessionRoutingTurnResolution("session", "batch", [{
+    risuAssistantMessageIndex:13,
+    assistantMessageId:"assistant-message",
+    assistantGenerationId:"generation",
+    assistantContentHash:"or1c_hash",
+  }]);
+  assertEqual(captured.observations[0].risu_assistant_message_index, 13, "assistant raw Risu index is forwarded");
+  assertEqual(captured.observations[0].assistant_message_id, "assistant-message", "assistant message identity is forwarded");
+  assertEqual(captured.observations[0].assistant_generation_id, "generation", "assistant generation identity is forwarded");
+  assertEqual(captured.observations[0].assistant_content_hash, "or1c_hash", "assistant content hash is forwarded");
 })().catch(err => { console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
@@ -3328,6 +3521,7 @@ function buildSessionNormalizeCompletedTurnPairs() {
   return {available:true,pairs:[1,8,9,10].map(turn => ({turnIndex:turn,risuUserMessageIndex:(turn-1)*2,observedPairOrdinal:turn,userContent:"u"+turn,assistantContent:"a"+turn}))};
 }
 function buildCompletedTurnPairsFromActiveChatMessages() { throw new Error("unexpected role parser fallback"); }
+function buildRollbackAssistantObservations() { return []; }
 async function requestBackendSessionRoutingTurnResolution() {
   if (allInherited) {
     return {status:"batch",resolvedObservations:[1,8,9,10].map((turn,index) => ({
@@ -3364,6 +3558,98 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("active-chat rebuild ownership fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for assistant-source rescan fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
+	script := functionBody + `
+async function getCurrentChatSessionId() { return "session"; }
+async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
+let allUsersRemoved = false;
+function extractActiveChatComparableMessages() {
+  const full = [
+    {role:"user",content:"visible user one",risuMessageIndex:0},
+    {role:"assistant",content:"visible assistant one",risuMessageIndex:1},
+    {role:"assistant",content:"visible assistant two",risuMessageIndex:2},
+  ];
+  return allUsersRemoved ? full.filter(message => message.role === "assistant") : full;
+}
+function summarizeActiveChatRawMessageShape() { return {unparsed_count:0}; }
+async function explorerFetchAllChatLogsForSession() { return {items:[],limited:false}; }
+async function explorerFetchTimelineItemsForSessionDryRun() { return {items:[]}; }
+async function fetchWorldRules() { return {items:[{}],count:1}; }
+function buildActiveChatRescanDbRawMap() { return new Map(); }
+function buildSessionNormalizeCompletedTurnPairs() {
+  if (allUsersRemoved) return {available:true,pairs:[]};
+  return {available:true,pairs:[{
+    observedPairOrdinal:1,userContent:"visible user one",assistantContent:"visible assistant two",
+    risuUserMessageIndex:0,risuAssistantMessageIndex:2,
+  }]};
+}
+function buildCompletedTurnPairsFromActiveChatMessages() { throw new Error("unexpected role parser fallback"); }
+function buildRollbackAssistantObservations() {
+  return [
+    {message_id:"assistant-1",generation_id:"",content_hash:"hash-1",message_index:1},
+    {message_id:"assistant-2",generation_id:"",content_hash:"hash-2",message_index:2},
+  ];
+}
+async function requestBackendSessionRoutingTurnResolution(_sid, _mode, observations) {
+  const assistantSourceRequest = observations.length > 0 && !!observations[0].message_id;
+  if (!assistantSourceRequest) {
+    return {status:"batch",resolvedObservations:[{
+      observation_index:0,turn_index:1,local_turn_index:1,resolution:"normal",source:"risu_user_message_index",
+    }]};
+  }
+  if (observations.length !== 2) throw new Error("assistant observations were not transported");
+  return {status:"batch",resolvedObservations:[
+    {observation_index:0,turn_index:1,local_turn_index:1,resolution:"existing_turn_by_assistant_source",source:"active_source_revision",source_revision:"rev-1",stored_user_content:"stored user one",stored_assistant_content:"visible assistant one"},
+    {observation_index:1,turn_index:2,local_turn_index:2,resolution:"existing_turn_by_assistant_source",source:"active_source_revision",source_revision:"rev-2",stored_user_content:"stored user two",stored_assistant_content:"visible assistant two"},
+  ]};
+}
+function buildActiveChatRescanPairsFromDbRawFallback() { return []; }
+function buildActiveChatRescanDerivedMap() { return new Map(); }
+function buildActiveChatRescanDryRunRows(pairs) { return pairs.map(pair => ({turn_index:pair.turnIndex,raw_status:"present",derived_status:"present"})); }
+function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").length; }
+function debugLog() {}
+(async function() {
+  const plan = await computeActiveChatRescanDryRunPlan("session");
+  if (JSON.stringify(plan.pairs.map(pair => pair.turnIndex)) !== JSON.stringify([1,2])) {
+    throw new Error("assistant sources did not preserve turn identities: "+JSON.stringify(plan.pairs));
+  }
+  if (plan.pairs[0].assistantContent !== "visible assistant one" || plan.pairs[1].userContent !== "stored user two") {
+    throw new Error("deleted user input caused assistant reassociation: "+JSON.stringify(plan.pairs));
+  }
+  if (plan.pairs.some(pair => pair.turnResolution !== "existing_turn_by_assistant_source")) {
+    throw new Error("source-backed resolution was not applied: "+JSON.stringify(plan.pairs));
+  }
+  allUsersRemoved = true;
+  const allDeletedPlan = await computeActiveChatRescanDryRunPlan("session");
+  if (JSON.stringify(allDeletedPlan.pairs.map(pair => pair.turnIndex)) !== JSON.stringify([1,2])) {
+    throw new Error("all deleted user inputs erased completed turns: "+JSON.stringify(allDeletedPlan.pairs));
+  }
+  if (allDeletedPlan.pairs[0].userContent !== "stored user one" || allDeletedPlan.pairs[1].userContent !== "stored user two") {
+    throw new Error("stored user sides were not restored for output-owned turns: "+JSON.stringify(allDeletedPlan.pairs));
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("assistant-source rescan fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -6023,6 +6309,7 @@ function hasPendingFinalConfirmationForSession() { return false; }
 function extractActiveChatMessageList(chat) { return chat.message; }
 function extractActiveChatComparableMessages(chat) { return chat.message; }
 function buildCompletedTurnPairsFromActiveChatMessages() { return []; }
+function buildRollbackAssistantObservations() { return []; }
 async function requestBackendSessionRoutingTurnResolution() {
   return {completedTurnCount:8,baseline:{backendTurnAtRoute:8,localPairCountAtRoute:0,reason:"timeline_copy"}};
 }
@@ -6048,6 +6335,60 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("copied-session rollback JS runtime fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestColdStartPartialVisibleChatDoesNotBlindRollbackBackendTail(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for cold-start tail reconciliation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend")
+	script := functionBody + `
+const settings = {enabled:true,dbEnabled:true};
+const SESSION_FALLBACK = "default";
+const ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS = 2;
+let _rollbackTailReconcileInFlight = false;
+let _lastAutoRollbackSignature = null;
+let rollbackCalls = 0;
+let skipReason = "";
+function hasPendingFinalConfirmationForSession() { return false; }
+function extractActiveChatMessageList(chat) { return chat.message; }
+function extractActiveChatComparableMessages(chat) { return chat.message; }
+function buildCompletedTurnPairsFromActiveChatMessages() { return []; }
+function buildRollbackAssistantObservations() { return []; }
+async function requestBackendSessionRoutingTurnResolution() {
+  return {status:"normal",localTurnIndex:6,completedTurnCount:6,baseline:null};
+}
+async function fetchBackendLatestTurnIndexForSession() { return 13; }
+function buildLedgerVerifiedTailRollback() { return null; }
+function getRecentRisuHistoryTrimGuard() { return null; }
+function updateRuntimeState(_key, _status, detail) { skipReason = String(detail && detail.reason_code || ""); }
+async function executeAutoRollback() { rollbackCalls++; return true; }
+function updateSessionSnapshot() {}
+function debugLog() {}
+(async function() {
+  const ok = await reconcileActiveChatTailDeletionWithBackend("cold-start-session", {message:[
+    {role:"user",content:"u7"},{role:"assistant",content:"a7"}
+  ]});
+  if (ok || rollbackCalls !== 0 || skipReason !== "blind_tail_reconcile_blocked") {
+    throw new Error("partial cold-start view authorized rollback: ok=" + ok + " calls=" + rollbackCalls + " reason=" + skipReason);
+  }
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("cold-start tail reconciliation fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -6302,9 +6643,9 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
   assert(adminCalls === 2 && adminState.loading === false && adminState.result.done, "explicit admin refresh did not consume terminal status");
 
   assert(await reconcileRollbackFromHostSignal(), "first host lifecycle signal did not reconcile rollback state");
-  assert(rollbackReconcileCalls === 2 && rollbackCheckCalls === 1, "rollback signal did not run the expected bounded reconciliation");
+  assert(rollbackReconcileCalls === 0 && rollbackCheckCalls === 1, "rollback signal bypassed the same-runtime snapshot detector");
   assert(!(await reconcileRollbackFromHostSignal()), "unchanged host signature reconciled more than once");
-  assert(rollbackReconcileCalls === 2 && rollbackCheckCalls === 1, "unchanged rollback signature repeated backend work");
+  assert(rollbackReconcileCalls === 0 && rollbackCheckCalls === 1, "unchanged rollback signature repeated backend work");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

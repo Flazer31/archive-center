@@ -172,8 +172,9 @@ type adminReopenableReprocessingStore struct {
 
 type adminCanonicalRawReprocessingStore struct {
 	*adminDuplicateReprocessingStore
-	registered []store.MemorySourceRevision
-	admissions []*store.MemoryAdmission
+	registered           []store.MemorySourceRevision
+	admissions           []*store.MemoryAdmission
+	savedCharacterStates []store.CharacterState
 }
 
 func (f *adminCanonicalRawReprocessingStore) SaveCriticInputSnapshot(
@@ -283,6 +284,13 @@ func (f *adminCanonicalRawReprocessingStore) CommitMemoryAdmission(
 		PreciseInserted:  len(item.PreciseUnits),
 		VectorOperations: len(item.Vectors),
 	}, nil
+}
+
+func (f *adminCanonicalRawReprocessingStore) SaveCharacterState(_ context.Context, item *store.CharacterState) error {
+	if item != nil {
+		f.savedCharacterStates = append(f.savedCharacterStates, *item)
+	}
+	return nil
 }
 
 func (f *adminReopenableReprocessingStore) ReopenMemoryReprocessingJob(
@@ -464,6 +472,11 @@ func TestAdminRescanCanonicalRawReplayReprojectsCommittedExtractionWithoutCritic
 		"turn_summary":      "Mina finds the brass key under the desk.",
 		"importance_score":  7,
 		"evidence_excerpts": []any{"Mina finds the brass key under the desk."},
+		"character_deltas": []any{map[string]any{
+			"character_name": "Mina",
+			"delta_type":     "intention",
+			"change":         "will keep the brass key safe",
+		}},
 		"kg_triples": []any{map[string]any{
 			"subject":   "Mina",
 			"predicate": "found",
@@ -509,6 +522,79 @@ func TestAdminRescanCanonicalRawReplayReprojectsCommittedExtractionWithoutCritic
 	}
 	if st.admissions[0].ResultJSON != committed.DerivedResultJSON {
 		t.Fatalf("admission=%+v", st.admissions[0])
+	}
+	artifacts, _ := response["artifact_counts"].(map[string]int)
+	if artifacts["character_states"] != 1 {
+		t.Fatalf("stored committed character delta was not reprojected: artifacts=%+v response=%+v", artifacts, response)
+	}
+}
+
+func TestAdminRescanProjectionCompleteReopensCharacterDeltaMissingNameOnlyUntilSuccessfulReplay(t *testing.T) {
+	base := newAdminDuplicateReprocessingStore()
+	committed := base.source
+	committed.DerivedAdmissionState = "committed"
+	committed.DerivedAdmissionVersion = store.MemoryAdmissionContract
+	committed.DerivedExtractorVersion = completeTurnCriticPipelineVersion
+	committed.DerivedIndexVersion = memoryAdmissionIndexVersion
+	committed.DerivedResultJSON = `{"turn_summary":"Mina changed.","character_deltas":[{"character_name":"Mina","change":"waits"}]}`
+	committed.DerivedResultHash = memoryAdmissionResultHashFromCanonicalJSON(
+		committed.SourceRevision,
+		committed.DerivedResultJSON,
+		store.MemoryAdmissionContract,
+		completeTurnCriticPipelineVersion,
+		memoryAdmissionIndexVersion,
+	)
+	base.source = committed
+
+	traceDetails := func(skipReasons []any) string {
+		return mustCompactJSON(map[string]any{
+			"pipeline_complete":  true,
+			"source_revision":    committed.SourceRevision,
+			"derivation_version": store.MemoryAdmissionContract,
+			"extractor_version":  completeTurnCriticPipelineVersion,
+			"index_version":      memoryAdmissionIndexVersion,
+			"skip_reasons":       skipReasons,
+		})
+	}
+	failedProjection := store.AuditLog{
+		ID:            1,
+		CreatedAt:     time.Unix(10, 0),
+		ChatSessionID: committed.ChatSessionID,
+		EventType:     "critic_ingest_trace",
+		TargetType:    "turn",
+		TargetID:      int64(committed.TurnIndex),
+		DetailsJSON: traceDetails([]any{map[string]any{
+			"surface": "character_deltas",
+			"reason":  "missing_name",
+		}}),
+	}
+	base.auditLogs = []store.AuditLog{failedProjection}
+	srv := &Server{Cfg: config.Default(), Store: base}
+	complete, err := srv.adminRescanSourceProjectionComplete(context.Background(), &committed)
+	if err != nil || complete {
+		t.Fatalf("missing-name projection complete=%v err=%v", complete, err)
+	}
+	unrecoverable := committed
+	unrecoverable.DerivedResultJSON = `{"turn_summary":"Unnamed change.","character_deltas":[{"change":"waits"}]}`
+	complete, err = srv.adminRescanSourceProjectionComplete(context.Background(), &unrecoverable)
+	if err != nil || !complete {
+		t.Fatalf("truly unnamed item must not reopen forever: complete=%v err=%v", complete, err)
+	}
+
+	successfulReplay := store.AuditLog{
+		ID:            2,
+		CreatedAt:     time.Unix(20, 0),
+		ChatSessionID: committed.ChatSessionID,
+		EventType:     "critic_ingest_trace",
+		TargetType:    "turn",
+		TargetID:      int64(committed.TurnIndex),
+		DetailsJSON:   traceDetails(nil),
+	}
+	// ListAuditLogs is newest-first in the production store.
+	base.auditLogs = []store.AuditLog{successfulReplay, failedProjection}
+	complete, err = srv.adminRescanSourceProjectionComplete(context.Background(), &committed)
+	if err != nil || !complete {
+		t.Fatalf("successful replay complete=%v err=%v", complete, err)
 	}
 }
 

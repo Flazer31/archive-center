@@ -39,6 +39,8 @@ Status words used in this document have strict meanings:
 
 **REMOVED.** The unreferenced legacy `assembleInjectionWithBudget()` JavaScript assembly surface has been deleted. The Go-owned payload application plan remains the active injection budget and assembly owner. [`extractMemoryItems()`](Archive%20Center.js#L20763) is called only to build UI/input-transparency inspection data, not to select final delivered memory.
 
+**VERIFIED (4.0.7 corrected source).** The added `replacement_pending` decision, source-acceptance state, and JavaScript pending-success branch were removed after live cold-start testing. The pre-existing rollback detector and the 4.0.6 user-input-only retention behavior were restored from the pre-repair 4.0.7 package instead of being redesigned. Rollback HTTP still stops after canonical MariaDB invalidation and durable vector-outbox registration, reports `vector_cleanup=queued`, and never drains the vector provider synchronously. The authority worker keeps bounded wake slices, delete service, bounded groups, refreshed timestamps, delayed retry eligibility, and bounded source-worker shutdown waits. Current live cold-start behavior requires a new package retest.
+
 ```mermaid
 flowchart LR
     U["User"] --> R["RisuAI"]
@@ -525,7 +527,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 
 ### Planned
 
-- **HISTORICAL:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled [4.1–7.0 planning index](../_archive/future-reference/4.1-7.0-integrated-roadmap.md) preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
+- **HISTORICAL:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled [4.1–9.0 planning index](../_archive/future-reference/4.1-9.0-integrated-roadmap.md) preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
 - **PLANNED:** The 4.0 goal of zero JavaScript policy calculations and a fully Go-owned final assembly is not complete while the active helpers listed in sections 3 and 17 remain.
 
 ### Obsolete, inactive, or abandoned

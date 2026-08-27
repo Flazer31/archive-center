@@ -26,6 +26,65 @@ func combinedCriticPromptForTest(t *testing.T, userPrompt string) string {
 	return systemPrompt + "\n" + userPrompt
 }
 
+type characterTimelineRecordingStore struct {
+	*turnRecordingStore
+	characterStateRows []store.CharacterState
+}
+
+func (f *characterTimelineRecordingStore) ListCharacterStatesCurrentBefore(_ context.Context, sid string, beforeTurn int) ([]store.CharacterState, error) {
+	latest := map[string]store.CharacterState{}
+	for _, item := range f.characterStateRows {
+		if sid != "" && item.ChatSessionID != sid {
+			continue
+		}
+		if beforeTurn > 0 && item.TurnIndex >= beforeTurn {
+			continue
+		}
+		key := comparableEntityKey(item.CharacterName)
+		current, found := latest[key]
+		if !found || item.TurnIndex > current.TurnIndex || (item.TurnIndex == current.TurnIndex && item.ID > current.ID) {
+			latest[key] = item
+		}
+	}
+	out := make([]store.CharacterState, 0, len(latest))
+	for _, item := range latest {
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *characterTimelineRecordingStore) SaveCharacterState(_ context.Context, item *store.CharacterState) error {
+	copyItem := *item
+	copyItem.ID = int64(len(f.characterStateRows) + 1)
+	f.characterStateRows = append(f.characterStateRows, copyItem)
+	f.savedCharacterStates = append(f.savedCharacterStates, &copyItem)
+	return nil
+}
+
+func TestCriticPromptUsesExplicitNameMappingsWithoutChangingOutputLanguage(t *testing.T) {
+	t.Parallel()
+	prompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	for _, required := range []string{
+		"explicit user-supplied name-matching list or table",
+		"Preserve both mapped strings exactly",
+		"preserve the mapped given-name identity first",
+		"Never swap or mix surnames between rows",
+		"exempt from surname/given-name matching",
+		"identity-only rules do not change the Language Contract",
+		"Follow runtime language guidance from `summary_language` or `session_output_language`",
+	} {
+		if !strings.Contains(prompt, required) {
+			t.Fatalf("critic prompt missing explicit name-mapping contract %q", required)
+		}
+	}
+	if strings.Contains(prompt, "Use only English for the task") {
+		t.Fatal("name-mapping guidance must not override the runtime output-language contract")
+	}
+}
+
 func criticWireJSONForTest(canonical map[string]any) string {
 	raw, err := json.Marshal(canonical)
 	if err != nil {
@@ -736,6 +795,16 @@ func TestCriticPipelineErrorClassificationPreservesStageAndHTTPStatus(t *testing
 		t.Fatalf("empty response details = %#v", emptyDetails)
 	}
 
+	exhaustedDetails := criticPipelineErrorDetails(classifyCriticProviderError(
+		&proxyFinalOutputExhaustedError{Provider: "custom"}, http.StatusOK,
+	))
+	if exhaustedDetails["code"] != "CRITIC_OUTPUT_TOKEN_EXHAUSTED" ||
+		exhaustedDetails["stage"] != "provider_response" ||
+		exhaustedDetails["retryable"] != true ||
+		exhaustedDetails["http_status"] != http.StatusOK {
+		t.Fatalf("output-exhausted details = %#v", exhaustedDetails)
+	}
+
 	localDetails := criticPipelineErrorDetails(classifyCriticProviderError(
 		&proxyLocalRequestError{Stage: "request_build", Cause: errors.New("conflict")},
 		http.StatusBadRequest,
@@ -1410,6 +1479,9 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 
 func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
 	systemPrompt, _ := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if !strings.Contains(systemPrompt, `"character_deltas":[{"name":"","status":{"key":"value"}}]`) {
+		t.Fatal("system critic prompt is missing the explicit character delta object shape")
+	}
 	systemJSONSection := strings.Index(systemPrompt, "[Wire Output Contract]")
 	if systemJSONSection < 0 {
 		t.Fatal("system critic prompt is missing the JSON surface section")
@@ -1448,6 +1520,169 @@ func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
 		if stringFromMap(reason, "surface") == "character_deltas" && stringFromMap(reason, "reason") == "missing_name" {
 			t.Fatalf("named character delta was discarded as missing_name: %#v", result.SkipReasons)
 		}
+	}
+}
+
+func TestCriticCharacterDeltaProviderAliasesPersistIndependentState(t *testing.T) {
+	tests := []struct {
+		name       string
+		delta      map[string]any
+		wantName   string
+		wantSlot   string
+		wantChange string
+	}{
+		{
+			name: "character_name_delta_type_change",
+			delta: map[string]any{
+				"character_name": "Mina",
+				"delta_type":     "intention",
+				"change":         "will return at dawn",
+			},
+			wantName: "Mina", wantSlot: "intention", wantChange: "will return at dawn",
+		},
+		{
+			name: "character_dimension_value",
+			delta: map[string]any{
+				"character": "Rowan",
+				"dimension": "authority",
+				"value":     "now leads the watch",
+			},
+			wantName: "Rowan", wantSlot: "authority", wantChange: "now leads the watch",
+		},
+		{
+			name: "scalar_status_open_slot",
+			delta: map[string]any{
+				"character_name": "Sora",
+				"status":         "keeps watch by the door",
+			},
+			wantName: "Sora", wantSlot: "observed_change", wantChange: "keeps watch by the door",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &turnRecordingStore{}
+			srv := NewServer(config.Default())
+			srv.Store = fake
+			result := srv.saveCriticExtractionArtifacts(
+				context.Background(),
+				"critic-character-alias-"+tc.name,
+				2,
+				normalizeCriticExtraction(map[string]any{"character_deltas": []any{tc.delta}}),
+				tc.wantName+" changed.",
+				completeTurnEmbeddingConfig{},
+				time.Unix(200, 0),
+			)
+			if result.CharacterStates != 1 || len(fake.savedCharacterStates) != 1 {
+				t.Fatalf("provider alias delta was not persisted: result=%#v states=%#v", result, fake.savedCharacterStates)
+			}
+			saved := fake.savedCharacterStates[0]
+			if saved.CharacterName != tc.wantName {
+				t.Fatalf("saved name=%q want=%q", saved.CharacterName, tc.wantName)
+			}
+			status := map[string]any{}
+			if err := json.Unmarshal([]byte(saved.StatusJSON), &status); err != nil {
+				t.Fatalf("status JSON=%q: %v", saved.StatusJSON, err)
+			}
+			if got := stringFromMap(status, tc.wantSlot); got != tc.wantChange {
+				t.Fatalf("status[%q]=%q want=%q; status=%#v", tc.wantSlot, got, tc.wantChange, status)
+			}
+		})
+	}
+}
+
+func TestCriticCharacterDeltaNormalizationPreservesCanonicalAndValidSiblings(t *testing.T) {
+	canonicalStatus := map[string]any{"role": "captain"}
+	normalized := normalizeCriticCharacterDeltas([]any{
+		map[string]any{"change": "unnamed change"},
+		map[string]any{"name": "Mina", "status": canonicalStatus, "evidence_excerpt": "Mina took command."},
+	})
+	if len(normalized) != 2 {
+		t.Fatalf("normalized deltas=%#v", normalized)
+	}
+	valid := mapFromAny(normalized[1])
+	if stringFromMap(valid, "name") != "Mina" || stringFromMap(mapFromAny(valid["status"]), "role") != "captain" ||
+		stringFromMap(valid, "evidence_excerpt") != "Mina took command." {
+		t.Fatalf("canonical delta changed=%#v", valid)
+	}
+
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	result := srv.saveCriticExtractionArtifacts(
+		context.Background(), "critic-character-mixed", 3,
+		map[string]any{"character_deltas": normalized},
+		"Mina took command.", completeTurnEmbeddingConfig{}, time.Unix(300, 0),
+	)
+	if result.CharacterStates != 1 || len(fake.savedCharacterStates) != 1 || fake.savedCharacterStates[0].CharacterName != "Mina" {
+		t.Fatalf("valid sibling was not independently persisted: result=%#v states=%#v", result, fake.savedCharacterStates)
+	}
+	foundMissingName := false
+	for _, reason := range result.SkipReasons {
+		if stringFromMap(reason, "surface") == "character_deltas" && stringFromMap(reason, "reason") == "missing_name" {
+			foundMissingName = true
+		}
+	}
+	if !foundMissingName {
+		t.Fatalf("malformed sibling was not traced independently: %#v", result.SkipReasons)
+	}
+}
+
+func TestCharacterStateReplayUsesPriorTurnAndIsSameTurnIdempotent(t *testing.T) {
+	base := &turnRecordingStore{}
+	fake := &characterTimelineRecordingStore{
+		turnRecordingStore: base,
+		characterStateRows: []store.CharacterState{
+			{
+				ID: 1, ChatSessionID: "character-replay", CharacterName: "Mina", TurnIndex: 2,
+				AppearanceJSON: "{}", PersonalityJSON: "{}", StatusJSON: `{"role":"scout"}`,
+				RelationshipsJSON: "{}", SpeechStyleJSON: "{}",
+			},
+			{
+				ID: 2, ChatSessionID: "character-replay", CharacterName: "Mina", TurnIndex: 10,
+				AppearanceJSON: "{}", PersonalityJSON: "{}", StatusJSON: `{"role":"general","secret":"future"}`,
+				RelationshipsJSON: "{}", SpeechStyleJSON: "{}",
+			},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	extraction := map[string]any{
+		"character_deltas": []any{
+			map[string]any{"name": "Mina", "status": map[string]any{"intention": "wait at the gate"}},
+			map[string]any{"name": "Mina", "status": map[string]any{"authority": "leads the watch"}},
+		},
+	}
+	first := srv.saveCriticExtractionArtifacts(
+		context.Background(), "character-replay", 5, extraction,
+		"Mina waits at the gate and leads the watch.", completeTurnEmbeddingConfig{}, time.Unix(500, 0),
+	)
+	if first.CharacterStates != 1 || len(fake.savedCharacterStates) != 1 {
+		t.Fatalf("first replay state count=%d saved=%#v errors=%#v", first.CharacterStates, fake.savedCharacterStates, first.ErrorDetails)
+	}
+	status := map[string]any{}
+	if err := json.Unmarshal([]byte(fake.savedCharacterStates[0].StatusJSON), &status); err != nil {
+		t.Fatal(err)
+	}
+	if stringFromMap(status, "role") != "scout" || stringFromMap(status, "intention") != "wait at the gate" ||
+		stringFromMap(status, "authority") != "leads the watch" || stringFromMap(status, "secret") != "" {
+		t.Fatalf("historical replay leaked or lost state: %#v", status)
+	}
+
+	second := srv.saveCriticExtractionArtifacts(
+		context.Background(), "character-replay", 5, extraction,
+		"Mina waits at the gate and leads the watch.", completeTurnEmbeddingConfig{}, time.Unix(600, 0),
+	)
+	if second.CharacterStates != 0 || len(fake.savedCharacterStates) != 1 {
+		t.Fatalf("same-turn replay appended a duplicate: result=%#v saved=%#v", second, fake.savedCharacterStates)
+	}
+	foundDuplicate := false
+	for _, reason := range second.SkipReasons {
+		if stringFromMap(reason, "surface") == "character_deltas" && stringFromMap(reason, "reason") == "duplicate_same_turn_state" {
+			foundDuplicate = true
+		}
+	}
+	if !foundDuplicate {
+		t.Fatalf("same-turn idempotency was not traced: %#v", second.SkipReasons)
 	}
 }
 

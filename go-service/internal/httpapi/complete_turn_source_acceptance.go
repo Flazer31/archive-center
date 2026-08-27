@@ -24,6 +24,8 @@ const (
 	sourceAcceptanceInvalidationEvent            = "source_acceptance_invalidation"
 )
 
+var completeTurnSourceWorkerStopTimeout = 5 * time.Second
+
 type completeTurnSourceObservation struct {
 	ContractVersion               string `json:"contract_version"`
 	HostLifecycleContractVersion  string `json:"host_lifecycle_contract_version"`
@@ -632,7 +634,7 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	var supersededWorkerDone []<-chan struct{}
 	defer func() {
 		ledger.mu.Unlock()
-		waitForCompleteTurnSourceWorkers(supersededWorkerDone)
+		_ = waitForCompleteTurnSourceWorkers(supersededWorkerDone)
 	}()
 	ledger.loadDurableStateLocked(ctx, s.Store, sid)
 	latestCanonicalTurn := 0
@@ -889,7 +891,7 @@ func (s *Server) completeTurnStoredSourceProcessingContext(parent context.Contex
 	}
 	ledger.reprocessingWorkers[source.SourceRevision] = worker
 	ledger.mu.Unlock()
-	waitForCompleteTurnSourceWorkers([]<-chan struct{}{previousDone})
+	_ = waitForCompleteTurnSourceWorkers([]<-chan struct{}{previousDone})
 	return ctx, func() {
 		ledger.mu.Lock()
 		if ledger.reprocessingWorkers[source.SourceRevision] == worker {
@@ -901,17 +903,30 @@ func (s *Server) completeTurnStoredSourceProcessingContext(parent context.Contex
 	}
 }
 
-func waitForCompleteTurnSourceWorkers(workers []<-chan struct{}) {
+func waitForCompleteTurnSourceWorkers(workers []<-chan struct{}) error {
 	for _, done := range workers {
-		if done != nil {
-			<-done
+		if done == nil {
+			continue
+		}
+		timer := time.NewTimer(completeTurnSourceWorkerStopTimeout)
+		select {
+		case <-done:
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+		case <-timer.C:
+			return fmt.Errorf("complete turn source worker stop timed out")
 		}
 	}
+	return nil
 }
 
-func (s *Server) cancelCompleteTurnSourceWorkers(sid string, fromTurn int) {
+func (s *Server) cancelCompleteTurnSourceWorkers(sid string, fromTurn int) error {
 	if strings.TrimSpace(sid) == "" || fromTurn <= 0 || s.SourceAcceptances == nil {
-		return
+		return nil
 	}
 	ledger := s.SourceAcceptances
 	var workers []<-chan struct{}
@@ -925,10 +940,9 @@ func (s *Server) cancelCompleteTurnSourceWorkers(sid string, fromTurn int) {
 			if worker.done != nil {
 				workers = append(workers, worker.done)
 			}
-			delete(ledger.workers, key)
 		}
 	}
-	for revision, worker := range ledger.reprocessingWorkers {
+	for _, worker := range ledger.reprocessingWorkers {
 		if worker == nil || worker.sessionID != sid || worker.turnIndex < fromTurn {
 			continue
 		}
@@ -936,10 +950,9 @@ func (s *Server) cancelCompleteTurnSourceWorkers(sid string, fromTurn int) {
 		if worker.done != nil {
 			workers = append(workers, worker.done)
 		}
-		delete(ledger.reprocessingWorkers, revision)
 	}
 	ledger.mu.Unlock()
-	waitForCompleteTurnSourceWorkers(workers)
+	return waitForCompleteTurnSourceWorkers(workers)
 }
 
 func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.Context, st store.Store, sid string) {
@@ -1089,7 +1102,7 @@ func (s *Server) invalidateCompleteTurnSourceAcceptances(ctx context.Context, si
 		}
 	}
 	ledger.mu.Unlock()
-	waitForCompleteTurnSourceWorkers(workers)
+	_ = waitForCompleteTurnSourceWorkers(workers)
 	if s.Store != nil && s.usesShadowWriteStore() {
 		invalidation := sourceAcceptanceInvalidation{FromTurn: fromTurn, ObservedAtMS: observedAt}
 		_ = s.Store.SaveAuditLog(context.WithoutCancel(ctx), &store.AuditLog{

@@ -36,6 +36,7 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - Object arrays: `kg_triples`, `speaker_attributions`, `interaction_events`, `relationship_observations`, `interaction_boundaries`, `habit_observations`, `character_profile_observations`, `voice_observations`, `user_interaction_profile`, `rp_character_profile`, `world_rules`, `subjective_entity_memories`, `protected_secrets`, `character_identity_accuracy`, `persona_capsule_candidates`, `narrative_events`, `state_claims`, `belief_updates`, `character_deltas`, `physical_conditions`, `entity_conditions`, `reversible_states`, `pending_threads`.
 - Subjective shape: `"subjective_entity_memories": [{"owner_entity_name": "", "memory_text": "", "evidence_excerpt": ""}]`.
 - Belief shape: `"belief_updates": [{"perspective_owner": "", "belief": "", "evidence_excerpt": ""}]`.
+- Shape: `"character_deltas":[{"name":"","status":{"key":"value"}}]`; `name` required.
 - Objects: `story_clock`, `relationship_memory`, `entities`, `archive_hint`, `world_rule_audit`, `world_state`, `state_deltas`.
 - Keep every durable item focused. One malformed optional item must not erase independent valid fields or items.
 
@@ -45,6 +46,9 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - `relationship_memory` records directional trust, tension, distance, warmth, suspicion, preference, taboo, or movement.
 - `entities` records concrete people, places, items, and groups observed or meaningfully affected. Each item needs `name`; aliases and identity evidence are optional.
 - Keep ordinary aliases, nicknames, titles, localized names, and romanizations under one established canonical identity. When canonical identity is uniquely established in retained story context and the latest turn uses an alias for it, a short exact latest-turn excerpt may support the link. Omit identity evidence for homonyms or uncertain equivalence; never infer sameness from spelling or similarity alone.
+- When an explicit user-supplied name-matching list or table maps an exact localized spelling to a surname and given name, treat that row as authoritative only for entity identity and name fields. Preserve both mapped strings exactly even when conventional romanization or language intuition differs; the mapping cannot create a character or event without story evidence.
+- When correcting or reviewing an entity covered by that explicit mapping, preserve the mapped given-name identity first and attach only its mapped surname. Never swap or mix surnames between rows, and never invent a missing surname or merge identities that the mapping does not establish.
+- If the explicit mapping marks an entry as exempt from surname/given-name matching, keep its localized and translated forms as exact names or aliases without splitting or rematching them. These identity-only rules do not change the Language Contract for generated memory fields.
 - `kg_triples`: extract useful source-grounded in-story facts and relationships broadly. Each object uses open story values for `subject`, `predicate`, and `object`. A fact is not omitted merely because another typed lane also records it.
 - `archive_hint` may identify a useful placement. Omit it when not useful without suppressing other records.
 - Omit unknown facts instead of inventing placeholders.
@@ -74,7 +78,7 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - On a location change, keep `state_deltas.scene_state.location`, affected `character_deltas` status.location, KG `moved_to`, and known `moved_from` consistent.
 
 [Character, Habits, And Voice]
-- `character_deltas` captures useful changes in emotion, health, role, authority, intention, relationship, location, personality, or speech style for named or described characters.
+- `character_deltas`: named current status only.
 - habit_observations collect behavior occurrences, patterns, counterexamples, and exceptions, including situation and counterpart. Do not use a fixed count to decide that a habit exists.
 - character_profile_observations collect personality, values, desires, fears, contradictions, and contextual or relationship-specific tendencies.
 - voice_observations collect conditional speech and nonverbal style principles broadly. For an attributable line, a first observation is valid contextual evidence. Store traits or principles rather than forcing future dialogue to repeat an example sentence.

@@ -68,6 +68,35 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	saveEntityItems(sliceFromAny(entities["places"]), "location")
 	saveEntityItems(sliceFromAny(entities["items"]), "item")
 	saveEntityItems(sliceFromAny(entities["objects"]), "item")
+
+	priorCharacterStates := map[string]store.CharacterState{}
+	sameTurnCharacterStates := map[string]store.CharacterState{}
+	timelineReadAvailable := false
+	if turnIndex > 0 {
+		if reader, ok := s.Store.(interface {
+			ListCharacterStatesCurrentBefore(context.Context, string, int) ([]store.CharacterState, error)
+		}); ok {
+			before, beforeErr := reader.ListCharacterStatesCurrentBefore(ctx, sid, turnIndex)
+			through, throughErr := reader.ListCharacterStatesCurrentBefore(ctx, sid, turnIndex+1)
+			if beforeErr == nil && throughErr == nil {
+				timelineReadAvailable = true
+				for _, state := range before {
+					priorCharacterStates[comparableEntityKey(state.CharacterName)] = state
+				}
+				for _, state := range through {
+					if state.TurnIndex == turnIndex {
+						sameTurnCharacterStates[comparableEntityKey(state.CharacterName)] = state
+					}
+				}
+			}
+		}
+	}
+	type pendingCharacterStateProjection struct {
+		state       store.CharacterState
+		sourceIndex int
+	}
+	pendingCharacterStates := map[string]pendingCharacterStateProjection{}
+	pendingCharacterOrder := []string{}
 	for characterDeltaIndex, item := range sliceFromAny(extraction["character_deltas"]) {
 		charDelta := mapFromAny(item)
 		rawName := strings.TrimSpace(stringFromMap(charDelta, "name"))
@@ -88,29 +117,47 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			continue
 		}
 		var currentState *store.CharacterState
-		if current, err := s.Store.GetCharacterState(ctx, sid, name); err == nil {
+		characterKey := comparableEntityKey(name)
+		if pending, ok := pendingCharacterStates[characterKey]; ok {
+			current := pending.state
+			currentState = &current
+		} else if timelineReadAvailable {
+			if prior, ok := priorCharacterStates[characterKey]; ok {
+				current := prior
+				currentState = &current
+			}
+		} else if current, err := s.Store.GetCharacterState(ctx, sid, name); err == nil {
 			currentState = current
 		}
-		if saver, ok := s.Store.(characterStateSaver); ok {
-			appearanceJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "appearance"), currentDelta["appearance"])
-			personalityJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "personality"), currentDelta["personality"])
-			statusJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "status"), currentDelta["status"])
-			relationshipsJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "relationships"), nil)
-			speechStyleJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "speech_style"), currentDelta["speech_style"])
-			result.trySave("SaveCharacterState", func() error {
-				return saver.SaveCharacterState(ctx, &store.CharacterState{
-					ChatSessionID:     sid,
-					CharacterName:     name,
-					AppearanceJSON:    appearanceJSON,
-					PersonalityJSON:   personalityJSON,
-					StatusJSON:        statusJSON,
-					RelationshipsJSON: relationshipsJSON,
-					SpeechStyleJSON:   speechStyleJSON,
-					TurnIndex:         turnIndex,
-					CreatedAt:         now,
-					UpdatedAt:         now,
-				})
-			}, result, func() { result.CharacterStates++ })
+		appearanceJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "appearance"), currentDelta["appearance"])
+		personalityJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "personality"), currentDelta["personality"])
+		statusJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "status"), currentDelta["status"])
+		relationshipsJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "relationships"), nil)
+		speechStyleJSON := mergeCharacterStateJSONField(currentCharacterJSON(currentState, "speech_style"), currentDelta["speech_style"])
+		if timelineReadAvailable {
+			appearanceJSON = characterStateJSONOrEmptyObject(appearanceJSON)
+			personalityJSON = characterStateJSONOrEmptyObject(personalityJSON)
+			statusJSON = characterStateJSONOrEmptyObject(statusJSON)
+			relationshipsJSON = characterStateJSONOrEmptyObject(relationshipsJSON)
+			speechStyleJSON = characterStateJSONOrEmptyObject(speechStyleJSON)
+		}
+		if _, exists := pendingCharacterStates[characterKey]; !exists {
+			pendingCharacterOrder = append(pendingCharacterOrder, characterKey)
+		}
+		pendingCharacterStates[characterKey] = pendingCharacterStateProjection{
+			state: store.CharacterState{
+				ChatSessionID:     sid,
+				CharacterName:     name,
+				AppearanceJSON:    appearanceJSON,
+				PersonalityJSON:   personalityJSON,
+				StatusJSON:        statusJSON,
+				RelationshipsJSON: relationshipsJSON,
+				SpeechStyleJSON:   speechStyleJSON,
+				TurnIndex:         turnIndex,
+				CreatedAt:         now,
+				UpdatedAt:         now,
+			},
+			sourceIndex: characterDeltaIndex,
 		}
 		for _, ev := range sliceFromAny(currentDelta["events"]) {
 			evMap := mapFromAny(ev)
@@ -134,6 +181,22 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 					CreatedAt:     now,
 				})
 			}, result, func() { result.CharacterEvents++ })
+		}
+	}
+	if saver, ok := s.Store.(characterStateSaver); ok {
+		for _, characterKey := range pendingCharacterOrder {
+			pending := pendingCharacterStates[characterKey]
+			if existing, found := sameTurnCharacterStates[characterKey]; found && sameCharacterStateProjection(existing, pending.state) {
+				result.addSkipReason("character_deltas", "duplicate_same_turn_state", map[string]any{
+					"index": pending.sourceIndex,
+					"name":  pending.state.CharacterName,
+				})
+				continue
+			}
+			next := pending.state
+			result.trySave("SaveCharacterState", func() error {
+				return saver.SaveCharacterState(ctx, &next)
+			}, result, func() { result.CharacterStates++ })
 		}
 	}
 
@@ -465,6 +528,22 @@ func currentCharacterJSON(current *store.CharacterState, field string) string {
 	default:
 		return ""
 	}
+}
+
+func characterStateJSONOrEmptyObject(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "{}"
+	}
+	return value
+}
+
+func sameCharacterStateProjection(left, right store.CharacterState) bool {
+	return comparableEntityKey(left.CharacterName) == comparableEntityKey(right.CharacterName) &&
+		strings.TrimSpace(left.AppearanceJSON) == strings.TrimSpace(right.AppearanceJSON) &&
+		strings.TrimSpace(left.PersonalityJSON) == strings.TrimSpace(right.PersonalityJSON) &&
+		strings.TrimSpace(left.StatusJSON) == strings.TrimSpace(right.StatusJSON) &&
+		strings.TrimSpace(left.RelationshipsJSON) == strings.TrimSpace(right.RelationshipsJSON) &&
+		strings.TrimSpace(left.SpeechStyleJSON) == strings.TrimSpace(right.SpeechStyleJSON)
 }
 
 func mergeCharacterStateJSONField(existing string, incoming any) string {

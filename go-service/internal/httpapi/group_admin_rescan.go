@@ -894,6 +894,7 @@ func (s *Server) adminRescanSourceProjectionComplete(
 		strings.TrimSpace(source.DerivedResultJSON) == "" {
 		return false, nil
 	}
+	recoverableCharacterDeltaName := committedResultHasCharacterDeltaNameAlias(source.DerivedResultJSON)
 	logs, err := s.Store.ListAuditLogs(
 		ctx,
 		source.ChatSessionID,
@@ -920,9 +921,34 @@ func (s *Server) adminRescanSourceProjectionComplete(
 			strings.TrimSpace(stringFromMap(details, "index_version")) != memoryAdmissionIndexVersion {
 			continue
 		}
+		for _, rawReason := range sliceFromAny(details["skip_reasons"]) {
+			reason := mapFromAny(rawReason)
+			if recoverableCharacterDeltaName &&
+				stringFromMap(reason, "surface") == "character_deltas" &&
+				stringFromMap(reason, "reason") == "missing_name" {
+				return false, nil
+			}
+		}
 		return true, nil
 	}
 	return false, nil
+}
+
+func committedResultHasCharacterDeltaNameAlias(rawJSON string) bool {
+	var extraction map[string]any
+	if json.Unmarshal([]byte(strings.TrimSpace(rawJSON)), &extraction) != nil {
+		return false
+	}
+	for _, raw := range sliceFromAny(extraction["character_deltas"]) {
+		item := mapFromAny(raw)
+		if stringFromMap(item, "name") == "" && strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "character_name"),
+			stringFromMap(item, "character"),
+		)) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func addAdminRescanArtifactCounts(counts map[string]int, result artifactSaveResult) {

@@ -1,8 +1,8 @@
 # Archive Center 기억 주입·서사 가이드 권한 검토
 
 > 현재 지위: 1.0 비교, 권한 검토와 대안 채택·기각을 보존하는 역사적 review다.
-> 4.1~7.0 버전 지도와 확장 제품 이름은
-> [`4.1-7.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-7.0-integrated-roadmap.md)를 우선한다.
+> 4.1~9.0 버전 지도와 확장 제품 이름은
+> [`4.1-9.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)를 우선한다.
 > 신규 확장 제품은 `AC Ensemble Agent`이며 Recomposer 공동 사용 절은 현재 제품
 > 이름이나 구현 완료 증거가 아니다.
 
@@ -2772,9 +2772,9 @@ GPT 하위 에이전트 4개가 권한 구조, 실패·보안 시험, source-vs-
 ## 16. 폐기된 과거안 — Standalone Recomposer와 Archive Center 출판사 공동 사용 계약
 
 > 이 절은 과거 비교 근거를 남기기 위한 기록이다. Archive Center publisher plan을 별도
-> 플러그인에 넘기거나 두 전처리를 fallback으로 교대하는 아래 설계는 현재 5.1~5.5 계획이
+> 플러그인에 넘기거나 두 전처리를 fallback으로 교대하는 아래 설계는 현재 6.1~7.0 계획이
 > 아니다. 현재 정본은
-> [`4.1-7.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-7.0-integrated-roadmap.md)이며,
+> [`4.1-9.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)이며,
 > [`4.3-character-subjective-memory-story-context-roadmap.md`](4.3-character-subjective-memory-story-context-roadmap.md)는
 > 역사적 번호를 가진 상세 근거로만 사용한다.
 

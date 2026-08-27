@@ -213,6 +213,13 @@ type MemoryVectorOutboxStore interface {
 	FailMemoryVectorOperation(ctx context.Context, outboxID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
 }
 
+// MemoryVectorOutboxLaneStore lets the bounded authority worker reserve fair
+// service for deletes without changing the canonical outbox contract used by
+// other stores and tests.
+type MemoryVectorOutboxLaneStore interface {
+	ClaimMemoryVectorOperationsByOperation(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration, operation string) ([]*MemoryVectorOutboxItem, error)
+}
+
 // MemoryVectorMaterialization is the verified public memory vector that must
 // converge into MariaDB before its outbox operation can be completed.
 type MemoryVectorMaterialization struct {

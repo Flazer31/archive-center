@@ -446,6 +446,209 @@ func TestHandleProxyPluginMainRejectsEmptyOpenAIText(t *testing.T) {
 	}
 }
 
+func TestHandleProxyPluginMainCriticConnectionTestReportsFinalOutputExhaustion(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RegisterRoutes(mux)
+
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode upstream request: %v", err)
+		}
+		if intFromAny(body["max_tokens"], 0) != 1024 {
+			t.Fatalf("connection test max_tokens=%v, want 1024", body["max_tokens"])
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"model":"deepseek-test",
+				"choices":[{"finish_reason":"length","message":{"content":null,"reasoning_content":"reasoning consumed the budget"}}],
+				"usage":{"prompt_tokens":12,"completion_tokens":1024,"total_tokens":1036,"completion_tokens_details":{"reasoning_tokens":1024}}
+			}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	body := `{"provider":"custom","endpoint":"https://api.example.com/v1","model":"deepseek-test","api_key":"sk-test","max_tokens":5,"max_completion_tokens":5,"reasoning_budget_tokens":4096,"messages":[{"role":"user","content":"Reply with exactly: OK"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/plugin-main?connection_test=critic", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want diagnostic 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "incomplete" || resp["code"] != "final_output_token_exhausted" || resp["connection_ok"] != true || resp["final_output_ok"] != false {
+		t.Fatalf("connection-test classification=%#v", resp)
+	}
+	metadata := mapFromAny(resp["provider_response"])
+	if metadata["native_finish_reason"] != "length" || metadata["termination_kind"] != "length" || metadata["reasoning_observed"] != true || intFromAny(metadata["reasoning_tokens"], 0) != 1024 {
+		t.Fatalf("connection-test metadata=%#v", metadata)
+	}
+	if strings.TrimSpace(stringFromAny(resp["final_text"])) != "" {
+		t.Fatalf("reasoning-only response became final text: %#v", resp["final_text"])
+	}
+}
+
+func TestHandleProxyPluginMainCriticConnectionTestDoesNotUseCompatibilityRetry(t *testing.T) {
+	mux := http.NewServeMux()
+	srv := setupTestServer()
+	srv.RuntimeConfigMu.Lock()
+	srv.RuntimeConfig.LLMRetryCount = 3
+	srv.RuntimeConfigMu.Unlock()
+	srv.RegisterRoutes(mux)
+
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusBadRequest,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"unsupported parameter: max_completion_tokens"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	body := `{"provider":"custom","endpoint":"https://api.example.com/v1","model":"custom-model","api_key":"sk-test","messages":[{"role":"user","content":"ping"}],"extra_body_json":"{\"max_completion_tokens\":256}"}`
+	req := httptest.NewRequest(http.MethodPost, "/proxy/plugin-main?connection_test=critic", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want diagnostic 200: %s", rec.Code, rec.Body.String())
+	}
+	if calls != 1 {
+		t.Fatalf("connection test calls=%d, want exactly one", calls)
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp["status"] != "error" || resp["connection_ok"] != false {
+		t.Fatalf("unexpected retry-free diagnostic=%#v", resp)
+	}
+}
+
+func TestChatCompletionTextSupportsTextBlocksAndLegacyTextWithoutUsingReasoning(t *testing.T) {
+	arrayResponse := map[string]any{"choices": []any{map[string]any{
+		"message": map[string]any{"content": []any{
+			map[string]any{"type": "reasoning", "text": "do not expose"},
+			map[string]any{"type": "text", "text": "part one"},
+			map[string]any{"type": "output_text", "text": " and two"},
+		}},
+	}}}
+	if got := chatCompletionText(arrayResponse); got != "part one and two" {
+		t.Fatalf("array content=%q", got)
+	}
+	legacyResponse := map[string]any{"choices": []any{map[string]any{"text": "legacy final text"}}}
+	if got := chatCompletionText(legacyResponse); got != "legacy final text" {
+		t.Fatalf("legacy content=%q", got)
+	}
+	reasoningOnly := map[string]any{"choices": []any{map[string]any{
+		"message": map[string]any{"content": []any{map[string]any{"type": "reasoning", "text": "internal"}}},
+	}}}
+	if got := chatCompletionText(reasoningOnly); got != "" {
+		t.Fatalf("reasoning content was treated as final text: %q", got)
+	}
+}
+
+func TestProxyExplicitResponsesEndpointUsesResponsesContractAndNormalizesFinalText(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://api.example.com/v1/responses" {
+			t.Fatalf("Responses URL=%q", got)
+		}
+		var body map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("decode Responses request: %v", err)
+		}
+		if _, exists := body["messages"]; exists {
+			t.Fatalf("Responses request retained chat messages: %#v", body)
+		}
+		if len(sliceFromAny(body["input"])) != 1 || intFromAny(body["max_output_tokens"], 0) != 512 {
+			t.Fatalf("Responses request contract=%#v", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"model":"custom-responses-model","status":"completed",
+				"output":[
+					{"type":"reasoning","summary":[{"type":"summary_text","text":"not final"}]},
+					{"type":"message","role":"assistant","content":[{"type":"output_text","text":"responses final"}]}
+				],
+				"usage":{"input_tokens":20,"output_tokens":9,"total_tokens":29,"output_tokens_details":{"reasoning_tokens":4}}
+			}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:              strPtr("sk-test"),
+		Endpoint:            strPtr("https://api.example.com/v1/responses"),
+		Model:               strPtr("custom-responses-model"),
+		Provider:            strPtr("custom"),
+		Messages:            []any{map[string]any{"role": "user", "content": "ping"}},
+		MaxTokens:           int64Ptr(256),
+		MaxCompletionTokens: int64Ptr(512),
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("Responses call status=%d err=%v", status, err)
+	}
+	if got := chatCompletionText(resp); got != "responses final" {
+		t.Fatalf("Responses final text=%q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["adapter"] != "openai_responses" || metadata["termination_kind"] != "complete" || metadata["reasoning_observed"] != true || intFromAny(metadata["reasoning_tokens"], 0) != 4 {
+		t.Fatalf("Responses metadata=%#v", metadata)
+	}
+}
+
+func TestProxyResponsesReasoningOnlyIncompleteIsNotFinalText(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"model":"custom-responses-model","status":"incomplete",
+				"incomplete_details":{"reason":"max_output_tokens"},
+				"output":[{"type":"reasoning","summary":[{"type":"summary_text","text":"not final"}]}],
+				"usage":{"input_tokens":20,"output_tokens":256,"total_tokens":276,"output_tokens_details":{"reasoning_tokens":256}}
+			}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("sk-test"),
+		Endpoint: strPtr("https://api.example.com/v1/responses"),
+		Model:    strPtr("custom-responses-model"),
+		Provider: strPtr("custom"),
+		Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || status != http.StatusOK {
+		t.Fatalf("Responses incomplete status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Responses reasoning became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "max_output_tokens" || metadata["termination_kind"] != "length" || metadata["reasoning_observed"] != true {
+		t.Fatalf("Responses incomplete metadata=%#v", metadata)
+	}
+}
+
 func TestHandleProxyPluginMainOllamaLoopbackWithoutAPIKey(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()

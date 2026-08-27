@@ -520,7 +520,7 @@ func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	}
 }
 
-func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *testing.T) {
+func TestRollbackLifecycleQueuesDurableOutboxWithoutWaitingForProvider(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
@@ -550,11 +550,15 @@ func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *t
 	}
 	deletions := response["deletions"].(map[string]any)
 	vectors := deletions["vectors"].(map[string]any)
-	if vectors["mode"] != "durable_outbox" || vectors["retryable_queued"] != float64(1) {
+	if vectors["mode"] != "durable_outbox" || vectors["vector_cleanup"] != "queued" ||
+		vectors["drain_attempted"] != false {
 		t.Fatalf("vectors=%+v", vectors)
 	}
-	if lifecycle.outbox == nil || lifecycle.outbox.Status != "retryable" {
+	if lifecycle.outbox == nil || lifecycle.outbox.Status != "pending" {
 		t.Fatalf("outbox=%+v", lifecycle.outbox)
+	}
+	if len(vec.deletedDocumentIDs) != 0 {
+		t.Fatalf("rollback HTTP called vector provider synchronously: %v", vec.deletedDocumentIDs)
 	}
 	if lifecycle.lastLifecycleState != store.LogicalTurnLifecycleDeleted {
 		t.Fatalf("typed delete lifecycle was not applied: %q", lifecycle.lastLifecycleState)
@@ -570,12 +574,12 @@ func TestRollbackLifecycleUsesDurableOutboxAndProviderFailureStaysRetryable(t *t
 	}
 	if facts["vector_index"]["status"] != "queued" ||
 		facts["vector_index"]["disposition"] != "deferred" ||
-		facts["vector_index"]["count"] != float64(1) {
+		facts["vector_index"]["count"] != float64(0) {
 		t.Fatalf("outbox rollback HUD facts=%+v", facts)
 	}
 }
 
-func TestRollbackLifecyclePermanentVectorFailureIsPartialError(t *testing.T) {
+func TestRollbackLifecycleDefersUnknownVectorOperationToWorker(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
@@ -602,33 +606,28 @@ func TestRollbackLifecyclePermanentVectorFailureIsPartialError(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response["status"] != "partial_error" {
+	if response["status"] != "ok" {
 		t.Fatalf("response status=%v body=%s", response["status"], recorder.Body.String())
 	}
 	deletions := response["deletions"].(map[string]any)
 	vectors := deletions["vectors"].(map[string]any)
-	if vectors["ok"] != false ||
-		vectors["canonical_committed"] != true ||
-		vectors["permanent"] != float64(1) ||
-		vectors["canonical_note"] != "MariaDB invalidation is committed; vector cleanup has a permanent provider failure" {
-		t.Fatalf("permanent vector result=%+v", vectors)
+	if vectors["ok"] != true || vectors["canonical_committed"] != true ||
+		vectors["vector_cleanup"] != "queued" || vectors["drain_attempted"] != false {
+		t.Fatalf("queued vector result=%+v", vectors)
 	}
 	hud := response["turn_workflow_hud"].(map[string]any)
-	if hud["status"] != "failed" ||
-		hud["severity"] != "error" ||
-		hud["dismissal_policy"] != "x_only" ||
-		hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL" {
-		t.Fatalf("permanent vector HUD=%+v", hud)
+	if hud["status"] != "completed" || hud["notice_code"] != "ASSISTANT_OUTPUT_DELETE_CONFIRMED" {
+		t.Fatalf("queued vector HUD=%+v", hud)
 	}
 	facts := map[string]map[string]any{}
 	for _, rawFact := range hud["facts"].([]any) {
 		fact := rawFact.(map[string]any)
 		facts[fact["key"].(string)] = fact
 	}
-	if facts["vector_index"]["status"] != "partial_error" ||
-		facts["vector_index"]["severity"] != "error" ||
-		facts["vector_index"]["count"] != float64(1) {
-		t.Fatalf("permanent vector HUD fact=%+v", facts["vector_index"])
+	if facts["vector_index"]["status"] != "queued" ||
+		facts["vector_index"]["disposition"] != "deferred" ||
+		facts["vector_index"]["count"] != float64(0) {
+		t.Fatalf("queued vector HUD fact=%+v", facts["vector_index"])
 	}
 }
 

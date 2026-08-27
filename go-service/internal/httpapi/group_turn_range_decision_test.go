@@ -22,6 +22,7 @@ type durableRoutingBaselineStore struct {
 type rollbackDecisionChatLogStore struct {
 	store.Store
 	logs             []store.ChatLog
+	activeSources    []store.MemorySourceRevision
 	baseline         *store.SessionRoutingBaseline
 	latestTurnCalls  int
 	listChatLogsFrom int
@@ -512,6 +513,28 @@ func (s *rollbackDecisionChatLogStore) ListChatLogs(_ context.Context, _ string,
 
 func (s *rollbackDecisionChatLogStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
 	return s.baseline, nil
+}
+
+func (s *rollbackDecisionChatLogStore) ListActiveSourceRevisions(
+	_ context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]store.MemorySourceRevision, error) {
+	result := make([]store.MemorySourceRevision, 0, len(s.activeSources))
+	for _, item := range s.activeSources {
+		if item.ChatSessionID != chatSessionID || item.LifecycleState != "active" {
+			continue
+		}
+		if fromTurn > 0 && item.TurnIndex < fromTurn {
+			continue
+		}
+		if toTurn > 0 && item.TurnIndex > toTurn {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
 }
 
 func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context, string) (*store.SessionRoutingBaseline, error) {
@@ -1578,6 +1601,169 @@ func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 	}
 }
 
+func TestRollbackDecisionHandlerRetainsCompletedTurnsWhenOnlyUserInputsDisappear(t *testing.T) {
+	const sid = "char_1_cid_user_inputs_removed"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 1, Role: "user", Content: "u1"},
+			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "user", Content: "u2"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", AssistantContent: "a1", AssistantObservedContentHash: prepareOR1CHash("a1"), LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", AssistantContent: "a2", AssistantObservedContentHash: prepareOR1CHash("a2"), LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":2,
+		"removed_assistant_count":1,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","content_hash":"`+prepareOR1CHash("a1")+`","message_index":0},
+			{"message_id":"assistant-2","content_hash":"`+prepareOR1CHash("a2")+`","message_index":1}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Allowed || response.Reason != "assistant_output_not_removed" || response.DecisionToken != "" {
+		t.Fatalf("user-only deletion authorized rollback: %+v", response)
+	}
+}
+
+func TestRollbackDecisionHandlerDerivesEarliestDeletedAssistantFromActiveSources(t *testing.T) {
+	const sid = "char_1_cid_assistant_removed"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", AssistantContent: "a1", AssistantObservedContentHash: prepareOR1CHash("a1"), LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", AssistantContent: "a2", AssistantObservedContentHash: prepareOR1CHash("a2"), LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":1,
+		"removed_assistant_count":0,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","content_hash":"`+prepareOR1CHash("a1")+`","message_index":0}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Allowed || response.FromTurn != 2 || response.Reason != "verified_delete_range" || response.DecisionToken == "" {
+		t.Fatalf("assistant deletion was not derived from active sources: %+v", response)
+	}
+}
+
+func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testing.T) {
+	const sid = "char_1_cid_middle_assistant_removed"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
+			{ChatSessionID: sid, TurnIndex: 3, Role: "assistant", Content: "a3"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", AssistantContent: "a1", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", AssistantContent: "a2", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 3, SourceMessageID: "assistant-3", AssistantContent: "a3", LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":3,
+		"removed_assistant_count":0,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","content_hash":"`+prepareOR1CHash("a1")+`","message_index":0},
+			{"message_id":"assistant-3","content_hash":"`+prepareOR1CHash("a3")+`","message_index":1}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Allowed || response.FromTurn != 2 || response.DecisionToken == "" {
+		t.Fatalf("middle assistant gap did not anchor tail rollback at turn 2: %+v", response)
+	}
+}
+
+func TestSessionRoutingBatchResolvesAssistantObservationsAgainstActiveSources(t *testing.T) {
+	const sid = "char_1_cid_normalize_user_missing"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		activeSources: []store.MemorySourceRevision{
+			{SourceRevision: "rev-1", ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", UserContent: "stored user 1", AssistantContent: "stored assistant 1", LifecycleState: "active"},
+			{SourceRevision: "rev-2", ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", UserContent: "stored user 2", AssistantContent: "stored assistant 2", LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"mode":"batch",
+		"observations":[
+			{"observation_index":0,"risu_assistant_message_index":0,"assistant_message_id":"assistant-1","assistant_content_hash":"`+prepareOR1CHash("stored assistant 1")+`"},
+			{"observation_index":1,"risu_assistant_message_index":1,"assistant_message_id":"assistant-2","assistant_content_hash":"`+prepareOR1CHash("stored assistant 2")+`"}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response sessionRoutingTurnResolutionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.ResolvedObservations) != 2 {
+		t.Fatalf("resolved observations=%+v", response.ResolvedObservations)
+	}
+	for index, item := range response.ResolvedObservations {
+		wantTurn := index + 1
+		if item.TurnIndex != wantTurn || item.Resolution != "existing_turn_by_assistant_source" ||
+			item.StoredUserContent != fmt.Sprintf("stored user %d", wantTurn) ||
+			item.StoredAssistantContent != fmt.Sprintf("stored assistant %d", wantTurn) {
+			t.Fatalf("resolved[%d]=%+v", index, item)
+		}
+	}
+}
+
 func TestRollbackDecisionHandlerAllowsSequentialOwnedManualTailDeletesAcrossImportedBaseline(t *testing.T) {
 	const sid = "char_1_cid_manual_sequential"
 	decisionStore := &rollbackDecisionChatLogStore{
@@ -1757,20 +1943,7 @@ func TestRollbackDecisionDefersPocketRisuStyleTailRemovalDuringGeneration(t *tes
 		HostLifecycleObservation: "generation_watch_active",
 	})
 	if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
-		t.Fatalf("active generation tail removal must not authorize rollback: %+v", resp)
-	}
-}
-
-func TestRollbackDecisionAllowsVerifiedDeleteObservedBeforeNewRequest(t *testing.T) {
-	resp := calculateRollbackDecision(rollbackDecisionRequest{
-		ChatSessionID: "session-1", RequestSource: "auto",
-		CandidateFromTurn: 4, PreviousTurnIndex: 4,
-		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
-		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
-		HostLifecycleObservation: "before_request_observed",
-	})
-	if !resp.Allowed || resp.FromTurn != 4 || resp.Reason != "verified_delete_range" {
-		t.Fatalf("verified delete before a new request was blocked: %+v", resp)
+		t.Fatalf("active generation must not authorize rollback: %+v", resp)
 	}
 }
 

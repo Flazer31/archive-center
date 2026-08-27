@@ -17,6 +17,10 @@ const (
 	criticRetryLimitUnconfigured = "CRITIC_RETRY_LIMIT_UNCONFIGURED"
 	criticRetryLimitReached      = "CRITIC_RETRY_LIMIT_REACHED"
 	memoryWorkerConfigDeferred   = "RUNTIME_CONFIG_NOT_SYNCED"
+	memoryWorkerRetryDelay       = time.Second
+	memoryReprocessingPerWake    = 4
+	memoryVectorGroupsPerWake    = 8
+	memoryVectorDeleteEvery      = 4
 )
 
 type memoryReprocessingProcessResult struct {
@@ -123,7 +127,7 @@ func memoryWorkerLeaseDuration(runtimeConfig RuntimeConfig) time.Duration {
 func (s *Server) processMemoryWorkerWake(
 	ctx context.Context,
 	owner string,
-	wakeTime time.Time,
+	_ time.Time,
 ) {
 	runtimeConfig := s.runtimeConfigSnapshot()
 	if !runtimeConfig.Synced {
@@ -133,31 +137,37 @@ func (s *Server) processMemoryWorkerWake(
 	if leaseDuration <= 0 {
 		return
 	}
-	for ctx.Err() == nil {
+	reprocessingProcessed := 0
+	for ctx.Err() == nil && reprocessingProcessed < memoryReprocessingPerWake {
 		result, err := s.processMemoryReprocessingOnce(
-			ctx, owner, wakeTime, leaseDuration,
+			ctx, owner, time.Now().UTC(), leaseDuration,
 		)
 		if err != nil || !result.Processed {
 			break
 		}
-		if result.State == "retryable" {
-			// retry_after is an exclusive wake cursor. The failed job is not
-			// eligible again in this wake, so other pending jobs can drain.
-			continue
-		}
+		reprocessingProcessed++
 	}
-	for ctx.Err() == nil {
-		result, err := s.processMemoryVectorOutboxOnce(
-			ctx, owner+":vector", wakeTime, leaseDuration,
+	vectorGroupsProcessed := 0
+	for ctx.Err() == nil && vectorGroupsProcessed < memoryVectorGroupsPerWake {
+		preferredOperation := "upsert"
+		if vectorGroupsProcessed%memoryVectorDeleteEvery == 0 {
+			preferredOperation = "delete"
+		}
+		results, err := s.processMemoryVectorOutboxGroupPreferred(
+			ctx, owner+":vector", time.Now().UTC(), leaseDuration, preferredOperation,
 		)
-		if err != nil || !result.Processed {
+		if (err == nil || errors.Is(err, store.ErrNotFound)) && len(results) == 0 {
+			results, err = s.processMemoryVectorOutboxGroupPreferred(
+				ctx, owner+":vector", time.Now().UTC(), leaseDuration, "",
+			)
+		}
+		if err != nil || len(results) == 0 {
 			break
 		}
-		if result.CanonicalState == "retryable" {
-			// retry_after is an exclusive wake cursor. Continue draining other
-			// eligible vector operations without reclaiming this item.
-			continue
-		}
+		vectorGroupsProcessed++
+	}
+	if reprocessingProcessed == memoryReprocessingPerWake || vectorGroupsProcessed == memoryVectorGroupsPerWake {
+		s.wakeMemoryWorkers()
 	}
 }
 
@@ -591,6 +601,7 @@ func (s *Server) retryMemoryReprocessingJob(
 	result *memoryReprocessingProcessResult,
 	failure string,
 ) error {
+	now = time.Now().UTC()
 	if job == nil {
 		return fmt.Errorf("memory reprocessing job is missing")
 	}
@@ -629,7 +640,7 @@ func (s *Server) retryMemoryReprocessingJob(
 		result.Failure = strings.TrimSpace(failure)
 	}
 	err := jobs.FailMemoryReprocessingJob(
-		ctx, job.ID, leaseOwner, now, now, false, failure,
+		ctx, job.ID, leaseOwner, now, now.Add(memoryWorkerRetryDelay), false, failure,
 	)
 	if errors.Is(err, store.ErrSourceRevisionStale) {
 		if result != nil {

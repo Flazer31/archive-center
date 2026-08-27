@@ -18,6 +18,7 @@ import (
 const (
 	memoryVectorRetryLimitUnconfigured = "MEMORY_VECTOR_RETRY_LIMIT_UNCONFIGURED"
 	memoryVectorRetryLimitReached      = "MEMORY_VECTOR_RETRY_LIMIT_REACHED"
+	memoryVectorRetryDelay             = time.Second
 )
 
 type memoryVectorProcessResult struct {
@@ -58,6 +59,16 @@ func (s *Server) processMemoryVectorOutboxGroup(
 	now time.Time,
 	leaseDuration time.Duration,
 ) ([]memoryVectorProcessResult, error) {
+	return s.processMemoryVectorOutboxGroupPreferred(ctx, leaseOwner, now, leaseDuration, "")
+}
+
+func (s *Server) processMemoryVectorOutboxGroupPreferred(
+	ctx context.Context,
+	leaseOwner string,
+	now time.Time,
+	leaseDuration time.Duration,
+	preferredOperation string,
+) ([]memoryVectorProcessResult, error) {
 	var result memoryVectorProcessResult
 	if s == nil || s.Store == nil {
 		return nil, store.ErrNotEnabled
@@ -71,7 +82,17 @@ func (s *Server) processMemoryVectorOutboxGroup(
 	if !ok {
 		return nil, store.ErrNotEnabled
 	}
-	items, err := outbox.ClaimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration)
+	var items []*store.MemoryVectorOutboxItem
+	var err error
+	if preferredOperation != "" {
+		if laneStore, laneOK := s.Store.(store.MemoryVectorOutboxLaneStore); laneOK {
+			items, err = laneStore.ClaimMemoryVectorOperationsByOperation(ctx, leaseOwner, now, leaseDuration, preferredOperation)
+		} else {
+			items, err = outbox.ClaimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration)
+		}
+	} else {
+		items, err = outbox.ClaimMemoryVectorOperations(ctx, leaseOwner, now, leaseDuration)
+	}
 	if errors.Is(err, store.ErrNotFound) {
 		return nil, nil
 	}
@@ -86,7 +107,7 @@ func (s *Server) processMemoryVectorOutboxGroup(
 			Failure: "vector operation timeout is not configured",
 		})
 	}
-	vectorCtx, cancelVector := context.WithTimeout(ctx, leaseDuration)
+	vectorCtx, cancelVector := context.WithTimeout(ctx, memoryVectorLeaseBoundedTimeout(leaseDuration))
 	defer cancelVector()
 	if s.Vector == nil {
 		return s.failClaimedMemoryVectorOperationGroup(ctx, outbox, items, leaseOwner, now, memoryVectorPreparationFailure{
@@ -108,14 +129,14 @@ func (s *Server) processMemoryVectorOutboxGroup(
 		var itemResult memoryVectorProcessResult
 		var itemErr error
 		if failure, failed := preparationFailures[item.ID]; failed {
-			itemResult, itemErr = s.failClaimedMemoryVectorOperation(ctx, outbox, item, leaseOwner, now, failure)
+			itemResult, itemErr = s.failClaimedMemoryVectorOperation(ctx, outbox, item, leaseOwner, time.Now().UTC(), failure)
 		} else {
 			var preparedDocument *vector.VectorDocument
 			if document, ok := prepared[item.ID]; ok {
 				copy := document
 				preparedDocument = &copy
 			}
-			itemResult, itemErr = s.processClaimedMemoryVectorOperation(ctx, vectorCtx, outbox, item, preparedDocument, leaseOwner, now)
+			itemResult, itemErr = s.processClaimedMemoryVectorOperation(ctx, vectorCtx, outbox, item, preparedDocument, leaseOwner, time.Now().UTC())
 		}
 		results = append(results, itemResult)
 		if itemErr != nil && firstErr == nil {
@@ -123,6 +144,21 @@ func (s *Server) processMemoryVectorOutboxGroup(
 		}
 	}
 	return results, firstErr
+}
+
+func memoryVectorLeaseBoundedTimeout(leaseDuration time.Duration) time.Duration {
+	if leaseDuration <= 0 {
+		return 0
+	}
+	margin := 5 * time.Second
+	if leaseDuration <= 10*time.Second {
+		margin = leaseDuration / 10
+	}
+	bounded := leaseDuration - margin
+	if bounded <= 0 {
+		return leaseDuration
+	}
+	return bounded
 }
 
 func (s *Server) processClaimedMemoryVectorDeletes(
@@ -178,7 +214,7 @@ func (s *Server) processClaimedMemoryVectorDeletes(
 			Processed: true, OutboxID: item.ID, Operation: item.Operation,
 			DocumentID: item.DocumentID, VectorApplied: true,
 		}
-		if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, now); err != nil {
+		if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, time.Now().UTC()); err != nil {
 			if firstErr == nil {
 				firstErr = err
 			}
@@ -362,7 +398,7 @@ func (s *Server) processClaimedMemoryVectorOperation(
 				return result, fmt.Errorf("memory vector materialized completion is not supported")
 			}
 			result.VectorApplied = true
-			if err := completion.CompleteMemoryVectorMaterializedOperation(ctx, item.ID, leaseOwner, now, materialization); err != nil {
+			if err := completion.CompleteMemoryVectorMaterializedOperation(ctx, item.ID, leaseOwner, time.Now().UTC(), materialization); err != nil {
 				if errors.Is(err, store.ErrSourceRevisionStale) {
 					if deleter, deleteOK := s.Vector.(vector.DocumentDeleter); deleteOK {
 						_ = deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID})
@@ -381,7 +417,7 @@ func (s *Server) processClaimedMemoryVectorOperation(
 		return result, s.failMemoryVectorOperationPermanently(ctx, outbox, item, leaseOwner, now, "unknown vector operation")
 	}
 	result.VectorApplied = true
-	if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, now); err != nil {
+	if err := outbox.CompleteMemoryVectorOperation(ctx, item.ID, leaseOwner, time.Now().UTC()); err != nil {
 		if errors.Is(err, store.ErrSourceRevisionStale) && item.Operation == "upsert" {
 			if deleter, ok := s.Vector.(vector.DocumentDeleter); ok {
 				_ = deleter.DeleteDocuments(vectorCtx, []string{item.DocumentID})
@@ -514,7 +550,7 @@ func (s *Server) processMemoryVectorOutboxBatch(
 	results := make([]memoryVectorProcessResult, 0, capacity)
 	seen := map[int64]struct{}{}
 	for limit <= 0 || len(results) < limit {
-		groupResults, err := s.processMemoryVectorOutboxGroup(ctx, leaseOwner, now, leaseDuration)
+		groupResults, err := s.processMemoryVectorOutboxGroup(ctx, leaseOwner, time.Now().UTC(), leaseDuration)
 		if err != nil || len(groupResults) == 0 {
 			break
 		}
@@ -548,6 +584,7 @@ func (s *Server) retryMemoryVectorOperation(
 	result *memoryVectorProcessResult,
 	failure string,
 ) error {
+	now = time.Now().UTC()
 	if item == nil {
 		return fmt.Errorf("memory vector outbox item is missing")
 	}
@@ -579,7 +616,7 @@ func (s *Server) retryMemoryVectorOperation(
 		)
 		return nil
 	}
-	if err := outbox.FailMemoryVectorOperation(ctx, item.ID, leaseOwner, now, now, false, failure); err != nil {
+	if err := outbox.FailMemoryVectorOperation(ctx, item.ID, leaseOwner, now, now.Add(memoryVectorRetryDelay), false, failure); err != nil {
 		return err
 	}
 	return nil
@@ -628,6 +665,7 @@ func (s *Server) failMemoryVectorOperationPermanently(
 	now time.Time,
 	failure string,
 ) error {
+	now = time.Now().UTC()
 	if err := outbox.FailMemoryVectorOperation(ctx, item.ID, leaseOwner, now, time.Time{}, true, failure); err != nil {
 		return err
 	}

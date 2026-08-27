@@ -47,6 +47,18 @@ func (e *proxyEmptyContentError) Error() string {
 	return provider + " returned no text content"
 }
 
+type proxyFinalOutputExhaustedError struct {
+	Provider string
+}
+
+func (e *proxyFinalOutputExhaustedError) Error() string {
+	provider := strings.TrimSpace(e.Provider)
+	if provider == "" {
+		provider = "provider"
+	}
+	return provider + " exhausted its output token budget before returning final text"
+}
+
 type proxyLocalRequestError struct {
 	Stage string
 	Cause error
@@ -116,6 +128,9 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 }
 
 func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
+	if proxyEndpointUsesResponses(endpoint) {
+		return proxyCallOpenAIResponses(ctx, req, endpoint, apiKey, model, provider, policy)
+	}
 	isGLM := provider != "ollama" && proxyIsGLMLike(model, endpoint, provider)
 	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
 	reasoningTransport, transportErr := proxyReasoningTransport(provider, endpoint)
@@ -299,17 +314,211 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	if choices := sliceFromAny(data["choices"]); len(choices) > 0 {
 		choice = mapFromAny(choices[0])
 	}
-	data[proxyResponseMetadataKey] = buildProxyResponseMetadata(
+	responseMeta := buildProxyResponseMetadata(
 		"openai_compatible",
 		strings.TrimSpace(extractionStringFromAny(choice["finish_reason"])),
 		mapFromAny(data["usage"]),
 	)
+	responseMeta["reasoning_observed"] = proxyChatReasoningObserved(data)
+	data[proxyResponseMetadataKey] = responseMeta
 	if policy.Purpose != "publisher" && strings.TrimSpace(chatCompletionText(data)) == "" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return data, http.StatusOK, &proxyFinalOutputExhaustedError{Provider: provider}
+		}
 		return data, http.StatusBadGateway, &proxyEmptyContentError{Provider: provider}
 	}
 	proxyAttachLLMGatewayServiceTierTrace(data, overrideTrace)
 	proxyAttachRequestOverrideTrace(data, overrideTrace)
 	return data, http.StatusOK, nil
+}
+
+func proxyEndpointUsesResponses(endpoint string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed == nil {
+		return false
+	}
+	path := strings.ToLower(strings.TrimRight(strings.TrimSpace(parsed.Path), "/"))
+	return strings.HasSuffix(path, "/responses")
+}
+
+func proxyCallOpenAIResponses(ctx context.Context, req dto.ProxyPluginMainRequest, endpoint, apiKey, model, provider string, policy proxyRequestPolicy) (map[string]any, int, error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed == nil {
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "configuration", Cause: fmt.Errorf("invalid Responses endpoint")}
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	target := parsed.String()
+	headers := map[string]string{
+		"Content-Type": "application/json",
+		"Accept":       "application/json",
+	}
+	if apiKey != "" && provider != "copilot" {
+		headers["Authorization"] = "Bearer " + apiKey
+	}
+	if provider == "openrouter" {
+		headers["HTTP-Referer"] = "https://risuai.xyz"
+		headers["X-Title"] = "Archive Center"
+	} else if provider == "copilot" {
+		headers["Editor-Version"] = "vscode/" + copilotCodeVersion
+		headers["Editor-version"] = "vscode/" + copilotCodeVersion
+		headers["Editor-Plugin-Version"] = "copilot-chat/" + copilotChatVersion
+		headers["Editor-plugin-version"] = "copilot-chat/" + copilotChatVersion
+		headers["Copilot-Integration-Id"] = "vscode-chat"
+		headers["User-Agent"] = "GitHubCopilotChat/" + copilotChatVersion
+		headers["X-Github-Api-Version"] = "2025-10-01"
+		headers["X-Initiator"] = "user"
+	}
+
+	requestedTokens := maxInt64(1, int64Value(req.MaxTokens, 1024))
+	configuredMax := maxInt64(0, int64Value(req.MaxCompletionTokens, 0))
+	body := map[string]any{
+		"model":             model,
+		"input":             req.Messages,
+		"max_output_tokens": maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens)),
+		"stream":            false,
+	}
+	if req.Temperature != nil {
+		body["temperature"] = *req.Temperature
+	}
+	reasoningEffort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
+	switch reasoningEffort {
+	case "none", "minimal", "low", "medium", "high", "xhigh":
+		body["reasoning"] = map[string]any{"effort": reasoningEffort}
+	}
+	managedReasoning, _ := json.Marshal(body["reasoning"])
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
+	if overrideErr != nil {
+		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
+	}
+	if len(managedReasoning) > 0 {
+		actual, _ := json.Marshal(body["reasoning"])
+		if !bytes.Equal(actual, managedReasoning) {
+			return nil, http.StatusBadRequest, &proxyLocalRequestError{
+				Stage: "request_build",
+				Cause: fmt.Errorf("extra_body_json conflicts with backend-managed reasoning"),
+			}
+		}
+	}
+	if policy.JSONResponse {
+		overrideTrace["json_response_requested"] = true
+		overrideTrace["json_response_purpose"] = strings.TrimSpace(policy.Purpose)
+		overrideTrace["json_response_applied"] = false
+		overrideTrace["json_response_skip_reason"] = "responses_endpoint_uses_prompt_contract"
+	}
+	if provider == "copilot" {
+		token, status, tokenErr := proxyGetCopilotToken(ctx, apiKey)
+		if tokenErr != nil {
+			return nil, status, tokenErr
+		}
+		headers["Authorization"] = "Bearer " + token
+	}
+
+	status, data, raw, callErr := proxyDoJSON(ctx, target, headers, body)
+	if callErr != nil {
+		return nil, http.StatusBadGateway, callErr
+	}
+	if status < 200 || status >= 300 {
+		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+	}
+	if data == nil {
+		return nil, http.StatusBadGateway, fmt.Errorf("Responses provider returned invalid JSON")
+	}
+
+	content := proxyExtractResponsesText(data)
+	finishReason := proxyResponsesFinishReason(data)
+	responseModel := extractionFirstNonEmpty(extractionStringFromAny(data["model"]), model)
+	resp := proxyNormalizeChatResponse(content, responseModel, finishReason)
+	usage := mapFromAny(data["usage"])
+	if len(usage) > 0 {
+		resp["usage"] = usage
+	}
+	responseMeta := buildProxyResponseMetadata("openai_responses", finishReason, usage)
+	responseMeta["response_status"] = strings.TrimSpace(extractionStringFromAny(data["status"]))
+	responseMeta["reasoning_observed"] = proxyResponsesReasoningObserved(data)
+	resp[proxyResponseMetadataKey] = responseMeta
+	proxyAttachRequestOverrideTrace(resp, overrideTrace)
+	if policy.Purpose != "publisher" && strings.TrimSpace(content) == "" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return resp, http.StatusOK, &proxyFinalOutputExhaustedError{Provider: provider}
+		}
+		return resp, http.StatusBadGateway, &proxyEmptyContentError{Provider: provider}
+	}
+	return resp, http.StatusOK, nil
+}
+
+func proxyExtractResponsesText(data map[string]any) string {
+	var builder strings.Builder
+	for _, rawItem := range sliceFromAny(data["output"]) {
+		item := mapFromAny(rawItem)
+		if !strings.EqualFold(strings.TrimSpace(extractionStringFromAny(item["type"])), "message") {
+			continue
+		}
+		for _, rawPart := range sliceFromAny(item["content"]) {
+			part := mapFromAny(rawPart)
+			partType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(part["type"])))
+			if partType != "output_text" && partType != "text" {
+				continue
+			}
+			builder.WriteString(extractionStringFromAny(part["text"]))
+		}
+	}
+	if builder.Len() > 0 {
+		return builder.String()
+	}
+	return extractionStringFromAny(data["output_text"])
+}
+
+func proxyResponsesFinishReason(data map[string]any) string {
+	if reason := strings.TrimSpace(extractionStringFromAny(mapFromAny(data["incomplete_details"])["reason"])); reason != "" {
+		return reason
+	}
+	return strings.TrimSpace(extractionStringFromAny(data["status"]))
+}
+
+func proxyChatReasoningObserved(data map[string]any) bool {
+	usage := mapFromAny(data["usage"])
+	if intFromAny(mapFromAny(usage["completion_tokens_details"])["reasoning_tokens"], 0) > 0 ||
+		intFromAny(mapFromAny(usage["output_tokens_details"])["reasoning_tokens"], 0) > 0 {
+		return true
+	}
+	choices := sliceFromAny(data["choices"])
+	if len(choices) == 0 {
+		return false
+	}
+	choice := mapFromAny(choices[0])
+	message := mapFromAny(choice["message"])
+	for _, value := range []any{choice["reasoning"], choice["reasoning_content"], message["reasoning"], message["reasoning_content"]} {
+		if strings.TrimSpace(extractionStringFromAny(value)) != "" || len(sliceFromAny(value)) > 0 || len(mapFromAny(value)) > 0 {
+			return true
+		}
+	}
+	for _, rawPart := range sliceFromAny(message["content"]) {
+		partType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(mapFromAny(rawPart)["type"])))
+		if strings.Contains(partType, "reasoning") || strings.Contains(partType, "thinking") {
+			return true
+		}
+	}
+	return false
+}
+
+func proxyResponsesReasoningObserved(data map[string]any) bool {
+	if intFromAny(mapFromAny(mapFromAny(data["usage"])["output_tokens_details"])["reasoning_tokens"], 0) > 0 {
+		return true
+	}
+	for _, rawItem := range sliceFromAny(data["output"]) {
+		item := mapFromAny(rawItem)
+		itemType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["type"])))
+		if itemType == "reasoning" {
+			return true
+		}
+		for _, rawPart := range sliceFromAny(item["content"]) {
+			partType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(mapFromAny(rawPart)["type"])))
+			if strings.Contains(partType, "reasoning") || partType == "summary_text" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func proxyReasoningTransport(provider, endpoint string) (string, error) {
@@ -1403,6 +1612,7 @@ func buildProxyResponseMetadata(adapter, finishReason string, usage map[string]a
 	)
 	reasoningTokens := firstPositiveInt(
 		intFromAny(mapFromAny(usage["completion_tokens_details"])["reasoning_tokens"], 0),
+		intFromAny(mapFromAny(usage["output_tokens_details"])["reasoning_tokens"], 0),
 		intFromAny(usage["thoughtsTokenCount"], 0),
 	)
 	totalTokens := firstPositiveInt(
@@ -1414,6 +1624,7 @@ func buildProxyResponseMetadata(adapter, finishReason string, usage map[string]a
 	}
 	cachedInputTokens := firstPositiveInt(
 		intFromAny(mapFromAny(usage["prompt_tokens_details"])["cached_tokens"], 0),
+		intFromAny(mapFromAny(usage["input_tokens_details"])["cached_tokens"], 0),
 		intFromAny(usage["cache_read_input_tokens"], 0),
 		intFromAny(usage["cachedContentTokenCount"], 0),
 	)
@@ -1427,9 +1638,9 @@ func buildProxyResponseMetadata(adapter, finishReason string, usage map[string]a
 
 func proxyTerminationKind(finishReason string) string {
 	switch strings.ToLower(strings.TrimSpace(finishReason)) {
-	case "stop", "end_turn", "stop_sequence":
+	case "stop", "end_turn", "stop_sequence", "completed":
 		return "complete"
-	case "length", "max_tokens", "model_context_window_exceeded":
+	case "length", "max_tokens", "max_output_tokens", "model_context_window_exceeded":
 		return "length"
 	case "content_filter", "safety", "recitation", "prohibited_content", "blocked", "blocklist", "spii", "image_safety", "language":
 		return "safety"

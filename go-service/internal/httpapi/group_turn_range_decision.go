@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -34,31 +35,73 @@ type routingTurnBaseline struct {
 }
 
 type rollbackDecisionRequest struct {
-	ChatSessionID                 string               `json:"chat_session_id"`
-	RequestSource                 string               `json:"request_source"`
-	Reason                        string               `json:"reason"`
-	CandidateFromTurn             int                  `json:"candidate_from_turn"`
-	PreviousTurnIndex             int                  `json:"previous_turn_index"`
-	FirstRemovedTurn              int                  `json:"first_removed_turn"`
-	LedgerAnchorTurn              int                  `json:"ledger_anchor_turn"`
-	RemovedAssistantCount         int                  `json:"removed_assistant_count"`
-	RemovedUserCount              int                  `json:"removed_user_count"`
-	RemovedMessageCount           int                  `json:"removed_message_count"`
-	VisibleCompletedTurns         int                  `json:"visible_completed_turns"`
-	BackendLatestTurn             int                  `json:"backend_latest_turn"`
-	DeletionObserved              bool                 `json:"deletion_observed"`
-	LedgerVerified                bool                 `json:"ledger_verified"`
-	IncompleteTailCandidate       bool                 `json:"incomplete_tail_candidate"`
-	BackendIncompleteTailVerified bool                 `json:"-"`
-	HistoryTrimGuard              bool                 `json:"history_trim_guard"`
-	DuplicateBlocked              bool                 `json:"duplicate_blocked"`
-	PendingOutputGuard            bool                 `json:"pending_output_guard"`
-	HostLifecycleObservation      string               `json:"host_lifecycle_observation"`
-	LifecycleActionObservation    string               `json:"lifecycle_action_observation"`
-	AllowManualCandidate          bool                 `json:"allow_manual_candidate"`
-	Baseline                      *routingTurnBaseline `json:"baseline,omitempty"`
-	ManualTargetOwnershipObserved bool                 `json:"-"`
-	ManualTargetOwned             bool                 `json:"-"`
+	ChatSessionID                 string                         `json:"chat_session_id"`
+	RequestSource                 string                         `json:"request_source"`
+	Reason                        string                         `json:"reason"`
+	CandidateFromTurn             int                            `json:"candidate_from_turn"`
+	PreviousTurnIndex             int                            `json:"previous_turn_index"`
+	FirstRemovedTurn              int                            `json:"first_removed_turn"`
+	LedgerAnchorTurn              int                            `json:"ledger_anchor_turn"`
+	RemovedAssistantCount         int                            `json:"removed_assistant_count"`
+	RemovedUserCount              int                            `json:"removed_user_count"`
+	RemovedMessageCount           int                            `json:"removed_message_count"`
+	VisibleCompletedTurns         int                            `json:"visible_completed_turns"`
+	BackendLatestTurn             int                            `json:"backend_latest_turn"`
+	DeletionObserved              bool                           `json:"deletion_observed"`
+	LedgerVerified                bool                           `json:"ledger_verified"`
+	IncompleteTailCandidate       bool                           `json:"incomplete_tail_candidate"`
+	BackendIncompleteTailVerified bool                           `json:"-"`
+	HistoryTrimGuard              bool                           `json:"history_trim_guard"`
+	DuplicateBlocked              bool                           `json:"duplicate_blocked"`
+	PendingOutputGuard            bool                           `json:"pending_output_guard"`
+	HostLifecycleObservation      string                         `json:"host_lifecycle_observation"`
+	LifecycleActionObservation    string                         `json:"lifecycle_action_observation"`
+	AllowManualCandidate          bool                           `json:"allow_manual_candidate"`
+	AssistantObservationScope     string                         `json:"assistant_observation_scope,omitempty"`
+	AssistantObservations         []rollbackAssistantObservation `json:"assistant_observations,omitempty"`
+	Baseline                      *routingTurnBaseline           `json:"baseline,omitempty"`
+	ManualTargetOwnershipObserved bool                           `json:"-"`
+	ManualTargetOwned             bool                           `json:"-"`
+	AssistantEvidenceRequired     bool                           `json:"-"`
+	AssistantEvidenceVerified     bool                           `json:"-"`
+	AssistantOutputRemoved        bool                           `json:"-"`
+	AssistantEvidenceReason       string                         `json:"-"`
+}
+
+type rollbackAssistantObservation struct {
+	MessageID    string `json:"message_id,omitempty"`
+	GenerationID string `json:"generation_id,omitempty"`
+	ContentHash  string `json:"content_hash,omitempty"`
+	MessageIndex int    `json:"message_index"`
+}
+
+type rollbackAssistantDeletionEvidence struct {
+	Verified         bool
+	RemovedCount     int
+	FirstRemovedTurn int
+	Reason           string
+}
+
+func rollbackAssistantObservationMatchesSource(source store.MemorySourceRevision, observation rollbackAssistantObservation, identityOnly bool) bool {
+	messageMatch := strings.TrimSpace(source.SourceMessageID) != "" &&
+		strings.TrimSpace(observation.MessageID) != "" &&
+		strings.TrimSpace(source.SourceMessageID) == strings.TrimSpace(observation.MessageID)
+	generationMatch := strings.TrimSpace(source.SourceGenerationID) != "" &&
+		strings.TrimSpace(observation.GenerationID) != "" &&
+		strings.TrimSpace(source.SourceGenerationID) == strings.TrimSpace(observation.GenerationID)
+	if messageMatch || generationMatch {
+		return true
+	}
+	if identityOnly {
+		return false
+	}
+	observedHash := strings.TrimSpace(observation.ContentHash)
+	if observedHash == "" {
+		return false
+	}
+	storedObservedHash := strings.TrimSpace(source.AssistantObservedContentHash)
+	canonicalObservedHash := prepareOR1CHash(source.AssistantContent)
+	return observedHash == storedObservedHash || observedHash == canonicalObservedHash
 }
 
 type rollbackDecisionResponse struct {
@@ -151,6 +194,88 @@ func (s *Server) rollbackDecisionLedger() *rollbackDecisionLedger {
 	return s.RollbackDecisions
 }
 
+func verifyRollbackAssistantDeletionEvidence(
+	ctx context.Context,
+	base store.Store,
+	chatSessionID string,
+	observations []rollbackAssistantObservation,
+) (rollbackAssistantDeletionEvidence, error) {
+	lister, ok := base.(store.ActiveSourceRevisionLister)
+	if !ok {
+		return rollbackAssistantDeletionEvidence{Reason: "active_source_revision_lister_unavailable"}, nil
+	}
+	sources, err := lister.ListActiveSourceRevisions(ctx, strings.TrimSpace(chatSessionID), 0, 0)
+	if err != nil {
+		return rollbackAssistantDeletionEvidence{Reason: "active_source_revision_list_failed"}, err
+	}
+	filtered := make([]store.MemorySourceRevision, 0, len(sources))
+	for _, source := range sources {
+		if source.LifecycleState != "active" || source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
+			continue
+		}
+		filtered = append(filtered, source)
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		if filtered[i].TurnIndex != filtered[j].TurnIndex {
+			return filtered[i].TurnIndex < filtered[j].TurnIndex
+		}
+		return filtered[i].ID < filtered[j].ID
+	})
+	if len(filtered) == 0 {
+		return rollbackAssistantDeletionEvidence{Verified: true, Reason: "no_active_completed_source_revisions"}, nil
+	}
+
+	used := make([]bool, len(observations))
+	lastMatched := -1
+	findMatch := func(source store.MemorySourceRevision, identityOnly bool) int {
+		search := func(start int) int {
+			for index := start; index < len(observations); index++ {
+				if used[index] {
+					continue
+				}
+				if rollbackAssistantObservationMatchesSource(source, observations[index], identityOnly) {
+					return index
+				}
+			}
+			return -1
+		}
+		if match := search(lastMatched + 1); match >= 0 {
+			return match
+		}
+		return search(0)
+	}
+
+	removedCount := 0
+	firstRemovedTurn := 0
+	for _, source := range filtered {
+		match := findMatch(source, true)
+		if match < 0 {
+			match = findMatch(source, false)
+		}
+		if match >= 0 {
+			used[match] = true
+			if match > lastMatched {
+				lastMatched = match
+			}
+			continue
+		}
+		removedCount++
+		if firstRemovedTurn == 0 || source.TurnIndex < firstRemovedTurn {
+			firstRemovedTurn = source.TurnIndex
+		}
+	}
+	reason := "verified_no_assistant_output_removed"
+	if removedCount > 0 {
+		reason = "verified_assistant_output_removed"
+	}
+	return rollbackAssistantDeletionEvidence{
+		Verified:         true,
+		RemovedCount:     removedCount,
+		FirstRemovedTurn: firstRemovedTurn,
+		Reason:           reason,
+	}, nil
+}
+
 func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) {
 	var req rollbackDecisionRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -182,6 +307,29 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 					req.ManualTargetOwned = true
 					break
 				}
+			}
+		}
+	}
+	if !manualCandidate && strings.TrimSpace(req.AssistantObservationScope) != "" {
+		req.AssistantEvidenceRequired = true
+		if strings.TrimSpace(req.AssistantObservationScope) != "full_active_chat" {
+			req.AssistantEvidenceReason = "assistant_observation_scope_invalid"
+		} else if evidence, err := verifyRollbackAssistantDeletionEvidence(
+			r.Context(),
+			s.Store,
+			req.ChatSessionID,
+			req.AssistantObservations,
+		); err != nil {
+			req.AssistantEvidenceReason = evidence.Reason
+		} else {
+			req.AssistantEvidenceVerified = evidence.Verified
+			req.AssistantOutputRemoved = evidence.RemovedCount > 0
+			req.AssistantEvidenceReason = evidence.Reason
+			if evidence.Verified {
+				req.RemovedAssistantCount = evidence.RemovedCount
+				req.FirstRemovedTurn = evidence.FirstRemovedTurn
+				req.LedgerVerified = false
+				req.DeletionObserved = evidence.RemovedCount > 0
 			}
 		}
 	}
@@ -263,6 +411,7 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 		resp.Reason = "duplicate_rollback_blocked"
 		return resp
 	}
+	manual := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual")
 	if req.PendingOutputGuard || rollbackObservationHasPendingGeneration(req.HostLifecycleObservation) {
 		resp.Reason = "pending_output_guard"
 		return resp
@@ -278,7 +427,19 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 		resp.Reason = "lifecycle_action_observation_invalid"
 		return resp
 	}
-	manual := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual")
+	if !manual && req.AssistantEvidenceRequired {
+		if !req.AssistantEvidenceVerified {
+			resp.Reason = strings.TrimSpace(req.AssistantEvidenceReason)
+			if resp.Reason == "" {
+				resp.Reason = "assistant_output_verification_unavailable"
+			}
+			return resp
+		}
+		if !req.AssistantOutputRemoved {
+			resp.Reason = "assistant_output_not_removed"
+			return resp
+		}
+	}
 	if !req.DeletionObserved && !(manual && req.AllowManualCandidate) {
 		return resp
 	}
@@ -409,19 +570,27 @@ type risuWorldlineMessageObservation struct {
 }
 
 type routingTurnObservation struct {
-	ObservationIndex     int  `json:"observation_index"`
-	RisuUserMessageIndex *int `json:"risu_user_message_index,omitempty"`
-	ObservedPairOrdinal  int  `json:"observed_pair_ordinal,omitempty"`
+	ObservationIndex          int    `json:"observation_index"`
+	RisuUserMessageIndex      *int   `json:"risu_user_message_index,omitempty"`
+	RisuAssistantMessageIndex *int   `json:"risu_assistant_message_index,omitempty"`
+	ObservedPairOrdinal       int    `json:"observed_pair_ordinal,omitempty"`
+	AssistantMessageID        string `json:"assistant_message_id,omitempty"`
+	AssistantGenerationID     string `json:"assistant_generation_id,omitempty"`
+	AssistantContentHash      string `json:"assistant_content_hash,omitempty"`
 }
 
 type routingTurnResolvedObservation struct {
-	ObservationIndex     int    `json:"observation_index"`
-	RisuUserMessageIndex *int   `json:"risu_user_message_index,omitempty"`
-	ObservedPairOrdinal  int    `json:"observed_pair_ordinal"`
-	LocalTurnIndex       int    `json:"local_turn_index"`
-	TurnIndex            int    `json:"turn_index"`
-	Resolution           string `json:"resolution"`
-	Source               string `json:"source"`
+	ObservationIndex          int    `json:"observation_index"`
+	RisuUserMessageIndex      *int   `json:"risu_user_message_index,omitempty"`
+	RisuAssistantMessageIndex *int   `json:"risu_assistant_message_index,omitempty"`
+	ObservedPairOrdinal       int    `json:"observed_pair_ordinal"`
+	LocalTurnIndex            int    `json:"local_turn_index"`
+	TurnIndex                 int    `json:"turn_index"`
+	Resolution                string `json:"resolution"`
+	Source                    string `json:"source"`
+	SourceRevision            string `json:"source_revision,omitempty"`
+	StoredUserContent         string `json:"stored_user_content,omitempty"`
+	StoredAssistantContent    string `json:"stored_assistant_content,omitempty"`
 }
 
 type sessionRoutingTurnResolutionResponse struct {
@@ -475,6 +644,7 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	req.canonicalTailAligned = identity.canonicalTailAligned
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
 	resp := calculateSessionRoutingTurnResolution(req)
+	resp = s.applyAssistantSourceRoutingResolution(r.Context(), req, resp)
 	resp = s.applyAutomaticWorldlineBackfillBoundary(r.Context(), req, resp)
 	resp.ChatSessionID = strings.TrimSpace(req.ChatSessionID)
 	resp.IdentityResolution = identity.resolution
@@ -489,6 +659,116 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 		resp.Worldline = &worldline
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) applyAssistantSourceRoutingResolution(
+	ctx context.Context,
+	req sessionRoutingTurnResolutionRequest,
+	resp sessionRoutingTurnResolutionResponse,
+) sessionRoutingTurnResolutionResponse {
+	if req.Mode != "batch" || len(req.Observations) == 0 {
+		return resp
+	}
+	hasAssistantEvidence := false
+	for _, observation := range req.Observations {
+		if strings.TrimSpace(observation.AssistantMessageID) != "" ||
+			strings.TrimSpace(observation.AssistantGenerationID) != "" ||
+			strings.TrimSpace(observation.AssistantContentHash) != "" {
+			hasAssistantEvidence = true
+			break
+		}
+	}
+	if !hasAssistantEvidence {
+		return resp
+	}
+	lister, ok := s.Store.(store.ActiveSourceRevisionLister)
+	if !ok {
+		resp.Status = "error"
+		resp.Code = "assistant_source_resolution_unavailable"
+		resp.Resolution = "assistant_source_resolution_unavailable"
+		resp.ResolvedObservations = nil
+		return resp
+	}
+	sources, err := lister.ListActiveSourceRevisions(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0)
+	if err != nil {
+		resp.Status = "error"
+		resp.Code = "assistant_source_resolution_failed"
+		resp.Resolution = "assistant_source_resolution_failed"
+		resp.ResolvedObservations = nil
+		return resp
+	}
+	activeSources := make([]store.MemorySourceRevision, 0, len(sources))
+	for _, source := range sources {
+		if source.LifecycleState != "active" || source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
+			continue
+		}
+		activeSources = append(activeSources, source)
+	}
+	sort.SliceStable(activeSources, func(i, j int) bool {
+		if activeSources[i].TurnIndex != activeSources[j].TurnIndex {
+			return activeSources[i].TurnIndex < activeSources[j].TurnIndex
+		}
+		return activeSources[i].ID < activeSources[j].ID
+	})
+
+	usedObservations := make([]bool, len(req.Observations))
+	matchedSources := make([]bool, len(activeSources))
+	matches := make(map[int]int, len(activeSources))
+	matchPass := func(identityOnly bool) {
+		for sourceIndex, source := range activeSources {
+			if matchedSources[sourceIndex] {
+				continue
+			}
+			for observationIndex, observation := range req.Observations {
+				if usedObservations[observationIndex] {
+					continue
+				}
+				candidate := rollbackAssistantObservation{
+					MessageID:    observation.AssistantMessageID,
+					GenerationID: observation.AssistantGenerationID,
+					ContentHash:  observation.AssistantContentHash,
+				}
+				if !rollbackAssistantObservationMatchesSource(source, candidate, identityOnly) {
+					continue
+				}
+				matches[observationIndex] = sourceIndex
+				usedObservations[observationIndex] = true
+				matchedSources[sourceIndex] = true
+				break
+			}
+		}
+	}
+	// Stable RisuAI message/generation identity wins. Content hash is only the
+	// fallback for hosts or historical rows that did not expose an identity.
+	matchPass(true)
+	matchPass(false)
+
+	for index := range resp.ResolvedObservations {
+		if index >= len(req.Observations) {
+			break
+		}
+		observation := req.Observations[index]
+		if strings.TrimSpace(observation.AssistantMessageID) == "" &&
+			strings.TrimSpace(observation.AssistantGenerationID) == "" &&
+			strings.TrimSpace(observation.AssistantContentHash) == "" {
+			continue
+		}
+		sourceIndex, matched := matches[index]
+		if !matched {
+			resp.ResolvedObservations[index].Resolution = "unmatched_assistant_source"
+			resp.ResolvedObservations[index].Source = "active_source_revision_unmatched"
+			continue
+		}
+		source := activeSources[sourceIndex]
+		resp.ResolvedObservations[index].LocalTurnIndex = source.TurnIndex
+		resp.ResolvedObservations[index].TurnIndex = source.TurnIndex
+		resp.ResolvedObservations[index].Resolution = "existing_turn_by_assistant_source"
+		resp.ResolvedObservations[index].Source = "active_source_revision"
+		resp.ResolvedObservations[index].SourceRevision = strings.TrimSpace(source.SourceRevision)
+		resp.ResolvedObservations[index].StoredUserContent = source.UserContent
+		resp.ResolvedObservations[index].StoredAssistantContent = source.AssistantContent
+	}
+	return resp
 }
 
 func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessionRoutingTurnResolutionRequest, childSessionID string) (vm worldlineViewModel) {
@@ -1065,13 +1345,14 @@ func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionReque
 				Baseline:             req.Baseline,
 			})
 			resp.ResolvedObservations = append(resp.ResolvedObservations, routingTurnResolvedObservation{
-				ObservationIndex:     observation.ObservationIndex,
-				RisuUserMessageIndex: observation.RisuUserMessageIndex,
-				ObservedPairOrdinal:  observation.ObservedPairOrdinal,
-				LocalTurnIndex:       resolved.LocalTurnIndex,
-				TurnIndex:            resolved.TurnIndex,
-				Resolution:           resolved.Resolution,
-				Source:               resolved.LocalTurnSource,
+				ObservationIndex:          observation.ObservationIndex,
+				RisuUserMessageIndex:      observation.RisuUserMessageIndex,
+				RisuAssistantMessageIndex: observation.RisuAssistantMessageIndex,
+				ObservedPairOrdinal:       observation.ObservedPairOrdinal,
+				LocalTurnIndex:            resolved.LocalTurnIndex,
+				TurnIndex:                 resolved.TurnIndex,
+				Resolution:                resolved.Resolution,
+				Source:                    resolved.LocalTurnSource,
 			})
 		}
 		return resp

@@ -18,8 +18,30 @@ func chatCompletionText(resp map[string]any) string {
 	}
 	choice := mapFromAny(choices[0])
 	msg := mapFromAny(choice["message"])
-	if content := stringFromMap(msg, "content"); content != "" {
-		return content
+	if content, exists := msg["content"]; exists {
+		switch value := content.(type) {
+		case string:
+			if value != "" {
+				return value
+			}
+		case []any:
+			var builder strings.Builder
+			for _, rawPart := range value {
+				switch part := rawPart.(type) {
+				case string:
+					builder.WriteString(part)
+				case map[string]any:
+					partType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(part["type"])))
+					if partType != "" && partType != "text" && partType != "output_text" {
+						continue
+					}
+					builder.WriteString(extractionStringFromAny(part["text"]))
+				}
+			}
+			if builder.Len() > 0 {
+				return builder.String()
+			}
+		}
 	}
 	return extractionStringFromAny(choice["text"])
 }

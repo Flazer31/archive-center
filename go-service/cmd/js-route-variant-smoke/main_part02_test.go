@@ -566,8 +566,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 4.0.5",
-		`const VERSION = "4.0.5";`,
+		"//@version 4.0.7",
+		`const VERSION = "4.0.7";`,
 		`"settings.title": ` + "`Archive Center ${VERSION}`",
 		`<h2>Archive Center</h2>`,
 		`<span class="mo-hdr-ver">${VERSION}</span>`,
@@ -907,7 +907,6 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 		{`tryPrepareTurn`, `/prepare-turn`},
 		{`drainOneFailedQueueItem`, `bridgeFetchWithRetry("/complete-turn"`},
 		{`queuePendingCompleteTurnPayload`, `result = await bridgeFetchWithRetry(`},
-		{`executeAutoRollback`, `/rollback/`},
 		{`tryCompleteTurn`, `/complete-turn`},
 		{`resetArchiveDatabaseFromDebugUI`, `/admin/database-reset`},
 		{`exportSession`, `/export`},
@@ -940,6 +939,11 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 		if !strings.Contains(block[pathIndex:end], `timeoutMs: 0`) {
 			t.Fatalf("%s still applies Plugin Timeout to %s", tc.functionName, tc.pathFragment)
 		}
+	}
+	rollback := extractArchiveCenterJSAsyncFunction(t, src, "executeAutoRollback")
+	rollbackPath := strings.Index(rollback, "/rollback/")
+	if rollbackPath < 0 || !strings.Contains(rollback[rollbackPath:min(len(rollback), rollbackPath+2000)], `timeoutMs: getRequestTimeoutSettingMs()`) {
+		t.Fatal("executeAutoRollback must terminate on the configured request deadline so HUD can become retryable")
 	}
 }
 

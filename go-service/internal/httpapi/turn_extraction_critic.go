@@ -134,6 +134,10 @@ func classifyCriticProviderError(err error, status int) *criticPipelineError {
 	case errors.Is(err, context.Canceled):
 		return newCriticPipelineError("CRITIC_PROVIDER_CANCELED", "provider_call", false, status, err)
 	}
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if errors.As(err, &exhaustedErr) {
+		return newCriticPipelineError("CRITIC_OUTPUT_TOKEN_EXHAUSTED", "provider_response", true, status, err)
+	}
 	var emptyContentErr *proxyEmptyContentError
 	if errors.As(err, &emptyContentErr) {
 		return newCriticPipelineError("CRITIC_EMPTY_RESPONSE", "provider_response", true, status, err)
@@ -2476,7 +2480,7 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 		delete(out, "story_clock")
 	}
 	out["kg_triples"] = sliceFromAny(raw["kg_triples"])
-	out["character_deltas"] = sliceFromAny(raw["character_deltas"])
+	out["character_deltas"] = normalizeCriticCharacterDeltas(raw["character_deltas"])
 	out["pending_threads"] = normalizeCriticPendingThreads(raw["pending_threads"])
 	out["entities"] = mapFromAny(raw["entities"])
 	out["speaker_attributions"] = normalizeSpeakerAttributionCandidates(raw["speaker_attributions"])
@@ -2507,6 +2511,51 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["character_identity_accuracy"] = characterIdentityAccuracy
 	out["subjective_entity_memories"] = subjectiveMemories
 	out["persona_capsule_candidates"] = normalizePersonaCapsuleCandidates(raw["persona_capsule_candidates"])
+	return out
+}
+
+func normalizeCriticCharacterDeltas(value any) []any {
+	items := sliceFromAny(value)
+	out := make([]any, 0, len(items))
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if len(item) == 0 {
+			out = append(out, raw)
+			continue
+		}
+		normalized := make(map[string]any, len(item)+2)
+		for key, field := range item {
+			normalized[key] = field
+		}
+		if name := strings.TrimSpace(extractionFirstNonEmpty(
+			stringFromMap(item, "name"),
+			stringFromMap(item, "character_name"),
+			stringFromMap(item, "character"),
+		)); name != "" {
+			normalized["name"] = name
+		}
+
+		if status, structured := item["status"].(map[string]any); !structured || len(status) == 0 {
+			change := strings.TrimSpace(extractionFirstNonEmpty(
+				stringFromMap(item, "change"),
+				stringFromMap(item, "value"),
+				stringFromMap(item, "status"),
+			))
+			if change != "" {
+				slot := strings.TrimSpace(extractionFirstNonEmpty(
+					stringFromMap(item, "delta_type"),
+					stringFromMap(item, "change_type"),
+					stringFromMap(item, "dimension"),
+					stringFromMap(item, "aspect"),
+				))
+				if slot == "" {
+					slot = "observed_change"
+				}
+				normalized["status"] = map[string]any{slot: change}
+			}
+		}
+		out = append(out, normalized)
+	}
 	return out
 }
 

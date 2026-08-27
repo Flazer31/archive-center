@@ -336,7 +336,15 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		})
 	}
 
-	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, extraction, content, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
+	characterStateExtraction := make(map[string]any, len(extraction))
+	for key, value := range extraction {
+		characterStateExtraction[key] = value
+	}
+	// A committed admission must keep its exact stored JSON/hash. Normalize only
+	// the local character-state projection so an explicit replay can recover old
+	// provider aliases without sampling the Critic or rewriting canonical memory.
+	characterStateExtraction["character_deltas"] = normalizeCriticCharacterDeltas(extraction["character_deltas"])
+	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, characterStateExtraction, content, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
 	s.saveReversibleStatesFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {

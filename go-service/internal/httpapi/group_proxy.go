@@ -1222,11 +1222,23 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, status, err := performProxyPluginMainWithRetryBudget(
-		r.Context(),
-		req,
-		newLLMRetryBudget(s.runtimeConfigSnapshot().LLMRetryCount),
-	)
+	connectionTest := strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("connection_test")), "critic")
+	var retryBudget *llmRetryBudget
+	if connectionTest {
+		connectionTestMaxTokens := int64(1024)
+		connectionTestReasoningBudget := int64(0)
+		req.MaxTokens = &connectionTestMaxTokens
+		req.MaxCompletionTokens = &connectionTestMaxTokens
+		req.ReasoningBudgetTokens = &connectionTestReasoningBudget
+		req.BudgetTokens = &connectionTestReasoningBudget
+	} else {
+		retryBudget = newLLMRetryBudget(s.runtimeConfigSnapshot().LLMRetryCount)
+	}
+	resp, status, err := performProxyPluginMainWithRetryBudget(r.Context(), req, retryBudget)
+	if connectionTest {
+		writeJSON(w, http.StatusOK, buildProxyConnectionTestViewModel(req, resp, status, err))
+		return
+	}
 	if err != nil {
 		code := "upstream_error"
 		upstreamCallEnabled := true
@@ -1251,6 +1263,48 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 	resp["endpoint_validated"] = true
 	resp["upstream_call_enabled"] = true
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func buildProxyConnectionTestViewModel(req dto.ProxyPluginMainRequest, resp map[string]any, upstreamStatus int, err error) map[string]any {
+	if resp == nil {
+		resp = map[string]any{}
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	finalText := strings.TrimSpace(chatCompletionText(resp))
+	result := map[string]any{
+		"contract_version":      "proxy_connection_test.v1",
+		"status":                "ok",
+		"code":                  "ok",
+		"connection_ok":         err == nil,
+		"final_output_ok":       err == nil && finalText != "",
+		"provider":              strings.TrimSpace(stringPtrValue(req.Provider, "")),
+		"model":                 extractionFirstNonEmpty(extractionStringFromAny(resp["model"]), stringPtrValue(req.Model, "")),
+		"final_text":            finalText,
+		"upstream_http_status":  upstreamStatus,
+		"provider_response":     metadata,
+		"endpoint_validated":    true,
+		"upstream_call_enabled": true,
+	}
+	if err == nil {
+		return result
+	}
+
+	result["status"] = "error"
+	result["code"] = "upstream_error"
+	result["final_output_ok"] = false
+	result["error"] = scrubProxySecret(err.Error(), stringPtrValue(req.APIKey, ""))
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	var emptyContentErr *proxyEmptyContentError
+	switch {
+	case errors.As(err, &exhaustedErr):
+		result["status"] = "incomplete"
+		result["code"] = "final_output_token_exhausted"
+		result["connection_ok"] = true
+	case errors.As(err, &emptyContentErr):
+		result["code"] = "empty_final_output"
+		result["connection_ok"] = true
+	}
+	return result
 }
 
 func performProxyPluginMain(ctx context.Context, req dto.ProxyPluginMainRequest) (map[string]any, int, error) {
