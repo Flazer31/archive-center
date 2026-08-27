@@ -186,7 +186,15 @@ func appendBeliefUpdateSubjectiveMemories(subjective []any, beliefUpdates any) [
 				"owner_entity_name": ownerName,
 				"memory_text":       memoryText,
 				"evidence_excerpt":  evidence,
-				"tags":              []any{"belief_fact_transfer", "source_grounded_recollection"},
+				"importance_10": extractionFloatFromAny(
+					item["importance_10"],
+					extractionFloatFromAny(item["importance_score"], 5),
+				),
+				"emotional_weight": extractionFloatFromAny(
+					item["emotional_weight"],
+					extractionFloatFromAny(item["emotional_intensity"], 0.5),
+				),
+				"tags": []any{"belief_fact_transfer", "source_grounded_recollection"},
 			}})
 			if len(derived) == 0 {
 				continue

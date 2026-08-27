@@ -24,6 +24,23 @@ func TestArchiveCenterJSCriticLedgerDebugRendererIsDefined(t *testing.T) {
 	}
 }
 
+func TestArchiveCenterJSDefaultPublisherCriticAndMemoryBudgets(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, marker := range []string{
+		`maxInjectionChars: 18000`,
+		`pluginMainTimeoutMs: 120000`,
+		`pluginMainMaxCompletionTokens: 30000`,
+		`subLlmTimeoutMs: 120000`,
+		`subLlmMaxCompletionTokens: 30000`,
+		`configuredMaxCompletionTokens !== DEFAULT_SETTINGS.pluginMainMaxCompletionTokens`,
+		`configuredMaxCompletionTokens !== DEFAULT_SETTINGS.subLlmMaxCompletionTokens`,
+	} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing raised default setting marker %q", marker)
+		}
+	}
+}
+
 func TestArchiveCenterJSReferenceLibraryUIMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
@@ -673,11 +690,13 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 func TestArchiveCenterJSOpenAICompatibleGatewayAndServiceTierMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		`"openrouter", "llmgateway", "vercel", "vertex"`,
+		`"openrouter", "llmgateway", "vercel", "neuralwatt", "vertex"`,
 		`<option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
 		`<option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
 		`<option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
 		`<option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
+		`<option value="neuralwatt"${s.pluginMainProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>`,
+		`<option value="neuralwatt"${s.subLlmProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>`,
 		`pluginMainLlmGatewayServiceTier: "standard"`,
 		`subLlmLlmGatewayServiceTier: "standard"`,
 		`function normalizeLlmGatewayServiceTierSetting(value)`,
@@ -691,7 +710,9 @@ func TestArchiveCenterJSOpenAICompatibleGatewayAndServiceTierMarkers(t *testing.
 		`id="mo-subLlmLlmGatewayServiceTier"`,
 		`https://api.llmgateway.io/v1`,
 		`https://ai-gateway.vercel.sh/v1`,
+		`https://api.neuralwatt.com/v1`,
 		`OpenAI-Compatible Service Tier`,
+		`["openai", "llmgateway", "vercel", "neuralwatt", "custom"]`,
 		`testBody.llm_gateway_service_tier = testLlmGatewayServiceTier`,
 	}
 	for _, needle := range required {
@@ -722,7 +743,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.0.7"`,
+		`const BUILD_NOTES = "Archive Center 4.0.8"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
@@ -1022,6 +1043,8 @@ func TestArchiveCenterJSPluginMainRuntimeWiringMarkers(t *testing.T) {
 		"supervisorEndpoint: typeof s.pluginMainEndpoint === \"string\" ? s.pluginMainEndpoint : \"\"",
 		"supervisorModel: typeof s.pluginMainModel === \"string\" ? s.pluginMainModel : \"\"",
 		"mainTimeout: Math.ceil(getPluginMainTimeoutSettingMs(s.pluginMainTimeoutMs) / 1000)",
+		"supervisorTimeout: Math.ceil(getPluginMainTimeoutSettingMs(s.pluginMainTimeoutMs) / 1000)",
+		"criticTimeout: Math.ceil(getSubLlmTimeoutSettingMs(s.subLlmTimeoutMs) / 1000)",
 		"const runtimeSynced = !!(trace && trace.synced === true);",
 		"async function ensureBackendRuntimeConfigBinding(backendInstanceId)",
 		"settings_runtime_bound_to_backend_instance",
@@ -1043,6 +1066,11 @@ func TestArchiveCenterJSPluginMainRuntimeWiringMarkers(t *testing.T) {
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
 			t.Fatalf("Archive Center.js missing Plugin Main runtime wiring marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{`id="mo-supervisorTimeout"`, `id="mo-criticTimeout"`} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains duplicate backend timeout control %q", forbidden)
 		}
 	}
 }

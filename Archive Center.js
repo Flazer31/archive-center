@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.7
+//@display-name Archive Center 4.0.8
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.7
+//@version 4.0.8
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.7";
-  const BUILD_ID = "4.0.7";
+  const VERSION = "4.0.8";
+  const BUILD_ID = "4.0.8";
   const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-26 KST";
-  const BUILD_NOTES = "Archive Center 4.0.7";
+  const BUILD_TIME = "2026-08-27 KST";
+  const BUILD_NOTES = "Archive Center 4.0.8";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -77,7 +77,7 @@
   const RECOMPOSER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
   const RECOMPOSER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
   const RECOMPOSER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
-  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vercel", "vertex", "copilot", "ollama", "custom"]);
+  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vercel", "neuralwatt", "vertex", "copilot", "ollama", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
   const REASONING_PRESET_OPTIONS = Object.freeze(["auto", "gpt", "gemini", "claude", "glm", "custom"]);
@@ -163,7 +163,7 @@
     auxiliaryInjectionPlacement: "auto",
     auxiliaryInjectionAnchorMarker: "",
     // ── Context Injection Budget (Sprint 3-B, Phase 2-3 revised) ──
-    maxInjectionChars: 9000,         // 자동 주입 기본 상한 (약 4,500 추정 토큰)
+    maxInjectionChars: 18000,        // 일반 기억 자동 주입 기본 상한
     referenceInjectionMaxChars: 3000, // 원작 DB 참조 전용 상한
     lorebookReferenceMaxChars: 3000,  // 활성 로어북 참조 전용 상한
     injectionBudgetProfileVersion: "p34_9000_base_v1",
@@ -189,12 +189,12 @@
     pluginMainApiKey: "",
     pluginMainEndpoint: "",
     pluginMainModel: "",
-    pluginMainTimeoutMs: 60000,   // 출판사 LLM 호출 타임아웃 (ms)
+    pluginMainTimeoutMs: 120000,  // 출판사 LLM 호출 타임아웃 (ms)
     pluginMainTemperature: 0.7,
     pluginMainReasoningPreset: "auto",
     pluginMainReasoningEffort: "none",
     pluginMainReasoningBudgetTokens: 0,
-    pluginMainMaxCompletionTokens: 1024,
+    pluginMainMaxCompletionTokens: 30000,
     pluginMainVertexFlexMode: "off",
     pluginMainLlmGatewayServiceTier: "standard",
     pluginMainClaudePromptCacheMode: "off",
@@ -205,12 +205,12 @@
     subLlmApiKey: "",
     subLlmEndpoint: "",
     subLlmModel: "",
-    subLlmTimeoutMs: 90000,
+    subLlmTimeoutMs: 120000,
     subLlmTemperature: 0.3,
     subLlmReasoningPreset: "auto",
     subLlmReasoningEffort: "none",
     subLlmReasoningBudgetTokens: 0,
-    subLlmMaxCompletionTokens: 1024,
+    subLlmMaxCompletionTokens: 30000,
     subLlmVertexFlexMode: "off",
     subLlmLlmGatewayServiceTier: "standard",
     subLlmClaudePromptCacheMode: "off",
@@ -234,9 +234,7 @@
     sourceSearchPlannerMaxCompletionTokens: 512,
     // ── LLM 호출 재시도 횟수 (0 = 재시도 없이 1회만) ──
     llmRetryCount: 3,
-    // ── 백엔드 LLM 타임아웃 (초) ──
-    supervisorTimeout: 60,
-    criticTimeout: 90,
+    // ── 백엔드 임베딩 타임아웃 (초) ──
     embeddingTimeout: 30,
     // ── Phase 3-2: Episode auto-generation ──
     episodeIntervalTurns: 5,         // N턴마다 에피소드 요약 자동 생성
@@ -819,9 +817,9 @@
       "explorer.kg.loading": "로딩 중...",
       "explorer.kg.empty": "kg_triples가 없습니다.",
       "explorer.kg.notSet": "미설정",
-      "explorer.kg.currentlyValid": "현재 유효",
+      "explorer.kg.currentlyValid": "종료 미기록",
       "explorer.kg.turnNumberPlaceholder": "턴 번호",
-      "explorer.kg.emptyValidToHint": "빈값=현재 유효",
+      "explorer.kg.emptyValidToHint": "빈값=종료 미기록",
       "explorer.episodes.loading": "로딩 중...",
       "explorer.episodes.empty": "에피소드가 없습니다.",
       "explorer.episodes.entities": "주요 인물/장소:",
@@ -2160,9 +2158,9 @@
       "explorer.kg.loading": "Loading...",
       "explorer.kg.empty": "No kg_triples found.",
       "explorer.kg.notSet": "Not set",
-      "explorer.kg.currentlyValid": "Currently valid",
+      "explorer.kg.currentlyValid": "End not recorded",
       "explorer.kg.turnNumberPlaceholder": "Turn number",
-      "explorer.kg.emptyValidToHint": "Empty = currently valid",
+      "explorer.kg.emptyValidToHint": "Empty = end not recorded",
       "explorer.episodes.loading": "Loading...",
       "explorer.episodes.empty": "No episodes found.",
       "explorer.episodes.entities": "Key characters/locations:",
@@ -3287,9 +3285,9 @@
       "explorer.kg.loading": "読み込み中...",
       "explorer.kg.empty": "kg_triplesがありません。",
       "explorer.kg.notSet": "未設定",
-      "explorer.kg.currentlyValid": "現在有効",
+      "explorer.kg.currentlyValid": "終了未記録",
       "explorer.kg.turnNumberPlaceholder": "ターン番号",
-      "explorer.kg.emptyValidToHint": "空=現在有効",
+      "explorer.kg.emptyValidToHint": "空=終了未記録",
       "explorer.episodes.loading": "読み込み中...",
       "explorer.episodes.empty": "エピソードがありません。",
       "explorer.episodes.entities": "主要人物/場所:",
@@ -10796,6 +10794,7 @@
       else if (hostname === "openrouter.ai") endpointTransport = "openrouter";
       else if (hostname === "api.llmgateway.io") endpointTransport = "llmgateway";
       else if (hostname === "ai-gateway.vercel.sh") endpointTransport = "vercel";
+      else if (hostname === "api.neuralwatt.com") endpointTransport = "neuralwatt";
       else if (hostname === "api.deepseek.com") endpointTransport = "deepseek";
       else if (["localhost", "127.0.0.1", "::1"].includes(hostname) && parsed.port === "11434") endpointTransport = "ollama";
     } catch {}
@@ -10892,7 +10891,7 @@
           : "현재 전송 규약: Ollama OpenAI 호환 reasoning_effort",
       };
     }
-    if (["llmgateway", "openrouter", "vercel"].includes(transport) && family !== "none") {
+    if (["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") {
       const gatewayEffortOptions = family === "deepseek_v4"
         ? ["none", "high", "max"]
         : (family === "gpt" && gptEffortOptions.length > 0
@@ -11290,13 +11289,13 @@
   }
 
   function getSupervisorTimeoutMs(value) {
-    const source = value !== undefined ? value : (settings && settings.supervisorTimeout);
-    return sanitizeNumber(source, DEFAULT_SETTINGS.supervisorTimeout, 5, 6000) * 1000;
+    const source = value !== undefined ? value : (settings && settings.pluginMainTimeoutMs);
+    return getPluginMainTimeoutSettingMs(source);
   }
 
   function getCriticTimeoutMs(value) {
-    const source = value !== undefined ? value : (settings && settings.criticTimeout);
-    return sanitizeNumber(source, DEFAULT_SETTINGS.criticTimeout, 5, 6000) * 1000;
+    const source = value !== undefined ? value : (settings && settings.subLlmTimeoutMs);
+    return getSubLlmTimeoutSettingMs(source);
   }
 
   function getEmbeddingTimeoutMs(value) {
@@ -11402,8 +11401,6 @@
     merged.pluginMainClaudePromptCacheMode = normalizeClaudePromptCacheModeSetting(merged.pluginMainClaudePromptCacheMode);
     merged.pluginMainExtraHeadersJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraHeadersJson);
     merged.pluginMainExtraBodyJson = sanitizeProviderOverrideJsonSetting(merged.pluginMainExtraBodyJson);
-    merged.supervisorTimeout = sanitizeNumber(merged.supervisorTimeout, 60, 5, 6000);
-    merged.criticTimeout = sanitizeNumber(merged.criticTimeout, DEFAULT_SETTINGS.criticTimeout, 5, 6000);
     merged.subLlmProvider = getSubLlmProviderSetting(merged.subLlmProvider);
     merged.subLlmTimeoutMs = getSubLlmTimeoutSettingMs(merged.subLlmTimeoutMs);
     merged.subLlmTemperature = getSubLlmTemperatureSetting(merged.subLlmTemperature);
@@ -11668,8 +11665,8 @@
       sourceSearchPlannerReasoningBudgetTokens: normalizeReasoningBudgetTokens(s.sourceSearchPlannerReasoningBudgetTokens, DEFAULT_SETTINGS.sourceSearchPlannerReasoningBudgetTokens),
       topK: s.topK,
       mainTimeout: Math.ceil(getPluginMainTimeoutSettingMs(s.pluginMainTimeoutMs) / 1000),
-      supervisorTimeout: s.supervisorTimeout,
-      criticTimeout: s.criticTimeout,
+      supervisorTimeout: Math.ceil(getPluginMainTimeoutSettingMs(s.pluginMainTimeoutMs) / 1000),
+      criticTimeout: Math.ceil(getSubLlmTimeoutSettingMs(s.subLlmTimeoutMs) / 1000),
       embeddingTimeout: s.embeddingTimeout,
       failedQueueMaxAttempts: failedQueueMaxAttempts(),
     };
@@ -11794,7 +11791,7 @@
         temperature: getSubLlmTemperatureSetting(settings.subLlmTemperature),
         max_tokens: getSubLlmMaxCompletionTokensSetting(settings.subLlmMaxCompletionTokens),
         max_completion_tokens: getSubLlmMaxCompletionTokensSetting(settings.subLlmMaxCompletionTokens),
-        timeout_ms: getCriticTimeoutMs(settings.criticTimeout),
+        timeout_ms: getCriticTimeoutMs(),
         retry_count: Math.trunc(sanitizeNumber(
           settings.llmRetryCount,
           DEFAULT_SETTINGS.llmRetryCount,
@@ -25307,7 +25304,7 @@
       : (function() {
           const raw = settings && settings.pluginMainMaxCompletionTokens;
           const parsed = parseInt(raw, 10);
-          return isNaN(parsed) || parsed < 1 ? 1024 : parsed;
+          return isNaN(parsed) || parsed < 1 ? DEFAULT_SETTINGS.pluginMainMaxCompletionTokens : parsed;
         })();
     const defaultTemperature = (typeof getPluginMainTemperatureSetting === "function")
       ? getPluginMainTemperatureSetting()
@@ -25360,7 +25357,7 @@
     const reasoningBudgetTokens = normalizeReasoningBudgetTokens(reasoningBudgetTokensRaw, 0);
     const rawConfiguredMaxCompletionTokens = settings && settings.pluginMainMaxCompletionTokens;
     const configuredMaxCompletionTokens = parseInt(rawConfiguredMaxCompletionTokens, 10);
-    const hasConfiguredMaxCompletionTokens = !isNaN(configuredMaxCompletionTokens) && configuredMaxCompletionTokens !== 1024;
+    const hasConfiguredMaxCompletionTokens = !isNaN(configuredMaxCompletionTokens) && configuredMaxCompletionTokens !== DEFAULT_SETTINGS.pluginMainMaxCompletionTokens;
 
     // 백엔드 프록시를 통해 호출 (CORS 우회)
     // bridgeFetch는 내부에서 JSON.stringify를 하므로 body는 객체로 전달
@@ -25749,7 +25746,7 @@
       : (function() {
           const raw = settings && settings.subLlmMaxCompletionTokens;
           const parsed = parseInt(raw, 10);
-          return isNaN(parsed) || parsed < 1 ? 1024 : parsed;
+          return isNaN(parsed) || parsed < 1 ? DEFAULT_SETTINGS.subLlmMaxCompletionTokens : parsed;
         })();
     const defaultTemperature = (typeof getSubLlmTemperatureSetting === "function")
       ? getSubLlmTemperatureSetting()
@@ -25815,7 +25812,7 @@
     const payload = { ...basePayload };
     const rawConfiguredMaxCompletionTokens = settings && settings.subLlmMaxCompletionTokens;
     const configuredMaxCompletionTokens = parseInt(rawConfiguredMaxCompletionTokens, 10);
-    const hasConfiguredMaxCompletionTokens = !isNaN(configuredMaxCompletionTokens) && configuredMaxCompletionTokens !== 1024;
+    const hasConfiguredMaxCompletionTokens = !isNaN(configuredMaxCompletionTokens) && configuredMaxCompletionTokens !== DEFAULT_SETTINGS.subLlmMaxCompletionTokens;
     if (typeof opts.maxCompletionTokens === "number" || hasConfiguredMaxCompletionTokens) {
       payload.max_completion_tokens = maxCompletionTokens;
     }
@@ -49950,6 +49947,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <option value="openrouter"${s.pluginMainProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
           <option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
+          <option value="neuralwatt"${s.pluginMainProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
           <option value="vertex"${s.pluginMainProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.pluginMainProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.pluginMainProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -50049,8 +50047,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       </div>
       <div class="mo-row mo-range-row">
         <label>${t('settings.label.publisherMaxCompletionTokens')}</label>
-        <input type="number" id="mo-pluginMainMaxCompletionTokens" value="${s.pluginMainMaxCompletionTokens ?? 1024}" min="1" max="128000" step="1">
-        <input class="mo-range" type="range" id="mo-pluginMainMaxCompletionTokensRange" data-sync-input="mo-pluginMainMaxCompletionTokens" value="${s.pluginMainMaxCompletionTokens ?? 1024}" min="1" max="128000" step="1">
+        <input type="number" id="mo-pluginMainMaxCompletionTokens" value="${s.pluginMainMaxCompletionTokens ?? DEFAULT_SETTINGS.pluginMainMaxCompletionTokens}" min="1" max="128000" step="1">
+        <input class="mo-range" type="range" id="mo-pluginMainMaxCompletionTokensRange" data-sync-input="mo-pluginMainMaxCompletionTokens" value="${s.pluginMainMaxCompletionTokens ?? DEFAULT_SETTINGS.pluginMainMaxCompletionTokens}" min="1" max="128000" step="1">
       </div>
       </div>
       </div>
@@ -50072,6 +50070,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <option value="openrouter"${s.subLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
           <option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
+          <option value="neuralwatt"${s.subLlmProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
           <option value="vertex"${s.subLlmProvider === "vertex" ? " selected" : ""}>Vertex</option>
           <option value="copilot"${s.subLlmProvider === "copilot" ? " selected" : ""}>Copilot</option>
           <option value="ollama"${s.subLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>
@@ -50126,7 +50125,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         <label>Timeout (ms)</label>
         <input type="number" id="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? DEFAULT_SETTINGS.subLlmTimeoutMs}" min="5000" max="300000" step="5000">
         <input class="mo-range" type="range" id="mo-subLlmTimeoutMsRange" data-sync-input="mo-subLlmTimeoutMs" value="${s.subLlmTimeoutMs ?? DEFAULT_SETTINGS.subLlmTimeoutMs}" min="5000" max="300000" step="5000">
-        <small style="color:#888;font-size:11px;">평론가 LLM 타임아웃.<br><br>느린 모델은 60000 이상 권장.</small>
+        <small style="color:#888;font-size:11px;">평론가 LLM 타임아웃.<br><br>느린 모델은 기본 120000ms를 기준으로 조정하세요.</small>
       </div>
       <div class="mo-row mo-range-row">
         <label>${t('settings.label.criticTemp')}</label>
@@ -50171,8 +50170,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       </div>
       <div class="mo-row mo-range-row">
         <label>${t('settings.label.criticMaxCompletionTokens')}</label>
-        <input type="number" id="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? 1024}" min="1" max="128000" step="1">
-        <input class="mo-range" type="range" id="mo-subLlmMaxCompletionTokensRange" data-sync-input="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? 1024}" min="1" max="128000" step="1">
+        <input type="number" id="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? DEFAULT_SETTINGS.subLlmMaxCompletionTokens}" min="1" max="128000" step="1">
+        <input class="mo-range" type="range" id="mo-subLlmMaxCompletionTokensRange" data-sync-input="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? DEFAULT_SETTINGS.subLlmMaxCompletionTokens}" min="1" max="128000" step="1">
       </div>
       </div>
       </div>
@@ -50284,21 +50283,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <input class="mo-range" type="range" id="mo-requestTimeoutMsRange" data-sync-input="mo-requestTimeoutMs" value="${s.requestTimeoutMs}" min="1000" max="300000" step="1000">
         </div>
         <div class="mo-row mo-range-row">
-          <label>${t('settings.label.supervisorTimeout')}</label>
-          <input type="number" id="mo-supervisorTimeout" value="${s.supervisorTimeout ?? 60}" min="5" max="6000" step="5">
-          <input class="mo-range" type="range" id="mo-supervisorTimeoutRange" data-sync-input="mo-supervisorTimeout" value="${s.supervisorTimeout ?? 60}" min="5" max="6000" step="5">
-        </div>
-        <div class="mo-row mo-range-row">
-          <label>${t('settings.label.criticTimeout')}</label>
-          <input type="number" id="mo-criticTimeout" value="${s.criticTimeout ?? DEFAULT_SETTINGS.criticTimeout}" min="5" max="6000" step="5">
-          <input class="mo-range" type="range" id="mo-criticTimeoutRange" data-sync-input="mo-criticTimeout" value="${s.criticTimeout ?? DEFAULT_SETTINGS.criticTimeout}" min="5" max="6000" step="5">
-        </div>
-        <div class="mo-row mo-range-row">
           <label>${t('settings.label.embeddingTimeout')}</label>
           <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
           <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
         </div>
-        <div class="mo-note">여기는 backend 출판사 LLM·평론가·임베딩 호출 시간입니다. 아래 출판사/평론가 LLM 간의 Timeout (ms)와는 별개입니다.</div>
+        <div class="mo-note">출판사·평론가 타임아웃은 각 LLM 설정의 Timeout (ms)가 백엔드 실제 호출에 그대로 적용됩니다.</div>
       </div>
       <div class="mo-settings-card mo-common-card-memory">
         <div class="mo-row mo-range-row">
@@ -51408,6 +51397,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       const llmGatewayHintText = "LLM Gateway의 OpenAI 호환 endpoint입니다. 모델 ID는 LLM Gateway 모델 페이지의 provider/model 표기를 사용하세요.";
       const vercelEndpointPlaceholder = "https://ai-gateway.vercel.sh/v1";
       const vercelHintText = "Vercel AI Gateway의 OpenAI Chat Completions 호환 endpoint입니다. 모델은 creator/model 형식을 사용하세요.";
+      const neuralWattEndpointPlaceholder = "https://api.neuralwatt.com/v1";
+      const neuralWattHintText = "NeuralWatt 공식 Chat Completions endpoint입니다. Flex는 Service Tier에서 선택하며 스트리밍과 실제 응답 조립은 백엔드가 처리합니다.";
       const syncVertexOverrideRows = (providerId, rowIds) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -51448,6 +51439,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const isVertex = provider === "vertex";
           const isLlmGateway = provider === "llmgateway";
           const isVercel = provider === "vercel";
+          const isNeuralWatt = provider === "neuralwatt";
           const apiLabel = $(apiLabelId);
           const apiInput = $(apiInputId);
           const endpointLabel = $(endpointLabelId);
@@ -51459,9 +51451,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint" : "Endpoint";
           if (endpointInput) endpointInput.placeholder = isVertex
             ? vertexEndpointPlaceholder
-            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (defaults.endpoint || "")));
+            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (isNeuralWatt ? neuralWattEndpointPlaceholder : (defaults.endpoint || ""))));
           if (modelInput) modelInput.placeholder = isVertex ? (defaults.vertexModel || "예: gemini-2.5-flash") : (defaults.model || "");
-          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : (isVercel ? vercelHintText : ""));
+          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : (isVercel ? vercelHintText : (isNeuralWatt ? neuralWattHintText : "")));
         };
         providerEl.addEventListener("change", sync);
         sync();
@@ -51485,8 +51477,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       // 저장
       syncVertexOverrideRows("mo-pluginMainProvider", ["mo-pluginMainVertexFlexRow"]);
       syncVertexOverrideRows("mo-subLlmProvider", ["mo-subLlmVertexFlexRow"]);
-      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "custom"]);
-      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "custom"]);
+      syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "neuralwatt", "custom"]);
+      syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmLlmGatewayServiceTierRow", ["openai", "llmgateway", "vercel", "neuralwatt", "custom"]);
       syncProviderSpecificRow("mo-pluginMainProvider", "mo-pluginMainClaudePromptCacheModeRow", "claude");
       syncProviderSpecificRow("mo-subLlmProvider", "mo-subLlmClaudePromptCacheModeRow", "claude");
 
@@ -51513,8 +51505,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             debug: $("mo-debug").checked,
             bridgeUrl: rawBridgeUrl,
             requestTimeoutMs: $("mo-requestTimeoutMs").value,
-            supervisorTimeout: $("mo-supervisorTimeout").value,
-            criticTimeout: $("mo-criticTimeout").value,
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
@@ -51620,8 +51610,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           // UI 필드를 정규화된 값으로 갱신
           $("mo-bridgeUrl").value = settings.bridgeUrl;
           $("mo-requestTimeoutMs").value = settings.requestTimeoutMs;
-          $("mo-supervisorTimeout").value = settings.supervisorTimeout;
-          $("mo-criticTimeout").value = settings.criticTimeout;
           $("mo-embeddingTimeout").value = settings.embeddingTimeout;
           $("mo-embeddingProvider").value = settings.embeddingProvider || "openai";
           $("mo-pluginMainTimeoutMs").value = settings.pluginMainTimeoutMs;

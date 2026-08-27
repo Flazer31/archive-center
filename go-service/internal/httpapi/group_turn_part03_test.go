@@ -35,8 +35,8 @@ func TestCompleteTurnSubjectiveEntityMemoriesAutoSaveByOwner(t *testing.T) {
 				"owner_visibility":     "player_known",
 				"memory_text":          "Siwoo remembers the Exit 2 hallway as a warning sign.",
 				"source_turn_index":    2,
-				"importance_10":        7,
-				"emotional_weight":     0.6,
+				"importance_10":        8,
+				"emotional_weight":     0.7,
 				"evidence_excerpt":     "Exit 2",
 				"target_reveal_policy": "requires_explicit_attachment",
 			},
@@ -67,7 +67,7 @@ func TestCompleteTurnSubjectiveEntityMemoriesAutoSaveByOwner(t *testing.T) {
 	if siwoo.OwnerEntityKey != "siwoo" || siwoo.OwnerEntityName != "Siwoo" || siwoo.OwnerEntityRole != "protagonist" || siwoo.OwnerVisibility != "player_known" {
 		t.Fatalf("Siwoo subjective memory owner mismatch: %+v", siwoo)
 	}
-	if siwoo.SourceChatSessionID != "sess-subjective" || siwoo.SourceTurn != 2 || siwoo.Importance10 != 7 || siwoo.EmotionalWeight != 0.6 {
+	if siwoo.SourceChatSessionID != "sess-subjective" || siwoo.SourceTurn != 2 || siwoo.Importance10 != 8 || siwoo.EmotionalWeight != 0.7 {
 		t.Fatalf("Siwoo subjective memory source/score mismatch: %+v", siwoo)
 	}
 	if asuna.OwnerEntityKey != "asuna" || asuna.OwnerEntityName != "Asuna" || asuna.OwnerEntityRole != "npc" || asuna.OwnerVisibility != "owner_private" {

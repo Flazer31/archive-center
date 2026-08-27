@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto"
@@ -117,7 +118,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
 	case "vertex":
 		return proxyCallGemini(ctx, req, endpoint, apiKey, model, true, policy)
-	case "openai", "openrouter", "llmgateway", "vercel", "copilot", "ollama", "custom":
+	case "openai", "openrouter", "llmgateway", "vercel", "neuralwatt", "copilot", "ollama", "custom":
 		return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, policy, retryBudget)
 	default:
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
@@ -187,7 +188,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" {
 		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
@@ -272,6 +273,16 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			Cause: policyErr,
 		}
 	}
+	neuralWattFlex := provider == "neuralwatt" && strings.EqualFold(strings.TrimSpace(extractionStringFromAny(body["service_tier"])), "flex")
+	if neuralWattFlex {
+		body["stream"] = true
+		streamOptions := mapFromAny(body["stream_options"])
+		streamOptions["include_usage"] = true
+		body["stream_options"] = streamOptions
+		headers["Accept"] = "text/event-stream"
+		overrideTrace["neuralwatt_streaming_applied"] = true
+		overrideTrace["neuralwatt_usage_stream_requested"] = true
+	}
 	if provider == "copilot" {
 		token, status, err := proxyGetCopilotToken(ctx, apiKey)
 		if err != nil {
@@ -280,7 +291,15 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		headers["Authorization"] = "Bearer " + token
 	}
 
-	status, data, raw, err := proxyDoJSON(ctx, target, headers, body)
+	var status int
+	var data map[string]any
+	var raw string
+	var err error
+	if neuralWattFlex {
+		status, data, raw, err = proxyDoNeuralWattFlex(ctx, target, headers, body)
+	} else {
+		status, data, raw, err = proxyDoJSON(ctx, target, headers, body)
+	}
 	if err != nil {
 		return nil, http.StatusBadGateway, err
 	}
@@ -289,6 +308,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	_, hasThinking := body["thinking"]
 	managedReasoningRequest := hasReasoningEffort || hasReasoningObject || hasThinking
 	if status == http.StatusBadRequest &&
+		!neuralWattFlex &&
 		!managedReasoningRequest &&
 		proxyHasAdvancedParams(body) &&
 		proxyUnsupportedParameter(raw, data) &&
@@ -533,6 +553,8 @@ func proxyReasoningTransport(provider, endpoint string) (string, error) {
 			knownEndpoint = "openrouter"
 		case "api.llmgateway.io":
 			knownEndpoint = "llmgateway"
+		case "api.neuralwatt.com":
+			knownEndpoint = "neuralwatt"
 		case "ai-gateway.vercel.sh":
 			knownEndpoint = "vercel"
 		case "api.deepseek.com":
@@ -1239,6 +1261,177 @@ func proxyDoJSON(ctx context.Context, target string, headers map[string]string, 
 	return resp.StatusCode, data, raw, nil
 }
 
+func proxyDoNeuralWattFlex(ctx context.Context, target string, headers map[string]string, body map[string]any) (int, map[string]any, string, error) {
+	payload, err := json.Marshal(body)
+	if err != nil {
+		return http.StatusBadRequest, nil, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, target, bytes.NewReader(payload))
+	if err != nil {
+		return http.StatusBadRequest, nil, "", err
+	}
+	for key, value := range headers {
+		if strings.TrimSpace(value) != "" {
+			req.Header.Set(key, value)
+		}
+	}
+	resp, err := proxyHTTPClient.Do(req)
+	if err != nil {
+		return http.StatusBadGateway, nil, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		rawBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		if readErr != nil {
+			return http.StatusBadGateway, nil, "", readErr
+		}
+		raw := string(rawBytes)
+		var data map[string]any
+		if json.Unmarshal(rawBytes, &data) != nil {
+			data = nil
+		}
+		return resp.StatusCode, data, raw, nil
+	}
+
+	var id, object, model, serviceTier, finishReason string
+	var created any
+	var content, reasoning strings.Builder
+	var usage map[string]any
+	var energy, cost any
+	done := false
+	seenChunk := false
+	eventData := make([]string, 0, 1)
+	applyEvent := func() error {
+		if len(eventData) == 0 {
+			return nil
+		}
+		rawEvent := strings.Join(eventData, "\n")
+		eventData = eventData[:0]
+		if strings.TrimSpace(rawEvent) == "[DONE]" {
+			done = true
+			return nil
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(rawEvent), &chunk); err != nil {
+			return fmt.Errorf("NeuralWatt Flex stream returned invalid JSON chunk: %w", err)
+		}
+		seenChunk = true
+		if value := strings.TrimSpace(extractionStringFromAny(chunk["id"])); value != "" {
+			id = value
+		}
+		if value := strings.TrimSpace(extractionStringFromAny(chunk["object"])); value != "" {
+			object = value
+		}
+		if value := strings.TrimSpace(extractionStringFromAny(chunk["model"])); value != "" {
+			model = value
+		}
+		if value := strings.TrimSpace(extractionStringFromAny(chunk["service_tier"])); value != "" {
+			serviceTier = value
+		}
+		if value, ok := chunk["created"]; ok {
+			created = value
+		}
+		if value := mapFromAny(chunk["usage"]); len(value) > 0 {
+			usage = value
+		}
+		for _, rawChoice := range sliceFromAny(chunk["choices"]) {
+			choice := mapFromAny(rawChoice)
+			delta := mapFromAny(choice["delta"])
+			content.WriteString(extractionStringFromAny(delta["content"]))
+			reasoningText := extractionStringFromAny(delta["reasoning_content"])
+			if reasoningText == "" {
+				reasoningText = extractionStringFromAny(delta["reasoning"])
+			}
+			reasoning.WriteString(reasoningText)
+			if value := strings.TrimSpace(extractionStringFromAny(choice["finish_reason"])); value != "" {
+				finishReason = value
+			}
+			break
+		}
+		return nil
+	}
+	applyComment := func(raw string) {
+		trimmed := strings.TrimSpace(strings.TrimPrefix(raw, ":"))
+		for _, target := range []struct {
+			prefix string
+			dst    *any
+		}{{"energy", &energy}, {"cost", &cost}} {
+			if !strings.HasPrefix(strings.ToLower(trimmed), target.prefix+" ") {
+				continue
+			}
+			payload := strings.TrimSpace(trimmed[len(target.prefix):])
+			var value any
+			if json.Unmarshal([]byte(payload), &value) == nil {
+				*target.dst = value
+			}
+		}
+	}
+
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 64<<10), 8<<20)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			if err := applyEvent(); err != nil {
+				return http.StatusBadGateway, nil, "", err
+			}
+			continue
+		}
+		if strings.HasPrefix(line, ":") {
+			applyComment(line)
+			continue
+		}
+		if strings.HasPrefix(line, "data:") {
+			eventData = append(eventData, strings.TrimSpace(strings.TrimPrefix(line, "data:")))
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return http.StatusBadGateway, nil, "", err
+	}
+	if err := applyEvent(); err != nil {
+		return http.StatusBadGateway, nil, "", err
+	}
+	if !seenChunk {
+		return http.StatusBadGateway, nil, "", errors.New("NeuralWatt Flex stream returned no completion chunks")
+	}
+	if !done && finishReason == "" {
+		return http.StatusBadGateway, nil, "", errors.New("NeuralWatt Flex stream ended before final completion marker")
+	}
+	if serviceTier == "" {
+		serviceTier = strings.TrimSpace(resp.Header.Get("X-NW-Service-Tier"))
+	}
+	if object == "" || strings.HasSuffix(object, ".chunk") {
+		object = "chat.completion"
+	}
+	message := map[string]any{"role": "assistant", "content": content.String()}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String()
+		message["reasoning"] = reasoning.String()
+	}
+	data := map[string]any{
+		"id":           id,
+		"object":       object,
+		"created":      created,
+		"model":        model,
+		"service_tier": serviceTier,
+		"choices": []any{map[string]any{
+			"index":         0,
+			"message":       message,
+			"finish_reason": finishReason,
+		}},
+	}
+	if len(usage) > 0 {
+		data["usage"] = usage
+	}
+	if energy != nil {
+		data["energy"] = energy
+	}
+	if cost != nil {
+		data["cost"] = cost
+	}
+	return http.StatusOK, data, "", nil
+}
+
 func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, req dto.ProxyPluginMainRequest, provider string, vertex bool) (map[string]any, error) {
 	trace := map[string]any{}
 	headerJSON := strings.TrimSpace(stringPtrValue(req.ExtraHeadersJSON, ""))
@@ -1440,7 +1633,7 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 	if !proxyProviderSupportsServiceTier(provider) {
 		trace["llm_gateway_service_tier_applied"] = false
 		trace["llm_gateway_service_tier_skip_reason"] = "provider_not_openai_compatible_service_tier"
-		return fmt.Errorf("llm_gateway_service_tier requires provider openai, llmgateway, vercel, or custom")
+		return fmt.Errorf("llm_gateway_service_tier requires provider openai, llmgateway, vercel, neuralwatt, or custom")
 	}
 	if existing, exists := body["service_tier"]; exists {
 		existingText, isString := existing.(string)
@@ -1461,7 +1654,7 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 
 func proxyProviderSupportsServiceTier(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai", "llmgateway", "vercel", "custom":
+	case "openai", "llmgateway", "vercel", "neuralwatt", "custom":
 		return true
 	default:
 		return false
@@ -1681,6 +1874,8 @@ func proxyOpenAIBaseURL(provider, endpoint string) string {
 		return "https://api.llmgateway.io/v1"
 	case "vercel":
 		return "https://ai-gateway.vercel.sh/v1"
+	case "neuralwatt":
+		return "https://api.neuralwatt.com/v1"
 	case "copilot":
 		return "https://api.githubcopilot.com"
 	default:

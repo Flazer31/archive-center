@@ -62,9 +62,9 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
 	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) ||
-		!strings.Contains(src, `const BUILD_ID = "4.0.7"`) ||
+		!strings.Contains(src, `const BUILD_ID = "4.0.8"`) ||
 		!strings.Contains(src, `const BUILD_CHANNEL = "release"`) {
-		t.Fatal("4.0.7 release build identity is not visible in the HUD")
+		t.Fatal("4.0.8 release build identity is not visible in the HUD")
 	}
 	for _, expected := range []string{
 		`critic_input_budget_observation: {`,
@@ -1213,7 +1213,7 @@ func TestExistingLLMRetryZeroReachesRuntimeConfigAndAdminCritic(t *testing.T) {
 	adminMeta := extractArchiveCenterJSSyncFunction(t, src, "buildAdminRuntimeClientMeta")
 	script := `
 const DEFAULT_SETTINGS={llmRetryCount:3,embeddingProvider:"openai",episodeIntervalTurns:8};
-const settings={llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai"};
+const settings={llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai",pluginMainTimeoutMs:185000,subLlmTimeoutMs:245000};
 const _backendRuntimeConfigBinding={instanceId:"",dirty:true,configReady:false,code:"runtime_config_not_bound",missingRoles:[]};
 let syncedBody=null;
 let bridgeCalls=0;
@@ -1238,17 +1238,21 @@ function normalizeSourceSearchLlmProvider(){ return "openai"; }
 function normalizeReasoningPreset(){ return "auto"; }
 function normalizeReasoningEffort(){ return "none"; }
 function normalizeReasoningBudgetTokens(){ return 0; }
-function getPluginMainTimeoutSettingMs(){ return 1000; }
+function getPluginMainTimeoutSettingMs(value){ return value == null ? 60000 : Number(value); }
+function getSubLlmTimeoutSettingMs(value){ return value == null ? 90000 : Number(value); }
 function failedQueueMaxAttempts(){ return 3; }
 function getRequestTimeoutSettingMs(){ return 1000; }
-function getCriticTimeoutMs(){ return 1000; }
+function getCriticTimeoutMs(value){ return getSubLlmTimeoutSettingMs(value == null ? settings.subLlmTimeoutMs : value); }
 function getEmbeddingTimeoutMs(){ return 1000; }
 async function bridgeFetch(path,options){ bridgeCalls++; syncedBody=options.body; return bridgeResponse; }
 async function safeCall(fn){ return await fn(); }
 ` + syncConfig + "\n" + ensureBinding + "\n" + markDirty + "\n" + adminMeta + `
 (async()=>{
-  const result=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai"});
+  const result=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai",pluginMainTimeoutMs:185000,subLlmTimeoutMs:245000});
   if(!result.ok || !syncedBody || syncedBody.llmRetryCount !== 0) throw new Error("runtime config lost retry=0");
+  if(syncedBody.mainTimeout !== 185 || syncedBody.supervisorTimeout !== 185 || syncedBody.criticTimeout !== 245) {
+    throw new Error("UI timeout values did not reach backend roles: "+JSON.stringify(syncedBody));
+  }
   bridgeResponse={status:"ok",backend_instance_id:"backend-a",runtime_config_trace:{synced:true,main:{configured:true,missing_fields:[]},supervisor:{configured:false,missing_fields:["timeout_ms"]}}};
   const incomplete=await syncConfigToBackend({llmRetryCount:0,pluginMainProvider:"openai",pluginMainApiKey:"key",pluginMainEndpoint:"https://example.test/v1",pluginMainModel:"model",subLlmProvider:"openai"});
   if(incomplete.ok || !incomplete.code.includes("supervisor[timeout_ms]")) throw new Error("runtime role incompleteness was accepted: "+incomplete.code);
@@ -1269,6 +1273,7 @@ async function safeCall(fn){ return await fn(); }
   if(!saved.ok || saved.skipped || bridgeCalls!==callsAfterComplete+2) throw new Error("settings save did not trigger one config bind");
   const meta=buildAdminRuntimeClientMeta();
   if(meta.critic.retry_count !== 0) throw new Error("admin critic meta lost retry=0");
+  if(meta.critic.timeout_ms !== 245000) throw new Error("admin critic timeout diverged from UI value: "+meta.critic.timeout_ms);
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
 	cmd := exec.Command(nodePath, "-e", script)

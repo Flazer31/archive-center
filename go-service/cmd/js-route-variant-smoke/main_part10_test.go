@@ -131,7 +131,7 @@ func TestArchiveCenterJSDeepSeekV4ReasoningMarkers(t *testing.T) {
 		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
 		`function resolveReasoningTransport(provider, endpoint)`,
 		`transport === "ollama" && family !== "none"`,
-		`["llmgateway", "openrouter", "vercel"].includes(transport)`,
+		`["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport)`,
 		`mode: "gateway_reasoning_effort"`,
 		`mode: "deepseek_v4_reasoning_effort"`,
 		`effortOptions: ["none", "high", "max"]`,

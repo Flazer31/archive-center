@@ -31,11 +31,11 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
   "entities": {"characters": [{"name": "", "aliases": [], "identity_evidence_excerpt": ""}]}
 }
 
-- Optional numbers: `emotional_intensity`, `narrative_significance`.
+- Optional numbers: `importance_10`, `emotional_weight`, `emotional_intensity`, `narrative_significance`; missing scores default per item.
 - String arrays: `evidence_excerpts`, `prune_targets`.
-- Object arrays: `kg_triples`, `speaker_attributions`, `interaction_events`, `relationship_observations`, `interaction_boundaries`, `habit_observations`, `character_profile_observations`, `voice_observations`, `user_interaction_profile`, `rp_character_profile`, `world_rules`, `subjective_entity_memories`, `protected_secrets`, `character_identity_accuracy`, `persona_capsule_candidates`, `narrative_events`, `state_claims`, `belief_updates`, `character_deltas`, `physical_conditions`, `entity_conditions`, `reversible_states`, `pending_threads`.
-- Subjective shape: `"subjective_entity_memories": [{"owner_entity_name": "", "memory_text": "", "evidence_excerpt": ""}]`.
-- Belief shape: `"belief_updates": [{"perspective_owner": "", "belief": "", "evidence_excerpt": ""}]`.
+- Object arrays: `kg_triples`, `speaker_attributions`, `interaction_events`, `relationship_observations`, `interaction_boundaries`, `habit_observations`, `character_profile_observations`, `voice_observations`, `user_interaction_profile`, `rp_character_profile`, `world_rules`, `protected_secrets`, `character_identity_accuracy`, `persona_capsule_candidates`, `narrative_events`, `physical_conditions`, `entity_conditions`, `reversible_states`, `pending_threads`.
+- Shapes: `"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":"","importance_10":8,"emotional_weight":0.7}]`; `"belief_updates":[{"perspective_owner":"","belief":"","evidence_excerpt":"","importance_10":6,"emotional_weight":0.4}]`.
+- State shape: `"state_claims":[{"subject":"","state_slot":"","value":"","transition":"set","evidence_excerpt":""}]`.
 - Shape: `"character_deltas":[{"name":"","status":{"key":"value"}}]`; `name` required.
 - Objects: `story_clock`, `relationship_memory`, `entities`, `archive_hint`, `world_rule_audit`, `world_state`, `state_deltas`.
 - Keep every durable item focused. One malformed optional item must not erase independent valid fields or items.
@@ -94,11 +94,11 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 
 [Subjective Memories And Secrets]
 - `subjective_entity_memories` are owner-scoped interpretations, memories, fears, suspicions, regrets, misunderstandings, attraction, avoidance, or bias; they are not canonical truth.
-- Before omitting this surface, inspect every named in-story entity who spoke, reacted, interpreted, decided, noticed, misunderstood, expected, feared, preferred, or changed attitude. Emit every useful supported perspective without a fixed count.
-- Each subjective memory needs an owner and memory text. Evidence, visibility, protection, importance, and portability are optional; generated-memory storage must not depend on exact source wording.
+- Before omitting this surface, inspect every named in-story entity with a supported reaction, interpretation, decision, expectation, fear, preference, or attitude change. Emit every useful perspective without a fixed count.
+- Each subjective memory needs an owner and memory text; other fields are optional and generated storage does not require exact source wording.
 - Omitting `subjective_entity_memories` remains valid for an objective-only or third-party-only turn with no distinct grounded perspective.
 - Use `owner_entity_role=protagonist` for the player/persona and `owner_entity_role=npc`, usually `owner_visibility=owner_private`, for private NPC memories. Keep NPC-only memories out of persona capsules.
-- Subjective memories are support-only and cannot overwrite world truth, canonical memory, direct evidence, KG, character state, or rules. NPC-private memory may affect only that NPC's subtext or choices until revealed.
+- Subjective memories are support-only and cannot overwrite world truth, canonical memory, evidence, KG, character state, or rules. NPC-private memory affects only that NPC until revealed.
 - `protected_secrets` covers private affection, guilt, shame, mistakes, lies, hidden plans/identity/role/allegiance/lineage/succession, protected power, or equivalent knowledge. Preserve owner, subject, sensitivity, evidence strength, knowledge scope, and disclosure policy when useful.
 - Use `transition=reveal` only for a directly evidenced targeted reveal. Matching subjective memory should carry `secret_guard:true` and a restrictive reveal policy. Stored secret truth never authorizes spontaneous confession, public narration, or unrelated-character discovery.
 

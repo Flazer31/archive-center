@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	archivebridge "github.com/risulongmemory/archive-center-go/internal/archive"
@@ -272,8 +273,8 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			kgClosedDropped++
 			continue
 		}
-		line := strings.TrimSpace(fmt.Sprintf("%s --%s--> %s", t.Subject, t.Predicate, t.Object))
-		if line == "-->" {
+		relation := strings.TrimSpace(fmt.Sprintf("%s --%s--> %s", t.Subject, t.Predicate, t.Object))
+		if relation == "-->" {
 			continue
 		}
 		eligible, reason := prepareTurnKGRecallEligible(relationshipQuery, t)
@@ -284,9 +285,24 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			}
 			continue
 		}
-		kgLines = append(kgLines, line)
+		sourceTurn := "unrecorded"
+		if t.SourceTurn > 0 {
+			sourceTurn = strconv.Itoa(t.SourceTurn)
+		}
+		validFrom := "unrecorded"
+		if t.ValidFrom > 0 {
+			validFrom = strconv.Itoa(t.ValidFrom)
+		}
+		validTo := "end_unrecorded"
+		if t.ValidTo > 0 {
+			validTo = strconv.Itoa(t.ValidTo)
+		}
+		kgLines = append(kgLines, fmt.Sprintf(
+			"- [source_turn=%s; valid=%s..%s] %s",
+			sourceTurn, validFrom, validTo, relation,
+		))
 	}
-	out.KGText = makePrepareTurnSection("[Knowledge Graph]", kgLines)
+	out.KGText = makePrepareTurnSection("[Knowledge Graph Support History; context only, not current-state authority; end_unrecorded means no closing turn recorded]", kgLines)
 
 	directEvidenceLines := make([]string, 0, len(artifactHydration.Evidence))
 	for _, ev := range artifactHydration.Evidence {
@@ -421,7 +437,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if value := prepareTurnSurfaceText(parseSurfacePayload(wr.ValueJSON)); value != "" {
 			desc = strings.TrimSpace(desc + ": " + value)
 		}
-		desc = compactPrepareTurnLine(desc, 180)
 		if desc != "" {
 			worldAnchors := []string{wr.ScopeName, wr.Key}
 			scope := strings.ToLower(strings.TrimSpace(wr.Scope))

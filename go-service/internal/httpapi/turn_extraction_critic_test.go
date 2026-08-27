@@ -1387,8 +1387,10 @@ func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZer
 		"Before omitting this surface, inspect every named in-story entity",
 		"Omitting `subjective_entity_memories` remains valid",
 		"Each subjective memory needs an owner and memory text",
-		`"subjective_entity_memories": [{"owner_entity_name": "", "memory_text": "", "evidence_excerpt": ""}]`,
-		`"belief_updates": [{"perspective_owner": "", "belief": "", "evidence_excerpt": ""}]`,
+		`"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":"","importance_10":8,"emotional_weight":0.7}]`,
+		`"belief_updates":[{"perspective_owner":"","belief":"","evidence_excerpt":"","importance_10":6,"emotional_weight":0.4}]`,
+		"missing scores default per item",
+		`"state_claims":[{"subject":"","state_slot":"","value":"","transition":"set","evidence_excerpt":""}]`,
 		"extract useful source-grounded in-story facts and relationships broadly",
 		"A fact is not omitted merely because another typed lane also records it",
 		"evidence_excerpts are durable citations, not transcript samples",
@@ -1801,6 +1803,85 @@ func TestCriticBeliefOwnerAliasCreatesClaimSubjectiveMemory(t *testing.T) {
 		stringFromMap(memory, "memory_text") != claim ||
 		stringFromMap(memory, "evidence_excerpt") != excerpt {
 		t.Fatalf("owner-scoped belief projection mismatch: %#v", memory)
+	}
+}
+
+func TestCriticSubjectiveScoresSurviveDirectBeliefAliasFallbackAndReplay(t *testing.T) {
+	extraction := normalizeCriticExtraction(map[string]any{
+		"subjective_entity_memories": []any{map[string]any{
+			"owner_entity_name": "Direct",
+			"memory_text":       "Direct remembers the gate opening.",
+			"evidence_excerpt":  "Direct watched the gate open.",
+			"importance_10":     8,
+			"emotional_weight":  0.7,
+		}},
+		"belief_updates": []any{
+			map[string]any{
+				"owner": "Mihyang", "belief": "The proposal is still uncertain.",
+				"evidence_excerpt": "Mihyang watched in silence.",
+				"importance_10":    9, "emotional_weight": 0.8,
+			},
+			map[string]any{
+				"owner": "Rowan", "belief": "The gatekeeper may be lying.",
+				"evidence_excerpt": "Rowan narrowed his eyes at the gatekeeper.",
+				"importance_score": 7, "emotional_intensity": 0.6,
+			},
+			map[string]any{
+				"owner": "Jules", "belief": "The eastern road may be safer.",
+				"evidence_excerpt": "Jules glanced toward the eastern road.",
+			},
+		},
+	})
+
+	items := sliceFromAny(extraction["subjective_entity_memories"])
+	if len(items) != 4 {
+		t.Fatalf("subjective memories = %d, want all four independent items: %#v", len(items), items)
+	}
+	wantScores := map[string][2]float64{
+		"Direct":  {8, 0.7},
+		"Mihyang": {9, 0.8},
+		"Rowan":   {7, 0.6},
+		"Jules":   {5, 0.5},
+	}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		owner := stringFromMap(item, "owner_entity_name")
+		want, ok := wantScores[owner]
+		if !ok {
+			t.Fatalf("unexpected subjective owner %q: %#v", owner, item)
+		}
+		if got := extractionFloatFromAny(item["importance_10"], 0); got != want[0] {
+			t.Fatalf("%s importance_10 = %v, want %v: %#v", owner, got, want[0], item)
+		}
+		if got := extractionFloatFromAny(item["emotional_weight"], 0); got != want[1] {
+			t.Fatalf("%s emotional_weight = %v, want %v: %#v", owner, got, want[1], item)
+		}
+	}
+
+	content := strings.Join([]string{
+		"Direct watched the gate open.",
+		"Mihyang watched in silence.",
+		"Rowan narrowed his eyes at the gatekeeper.",
+		"Jules glanced toward the eastern road.",
+	}, " ")
+	fake := &turnRecordingStore{}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	first := srv.saveCriticExtractionArtifacts(context.Background(), "subjective-score-replay", 12, extraction, content, completeTurnEmbeddingConfig{}, time.Unix(1200, 0))
+	if first.SubjectiveEntityMemories != 4 || len(fake.savedEntityMemories) != 4 {
+		t.Fatalf("first subjective save = %d/%d, want 4/4: %#v", first.SubjectiveEntityMemories, len(fake.savedEntityMemories), first)
+	}
+	for _, saved := range fake.savedEntityMemories {
+		want := wantScores[saved.OwnerEntityName]
+		if saved.Importance10 != want[0] || saved.EmotionalWeight != want[1] {
+			t.Fatalf("stored score mismatch for %s: %#v", saved.OwnerEntityName, saved)
+		}
+		fake.returnEntityMemories = append(fake.returnEntityMemories, *saved)
+	}
+	fake.savedEntityMemories = nil
+	second := srv.saveCriticExtractionArtifacts(context.Background(), "subjective-score-replay", 12, extraction, content, completeTurnEmbeddingConfig{}, time.Unix(1201, 0))
+	if second.SubjectiveEntityMemories != 0 || len(fake.savedEntityMemories) != 0 {
+		t.Fatalf("replay duplicated subjective memories: result=%#v saved=%#v", second, fake.savedEntityMemories)
 	}
 }
 

@@ -816,7 +816,7 @@ func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, str
 	subjectMatched := prepareTurnRecallContainsAnchor(query, triple.Subject)
 	objectMatched := prepareTurnRecallContainsAnchor(query, triple.Object)
 	if subjectMatched && objectMatched {
-		return true, "both_endpoints_current"
+		return true, "both_endpoints_matched"
 	}
 	if subjectMatched || objectMatched {
 		complementaryEvidence := strings.TrimSpace(triple.Predicate)

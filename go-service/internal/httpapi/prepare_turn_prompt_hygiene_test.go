@@ -294,6 +294,30 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 	}
 }
 
+func TestPrepareTurnWorldRuleRemainsWholeUntilFinalMemoryBudgetSelection(t *testing.T) {
+	const tailMarker = "WORLD_RULE_COMPLETE_TAIL_MARKER"
+	longRule := strings.Repeat("이 규칙은 장면 전체에서 지속되어야 하며 중간 문장을 잃어서는 안 된다. ", 8) + tailMarker
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil,
+		[]store.WorldRule{{
+			ID:        1,
+			Scope:     "root",
+			Key:       "긴 세계 규칙",
+			ValueJSON: `{"rule":` + fmt.Sprintf("%q", longRule) + `}`,
+			Pinned:    true,
+		}},
+		nil, nil, nil, nil, nil, nil, nil,
+		5, 9000, "긴 세계 규칙을 확인한다.", "default", nil, nil, nil,
+	)
+	if !strings.Contains(assembly.WorldRulesText, tailMarker) {
+		t.Fatalf("world rule was truncated before final budget selection: %q", assembly.WorldRulesText)
+	}
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if !strings.Contains(finalText, tailMarker) {
+		t.Fatalf("whole world rule was not delivered by the final memory budget plan: %q", finalText)
+	}
+}
+
 func TestPrepareTurnRelationshipRequestDoesNotReactivatePriorWorldState(t *testing.T) {
 	const rawInput = "Mira pauses beside Rowan and waits for him to answer her."
 	const unrelated = "turbine calibration"
@@ -476,6 +500,43 @@ func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *
 	}
 	if boolFromAny(assembly.Counts["current_scene_state_is_current"]) {
 		t.Fatalf("stale scene was marked current: %#v", assembly.Counts)
+	}
+}
+
+func TestPrepareTurnKGUsesTemporalSupportSemanticsAndBranchReferenceTurn(t *testing.T) {
+	rawInput := "Alice and Bob revisit their promise at the harbor."
+	chatLogs := []store.ChatLog{{TurnIndex: 8, Role: "assistant", Content: "Alice and Bob arrive at the harbor."}}
+	triples := []store.KGTriple{
+		{Subject: "Alice", Predicate: "promised_to", Object: "Bob", SourceTurn: 2, ValidFrom: 2},
+		{Subject: "Alice", Predicate: "lent_coin_to", Object: "Bob", SourceTurn: 3, ValidFrom: 3, ValidTo: 5},
+		{Subject: "Alice", Predicate: "will_meet", Object: "Bob", SourceTurn: 10, ValidFrom: 10},
+	}
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, triples, nil, chatLogs, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		5, 9000, rawInput, "default", nil, nil, nil,
+	)
+	if !strings.Contains(assembly.KGText, "[Knowledge Graph Support History;") ||
+		!strings.Contains(assembly.KGText, "not current-state authority") {
+		t.Fatalf("KG support authority was not explicit: %q", assembly.KGText)
+	}
+	for _, want := range []string{
+		"source_turn=2", "valid=2..end_unrecorded",
+		"Alice --promised_to--> Bob",
+	} {
+		if !strings.Contains(assembly.KGText, want) {
+			t.Fatalf("KG temporal support missing %q: %q", want, assembly.KGText)
+		}
+	}
+	for _, unwanted := range []string{"lent_coin_to", "will_meet", "currently_valid", "authority=current_state"} {
+		if strings.Contains(assembly.KGText, unwanted) {
+			t.Fatalf("KG support retained out-of-range or current-state text %q: %q", unwanted, assembly.KGText)
+		}
+	}
+	if got := intFromAny(assembly.Counts["kg_closed_or_not_yet_valid_dropped"], 0); got != 2 {
+		t.Fatalf("kg_closed_or_not_yet_valid_dropped=%d, want 2: %#v", got, assembly.Counts)
+	}
+	if len(triples) != 3 || triples[0].ValidTo != 0 {
+		t.Fatalf("read-only KG assembly mutated stored history: %#v", triples)
 	}
 }
 

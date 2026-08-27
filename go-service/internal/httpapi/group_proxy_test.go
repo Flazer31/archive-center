@@ -878,6 +878,190 @@ func TestProxyLLMGatewayServiceTierRoutingAndTrace(t *testing.T) {
 	}
 }
 
+func TestProxyNeuralWattStandardUsesChatCompletionsJSON(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://api.neuralwatt.com/v1/chat/completions" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if body["stream"] != false || body["service_tier"] != "default" {
+			t.Fatalf("standard request = %+v", body)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"model":"test/model","service_tier":"default","choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("nw-test"),
+		Endpoint:              strPtr("https://api.neuralwatt.com/v1"),
+		Model:                 strPtr("test/model"),
+		Provider:              strPtr("neuralwatt"),
+		LLMGatewayServiceTier: strPtr("standard"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil || status != http.StatusOK || chatCompletionText(resp) != "ok" {
+		t.Fatalf("status=%d err=%v resp=%+v", status, err, resp)
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["provider"] != "neuralwatt" || trace["llm_gateway_service_tier_served"] != "default" {
+		t.Fatalf("trace = %+v", trace)
+	}
+}
+
+func TestProxyNeuralWattFlexStreamsExactlyOnceAndReconstructsResponse(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if got := r.Header.Get("Accept"); got != "text/event-stream" {
+			t.Fatalf("Accept = %q", got)
+		}
+		raw, _ := io.ReadAll(r.Body)
+		var body map[string]any
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode upstream body: %v", err)
+		}
+		if body["stream"] != true || body["service_tier"] != "flex" {
+			t.Fatalf("flex request = %+v", body)
+		}
+		if mapFromAny(body["stream_options"])["include_usage"] != true {
+			t.Fatalf("stream_options = %+v", body["stream_options"])
+		}
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		header.Set("X-NW-Service-Tier", "flex")
+		stream := strings.Join([]string{
+			": keepalive",
+			"",
+			`data: {"id":"chatcmpl-nw","object":"chat.completion.chunk","created":123,"model":"test/model","service_tier":"flex","choices":[{"index":0,"delta":{"role":"assistant","reasoning_content":"brief"},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl-nw","object":"chat.completion.chunk","created":123,"model":"test/model","choices":[{"index":0,"delta":{"content":"hello "},"finish_reason":null}]}`,
+			"",
+			`data: {"id":"chatcmpl-nw","object":"chat.completion.chunk","created":123,"model":"test/model","choices":[{"index":0,"delta":{"content":"world"},"finish_reason":"stop"}]}`,
+			"",
+			`data: {"id":"chatcmpl-nw","object":"chat.completion.chunk","created":123,"model":"test/model","choices":[],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13}}`,
+			"",
+			`: energy {"joules":12.5}`,
+			`: cost {"usd":0.01}`,
+			"",
+			"data: [DONE]",
+			"",
+		}, "\n")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     header,
+			Body:       io.NopCloser(strings.NewReader(stream)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMainWithRetryBudget(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("nw-test"),
+		Endpoint:              strPtr("https://api.neuralwatt.com/v1"),
+		Model:                 strPtr("test/model"),
+		Provider:              strPtr("neuralwatt"),
+		LLMGatewayServiceTier: strPtr("flex"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	}, newLLMRetryBudget(3))
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("status=%d err=%v resp=%+v", status, err, resp)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want one Flex request without hidden retry", calls)
+	}
+	if got := chatCompletionText(resp); got != "hello world" {
+		t.Fatalf("content = %q", got)
+	}
+	choice := mapFromAny(sliceFromAny(resp["choices"])[0])
+	message := mapFromAny(choice["message"])
+	if message["reasoning_content"] != "brief" || message["reasoning"] != "brief" {
+		t.Fatalf("message = %+v", message)
+	}
+	if mapFromAny(resp["usage"])["total_tokens"] != float64(13) {
+		t.Fatalf("usage = %+v", resp["usage"])
+	}
+	if mapFromAny(resp["energy"])["joules"] != float64(12.5) || mapFromAny(resp["cost"])["usd"] != float64(0.01) {
+		t.Fatalf("energy=%+v cost=%+v", resp["energy"], resp["cost"])
+	}
+	trace := mapFromAny(resp["_proxy_request_overrides"])
+	if trace["llm_gateway_service_tier_served"] != "flex" {
+		t.Fatalf("trace = %+v", trace)
+	}
+}
+
+func TestProxyNeuralWattFlexUpstreamErrorDoesNotFallback(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusTooManyRequests,
+			Status:     "429 Too Many Requests",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":{"message":"flex queue full"}}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	_, status, err := performProxyPluginMainWithRetryBudget(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("nw-test"),
+		Endpoint:              strPtr("https://api.neuralwatt.com/v1"),
+		Model:                 strPtr("test/model"),
+		Provider:              strPtr("neuralwatt"),
+		LLMGatewayServiceTier: strPtr("flex"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	}, newLLMRetryBudget(3))
+	if err == nil || status != http.StatusTooManyRequests || !strings.Contains(err.Error(), "flex queue full") {
+		t.Fatalf("status=%d err=%v", status, err)
+	}
+	if calls != 1 {
+		t.Fatalf("calls=%d, want no Standard fallback", calls)
+	}
+}
+
+func TestProxyNeuralWattFlexRejectsIncompleteStreamInsteadOfSavingPartialText(t *testing.T) {
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		header := make(http.Header)
+		header.Set("Content-Type", "text/event-stream")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     header,
+			Body: io.NopCloser(strings.NewReader(
+				"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":null}]}\n\n",
+			)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:                strPtr("nw-test"),
+		Endpoint:              strPtr("https://api.neuralwatt.com/v1"),
+		Model:                 strPtr("test/model"),
+		Provider:              strPtr("neuralwatt"),
+		LLMGatewayServiceTier: strPtr("flex"),
+		Messages:              []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err == nil || status != http.StatusBadGateway || !strings.Contains(err.Error(), "ended before final completion marker") {
+		t.Fatalf("status=%d err=%v resp=%+v", status, err, resp)
+	}
+	if resp != nil {
+		t.Fatalf("partial response must not be returned as success: %+v", resp)
+	}
+}
+
 func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -887,7 +1071,7 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 	}{
 		{name: "invalid", tier: "economy", wantError: "must be standard, flex, or priority"},
 		{name: "conflict", tier: "flex", extraBody: `{"service_tier":"priority"}`, wantError: "conflicts with extra_body_json"},
-		{name: "wrong provider", tier: "flex", wantError: "requires provider openai, llmgateway, vercel, or custom"},
+		{name: "wrong provider", tier: "flex", wantError: "requires provider openai, llmgateway, vercel, neuralwatt, or custom"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
