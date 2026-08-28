@@ -714,12 +714,14 @@ DB schema, 테스트 패키지는 변경하지 않았다.
   `Archive Center 4.0.9 Windows Auto Install Package.zip`
 - manifest 상태: `green`
 - `release_ready=true`, `automatic_update_apply=true`
+- package source commit: `dd28a769e038c5ad7b63be7e6f8f05d5f47d1541`,
+  `source_dirty=false`
 - 관리 파일 46개, 누락 0, 크기 불일치 0, SHA-256 불일치 0
 - source/package `Archive Center.js` SHA-256:
   `c7dd5e9dbb5264343ba0df2bde5c516660947c907a91ed6232c293e64056220a`
-- ZIP 크기: `12,155,003 bytes`
+- ZIP 크기: `12,154,995 bytes`
 - ZIP SHA-256:
-  `203cf8687ef06fba3713ce2449956abaeb797a0e6b82e5698a2fa4f17309b8b8`
+  `02597d09042f7e566635c6f42b3708c8c437c04d3111898954b4b2b3ac716b71`
 
 이 증거는 현재 source와 Windows 테스트 패키지의 동일성과 패키지 내부
 무결성을 확인한 것이다. 실제 RisuAI에 갱신된 plugin을 다시 로드한 뒤 HUD,
