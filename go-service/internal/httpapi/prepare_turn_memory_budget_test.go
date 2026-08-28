@@ -241,15 +241,43 @@ func TestMEMDKeepsCoordinateMissingRepeatedTextWithinClasses(t *testing.T) {
 	}
 }
 
-func TestMEMDSubjectiveRelationshipKeepsCoordinateMissingRepeatedText(t *testing.T) {
+func TestPrepareTurnDistinctDeliveryItemsDropsOnlyExactTrimmedLineDuplicates(t *testing.T) {
+	firstOrder := `- relationship_state: {"observations":[{"from":"Mira"},{"to":"Noah"}]}`
+	reversedOrder := `- relationship_state: {"observations":[{"to":"Noah"},{"from":"Mira"}]}`
+	got := prepareTurnDistinctDeliveryItems(
+		"[Character Private Recollection]\n- Mira trusts Noah\n  - Mira trusts Noah  \n- [turn 8] Mira trusts Noah",
+		"[Canonical Relationships]\n- Mira trusts Noah\n- [turn 9] Mira trusts Noah\n"+firstOrder,
+		"[Knowledge Graph]\n"+reversedOrder+"\n- Noah doubts Mira",
+	)
+	want := []string{
+		"- Mira trusts Noah",
+		"- [turn 8] Mira trusts Noah",
+		"- [turn 9] Mira trusts Noah",
+		firstOrder,
+		reversedOrder,
+		"- Noah doubts Mira",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("distinct delivery items = %#v, want %#v", got, want)
+	}
+}
+
+func TestMEMDSubjectiveRelationshipDropsOnlyExactRepeatedText(t *testing.T) {
 	out := prepareTurnInjectionAssembly{
 		CharacterPrivateText: "[Character Private Recollection]\n- Mira trusts Noah",
 		KGText:               "[Knowledge Graph]\n- Mira trusts Noah",
 	}
 	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
 	classText := prepareTurnTestDeliveryClassText(plan, "subjective_relationship")
-	if got := strings.Count(classText, "Mira trusts Noah"); got != 2 {
-		t.Fatalf("coordinate-missing subjective origins were merged: count=%d text=%q", got, classText)
+	if got := strings.Count(classText, "Mira trusts Noah"); got != 1 {
+		t.Fatalf("exact repeated subjective line count=%d, want 1: %q", got, classText)
+	}
+	for _, rawClass := range prepareTurnMemoryLineageSlice(plan["classes"]) {
+		class := mapFromAny(rawClass)
+		if extractionStringFromAny(class["key"]) == "subjective_relationship" &&
+			(intFromAny(class["selected_count"], 0) != 1 || intFromAny(class["deduplicated_count"], 0) != 1) {
+			t.Fatalf("subjective exact duplicate trace = %#v, want selected=1 deduplicated=1", class)
+		}
 	}
 }
 

@@ -93,6 +93,20 @@ func firstRuntimeSourceValue(candidates ...runtimeSourceValue) runtimeSourceValu
 	return runtimeSourceValue{Source: "unset"}
 }
 
+func runtimeProviderEndpointSource(provider, endpoint runtimeSourceValue) runtimeSourceValue {
+	if strings.TrimSpace(endpoint.Value) != "" {
+		return endpoint
+	}
+	resolved := proxyProviderBaseURL(provider.Value, "")
+	if resolved == "" {
+		return endpoint
+	}
+	return runtimeSourceValue{
+		Value:  resolved,
+		Source: "provider_default." + strings.ToLower(strings.TrimSpace(provider.Value)),
+	}
+}
+
 func addRuntimeSourceTrace(trace map[string]any, provider, apiKey, endpoint, model runtimeSourceValue) {
 	trace["config_authority"] = "runtime_config"
 	trace["provider_source"] = provider.Source
@@ -299,7 +313,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 	}
 	return completeTurnLLMConfig{
 		APIKey:                rt.SupervisorAPIKey,
-		Endpoint:              rt.SupervisorEndpoint,
+		Endpoint:              proxyProviderBaseURL(rt.SupervisorProvider, rt.SupervisorEndpoint),
 		Model:                 rt.SupervisorModel,
 		Provider:              rt.SupervisorProvider,
 		TimeoutMs:             runtimeTimeoutMs(rt.SupervisorTimeoutSec),
@@ -336,7 +350,7 @@ func (s *Server) sourceSearchPlannerLLMConfig() completeTurnLLMConfig {
 		reasoningEffort = "none"
 	}
 	return completeTurnLLMConfig{
-		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: rt.SourceSearchPlannerEndpoint,
+		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: proxyProviderBaseURL(rt.SourceSearchPlannerProvider, rt.SourceSearchPlannerEndpoint),
 		Model: rt.SourceSearchPlannerModel, Provider: rt.SourceSearchPlannerProvider,
 		TimeoutMs:   runtimeTimeoutMs(rt.SourceSearchPlannerTimeoutSec),
 		Temperature: temperature, MaxTokens: maxTokens,
@@ -359,7 +373,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 	}
 	return completeTurnLLMConfig{
 		APIKey:                rt.MainAPIKey,
-		Endpoint:              rt.MainEndpoint,
+		Endpoint:              proxyProviderBaseURL(rt.MainProvider, rt.MainEndpoint),
 		Model:                 rt.MainModel,
 		Provider:              rt.MainProvider,
 		TimeoutMs:             runtimeTimeoutMs(rt.MainTimeoutSec),
@@ -522,6 +536,10 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 			embeddingEnvSource("AC_EMBEDDER_ENDPOINT", "AC_LT_EMBEDDING_ENDPOINT", "PROJECT_EMBEDDING_ENDPOINT", "AC_PROJECT_EMBEDDING_ENDPOINT"),
 		)
 	}
+	mainEndpointID = runtimeProviderEndpointSource(mainProviderID, mainEndpointID)
+	supervisorEndpointID = runtimeProviderEndpointSource(supervisorProviderID, supervisorEndpointID)
+	criticEndpointID = runtimeProviderEndpointSource(criticProviderID, criticEndpointID)
+	sourceSearchPlannerEndpointID = runtimeProviderEndpointSource(sourceSearchPlannerProviderID, sourceSearchPlannerEndpointID)
 	embeddingIdentity := s.currentEmbeddingModelIdentity()
 	embeddingModel := embeddingIdentity.Model
 	embeddingModelID := runtimeSourceValue{Value: embeddingModel, Source: embeddingIdentity.Source}

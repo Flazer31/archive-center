@@ -123,6 +123,126 @@ func TestProxyResolveVertexProjectIDRejectsMissingProjectID(t *testing.T) {
 	}
 }
 
+func TestProxyProviderBaseURLDefaults(t *testing.T) {
+	wants := map[string]string{
+		"openai":     "https://api.openai.com/v1",
+		"openrouter": "https://openrouter.ai/api/v1",
+		"llmgateway": "https://api.llmgateway.io/v1",
+		"vercel":     "https://ai-gateway.vercel.sh/v1",
+		"neuralwatt": "https://api.neuralwatt.com/v1",
+		"copilot":    "https://api.githubcopilot.com",
+		"ollama":     "http://127.0.0.1:11434",
+		"claude":     "https://api.anthropic.com",
+		"gemini":     "https://generativelanguage.googleapis.com/v1beta",
+		"vertex":     "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models",
+	}
+	for provider, want := range wants {
+		if got := proxyProviderBaseURL(provider, ""); got != want {
+			t.Errorf("provider %s default = %q, want %q", provider, got, want)
+		}
+	}
+	if got := proxyProviderBaseURL("custom", ""); got != "" {
+		t.Fatalf("custom blank endpoint = %q, want empty", got)
+	}
+	if got := proxyProviderBaseURL("neuralwatt", "https://override.example/v1/"); got != "https://override.example/v1" {
+		t.Fatalf("explicit endpoint override = %q", got)
+	}
+}
+
+func TestProxyBlankEndpointUsesNamedProviderDefaultAndHonorsOverride(t *testing.T) {
+	t.Run("neuralwatt default", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		defer func() { proxyHTTPClient = oldClient }()
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.URL.String(); got != "https://api.neuralwatt.com/v1/chat/completions" {
+				t.Fatalf("default NeuralWatt URL = %q", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
+			}, nil
+		})}
+
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:   strPtr("nw-test"),
+			Endpoint: strPtr(""),
+			Model:    strPtr("test/model"),
+			Provider: strPtr("neuralwatt"),
+			Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+		})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("blank NeuralWatt endpoint status=%d err=%v", status, err)
+		}
+	})
+
+	t.Run("explicit override", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		defer func() { proxyHTTPClient = oldClient }()
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.URL.String(); got != "https://gateway.example.test/v1/chat/completions" {
+				t.Fatalf("override URL = %q", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
+			}, nil
+		})}
+
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:   strPtr("openai-test"),
+			Endpoint: strPtr("https://gateway.example.test/v1"),
+			Model:    strPtr("gpt-test"),
+			Provider: strPtr("openai"),
+			Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+		})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("explicit endpoint status=%d err=%v", status, err)
+		}
+	})
+}
+
+func TestProxyBlankVertexEndpointUsesServiceAccountProjectAndGlobalLocation(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+	credential := testVertexServiceAccountJSON(t)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-test:generateContent":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected Vertex URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   &credential,
+		Endpoint: strPtr(""),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("vertex"),
+		Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("blank Vertex endpoint status=%d err=%v", status, err)
+	}
+}
+
 func TestProxyEmptyContentPreservesProviderAndActual2xxStatus(t *testing.T) {
 	oldClient := proxyHTTPClient
 	defer func() { proxyHTTPClient = oldClient }()
@@ -249,9 +369,9 @@ func TestProxyLocalRequestErrorsAreTypedSeparatelyFromUpstreamHTTP(t *testing.T)
 		}
 	}
 
-	t.Run("missing configuration", func(t *testing.T) {
+	t.Run("custom missing endpoint", func(t *testing.T) {
 		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
-			Provider: strPtr("openai"),
+			Provider: strPtr("custom"),
 			Model:    strPtr("gpt-test"),
 			APIKey:   strPtr("sk-test"),
 		})
@@ -873,7 +993,7 @@ func TestProxyLLMGatewayServiceTierRoutingAndTrace(t *testing.T) {
 			}
 		})
 	}
-	if got := proxyOpenAIBaseURL("llmgateway", ""); got != "https://api.llmgateway.io/v1" {
+	if got := proxyProviderBaseURL("llmgateway", ""); got != "https://api.llmgateway.io/v1" {
 		t.Fatalf("LLM Gateway default base = %q", got)
 	}
 }
@@ -1160,7 +1280,7 @@ func TestProxyOpenAICompatibleServiceTierProviders(t *testing.T) {
 			}
 		})
 	}
-	if got := proxyOpenAIBaseURL("vercel", ""); got != "https://ai-gateway.vercel.sh/v1" {
+	if got := proxyProviderBaseURL("vercel", ""); got != "https://ai-gateway.vercel.sh/v1" {
 		t.Fatalf("Vercel default base = %q", got)
 	}
 }

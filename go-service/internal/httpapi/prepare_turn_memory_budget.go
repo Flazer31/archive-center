@@ -68,12 +68,17 @@ func prepareTurnDeliveryItems(texts ...string) []string {
 
 func prepareTurnDistinctDeliveryItems(texts ...string) []string {
 	items := []string{}
+	seen := map[string]bool{}
 	for _, text := range texts {
 		for index, line := range strings.Split(strings.TrimSpace(text), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || (index == 0 && strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]")) {
 				continue
 			}
+			if seen[line] {
+				continue
+			}
+			seen[line] = true
 			items = append(items, line)
 		}
 	}
@@ -170,10 +175,15 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 	borrowedChars := map[string]int{}
 	requiredSelected := map[string]int{}
 	auxiliarySelected := map[string]int{}
+	selectedSubjectiveLines := map[string]bool{}
 	usedGlobal := 0
 	appendWithin := func(key string, candidates []string, cap int, tier string) []string {
 		deferred := []string{}
 		for _, item := range candidates {
+			if key == "subjective_relationship" && selectedSubjectiveLines[item] {
+				deduplicated[key]++
+				continue
+			}
 			factKey := ""
 			isCoreObjective := false
 			if key != "protected_secret" && key != "subjective_relationship" {
@@ -191,6 +201,9 @@ func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxCh
 			delta := len([]rune(text)) - len([]rune(oldText))
 			if len([]rune(text)) <= cap && usedGlobal+delta <= deliveryCap {
 				selected[key] = candidate
+				if key == "subjective_relationship" {
+					selectedSubjectiveLines[item] = true
+				}
 				usedGlobal += delta
 				if isCoreObjective {
 					coreObjectiveSelectedCount++

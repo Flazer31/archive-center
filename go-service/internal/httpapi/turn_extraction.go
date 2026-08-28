@@ -679,6 +679,7 @@ func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnE
 
 func selectCompleteTurnLLMCoreConfig(metaCfg completeTurnLLMConfig, metaMap map[string]any, runtimeProvider, runtimeAPIKey, runtimeEndpoint, runtimeModel, label string) completeTurnLLMConfig {
 	metaCfg.APIKey = normalizeConfigSecret(metaCfg.APIKey)
+	metaCfg.Endpoint = proxyProviderBaseURL(metaCfg.Provider, metaCfg.Endpoint)
 	if len(metaMap) > 0 && metaCfg.hasAnyAuthorityConfigField() {
 		metaCfg.Source = "client_meta." + label
 		if !metaCfg.hasConfig() {
@@ -689,7 +690,7 @@ func selectCompleteTurnLLMCoreConfig(metaCfg completeTurnLLMConfig, metaMap map[
 	runtimeCfg := metaCfg
 	runtimeCfg.Provider = strings.TrimSpace(runtimeProvider)
 	runtimeCfg.APIKey = normalizeConfigSecret(runtimeAPIKey)
-	runtimeCfg.Endpoint = strings.TrimSpace(runtimeEndpoint)
+	runtimeCfg.Endpoint = proxyProviderBaseURL(runtimeCfg.Provider, runtimeEndpoint)
 	runtimeCfg.Model = strings.TrimSpace(runtimeModel)
 	runtimeCfg.Source = "runtime_config." + label
 	if runtimeCfg.hasAnyAuthorityConfigField() {

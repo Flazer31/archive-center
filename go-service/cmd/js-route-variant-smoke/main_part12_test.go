@@ -62,9 +62,9 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
 	}
 	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) ||
-		!strings.Contains(src, `const BUILD_ID = "4.0.8"`) ||
+		!strings.Contains(src, `const BUILD_ID = "4.0.9"`) ||
 		!strings.Contains(src, `const BUILD_CHANNEL = "release"`) {
-		t.Fatal("4.0.8 release build identity is not visible in the HUD")
+		t.Fatal("4.0.9 release build identity is not visible in the HUD")
 	}
 	for _, expected := range []string{
 		`critic_input_budget_observation: {`,
@@ -74,6 +74,165 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 		if !strings.Contains(bodySource, expected) {
 			t.Fatalf("complete-turn does not forward the Critic input budget observation %q", expected)
 		}
+	}
+}
+
+func TestWebRisuDirectBridgeUsesOnlyRequestScopedPlainFetch(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Web Risu direct bridge fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	bridgeFetchSource := extractArchiveCenterJSAsyncFunction(t, src, "bridgeFetch")
+	script := `
+const settings = {
+  bridgeUrl: "https://archive-test.example.ts.net",
+  webDirectBridgeEnabled: true,
+};
+const _lastBridgeFailureByPath = new Map();
+function resolveRequestTimeoutMs(){ return 15000; }
+function resolveBridgeRuntimeRoute(url){
+  return {url, configuredUrl:url, mode:"configured", remoteAuto:false, pageHost:"risuai.xyz", loopbackOnHostedPage:false, mixedContentRisk:false};
+}
+function warnLog(){}
+function debugLog(){}
+function extractBridgeErrorDetail(value, fallback){ return value && value.detail || fallback; }
+let nativeFetchCalled = false;
+let directCall = null;
+let directCallCount = 0;
+const R = {
+  async nativeFetch(){ nativeFetchCalled = true; throw new Error("nativeFetch must not be used"); },
+  async risuFetch(url, init){
+    directCallCount++;
+    directCall = {url, init};
+    return {
+      ok: true,
+      status: 200,
+      data: new TextEncoder().encode(JSON.stringify({ready:true, route:"browser_direct"})),
+      headers: {"content-type":"application/json"},
+    };
+  },
+};
+` + bridgeFetchSource + `
+(async()=>{
+  const result = await bridgeFetch("/ready", {method:"POST", body:{probe:"web-risu"}});
+  if(!result || result.ready !== true) throw new Error("direct response was not decoded");
+  if(nativeFetchCalled) throw new Error("nativeFetch was called in direct mode");
+  if(!directCall || directCall.url !== "https://archive-test.example.ts.net/ready") throw new Error("direct URL mismatch");
+  if(directCall.init.plainFetchForce !== true || directCall.init.rawResponse !== true) throw new Error("request-scoped direct flags missing");
+  if(!directCall.init.body || directCall.init.body.probe !== "web-risu") throw new Error("request body was stringified before Risu globalFetch");
+  const rawResult = await bridgeFetch("/canon-packs/preview/v1", {method:"POST", body:new Uint8Array([1,2,3]), rawBody:true});
+  if(rawResult !== null || nativeFetchCalled) throw new Error("unsupported binary request used a hidden fallback");
+  const failure = _lastBridgeFailureByPath.get("/canon-packs/preview/v1");
+  if(!failure || failure.error_code !== "web_direct_raw_body_unsupported" || failure.route_mode !== "web_direct_experimental") {
+    throw new Error("typed Web direct binary limitation was not recorded");
+  }
+  settings.webDirectBridgeEnabled = false;
+  R.nativeFetch = async function(){
+    nativeFetchCalled = true;
+    return {ok:true, status:200, async json(){ return {ready:true, route:"native"}; }, async text(){ return ""; }};
+  };
+  const nativeResult = await bridgeFetch("/ready");
+  if(!nativeResult || nativeResult.route !== "native" || !nativeFetchCalled) throw new Error("default nativeFetch route changed");
+  if(directCallCount !== 1) throw new Error("disabled direct mode still called risuFetch");
+})().catch(err=>{ console.error(err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Web Risu direct bridge fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestReferenceSearchSettingsPanelSavesThroughExistingSettingsOwner(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for reference search settings fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	renderSource := extractArchiveCenterJSFunction(t, src, "renderReferenceSearchLlmSettingsPanel")
+	attachSource := extractArchiveCenterJSFunction(t, src, "attachReferenceSearchLlmSettingsEvents")
+	script := `
+const DEFAULT_SETTINGS = {
+  sourceSearchPlannerProvider:"openai",
+  sourceSearchPlannerTimeoutMs:60000,
+};
+const settings = {
+  sourceSearchPlannerProvider:"openai",
+  sourceSearchPlannerApiKey:"old-key",
+  sourceSearchPlannerEndpoint:"https://old.example/v1",
+  sourceSearchPlannerModel:"old-model",
+  sourceSearchPlannerTimeoutMs:60000,
+  sourceSearchPlannerTemperature:0.1,
+  sourceSearchPlannerReasoningPreset:"auto",
+  sourceSearchPlannerReasoningEffort:"none",
+  sourceSearchPlannerReasoningBudgetTokens:0,
+  sourceSearchPlannerMaxCompletionTokens:512,
+};
+function escapeAttr(value){ return String(value == null ? "" : value); }
+function normalizeSourceSearchLlmProvider(value){ return String(value || "openai"); }
+function getAllowedReasoningPresetsForProvider(){ return ["auto","gpt","gemini","claude","glm","custom"]; }
+const rendered = (` + renderSource + `)();
+if(!rendered.includes('id="mo-sourceSearchPlannerSave"')) throw new Error("reference search save button is not rendered");
+
+function element(value=""){
+  return {value, type:"text", style:{}, options:[], disabled:false, textContent:"", listeners:{}, addEventListener(type, handler){ this.listeners[type]=handler; }};
+}
+const elements = {
+  "mo-sourceSearchPlannerProvider":element("ollama"),
+  "mo-sourceSearchPlannerApiKey":element("new-key"),
+  "mo-sourceSearchPlannerEndpoint":element("https://search.example/v1"),
+  "mo-sourceSearchPlannerModel":element("search-model"),
+  "mo-sourceSearchPlannerTimeoutMs":element("125000"),
+  "mo-sourceSearchPlannerTemperature":element("0.3"),
+  "mo-sourceSearchPlannerReasoningPreset":element("glm"),
+  "mo-sourceSearchPlannerReasoningEffort":element("low"),
+  "mo-sourceSearchPlannerReasoningBudgetTokens":element("2048"),
+  "mo-sourceSearchPlannerMaxCompletionTokens":element("4096"),
+  "mo-sourceSearchPlannerReasoningGuide":element(),
+  "mo-sourceSearchPlannerReasoningBudgetTokensRow":element(),
+  "mo-sourceSearchPlannerGenerationOptions":element(),
+  "mo-sourceSearchPlannerApiKeyToggle":element(),
+  "mo-sourceSearchPlannerSave":element(),
+  "mo-sourceSearchPlannerSaveStatus":element(),
+};
+elements["mo-sourceSearchPlannerReasoningPreset"].options = ["auto","gpt","gemini","claude","glm","custom"].map(value=>({value,hidden:false}));
+const document = {getElementById(id){ return elements[id] || null; }};
+let savedPatch = null;
+async function updateSettings(patch){ savedPatch = patch; return true; }
+` + attachSource + `
+(async()=>{
+  attachReferenceSearchLlmSettingsEvents();
+  const save = elements["mo-sourceSearchPlannerSave"];
+  if(typeof save.listeners.click !== "function") throw new Error("reference search save action is not attached");
+  await save.listeners.click();
+  if(!savedPatch || savedPatch.sourceSearchPlannerProvider!=="ollama" ||
+      savedPatch.sourceSearchPlannerApiKey!=="new-key" ||
+      savedPatch.sourceSearchPlannerEndpoint!=="https://search.example/v1" ||
+      savedPatch.sourceSearchPlannerModel!=="search-model" ||
+      savedPatch.sourceSearchPlannerTimeoutMs!=="125000" ||
+      savedPatch.sourceSearchPlannerTemperature!=="0.3" ||
+      savedPatch.sourceSearchPlannerReasoningPreset!=="glm" ||
+      savedPatch.sourceSearchPlannerReasoningEffort!=="low" ||
+      savedPatch.sourceSearchPlannerReasoningBudgetTokens!=="2048" ||
+      savedPatch.sourceSearchPlannerMaxCompletionTokens!=="4096") {
+    throw new Error("reference search settings were not forwarded intact: "+JSON.stringify(savedPatch));
+  }
+  if(save.disabled || elements["mo-sourceSearchPlannerSaveStatus"].textContent!=="저장됨") {
+    throw new Error("reference search save completion was not shown");
+  }
+})().catch(err=>{ console.error(err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("reference search settings save fixture failed: %v\n%s", err, out)
 	}
 }
 

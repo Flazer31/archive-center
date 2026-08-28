@@ -1211,13 +1211,15 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	endpoint := strings.TrimSpace(*req.Endpoint)
+	provider := strings.TrimSpace(stringPtrValue(req.Provider, ""))
+	endpoint := proxyProviderBaseURL(provider, stringPtrValue(req.Endpoint, ""))
 	if endpoint == "" {
-		writeError(w, http.StatusBadRequest, "missing_param", "endpoint is required")
+		writeError(w, http.StatusBadRequest, "missing_param", "endpoint is required when the selected provider has no official default")
 		return
 	}
+	req.Endpoint = &endpoint
 
-	if err := ValidateProxyEndpointForProvider(endpoint, stringPtrValue(req.Provider, "")); err != nil {
+	if err := ValidateProxyEndpointForProvider(endpoint, provider); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid_endpoint", err.Error())
 		return
 	}

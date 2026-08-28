@@ -81,10 +81,10 @@ func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map
 }
 
 func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
-	endpoint := strings.TrimSpace(stringPtrValue(req.Endpoint, ""))
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
 	provider := strings.ToLower(strings.TrimSpace(stringPtrValue(req.Provider, "")))
+	endpoint := proxyProviderBaseURL(provider, stringPtrValue(req.Endpoint, ""))
 	if provider == "" || endpoint == "" || model == "" || (apiKey == "" && provider != "ollama") {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
 			Stage: "configuration",
@@ -133,7 +133,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		return proxyCallOpenAIResponses(ctx, req, endpoint, apiKey, model, provider, policy)
 	}
 	isGLM := provider != "ollama" && proxyIsGLMLike(model, endpoint, provider)
-	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
+	target := proxyOpenAIChatEndpoint(proxyProviderBaseURL(provider, endpoint), provider, isGLM)
 	reasoningTransport, transportErr := proxyReasoningTransport(provider, endpoint)
 	if transportErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "configuration", Cause: transportErr}
@@ -1862,14 +1862,16 @@ func proxyAttachRequestOverrideTrace(resp map[string]any, trace map[string]any) 
 	resp["_proxy_request_overrides"] = trace
 }
 
-func proxyOpenAIBaseURL(provider, endpoint string) string {
+func proxyProviderBaseURL(provider, endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint != "" {
 		return endpoint
 	}
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return "https://api.openai.com/v1"
 	case "openrouter":
-		return "https://openrouter.ai/api"
+		return "https://openrouter.ai/api/v1"
 	case "llmgateway":
 		return "https://api.llmgateway.io/v1"
 	case "vercel":
@@ -1878,8 +1880,16 @@ func proxyOpenAIBaseURL(provider, endpoint string) string {
 		return "https://api.neuralwatt.com/v1"
 	case "copilot":
 		return "https://api.githubcopilot.com"
+	case "ollama":
+		return "http://127.0.0.1:11434"
+	case "claude":
+		return "https://api.anthropic.com"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta"
+	case "vertex":
+		return "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"
 	default:
-		return "https://api.openai.com"
+		return ""
 	}
 }
 

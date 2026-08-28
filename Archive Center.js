@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.8
+//@display-name Archive Center 4.0.9
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.8
+//@version 4.0.9
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.8";
-  const BUILD_ID = "4.0.8";
+  const VERSION = "4.0.9";
+  const BUILD_ID = "4.0.9";
   const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-27 KST";
-  const BUILD_NOTES = "Archive Center 4.0.8";
+  const BUILD_TIME = "2026-08-28 KST";
+  const BUILD_NOTES = "Archive Center 4.0.9 Web Risu direct bridge test";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -152,6 +152,7 @@
   const DEFAULT_SETTINGS = Object.freeze({
     enabled: true,
     bridgeUrl: "http://127.0.0.1:28080",
+    webDirectBridgeEnabled: false,
     dbEnabled: true,
     supervisorEnabled: true,
     injectionEnabled: true,
@@ -302,15 +303,16 @@
       "settings.lorebookReferenceMode.help": "켜면 관련성이 있는 활성 로어북을 별도 보조 참조로 사용합니다. 꺼도 저장·동기화·조회는 유지됩니다.",
       "settings.btn.refreshLorebookReference": "로어북 새로고침",
       "lorebook.sync.errorDetails": "로어북 동기화 오류 상세",
+      "settings.label.webDirectBridgeEnabled": "Web Risu 직접 연결 (실험)",
+      "settings.webDirectBridgeEnabled.on": "이 백엔드 요청만 직접 전송",
+      "settings.hint.webDirectBridgeEnabled": "HTTPS Bridge URL 전용 · localhost/127.0.0.1 및 실시간 진행 스트림은 지원하지 않습니다.",
       "settings.section.connectionTest": "연결 테스트",
       "settings.section.callTest": "호출 테스트",
       "settings.section.update": "업데이트",
       "settings.section.pluginMainLlm": "출판사 LLM (1차 편집)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "출판사 LLM 기본값이며 입력 개선과 출판사 LLM 호출에 함께 사용됩니다.\n\n저장 시 backend/.env 및 런타임 설정과 동기화됩니다.",
       "settings.pluginMainLlm.showFields": "▸ 필드 보기",
       "settings.section.subLlm": "편집 검토·평론가 LLM (2차 검토/정리)",
-      "settings.section.subLlm.desc": "1차 편집 결과의 2차 검토와 응답 후 평론가 정리(요약/구조화)에 사용하는 모델입니다.\n\n비어 있으면 해당 호출은 미설정으로 처리되며 출판사 LLM 값을 자동으로 사용하지 않습니다.",
       "settings.section.embeddingLlm": "기억 색인 LLM (Embedding)",
       "settings.section.embeddingLlm.desc": "출판사/평론가가 참조할 장기 기억 검색용 임베딩 생성에 사용됩니다.",
       "settings.section.advanced": "⚙ 고급 설정 (접기/펼치기)",
@@ -1463,15 +1465,16 @@
       "settings.lorebookReferenceMode.help": "Uses relevant active lorebooks as a separate auxiliary reference. Turning it off keeps storage, synchronization, and browsing available.",
       "settings.btn.refreshLorebookReference": "Refresh lorebook",
       "lorebook.sync.errorDetails": "Lorebook synchronization error details",
+      "settings.label.webDirectBridgeEnabled": "Web Risu direct bridge (experimental)",
+      "settings.webDirectBridgeEnabled.on": "Send only these backend requests directly",
+      "settings.hint.webDirectBridgeEnabled": "HTTPS Bridge URL only · localhost/127.0.0.1 and the live progress stream are not supported.",
       "settings.section.connectionTest": "Connection Test",
       "settings.section.callTest": "Call Test",
       "settings.section.update": "Update",
       "settings.section.pluginMainLlm": "Publisher LLM (Editor First-pass)",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "Default Publisher LLM settings.\n\nUsed by input-improvement first pass and Publisher LLM calls.\n\nSaved values sync to backend/.env and runtime settings.",
       "settings.pluginMainLlm.showFields": "▸ Show Fields",
       "settings.section.subLlm": "Review/Critic LLM (Second-pass/Post-process)",
-      "settings.section.subLlm.desc": "Used for second-pass review of first-pass edits and post-response critic structuring.\n\nIf left empty, this lane is treated as not configured and does not automatically use Publisher LLM values.",
       "settings.section.embeddingLlm": "Indexer LLM (Embedding)",
       "settings.section.embeddingLlm.desc": "Used to generate embeddings for long-memory retrieval referenced by Publisher/Critic.",
       "settings.section.advanced": "⚙ Advanced Settings (expand/collapse)",
@@ -2624,15 +2627,16 @@
       "settings.lorebookReferenceMode.help": "関連性のある有効なロアブックを別の補助参照として使用します。オフにしても保存・同期・閲覧は維持されます。",
       "settings.btn.refreshLorebookReference": "ロアブックを更新",
       "lorebook.sync.errorDetails": "ロアブック同期エラーの詳細",
+      "settings.label.webDirectBridgeEnabled": "Web Risu 直接接続（実験）",
+      "settings.webDirectBridgeEnabled.on": "このバックエンド要求のみ直接送信",
+      "settings.hint.webDirectBridgeEnabled": "HTTPS Bridge URL 専用 · localhost/127.0.0.1 とリアルタイム進行ストリームは非対応です。",
       "settings.section.connectionTest": "接続テスト",
       "settings.section.callTest": "呼出テスト",
       "settings.section.update": "アップデート",
       "settings.section.pluginMainLlm": "出版社 LLM（一次編集）",
       "settings.section.pluginMainLlm.notConnected": "",
-      "settings.section.pluginMainLlm.desc": "Publisher LLM の既定値です。\n\n入力改善 first-pass と Publisher LLM 呼び出しに使用されます。\n\n保存時に backend/.env とランタイム設定へ同期されます。",
       "settings.pluginMainLlm.showFields": "▸ フィールド表示",
       "settings.section.subLlm": "編集レビュー・評論家 LLM（二次レビュー/整理）",
-      "settings.section.subLlm.desc": "一次編集結果の二次レビューと、応答後の評論家整理（要約/構造化）に使用するモデルです。\n\n空の場合は出版社 LLM の値を自動使用します。",
       "settings.section.embeddingLlm": "記憶インデックス LLM（Embedding）",
       "settings.section.embeddingLlm.desc": "出版社/評論家が参照する長期記憶検索用の埋め込み生成に使用されます。",
       "settings.section.advanced": "⚙ 詳細設定 (展開/折りたたみ)",
@@ -10649,8 +10653,11 @@
     };
   }
 
-  function renderBridgeRuntimeNotice(rawUrl) {
+  function renderBridgeRuntimeNotice(rawUrl, webDirectEnabled) {
     const route = resolveBridgeRuntimeRoute(rawUrl);
+    if (webDirectEnabled === true) {
+      return `<div class="mo-note">Web Risu 직접 연결 실험 모드입니다. 브라우저에서 접근 가능한 HTTPS Bridge URL을 사용하세요.</div>`;
+    }
     if (route.loopbackOnHostedPage) {
       return `<div class="mo-note" style="color:#facc15;">Backend URL이 localhost/127.0.0.1입니다. RisuAI를 같은 PC에서 열었다면 정상입니다. 다른 PC/모바일에서 열었다면 이 주소는 그 기기 자신을 가리키므로 서버 PC의 LAN IP, Tailscale IP, 도메인, 또는 HTTPS 프록시 주소를 직접 입력하세요. Archive Center는 이 주소를 페이지 도메인으로 자동 변경하지 않습니다.</div>`;
     }
@@ -11454,6 +11461,7 @@
     merged.rollbackAutoEnabled = true;
     // bridgeUrl 방어
     merged.bridgeUrl = sanitizeBridgeUrl(merged.bridgeUrl);
+    merged.webDirectBridgeEnabled = merged.webDirectBridgeEnabled === true;
     merged.narrativeGuideMode = sanitizeEnumValue(
       merged.narrativeGuideMode,
       DEFAULT_SETTINGS.narrativeGuideMode,
@@ -13220,6 +13228,7 @@
       + '<div class="mo-row"><label>Reasoning Effort</label><select id="mo-sourceSearchPlannerReasoningEffort"><option value="none"' + ((s.sourceSearchPlannerReasoningEffort || "none") === "none" ? " selected" : "") + '>none</option><option value="minimal"' + (s.sourceSearchPlannerReasoningEffort === "minimal" ? " selected" : "") + '>minimal</option><option value="low"' + (s.sourceSearchPlannerReasoningEffort === "low" ? " selected" : "") + '>low</option><option value="medium"' + (s.sourceSearchPlannerReasoningEffort === "medium" ? " selected" : "") + '>medium</option><option value="high"' + (s.sourceSearchPlannerReasoningEffort === "high" ? " selected" : "") + '>high</option></select></div>'
       + '<div class="mo-row" id="mo-sourceSearchPlannerReasoningBudgetTokensRow"><label>Reasoning Budget Tokens</label><input type="number" id="mo-sourceSearchPlannerReasoningBudgetTokens" value="' + Number(s.sourceSearchPlannerReasoningBudgetTokens ?? 0) + '" min="0" max="131072" step="1"></div>'
       + '<div class="mo-row"><label>Max Completion Tokens</label><input type="number" id="mo-sourceSearchPlannerMaxCompletionTokens" value="' + Number(s.sourceSearchPlannerMaxCompletionTokens ?? 512) + '" min="1" max="128000" step="1"></div></div>'
+      + '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-primary" id="mo-sourceSearchPlannerSave">💾 저장</button><span id="mo-sourceSearchPlannerSaveStatus" class="mo-section-desc"></span></div>'
       + '</div></div></div>';
   }
 
@@ -13424,6 +13433,26 @@
     byId("mo-sourceSearchPlannerApiKeyToggle")?.addEventListener("click", () => {
       const input = byId("mo-sourceSearchPlannerApiKey");
       if (input) input.type = input.type === "password" ? "text" : "password";
+    });
+    const saveButton = byId("mo-sourceSearchPlannerSave");
+    if (saveButton) saveButton.addEventListener("click", async () => {
+      const status = byId("mo-sourceSearchPlannerSaveStatus");
+      saveButton.disabled = true;
+      if (status) status.textContent = "저장 중...";
+      const saved = await updateSettings({
+        sourceSearchPlannerProvider: provider.value,
+        sourceSearchPlannerApiKey: byId("mo-sourceSearchPlannerApiKey")?.value ?? settings.sourceSearchPlannerApiKey,
+        sourceSearchPlannerEndpoint: byId("mo-sourceSearchPlannerEndpoint")?.value ?? settings.sourceSearchPlannerEndpoint,
+        sourceSearchPlannerModel: byId("mo-sourceSearchPlannerModel")?.value ?? settings.sourceSearchPlannerModel,
+        sourceSearchPlannerTimeoutMs: byId("mo-sourceSearchPlannerTimeoutMs")?.value ?? settings.sourceSearchPlannerTimeoutMs,
+        sourceSearchPlannerTemperature: byId("mo-sourceSearchPlannerTemperature")?.value ?? settings.sourceSearchPlannerTemperature,
+        sourceSearchPlannerReasoningPreset: byId("mo-sourceSearchPlannerReasoningPreset")?.value ?? settings.sourceSearchPlannerReasoningPreset,
+        sourceSearchPlannerReasoningEffort: byId("mo-sourceSearchPlannerReasoningEffort")?.value ?? settings.sourceSearchPlannerReasoningEffort,
+        sourceSearchPlannerReasoningBudgetTokens: byId("mo-sourceSearchPlannerReasoningBudgetTokens")?.value ?? settings.sourceSearchPlannerReasoningBudgetTokens,
+        sourceSearchPlannerMaxCompletionTokens: byId("mo-sourceSearchPlannerMaxCompletionTokens")?.value ?? settings.sourceSearchPlannerMaxCompletionTokens,
+      });
+      saveButton.disabled = false;
+      if (status) status.textContent = saved ? "저장됨" : "저장 실패";
     });
     sync();
   }
@@ -13664,11 +13693,13 @@
     return copy;
   }
 
-  function endpointSummary(endpoint, model) {
+  function endpointSummary(endpoint, model, automatic) {
     const ep = endpoint || "";
     const mdl = model || "";
     if (ep && mdl) return ep + " · model: " + mdl;
     if (ep) return ep;
+    if (automatic && mdl) return "자동 Endpoint · model: " + mdl;
+    if (automatic) return "자동 Endpoint";
     if (mdl) return mdl;
     return "미설정";
   }
@@ -13697,6 +13728,8 @@
     const timeout = resolveRequestTimeoutMs(timeoutMs);
     const requestStartedAt = Date.now();
     const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
+    const webDirectBridge = settings.webDirectBridgeEnabled === true;
+    const bridgeTransportMode = webDirectBridge ? "web_direct_experimental" : String(bridgeRoute.mode || "configured");
     const baseUrl = bridgeRoute.url;
     const targetUrl = baseUrl ? `${baseUrl}${path}` : "";
     const recordBridgeFailure = function(kind, status, detail, diagnostics = {}) {
@@ -13708,7 +13741,7 @@
           method: String(method || "GET").toUpperCase(),
           configured_url: String(bridgeRoute.configuredUrl || settings.bridgeUrl || ""),
           target_url: targetUrl,
-          route_mode: String(bridgeRoute.mode || "configured"),
+          route_mode: bridgeTransportMode,
           page_host: String(bridgeRoute.pageHost || ""),
           loopback_on_hosted_page: bridgeRoute.loopbackOnHostedPage === true,
           mixed_content_risk: bridgeRoute.mixedContentRisk === true,
@@ -13773,7 +13806,53 @@
       let response;
       try {
         let fetchPromise;
-        if (R && typeof R.nativeFetch === "function") {
+        if (webDirectBridge) {
+          if (!R || typeof R.risuFetch !== "function") {
+            const unavailable = new Error("web_direct_transport_unavailable");
+            unavailable.code = "web_direct_transport_unavailable";
+            throw unavailable;
+          }
+          if (rawBody) {
+            const unsupported = new Error("web_direct_raw_body_unsupported");
+            unsupported.code = "web_direct_raw_body_unsupported";
+            throw unsupported;
+          }
+          let directBody = body;
+          if (typeof directBody === "string") {
+            try { directBody = JSON.parse(directBody); } catch { /* preserve intentional JSON string values */ }
+          }
+          const directInit = {
+            method,
+            headers: mergedHeaders,
+            plainFetchForce: true,
+            rawResponse: true,
+            requestTimeoutMs: timeout > 0 ? timeout : undefined,
+            abortSignal: controller ? controller.signal : undefined,
+          };
+          if (body !== null && method !== "GET") directInit.body = directBody;
+          fetchPromise = R.risuFetch(url, directInit).then(function(result) {
+            const rawData = result && result.data;
+            let responseText = "";
+            if (rawData instanceof Uint8Array) {
+              responseText = new TextDecoder().decode(rawData);
+            } else if (rawData instanceof ArrayBuffer) {
+              responseText = new TextDecoder().decode(new Uint8Array(rawData));
+            } else if (typeof rawData === "string") {
+              responseText = rawData;
+            } else if (rawData !== undefined && rawData !== null) {
+              responseText = JSON.stringify(rawData);
+            }
+            return {
+              status: Number(result && result.status || 0),
+              ok: result && result.ok === true,
+              json: async function() {
+                if (!responseText.trim()) return null;
+                return JSON.parse(responseText);
+              },
+              text: async function() { return responseText; },
+            };
+          });
+        } else if (R && typeof R.nativeFetch === "function") {
           fetchPromise = R.nativeFetch(url, fetchInit);
         } else {
           // fallback: 일반 fetch (브라우저 콘솔 디버깅용)
@@ -14983,6 +15062,10 @@
     }
     const normalizedRequestId = String(requestId || "").trim();
     if (!normalizedRequestId) return;
+    if (settings.webDirectBridgeEnabled === true) {
+      debugLog("turn workflow HUD live stream is unavailable in Web Risu direct bridge test mode");
+      return;
+    }
     if (_turnWorkflowHUDWatchRunning && _turnWorkflowHUDActiveRequestId === normalizedRequestId) return;
     if (_turnWorkflowHUDActiveRequestId !== normalizedRequestId) {
       primeTurnWorkflowHUD(normalizedRequestId);
@@ -25282,9 +25365,6 @@
       (settings.pluginMainProvider.trim().toLowerCase() === "ollama" || (
         typeof settings.pluginMainApiKey === "string" && settings.pluginMainApiKey.trim()
       )) &&
-      settings.pluginMainEndpoint &&
-      typeof settings.pluginMainEndpoint === "string" &&
-      settings.pluginMainEndpoint.trim() &&
       settings.pluginMainModel &&
       typeof settings.pluginMainModel === "string" &&
       settings.pluginMainModel.trim()
@@ -25296,7 +25376,7 @@
   // CORS 우회를 위해 백엔드 /proxy/plugin-main 을 경유
   async function callPluginMainLlm(systemPrompt, userContent, options) {
     if (!pluginMainHasConfig()) {
-      throw new Error("[J-1a] Plugin Main LLM not configured (provider/apiKey/endpoint/model 중 하나 이상 비어있음)");
+      throw new Error("[J-1a] Plugin Main LLM not configured (provider/apiKey/model 중 하나 이상 비어있음)");
     }
     const opts = options || {};
     const defaultMaxCompletionTokens = (typeof getPluginMainMaxCompletionTokensSetting === "function")
@@ -25598,9 +25678,6 @@
       (settings.subLlmProvider.trim().toLowerCase() === "ollama" || (
         typeof settings.subLlmApiKey === "string" && settings.subLlmApiKey.trim()
       )) &&
-      settings.subLlmEndpoint &&
-      typeof settings.subLlmEndpoint === "string" &&
-      settings.subLlmEndpoint.trim() &&
       settings.subLlmModel &&
       typeof settings.subLlmModel === "string" &&
       settings.subLlmModel.trim()
@@ -25737,7 +25814,7 @@
 
   async function callSubLlmReview(systemPrompt, userContent, options) {
     if (!subLlmHasConfig()) {
-      throw new Error("[J-2b] Sub LLM not configured (provider/subLlmApiKey/endpoint/model 중 하나 이상 비어있음)");
+      throw new Error("[J-2b] Sub LLM not configured (provider/subLlmApiKey/model 중 하나 이상 비어있음)");
     }
     const opts = options || {};
     const defaultTimeoutMs = getSubLlmTimeoutSettingMs();
@@ -49893,8 +49970,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     <!-- ▸ 설정 상태 요약 -->
     <div class="mo-section">${t('settings.section.status')}</div>
     <div class="mo-dash">
-      <div class="mo-dash-row"><span class="mo-dot ${s.pluginMainEndpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.directorLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.pluginMainEndpoint, s.pluginMainModel))}</span></div>
-      <div class="mo-dash-row"><span class="mo-dot ${effectiveCritic.endpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.criticLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(effectiveCritic.endpoint, effectiveCritic.model))}</span></div>
+      <div class="mo-dash-row"><span class="mo-dot ${s.pluginMainEndpoint || (s.pluginMainProvider && s.pluginMainProvider !== "custom") ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.directorLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.pluginMainEndpoint, s.pluginMainModel, s.pluginMainProvider && s.pluginMainProvider !== "custom"))}</span></div>
+      <div class="mo-dash-row"><span class="mo-dot ${effectiveCritic.endpoint || (effectiveCritic.provider && effectiveCritic.provider !== "custom") ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.criticLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(effectiveCritic.endpoint, effectiveCritic.model, effectiveCritic.provider && effectiveCritic.provider !== "custom"))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${s.embeddingEndpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.embeddingLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.embeddingEndpoint, s.embeddingModel))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${settingsStorageDot}"></span><span class="mo-dash-label">Storage</span><span class="mo-dash-value" title="${escapeAttr(settingsStorageDetail)}">${escapeAttr(settingsStorageLabel)}</span></div>
     </div>
@@ -49931,7 +50008,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     <div class="mo-section">${t('settings.section.pluginMainLlm')} | ${t('settings.section.subLlm')}</div>
     <div class="mo-llm-split">
       <div class="mo-llm-panel">
-      <div class="mo-section-desc">${t('settings.section.pluginMainLlm.desc').replace(/\n/g,'<br>')}</div>
       <div class="mo-llm-section">
       <div class="mo-row">
         <label id="mo-pluginMainApiKeyLabel">API Key</label>
@@ -49955,7 +50031,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         </select>
       </div>
       <div class="mo-row">
-        <label id="mo-pluginMainEndpointLabel">Endpoint</label>
+        <label id="mo-pluginMainEndpointLabel">Endpoint (비워두면 자동)</label>
         <input type="text" id="mo-pluginMainEndpoint" value="${escapeAttr(s.pluginMainEndpoint)}" placeholder="https://api.openai.com/v1">
         <small id="mo-pluginMainVertexHint" style="color:#9aa8c7;font-size:11px;"></small>
       </div>
@@ -50054,7 +50130,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       </div>
 
       <div class="mo-llm-panel">
-      <div class="mo-section-desc">${t('settings.section.subLlm.desc').replace(/\n/g,'<br>')}</div>
       <div class="mo-llm-section">
       <div class="mo-row">
         <label id="mo-subLlmApiKeyLabel">API Key</label>
@@ -50078,7 +50153,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         </select>
       </div>
       <div class="mo-row">
-        <label id="mo-subLlmEndpointLabel">Endpoint</label>
+        <label id="mo-subLlmEndpointLabel">Endpoint (비워두면 자동)</label>
         <input type="text" id="mo-subLlmEndpoint" value="${escapeAttr(s.subLlmEndpoint)}" placeholder="${t('settings.placeholder.sameAsMain')}">
         <small id="mo-subLlmVertexHint" style="color:#9aa8c7;font-size:11px;"></small>
       </div>
@@ -50276,7 +50351,15 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <label>Backend URL</label>
           <input type="text" id="mo-bridgeUrl" value="${escapeAttr(s.bridgeUrl)}" placeholder="http://localhost:28080">
         </div>
-        ${renderBridgeRuntimeNotice(s.bridgeUrl)}
+        <div class="mo-row">
+          <label>${t('settings.label.webDirectBridgeEnabled')}</label>
+          <div class="mo-chk">
+            <input type="checkbox" id="mo-webDirectBridgeEnabled"${s.webDirectBridgeEnabled === true ? " checked" : ""}>
+            <label for="mo-webDirectBridgeEnabled">${t('settings.webDirectBridgeEnabled.on')}</label>
+          </div>
+          <small>${t('settings.hint.webDirectBridgeEnabled')}</small>
+        </div>
+        ${renderBridgeRuntimeNotice(s.bridgeUrl, s.webDirectBridgeEnabled)}
         <div class="mo-row mo-range-row">
           <label>Plugin Timeout (ms)</label>
           <input type="number" id="mo-requestTimeoutMs" value="${s.requestTimeoutMs}" min="1000" max="300000" step="1000">
@@ -51231,13 +51314,16 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       async function withUiBridgeSettings(fn) {
         const prevUrl = settings.bridgeUrl;
         const prevRequestTimeoutMs = settings.requestTimeoutMs;
+        const prevWebDirectBridgeEnabled = settings.webDirectBridgeEnabled === true;
         settings.bridgeUrl = sanitizeBridgeUrl(((($("mo-bridgeUrl") || {}).value) || "").trim() || settings.bridgeUrl);
         settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();
+        settings.webDirectBridgeEnabled = !!(($("mo-webDirectBridgeEnabled") || {}).checked);
         try {
           return await fn();
         } finally {
           settings.bridgeUrl = prevUrl;
           settings.requestTimeoutMs = prevRequestTimeoutMs;
+          settings.webDirectBridgeEnabled = prevWebDirectBridgeEnabled;
         }
       }
 
@@ -51392,13 +51478,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       );
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';
-      const vertexHintText = "LIBRA native 방식: 서비스 계정 JSON 전체와 /publishers/google/models까지의 endpoint prefix를 사용합니다. PROJECT_ID는 JSON의 project_id로 자동 치환됩니다. 모델은 gemini-3.5-flash처럼 google/ 없이 입력하세요.";
       const llmGatewayEndpointPlaceholder = "https://api.llmgateway.io/v1";
-      const llmGatewayHintText = "LLM Gateway의 OpenAI 호환 endpoint입니다. 모델 ID는 LLM Gateway 모델 페이지의 provider/model 표기를 사용하세요.";
       const vercelEndpointPlaceholder = "https://ai-gateway.vercel.sh/v1";
-      const vercelHintText = "Vercel AI Gateway의 OpenAI Chat Completions 호환 endpoint입니다. 모델은 creator/model 형식을 사용하세요.";
       const neuralWattEndpointPlaceholder = "https://api.neuralwatt.com/v1";
-      const neuralWattHintText = "NeuralWatt 공식 Chat Completions endpoint입니다. Flex는 Service Tier에서 선택하며 스트리밍과 실제 응답 조립은 백엔드가 처리합니다.";
       const syncVertexOverrideRows = (providerId, rowIds) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -51448,12 +51530,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const hint = $(hintId);
           if (apiLabel) apiLabel.textContent = isVertex ? "Service Account JSON" : "API Key";
           if (apiInput) apiInput.placeholder = isVertex ? vertexServiceAccountPlaceholder : (defaults.api || "");
-          if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint" : "Endpoint";
+          if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint (비워두면 global 자동)" : "Endpoint (비워두면 자동)";
           if (endpointInput) endpointInput.placeholder = isVertex
             ? vertexEndpointPlaceholder
             : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (isNeuralWatt ? neuralWattEndpointPlaceholder : (defaults.endpoint || ""))));
           if (modelInput) modelInput.placeholder = isVertex ? (defaults.vertexModel || "예: gemini-2.5-flash") : (defaults.model || "");
-          if (hint) hint.textContent = isVertex ? vertexHintText : (isLlmGateway ? llmGatewayHintText : (isVercel ? vercelHintText : (isNeuralWatt ? neuralWattHintText : "")));
+          if (hint) {
+            hint.textContent = "비워두면 선택한 Provider의 공식 기본 Endpoint를 사용하며, 직접 입력하면 입력한 주소를 우선합니다.";
+          }
         };
         providerEl.addEventListener("change", sync);
         sync();
@@ -51504,6 +51588,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const patch = {
             debug: $("mo-debug").checked,
             bridgeUrl: rawBridgeUrl,
+            webDirectBridgeEnabled: readChecked("mo-webDirectBridgeEnabled", false),
             requestTimeoutMs: $("mo-requestTimeoutMs").value,
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
@@ -51609,6 +51694,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           }
           // UI 필드를 정규화된 값으로 갱신
           $("mo-bridgeUrl").value = settings.bridgeUrl;
+          $("mo-webDirectBridgeEnabled").checked = settings.webDirectBridgeEnabled === true;
           $("mo-requestTimeoutMs").value = settings.requestTimeoutMs;
           $("mo-embeddingTimeout").value = settings.embeddingTimeout;
           $("mo-embeddingProvider").value = settings.embeddingProvider || "openai";
@@ -51735,8 +51821,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         const testEndpoint = (($("mo-pluginMainEndpoint") || {}).value || "").trim();
         const testModel = (($("mo-pluginMainModel") || {}).value || "").trim();
         const testProvider = normalizeLlmProvider((($("mo-pluginMainProvider") || {}).value) || "openai", "openai");
-        if ((!testApiKey && testProvider !== "ollama") || !testEndpoint || !testModel) {
-          resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 출판사 LLM API Key / Endpoint / Model이 비어 있습니다. 출판사 필드를 먼저 채워주세요.</div>';
+        if ((!testApiKey && testProvider !== "ollama") || !testModel) {
+          resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 출판사 LLM API Key / Model이 비어 있습니다. Endpoint는 비워두면 자동 설정됩니다.</div>';
           return;
         }
 
@@ -51820,8 +51906,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         const testEndpoint = (($("mo-subLlmEndpoint") || {}).value || "").trim();
         const testModel = (($("mo-subLlmModel") || {}).value || "").trim();
         const testProvider = normalizeLlmProvider((($("mo-subLlmProvider") || {}).value) || "openai", "openai");
-        if ((!testApiKey && testProvider !== "ollama") || !testEndpoint || !testModel) {
-          resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 평론가 LLM API Key / Endpoint / Model이 비어 있습니다. 평론가 필드를 먼저 채워주세요.</div>';
+        if ((!testApiKey && testProvider !== "ollama") || !testModel) {
+          resultEl.innerHTML = '<div class="mo-status mo-status-fail">❌ 평론가 LLM API Key / Model이 비어 있습니다. Endpoint는 비워두면 자동 설정됩니다.</div>';
           return;
         }
 
