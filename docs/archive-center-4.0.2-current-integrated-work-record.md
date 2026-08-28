@@ -1,6 +1,6 @@
 # Archive Center 4.0.2 이후 통합 작업 기록
 
-기준일: 2026-08-27 KST  
+기준일: 2026-08-28 KST
 활성 소스: `source/Archive Center.js`, `source/go-service`  
 현재 소스 표기 버전: `4.0.8`
 
@@ -23,7 +23,7 @@
 - 4.0.7 리롤·삭제·Vector worker 작업과 후속 결함 제거
 - 4.0.7 이후 콜드 스타트 개체 투영 복구
 - 현재 4.0.8 소스의 타임아웃, 주관 기억 점수, KG 시간 의미,
-  NeuralWatt, 세계 규칙 전달 및 기본 설정 상향
+  NeuralWatt, 세계 규칙 전달, 기본 설정 상향 및 DeepSeek V4 `low` 전달
 
 ### 증거 단계
 
@@ -75,6 +75,7 @@
 | 4.0.8 | NeuralWatt Flex를 출판사·평론가에서 사용하고 싶음 | 전용 Provider, endpoint, service tier, SSE 응답 조립 추가 | 소스·회귀 완료, 실계정 미확인 |
 | 4.0.8 | 세계 규칙이 180자에서 문장 중간 절단 | 조립 전 고정 축약 제거, 완전한 항목을 최종 예산 선택기로 전달 | 소스·회귀 완료 |
 | 4.0.8 후속 | 긴 세션에서 기존 기본값이 부족해짐 | 새 기본값을 timeout 120초, completion 30,000, 일반 기억 18,000자로 상향 | 현재 소스 반영, 패키지 재생성 필요 |
+| 4.0.8 후속 | DeepSeek V4에 실제 `low`가 있어도 UI에서 선택할 수 없고 호출 전 `high`로 승격됨 | Direct·gateway·Ollama·Custom OpenAI 호환 경로에서 지원되는 `low`를 보존하고 NeuralWatt Pro/Flash 의미를 구분 | 소스·회귀 완료, 실 Provider 미확인 |
 
 ## 4. 버전별 상세 기록
 
@@ -348,6 +349,39 @@
 - 별도 backend fallback이나 보호 정책을 추가하지 않고 기존 runtime config
   동기화 경로를 사용한다.
 
+### 4.0.8 후속 현재 소스 — DeepSeek V4 `low` 추론 강도
+
+#### 피드백과 확인
+
+- DeepSeek 공식 API의 V4 계열에는 `low`가 존재하지만 Archive Center는
+  Direct DeepSeek와 gateway 설정에서 `none/high/max`만 제공했다.
+- Go 요청 변환기도 일부 DeepSeek V4 `low`를 요청 전에 `high`로 승격했다.
+- 비공식 제공 경로는 계약이 서로 달랐다. NeuralWatt V4 Pro는 실제 `low`를
+  제공하지만 V4 Flash는 `low`를 `high`로 정규화하며, OpenCode Zen의 공식
+  모델 목록은 별도 reasoning metadata를 제공하지 않는다.
+
+#### 현재 소스 반영
+
+- Direct DeepSeek, LLM Gateway, OpenRouter, Vercel, Ollama 및 DeepSeek V4로
+  판정된 Custom OpenAI 호환 endpoint에서 선택한 `low`를 숨겨서 승격하지
+  않고 해당 wire 형식으로 전달한다.
+- Custom OpenAI 호환 endpoint가 `low`를 지원하지 않으면 upstream 오류를
+  그대로 표시한다. 다른 강도로 바꾸거나 재호출하지 않는다.
+- NeuralWatt `deepseek-v4-pro`는 `low`를 보존하고,
+  `deepseek-v4-flash`와 `-flex`는 공식 서비스 계약대로 별도 low 단계로
+  표시하지 않는다.
+- 기존 Ollama DeepSeek V4의 `low`·`medium` 동작과 기존 저장값 호환은
+  유지했다.
+
+#### 검증 수준
+
+- `Archive Center.js` Node 구문 검사: 통과
+- `go test ./internal/httpapi -count=1`: 통과
+- `go test ./cmd/js-route-variant-smoke -count=1`: 통과
+- Direct·LLM Gateway·OpenRouter·NeuralWatt Pro·NeuralWatt Flash·Ollama·Custom
+  OpenAI 호환 요청 body 회귀: 통과
+- 실제 외부 Provider 호출과 실제 추론량 차이: 미검증
+
 ## 5. 핵심 기능별 현재 감사 상태
 
 | 기능 | 현재 소유 경로 | 자동 회귀 | 현재 판정 |
@@ -389,6 +423,9 @@
 아직 포함되지 않는다. 패키지를 다시 갱신하기 전에는 현재 소스와 기존 ZIP을
 동일한 산출물로 취급하면 안 된다.
 
+2026-08-28에 반영한 DeepSeek V4 `low` 후속 수정도 기존 4.0.8 테스트 ZIP에는
+포함되지 않는다.
+
 ## 7. 전 구간에서 유지한 원칙
 
 - 모델명 allowlist를 만들지 않는다.
@@ -416,6 +453,8 @@
 ### 실환경 확인
 
 - 실제 NeuralWatt Standard/Flex 호출의 usage·finish event·과금 표시
+- 실제 Direct DeepSeek·LLM Gateway·OpenRouter·OpenCode Zen·NeuralWatt에서
+  요청한 `low`가 수용되고 실제 낮은 추론 단계로 적용되는지
 - 사용자 설정 timeout이 느린 실제 Provider 호출에 그대로 적용되는지
 - 신규 주관 기억 점수가 실제 세션에서 다양하게 생성되는지
 - 기존 `5 / 0.5` 데이터의 명시적 재처리 시 중복 없이 투영되는지
@@ -451,6 +490,8 @@
     Provider 호출 장부에 같은 값으로 남는지 확인한다.
 11. 일반 기억 기본값 18,000 chars가 원작 DB·로어북 별도 예산을 바꾸지 않는지
     확인한다.
+12. 각 Provider에서 DeepSeek V4 `low`를 선택해 요청 payload·Provider 응답과
+    실제 reasoning token/latency가 일치하는지 확인한다.
 
 ## 10. 근거 문서와 소스
 
@@ -484,3 +525,98 @@
 이 문서는 작업을 없던 일로 만들거나 과거 문서를 삭제하기 위한 요약이 아니다.
 4.0.2 이후 어떤 피드백으로 무엇을 바꿨고, 무엇을 다시 제거했으며, 현재 무엇이
 소스·패키지·실사용 중 어느 단계까지 검증됐는지를 한 번에 이어 보기 위한 기준이다.
+
+## 11. RisuAI CID 변경과 세션 계보 식별 검토
+
+기록일: 2026-08-28 KST
+상태: `diagnosed_design_only` — 원인 확인과 설계 기록만 완료했으며 런타임,
+DB schema, 테스트 패키지는 변경하지 않았다.
+
+### 사용자 피드백
+
+- RisuAI의 현재 채팅 Index는 119인데 Archive Center DB에는 29턴까지만
+  보였고, 이전에 존재하던 기억을 사용하지 않고 현재 채팅을 처음부터 다시
+  불러오는 것처럼 보였다.
+- 사용자는 RisuAI 채팅방의 CID가 항상 고정되지 않을 수 있다는 점을 이미
+  알고 있었으며, 공식 RisuAI와 PocketRisu에서 공통으로 쓸 수 있는 더 안정적인
+  식별값이 있는지 확인을 요청했다.
+
+### 실데이터에서 확인된 원인
+
+- MariaDB와 ChromaDB가 삭제되거나 초기화된 것은 아니었다.
+- 현재 관측된 세션
+  `char_13_cid_9dd8e401-1ba6-47b8-8abe-3d0cca98fdbf`와 기존 세션
+  `char_0_cid_125f11ae-b87e-4dad-a0d0-c36ae9574796`은 서로 다른 canonical
+  session으로 등록돼 있었다.
+- 두 세션 사이에서 동일한 chat log 31건과 동일한
+  `memory_source_revisions.source_message_id` 최소 3건이 확인됐다. 따라서
+  대화 원문과 메시지 계보가 겹치는 동일 대화 계열이라는 근거가 있다.
+- 반면 두 route binding의 stable character ID와 host chat ID는 모두 달랐고,
+  `session_fork_lineage` 연결도 없었다. 현재 resolver는 이를 독립 세션으로
+  취급했고 active-chat backfill이 현재 CID 아래로 원문을 다시 수집했다.
+- RisuAI의 화면 Index는 배열 위치이며 논리 턴 수나 영구 채팅 ID가 아니다.
+
+### 공식 RisuAI·PocketRisu 공통 필드 확인
+
+2026-08-28에 공식 `main` 소스와 Plugin API V3 타입을 확인했다.
+
+- RisuAI Plugin API는 `character.chaId`를 stable character ID라고 설명한다.
+  캐릭터 단위 식별에는 쓸 수 있지만 채팅방 자체를 식별하지는 못한다.
+- 공식 RisuAI와 PocketRisu의 현재 데이터 구조에는 공통으로 다음 필드가 있다.
+  - `character.chaId`
+  - 선택 필드 `Chat.id`
+  - 선택 필드 `Message.chatId`
+  - 채팅별 `scriptstate`
+- `characterIndex`와 `chatIndex`는 위치값이므로 영구 식별자로 사용하지 않는다.
+- `Chat.id`는 현재 채팅 객체 경로에는 유용하지만 branch, 복사, 가져오기,
+  재생성 과정에서 바뀔 수 있다.
+- `Message.chatId`는 공유된 과거 메시지의 계보 근거로 유용하지만 선택 필드이므로
+  모든 메시지와 모든 변환 경로에서 존재한다고 가정하지 않는다.
+- Plugin API의 chat 반환형은 `any`이고, 문서화되지 않은 내부 필드는 변경될 수
+  있다고 공식 타입 문서가 명시한다. 따라서 내부 필드 하나만을 절대 고정 ID로
+  승격하지 않는다.
+- PocketRisu는 RisuAI 파생 프로젝트이며 RisuAI 데이터와 양방향 호환을
+  설명하고 있지만, 이것이 모든 복사·branch·가져오기에서 채팅 ID가 보존된다는
+  보장은 아니다.
+
+확인 자료:
+
+- `https://github.com/kwaroran/RisuAI/blob/main/src/ts/plugins/apiV3/risuai.d.ts`
+- `https://github.com/kwaroran/RisuAI/blob/main/src/ts/storage/database.svelte.ts`
+- `https://github.com/PocketRisu/PocketRisu/blob/main/src/ts/storage/database.svelte.ts`
+- `https://github.com/PocketRisu/PocketRisu#risuai-compatibility`
+
+### 권장 식별 구조
+
+단일 호스트 값을 새 영구 ID로 선택하지 않는다. 다음 3단 구조를 후속 구현
+후보로 기록한다.
+
+1. Go 백엔드의 Archive Center canonical session ID를 최종 권위로 유지한다.
+2. 관측된 `chaId + Chat.id` 조합은 현재 호스트 경로 alias로 저장하며, 동일
+   canonical session에 여러 route binding이 연결될 수 있게 한다.
+3. CID가 달라졌을 때 `Message.chatId`, 턴 순서가 붙은 role·원문 hash, 공식
+   branch marker를 계보 증거로 비교한다.
+
+판정 의미는 다음처럼 구분한다.
+
+- 전체 원문 계보가 이어지는 유일한 후보: 기존 canonical session 재연결 후보
+- 공통 prefix 뒤 내용이 갈라짐: 부모를 유지하고 새 branch lineage 후보
+- 근거가 충돌하거나 후보가 여러 개: 자동 병합하지 않고 사용자 확인 후보
+
+`chat.scriptstate`에 Archive Center가 발급한 namespaced root ID를 보조 표식으로
+보관하는 방안도 공식 RisuAI와 PocketRisu 공통 구조상 가능하다. 다만 branch 시
+함께 복사될 수 있으므로 leaf session ID나 단독 병합 근거로 사용하지 않고, 동일
+세계선 계열을 찾는 root lineage 단서로만 검토한다. 해당 표식을 실제로 쓰게 될
+경우 ID 생성과 판정은 Go가 소유하고 JavaScript는 공식 host API로 관측·적용만
+담당해야 한다.
+
+### 구현 시 지켜야 할 경계
+
+- 이름, 화면 Index, CID suffix, 원문 한 줄 일치만으로 자동 병합하지 않는다.
+- 기존 세션이나 중복 후보를 자동 삭제하지 않는다.
+- branch를 기존 세션 재연결로 합쳐 버리지 않는다.
+- raw chat fallback이나 JavaScript 정책 엔진을 새로 만들지 않는다.
+- 새 테이블을 먼저 추가하지 않는다. 기존 `session_route_bindings`와
+  `session_fork_lineage`로 표현 가능한지 우선 검증한다.
+- 실제 구현 전 공식 RisuAI와 PocketRisu의 branch·copy·import에서 각 필드가
+  어떻게 보존되는지 fixture와 실환경으로 다시 확인한다.

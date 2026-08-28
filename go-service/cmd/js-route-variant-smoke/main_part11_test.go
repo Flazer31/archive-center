@@ -1230,9 +1230,36 @@ const R = {
       delete listener.node.listeners[listener.type];
     }
     risuEventListeners.delete(listenerId);
+  },
+  async nativeFetch(url) {
+    recoveryStreamCalls.push(String(url || ""));
+    let sent = false;
+    return {
+      ok:true,
+      status:200,
+      body:{
+        getReader(){
+          return {
+            read(){
+              if (sent) return Promise.resolve({done:true});
+              return new Promise(function(resolve){
+                recoveryStreamReadResolve = function(){
+                  sent = true;
+                  resolve({
+                    done:false,
+                    value:new TextEncoder().encode(JSON.stringify(recoveryStreamCompletionView) + "\n")
+                  });
+                };
+              });
+            },
+            async cancel(){ sent = true; }
+          };
+        }
+      }
+    };
   }
 };
-const settings = {turnWorkflowHUDEnabled:true};
+const settings = {turnWorkflowHUDEnabled:true,bridgeUrl:"http://127.0.0.1:28080"};
 const BUILD_ID = "20260802-4";
 const _lastBridgeFailureByPath = new Map();
 let recoveryConfirmCalls = 0;
@@ -1240,6 +1267,9 @@ let recoveryConfirmResult = true;
 const recoveryBridgeCalls = [];
 let recoveryResponseView = null;
 let recoveryBridgeFailure = false;
+const recoveryStreamCalls = [];
+let recoveryStreamCompletionView = null;
+let recoveryStreamReadResolve = null;
 function confirm() {
   recoveryConfirmCalls++;
   return recoveryConfirmResult;
@@ -1254,6 +1284,10 @@ const translations = {
   "turn_hud.recovery.confirm_title": "턴 기억 복구",
   "turn_hud.recovery.confirm_retry_derived_turn": "{turn}턴 복구",
   "turn_hud.recovery.requested": "복구 요청을 보냈습니다.",
+  "turn_hud.recovery.running_title": "평론가 재처리 중",
+  "turn_hud.recovery.running": "실패한 턴의 평론가 재처리를 진행하고 있습니다.",
+  "turn_hud.recovery.completed_title": "평론가 재처리 완료",
+  "turn_hud.recovery.completed": "파생 기억 재처리가 완료되었습니다.",
   "turn_hud.recovery.request_failed": "복구 요청에 실패했습니다.",
   "turn_hud.completed": "완료",
   "turn_hud.completed_with_warning": "경고와 함께 완료",
@@ -1295,6 +1329,8 @@ function tf(key, args) {
   return key;
 }
 function warnLog() {}
+function debugLog() {}
+function resolveBridgeRuntimeRoute(rawUrl) { return {url:String(rawUrl || "")}; }
 ` + "\n" + hudRuntime + `
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -1547,6 +1583,9 @@ function assert(condition, message) {
   recoveryResponseView = {
     ...recoverableView,
     revision:2,
+    status:"recovering",
+    severity:"warning",
+    dismissal_policy:"none",
     error:{
       ...recoverableError,
       recovery_actions:[{
@@ -1555,6 +1594,22 @@ function assert(condition, message) {
         status_message_key:"turn_hud.recovery.requested"
       }]
     }
+  };
+  recoveryStreamCompletionView = {
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,
+    request_id:"recoverable-turn",
+    revision:3,
+    logical_turn:57,
+    status:"completed",
+    severity:"notice",
+    dismissal_policy:"card_or_x",
+    display_mode:"notice",
+    title_key:"turn_hud.recovery.completed_title",
+    message_key:"turn_hud.recovery.completed",
+    notice_code:"CRITIC_REPROCESSING_COMPLETED",
+    counts,
+    stages,
+    warnings:[]
   };
   assert(consumeTurnWorkflowHUD(recoverableView), "recoverable failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
@@ -1583,8 +1638,15 @@ function assert(condition, message) {
   assert(recoveryBridgeCalls.length === 1, "recovery action did not call the backend exactly once");
   assert(recoveryBridgeCalls[0].path === "/turn-workflow/recovery", "recovery action called the wrong backend route");
   assert(recoveryBridgeCalls[0].options.body.request_id === "recoverable-turn", "recovery action lost its request identity");
-  assert(surface.innerHTML.includes("복구 요청을 보냈습니다."), "recoverable HUD did not render the accepted recovery state");
+  assert(surface.innerHTML.includes("평론가 재처리 중"), "recoverable HUD did not render the accepted recovery state");
   assert(!surface.recoveryButton, "accepted recovery action stayed clickable");
+  assert(recoveryStreamCalls.length === 1 && recoveryStreamCalls[0].includes("/turn-workflow/events?request_id=recoverable-turn"), "accepted recovery did not restart the existing HUD event stream");
+  assert(typeof recoveryStreamReadResolve === "function", "recovery HUD stream did not wait for a backend revision");
+  recoveryStreamReadResolve();
+  for (let index = 0; index < 6; index++) await Promise.resolve();
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML.includes("평론가 재처리 완료"), "worker completion did not replace the recovering HUD");
+  assert(surface.innerHTML.includes("CRITIC_REPROCESSING_COMPLETED"), "recovery completion notice code was hidden");
   await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "recovery status HUD close button did not dismiss HUD");
@@ -2206,6 +2268,7 @@ function bindRawInputObservationToRequest(_sessionId, requestId) {
 }
 function makeOrchRequestId() { return "request-runtime"; }
 function primeTurnWorkflowHUD() {}
+async function reconcileRollbackFromHostSignal() { return false; }
 function buildPostOutputSecondaryRequestContext() { return null; }
 function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
 async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
@@ -3359,25 +3422,72 @@ func TestSessionNormalizeRepairEntriesPreserveExistingTurnZeroAndRepairMissingPa
 	}
 	src := readArchiveCenterJS(t)
 	script := extractArchiveCenterJSFunction(t, src, "sanitizeChatLogRepairEntry") + "\n" +
-		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeRepairEntriesFromDryRunPlan") + `
+		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeRepairEntriesFromDryRunPlan") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeTargetTurnsFromDryRunPlan") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "normalizeTurnIndexList") + `
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
 }
 const plan = {
   dbRows: [],
-  rawMissingTurns: [1,2,3,4],
+	  rawMissingTurns: [1,3,4],
+	  rawMismatchTurns: [2],
+	  processableTurns: [1,2,3,4],
   pairs: [1,2,3,4].map(turn => ({turnIndex:turn,userContent:"user "+turn,assistantContent:"assistant "+turn})),
 };
 let entries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
 assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([1,2,3,4]), "bootstrap must not be fabricated as canonical turn zero");
 entries = buildSessionNormalizeRepairEntriesFromDryRunPlan({...plan, dbRows:[{turn_index:0,role:"assistant",content:"already stored"}]});
 assertEqual(JSON.stringify(entries.map(entry => entry.turn_index)), JSON.stringify([1,2,3,4]), "existing turn zero must remain untouched");
+assertEqual(JSON.stringify(buildSessionNormalizeTargetTurnsFromDryRunPlan(plan)), JSON.stringify([1,2,3,4]), "raw mismatch must reach backend per-turn reconciliation instead of being globally dropped");
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("session-normalize repair JS fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestActiveChatRepairFallbackSendsPartialAndConflictCandidatesToBackend(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for active-chat repair fallback runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	script := extractArchiveCenterJSFunction(t, src, "sanitizeChatLogRepairEntry") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeRepairEntriesFromDryRunPlan") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "buildChatLogRepairReplayFallbackBundleFromActiveChat") + `
+function assertEqual(actual, expected, label) {
+  if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
+}
+async function getCurrentChatSessionId() { return "session-active"; }
+async function computeActiveChatRescanDryRunPlan() {
+  return {
+    ok: true,
+    messages: [{role:"user"},{role:"assistant"}],
+    rawMissingTurns: [1],
+    rawMismatchTurns: [2],
+    derivedMissingTurns: [3],
+    pairs: [1,2,3].map(turn => ({turnIndex:turn,userContent:"user "+turn,assistantContent:"assistant "+turn})),
+  };
+}
+(async () => {
+  const bundle = await buildChatLogRepairReplayFallbackBundleFromActiveChat("session-active");
+  assertEqual(bundle.blocked === true, false, "raw mismatch must not block all active-chat repair candidates");
+  assertEqual(JSON.stringify(bundle.candidateTurnIndices), JSON.stringify([1,2]), "only raw missing or mismatch observations are sent to backend repair owner");
+  assertEqual(bundle.derivedMissingTurns[0], 3, "derived mismatch remains visible without becoming a raw-repair blocker");
+})().catch(err => { console.error(err); process.exit(1); });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("active-chat repair fallback JS fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -6582,7 +6692,7 @@ let adminCalls = 0;
 let explorerRefreshes = 0;
 let rollbackReconcileCalls = 0;
 let rollbackCheckCalls = 0;
-let _rollbackHostSignalReconcileInFlight = false;
+let _rollbackHostSignalReconcilePromise = null;
 const _rollbackHostSignalLastSignatureBySession = new Map();
 const _adminBackgroundJobStreams = new Map();
 const settings = {enabled:true,rollbackAutoEnabled:true};

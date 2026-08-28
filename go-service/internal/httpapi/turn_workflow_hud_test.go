@@ -166,6 +166,7 @@ type turnWorkflowHUDRecoveryStore struct {
 	reopenErr   error
 	reopenCalls int
 	listCalls   int
+	onReopen    func()
 }
 
 func (f *turnWorkflowHUDRecoveryStore) ListActiveSourceRevisions(
@@ -188,6 +189,9 @@ func (f *turnWorkflowHUDRecoveryStore) ReopenMemoryReprocessingJob(
 	f.reopenCalls++
 	if chatSessionID != f.source.ChatSessionID || sourceRevision != f.source.SourceRevision {
 		return false, errors.New("unexpected recovery source")
+	}
+	if f.onReopen != nil {
+		f.onReopen()
 	}
 	if f.reopenErr != nil {
 		return false, f.reopenErr
@@ -227,6 +231,12 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	); !ok {
 		t.Fatal("failed to expose manual recovery action")
 	}
+	st.onReopen = func() {
+		view, found := ledger.snapshot("request-recovery")
+		if !found || view.Status != "recovering" || turnWorkflowHUDTerminal(view.Status) || view.EndedAt != nil {
+			t.Fatalf("memory job reopened before HUD entered recovering state: found=%t view=%+v", found, view)
+		}
+	}
 	srv := &Server{
 		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
 		Store: st,
@@ -265,6 +275,8 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	}
 	view, ok := ledger.snapshot("request-recovery")
 	if !ok || view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
+		view.Status != "recovering" || view.Severity != turnWorkflowHUDSeverityWarning ||
+		view.DismissalPolicy != turnWorkflowHUDDismissNone || view.EndedAt != nil ||
 		view.Error.RecoveryActions[0].Status != "requested" {
 		t.Fatalf("recovery view=%+v found=%t", view, ok)
 	}
@@ -278,6 +290,25 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	if stringFromMap(response, "chat_session_id") != base.source.ChatSessionID ||
 		intFromAny(response["turn_index"], 0) != base.source.TurnIndex {
 		t.Fatalf("recovery response used stale HUD coordinates: %#v", response)
+	}
+	responseHUD := mapFromAny(response["turn_workflow_hud"])
+	if stringFromMap(responseHUD, "status") != "recovering" {
+		t.Fatalf("recovery response did not expose nonterminal HUD state: %#v", responseHUD)
+	}
+	if !ledger.updateRecoveryResult(
+		base.source.ChatSessionID,
+		base.source.TurnIndex,
+		base.source.SourceRevision,
+		"completed",
+		"",
+		artifactSaveResult{Memories: 1, Evidence: 2},
+	) {
+		t.Fatal("worker completion was rejected after manual retry entered recovering state")
+	}
+	completed, found := ledger.snapshot("request-recovery")
+	if !found || completed.Status != "completed" || completed.Error != nil ||
+		completed.NoticeCode != "CRITIC_REPROCESSING_COMPLETED" {
+		t.Fatalf("manual retry completion HUD=%+v found=%t", completed, found)
 	}
 }
 

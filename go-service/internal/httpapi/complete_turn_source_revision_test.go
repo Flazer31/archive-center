@@ -253,6 +253,11 @@ func TestCompleteTurnTruncatedCriticWritesNoDerivedArtifactsAndEnqueuesOneRevisi
 		detailValues["raw_preview"] == "" {
 		t.Fatalf("critic failure details=%#v", detailValues)
 	}
+	storedHUD, storedHUDOK := srv.TurnWorkflows.snapshot("critic-hud-recovery")
+	if !storedHUDOK || storedHUD.Status != "recovering" || storedHUD.Error == nil ||
+		storedHUD.Error.Code != "CRITIC_JSON_TRUNCATED" {
+		t.Fatalf("complete-turn defer overwrote queued recovery HUD: found=%t view=%+v", storedHUDOK, storedHUD)
+	}
 	for _, job := range recording.jobs {
 		if job.SourceRevision == "" || !strings.Contains(job.LastError, "CRITIC_JSON_TRUNCATED") ||
 			job.SourceContract != completeTurnSourceAcceptanceContract ||

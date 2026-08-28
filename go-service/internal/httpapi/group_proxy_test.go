@@ -1870,6 +1870,7 @@ func TestProxyOllamaDeepSeekV4ReasoningRequestUsesProviderTransportContract(t *t
 		wantEffort string
 		wantTokens float64
 	}{
+		{name: "low", effort: "low", wantEffort: "low", wantTokens: 11873},
 		{name: "high", effort: "high", wantEffort: "high", wantTokens: 11873},
 		{name: "stored max", effort: "max", wantEffort: "high", wantTokens: 11873},
 		{name: "none", effort: "none", wantEffort: "none", wantTokens: 4096},
@@ -1954,10 +1955,16 @@ func TestProxyReasoningWireUsesProviderAndEndpointTransport(t *testing.T) {
 		wantNoTemperature  bool
 	}{
 		{name: "LLM Gateway Luna", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "gpt-5.6-luna", effort: "low", wantEffort: "low", wantNoTemperature: true},
-		{name: "LLM Gateway DeepSeek", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
-		{name: "OpenRouter DeepSeek", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "high", wantReasoning: "high"},
+		{name: "LLM Gateway DeepSeek low", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "low", wantEffort: "low"},
+		{name: "LLM Gateway DeepSeek medium compatibility", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
+		{name: "OpenRouter DeepSeek low", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "low", wantReasoning: "low"},
+		{name: "OpenRouter DeepSeek high", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "high", wantReasoning: "high"},
+		{name: "NeuralWatt DeepSeek Pro low", provider: "neuralwatt", endpoint: "https://api.neuralwatt.com/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low"},
+		{name: "NeuralWatt DeepSeek Flash low aliases high", provider: "neuralwatt", endpoint: "https://api.neuralwatt.com/v1", model: "deepseek-v4-flash-flex", effort: "low", wantEffort: "high"},
 		{name: "Vercel GPT", provider: "vercel", endpoint: "https://ai-gateway.vercel.sh/v1", model: "openai/gpt-5.6", effort: "medium", wantReasoning: "medium", wantNoTemperature: true},
-		{name: "custom exact DeepSeek endpoint", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
+		{name: "custom OpenAI-compatible DeepSeek low", provider: "custom", endpoint: "https://opencode.ai/zen/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low"},
+		{name: "custom exact DeepSeek endpoint low", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low", wantNativeThinking: true},
+		{name: "custom exact DeepSeek endpoint medium compatibility", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

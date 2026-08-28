@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -392,6 +393,60 @@ func TestRepairReplayWriteStoreDryRunAndReplay(t *testing.T) {
 	}
 	if !foundAudit {
 		t.Fatalf("expected repair_replay audit, got %#v", fake.savedAuditLogs)
+	}
+}
+
+func TestRepairReplayKeepsConflictingTurnForReviewAndContinuesSafeTurns(t *testing.T) {
+	existingExactUser := "existing exact user"
+	conflictingDBUser := "database user"
+	activeConflictingUser := "active chat user"
+	missingAssistant := "missing assistant"
+	newUser := "new user"
+	newAssistant := "new assistant"
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ChatSessionID: "sess-repair-mixed", TurnIndex: 1, Role: "user", Content: existingExactUser},
+			{ChatSessionID: "sess-repair-mixed", TurnIndex: 2, Role: "user", Content: conflictingDBUser},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	result, err := srv.runChatLogRepairReplayWithProgress(
+		context.Background(),
+		"sess-repair-mixed",
+		dto.ChatLogRepairReplayRequest{Entries: []dto.ChatLogRepairEntryRequest{
+			{TurnIndex: 1, UserContent: &existingExactUser, AssistantContent: &missingAssistant},
+			{TurnIndex: 2, UserContent: &activeConflictingUser, AssistantContent: &missingAssistant},
+			{TurnIndex: 3, UserContent: &newUser, AssistantContent: &newAssistant},
+		}},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("repair replay mixed candidates: %v", err)
+	}
+	if intFromAny(result["total_conflict_role_count"], 0) != 1 ||
+		!reflect.DeepEqual(intSliceFromAny(result["conflict_turns"]), []int{2}) {
+		t.Fatalf("conflict result=%#v", result)
+	}
+	conflicts, _ := result["conflicts"].([]map[string]any)
+	if len(conflicts) != 1 || intFromAny(mapFromAny(conflicts[0])["turn_index"], 0) != 2 ||
+		stringFromMap(mapFromAny(conflicts[0]), "role") != "user" {
+		t.Fatalf("conflict details=%#v", conflicts)
+	}
+	if !reflect.DeepEqual(intSliceFromAny(result["repaired_turns"]), []int{1, 3}) {
+		t.Fatalf("repaired turns=%#v", result["repaired_turns"])
+	}
+	if len(fake.savedChatLogs) != 3 {
+		t.Fatalf("saved chat logs=%#v, want assistant turn 1 and both roles turn 3", fake.savedChatLogs)
+	}
+	for _, saved := range fake.savedChatLogs {
+		if saved.TurnIndex == 2 {
+			t.Fatalf("conflicting turn was partially combined with active-chat content: %#v", saved)
+		}
 	}
 }
 

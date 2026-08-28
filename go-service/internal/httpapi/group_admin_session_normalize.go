@@ -76,10 +76,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	entries := adminSessionNormalizeRepairEntries(req)
 	before, warnings := s.adminSessionNormalizeSnapshot(ctx, sid)
 	plan := adminSessionNormalizePlan(req, entries, before)
-	reviewNeededTurns := adminSessionNormalizeConflictTurns(before)
-	if len(reviewNeededTurns) > 0 {
-		warnings = append(warnings, "raw_mismatch_or_partial_requires_review")
-	}
+	initialReviewNeededTurns := adminSessionNormalizeConflictTurns(before)
 
 	var repairResult map[string]any
 	if !req.SkipRepair && len(entries) > 0 {
@@ -93,7 +90,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 				"succeeded":             0,
 				"failed_count":          0,
 				"skipped_count":         0,
-				"review_needed_turns":   reviewNeededTurns,
+				"review_needed_turns":   initialReviewNeededTurns,
 				"progress_percent":      8,
 				"non_destructive_scope": "insert_missing_raw_roles_only",
 			})
@@ -123,14 +120,52 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"reason":          adminSessionNormalizeSkipReason(req.SkipRepair, len(entries), "no_repair_entries"),
 		}
 	}
+	afterRepair, afterRepairWarnings := s.adminSessionNormalizeSnapshot(ctx, sid)
+	warnings = append(warnings, afterRepairWarnings...)
+	reviewNeededTurns := append(
+		adminSessionNormalizeConflictTurns(afterRepair),
+		intSliceFromAny(repairResult["conflict_turns"])...,
+	)
+	reviewNeededTurns = append(reviewNeededTurns, intSliceFromAny(repairResult["failed_turn_indices"])...)
+	reviewNeededTurns = uniqueSortedInts(reviewNeededTurns)
+	if len(reviewNeededTurns) > 0 {
+		warnings = append(warnings, "raw_mismatch_or_partial_requires_review")
+	}
+	requestedRescanTurns := uniqueSortedNonNegativeInts(req.TurnIndices)
+	rescanTurns := append([]int{}, requestedRescanTurns...)
+	if len(reviewNeededTurns) > 0 && len(rescanTurns) > 0 {
+		reviewSet := map[int]bool{}
+		for _, turn := range reviewNeededTurns {
+			reviewSet[turn] = true
+		}
+		filtered := rescanTurns[:0]
+		for _, turn := range rescanTurns {
+			if !reviewSet[turn] {
+				filtered = append(filtered, turn)
+			}
+		}
+		rescanTurns = filtered
+	}
 
 	var rescanResult map[string]any
-	if !req.SkipRescan {
+	if !req.SkipRescan && len(requestedRescanTurns) > 0 && len(rescanTurns) == 0 {
+		rescanResult = map[string]any{
+			"status":              "skipped",
+			"chat_session_id":     sid,
+			"dry_run":             req.DryRun,
+			"candidate_count":     0,
+			"succeeded":           0,
+			"failed":              0,
+			"skipped":             len(requestedRescanTurns),
+			"review_needed_turns": reviewNeededTurns,
+			"reason":              "all_requested_turns_require_raw_review",
+		}
+	} else if !req.SkipRescan {
 		meta := adminSessionNormalizeClientMeta(req.ClientMeta)
 		rescanReq := adminRescanRequest{
 			ChatSessionID:      sid,
 			MaxItems:           req.MaxItems,
-			TurnIndices:        uniqueSortedNonNegativeInts(req.TurnIndices),
+			TurnIndices:        rescanTurns,
 			ClientMeta:         meta,
 			DryRun:             req.DryRun,
 			Background:         false,

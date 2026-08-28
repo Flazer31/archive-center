@@ -153,7 +153,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		view, ok := s.TurnWorkflows.snapshot(workflowRequestID)
-		if !ok || turnWorkflowHUDTerminal(view.Status) {
+		if !ok || turnWorkflowHUDTerminal(view.Status) || view.Status == "recovering" {
 			return
 		}
 		stageKey := turnWorkflowStageFinalAccepted

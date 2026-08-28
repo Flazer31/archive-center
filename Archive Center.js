@@ -124,7 +124,7 @@
       budgetTokens: 0,
       glmThinkingType: "disabled",
       maxCompletionTokens: 20000,
-      hint: "DeepSeek V4는 none/high/max 추론 강도를 사용하며 별도 추론 토큰 예산을 사용하지 않습니다.",
+      hint: "DeepSeek V4는 provider가 지원하는 low/high/max 추론 강도를 사용하며 별도 추론 토큰 예산을 사용하지 않습니다.",
     },
     custom: {
       label: "Custom",
@@ -4464,7 +4464,7 @@
   const ROLLBACK_TURN_LEDGER_KEY = `${PLUGIN_ID}_rollbackTurnLedger`;
   let _lastAutoRollbackSignature = null;  // 중복 rollback 방지용
   let _lastAutoRollbackSkipSignature = null;
-  let _rollbackHostSignalReconcileInFlight = false;
+  let _rollbackHostSignalReconcilePromise = null;
   const _rollbackHostSignalLastSignatureBySession = new Map();
   let _rollbackTailReconcileInFlight = false;
   const _rollbackHistoryTrimGuardBySession = new Map();
@@ -4890,9 +4890,8 @@
       } else {
         _rollbackHistoryTrimGuardBySession.delete(String(sessionId || "").trim() || "default");
       }
-      observePendingFinalConfirmationAtHostSignal(sessionId, "input").catch(function(err) {
-        debugLog("[final-confirmation] input host-signal observation failed:", err && err.message);
-      });
+      await reconcileRollbackFromHostSignal();
+      await observePendingFinalConfirmationAtHostSignal(sessionId, "input");
     } catch (err) {
       warnLog("onInputHook failed:", err.message);
     }
@@ -10861,6 +10860,9 @@
     const claudeMode = resolveClaudeThinkingMode(model);
     const gptEffortOptions = resolveGPTReasoningEffortOptions(model);
     const glmMode = family === "glm" ? resolveGLMReasoningMode(model) : "none";
+    const deepSeekV4EffortOptions = transport === "neuralwatt" && /deepseek[-_]?v4(?:$|[-_:]).*flash/.test(normalizeReasoningModelIdentifier(model))
+      ? ["none", "high", "max"]
+      : ["none", "low", "high", "max"];
     if (transport === "conflict") {
       return {
         family,
@@ -10898,9 +10900,9 @@
           : "현재 전송 규약: Ollama OpenAI 호환 reasoning_effort",
       };
     }
-    if (["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") {
+    if ((["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") || (transport === "custom" && family === "deepseek_v4")) {
       const gatewayEffortOptions = family === "deepseek_v4"
-        ? ["none", "high", "max"]
+        ? deepSeekV4EffortOptions
         : (family === "gpt" && gptEffortOptions.length > 0
           ? gptEffortOptions
           : (family === "glm"
@@ -10956,9 +10958,9 @@
         family,
         mode: "deepseek_v4_reasoning_effort",
         showEffort: true,
-        effortOptions: ["none", "high", "max"],
+        effortOptions: deepSeekV4EffortOptions,
         effortLabel: "Reasoning Effort",
-        effortHint: "DeepSeek V4는 none/high/max를 사용합니다. 별도 추론 토큰 예산은 전달하지 않습니다.",
+        effortHint: "DeepSeek V4는 provider가 지원하는 none/low/high/max를 사용합니다. 별도 추론 토큰 예산은 전달하지 않습니다.",
         showBudget: false,
         budgetLabel: "Reasoning Budget Tokens",
         budgetHint: "",
@@ -11079,8 +11081,9 @@
         if (normalizedValue === "max" && !options.includes("max") && options.includes("high")) normalizedValue = "high";
       }
     }
-    if (controls.mode === "deepseek_v4_reasoning_effort") {
-      if (normalizedValue === "low" || normalizedValue === "medium") normalizedValue = "high";
+    if (controls.family === "deepseek_v4") {
+      if (normalizedValue === "low" && !options.includes("low")) normalizedValue = "high";
+      if (normalizedValue === "medium" && controls.mode !== "ollama_reasoning_effort") normalizedValue = "high";
       if (normalizedValue === "xhigh") normalizedValue = "max";
     }
     const fallback = options[0];
@@ -11196,7 +11199,7 @@
     const currentBudget = String(source.currentBudget !== undefined && source.currentBudget !== null ? source.currentBudget : "").trim();
     const currentMaxCompletion = String(source.currentMaxCompletion !== undefined && source.currentMaxCompletion !== null ? source.currentMaxCompletion : "").trim();
     const storedDeepSeekV4EffortCompatible = controls.mode === "deepseek_v4_reasoning_effort"
-      && ["low", "medium", "xhigh"].indexOf(currentEffort.toLowerCase()) >= 0;
+      && ["medium", "xhigh"].indexOf(currentEffort.toLowerCase()) >= 0;
     const currentEffortSupported = controls.effortOptions.indexOf(currentEffort) >= 0 || storedDeepSeekV4EffortCompatible;
     const currentBudgetIsNumeric = currentBudget !== "" && isFinite(Number(currentBudget));
     const currentMaxCompletionIsNumeric = currentMaxCompletion !== "" && isFinite(Number(currentMaxCompletion));
@@ -14487,6 +14490,11 @@
         throw new Error("turn workflow recovery response is missing its HUD ViewModel");
       }
       await renderTurnWorkflowHUD(updated);
+      if (String(updated.status || "").trim() === "recovering") {
+        _turnWorkflowHUDTerminalRequestId = "";
+        stopTurnWorkflowHUDWatch(requestId, false);
+        startTurnWorkflowHUDWatch(requestId);
+      }
     } catch (err) {
       const warning = classifyTurnWorkflowHUDTransportFailure(
         "/turn-workflow/recovery",
@@ -20815,12 +20823,11 @@
   }
 
   async function reconcileRollbackFromHostSignal() {
-    if (_rollbackHostSignalReconcileInFlight) return false;
+    if (_rollbackHostSignalReconcilePromise) return _rollbackHostSignalReconcilePromise;
     if (!settings.enabled || !settings.rollbackAutoEnabled || !R || typeof R.getCharacter !== "function") {
       return false;
     }
-    _rollbackHostSignalReconcileInFlight = true;
-    try {
+    const reconcilePromise = (async function reconcileObservedHostRollback() {
       const sessionId = await getCurrentChatSessionId();
       if (!sessionId) return false;
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId);
@@ -20835,11 +20842,17 @@
       _rollbackHostSignalLastSignatureBySession.set(sessionId || "default", watcherSignature);
       await checkAndAutoRollback(sessionId, messages);
       return true;
+    })();
+    _rollbackHostSignalReconcilePromise = reconcilePromise;
+    try {
+      return await reconcilePromise;
     } catch (err) {
       debugLog("reconcileRollbackFromHostSignal failed:", err && err.message);
       return false;
     } finally {
-      _rollbackHostSignalReconcileInFlight = false;
+      if (_rollbackHostSignalReconcilePromise === reconcilePromise) {
+        _rollbackHostSignalReconcilePromise = null;
+      }
     }
   }
 
@@ -32732,6 +32745,7 @@
       }
       const orchRequestId = makeOrchRequestId(orchSessionId);
       primeTurnWorkflowHUD(orchRequestId);
+      await reconcileRollbackFromHostSignal();
       // Observe/capture at the supported host callback boundary even when the
       // backend prepare lane later fails open. Only this bounded snapshot work is
       // awaited; complete-turn/critic persistence remains fire-and-forget.
@@ -37790,12 +37804,16 @@
 
   function buildSessionNormalizeRepairEntriesFromDryRunPlan(plan) {
     const entries = [];
-    const rawMissingSet = new Set((Array.isArray(plan && plan.rawMissingTurns) ? plan.rawMissingTurns : []).map(function(turn) { return Number(turn); }));
-    if (rawMissingSet.size === 0) return entries;
+    const repairCandidateSet = new Set(
+      (Array.isArray(plan && plan.rawMissingTurns) ? plan.rawMissingTurns : [])
+        .concat(Array.isArray(plan && plan.rawMismatchTurns) ? plan.rawMismatchTurns : [])
+        .map(function(turn) { return Number(turn); })
+    );
+    if (repairCandidateSet.size === 0) return entries;
     return entries.concat((Array.isArray(plan && plan.pairs) ? plan.pairs : [])
       .map(function(pair) {
         const turnIndex = Number(pair && pair.turnIndex);
-        if (!Number.isFinite(turnIndex) || turnIndex < 1 || !rawMissingSet.has(turnIndex)) return null;
+        if (!Number.isFinite(turnIndex) || turnIndex < 1 || !repairCandidateSet.has(turnIndex)) return null;
         return sanitizeChatLogRepairEntry({
           turn_index: turnIndex,
           user_content: String(pair && pair.userContent || ""),
@@ -37807,9 +37825,7 @@
   }
 
   function buildSessionNormalizeTargetTurnsFromDryRunPlan(plan) {
-    const mismatch = new Set((Array.isArray(plan && plan.rawMismatchTurns) ? plan.rawMismatchTurns : []).map(function(turn) { return Number(turn); }));
-    return normalizeTurnIndexList(Array.isArray(plan && plan.processableTurns) ? plan.processableTurns : [])
-      .filter(function(turn) { return !mismatch.has(Number(turn)); });
+    return normalizeTurnIndexList(Array.isArray(plan && plan.processableTurns) ? plan.processableTurns : []);
   }
 
   function renderSessionNormalizeResultHtml(result) {
@@ -38296,33 +38312,25 @@
     bundle.liveSessionMatch = true;
     try {
       const dryRunPlan = await computeActiveChatRescanDryRunPlan(sid);
-      if (!dryRunPlan || !dryRunPlan.ok || dryRunPlan.rawMismatchTurns.length > 0 || dryRunPlan.derivedMissingTurns.length > 0) {
+      if (!dryRunPlan || !dryRunPlan.ok) {
         bundle.blocked = true;
-        bundle.blockedReason = dryRunPlan && dryRunPlan.rawMismatchTurns && dryRunPlan.rawMismatchTurns.length > 0
-          ? "active_chat_turn_mismatch_present"
-          : "active_chat_derived_mismatch_present";
-        bundle.rawMismatchTurns = dryRunPlan && Array.isArray(dryRunPlan.rawMismatchTurns) ? dryRunPlan.rawMismatchTurns.slice(0, 20) : [];
-        bundle.derivedMissingTurns = dryRunPlan && Array.isArray(dryRunPlan.derivedMissingTurns) ? dryRunPlan.derivedMissingTurns.slice(0, 20) : [];
+        bundle.blockedReason = "active_chat_dry_run_preflight_failed";
         return bundle;
       }
-      if (!Array.isArray(dryRunPlan.rawMissingTurns) || dryRunPlan.rawMissingTurns.length === 0) {
+      bundle.entries = buildSessionNormalizeRepairEntriesFromDryRunPlan(dryRunPlan);
+      bundle.candidateTurnIndices = bundle.entries.map(function(entry) { return entry.turn_index; });
+      bundle.activeChatMessageCount = Array.isArray(dryRunPlan.messages) ? dryRunPlan.messages.length : 0;
+      bundle.rawMismatchTurns = Array.isArray(dryRunPlan.rawMismatchTurns) ? dryRunPlan.rawMismatchTurns.slice(0, 20) : [];
+      bundle.derivedMissingTurns = Array.isArray(dryRunPlan.derivedMissingTurns) ? dryRunPlan.derivedMissingTurns.slice(0, 20) : [];
+      if (bundle.entries.length === 0) {
         bundle.blocked = true;
         bundle.blockedReason = "active_chat_has_no_raw_missing_turns";
-        return bundle;
       }
-      bundle.safeMissingTurns = dryRunPlan.rawMissingTurns.slice();
     } catch (err) {
       bundle.blocked = true;
       bundle.blockedReason = "active_chat_dry_run_preflight_failed: " + (err && err.message ? err.message : "unknown");
       return bundle;
     }
-    const comparableMessages = await getCurrentActiveChatComparableMessages();
-    bundle.activeChatMessageCount = Array.isArray(comparableMessages) ? comparableMessages.length : 0;
-    const trackedTurnIndex = Math.max(loadTurnCounter(sid), getSessionTurnIndex(sid), 0);
-    const safeMissingSet = new Set((bundle.safeMissingTurns || []).map(function(turn) { return Number(turn); }));
-    bundle.entries = buildChatLogRepairEntriesFromComparableMessages(comparableMessages, trackedTurnIndex, "active_chat")
-      .filter(function(entry) { return safeMissingSet.has(Number(entry && entry.turn_index)); });
-    bundle.candidateTurnIndices = bundle.entries.map(entry => entry.turn_index);
     return bundle;
   }
 
@@ -38558,7 +38566,7 @@
         setChatLogRepairProgress(
           "done",
           blockedReason
-            ? "Repair Replay 후보가 보류되었습니다: " + blockedReason + ". raw mismatch가 있는 상태에서는 active chat 원문을 자동 삽입하지 않습니다."
+            ? "Repair Replay 후보가 없습니다: " + blockedReason + "."
             : activeChatBundle.liveSessionMatch
             ? "점검 완료: 활성 chat 기준으로 재생성할 수 있는 완료 턴이 없습니다."
             : "Repair Replay 후보가 없습니다. failed queue / local delete snapshot이 비어 있고 선택 세션이 현재 활성 chat이 아니라 live preflight를 수행할 수 없습니다."

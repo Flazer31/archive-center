@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1499,6 +1500,45 @@ func TestAdminSessionNormalizeRawRepairReportsRealCandidateCountAndCompletes(t *
 	}
 	if !sawRawRepair {
 		t.Fatalf("raw_repair_replay progress missing: %#v", updates)
+	}
+}
+
+func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *testing.T) {
+	dbUser := "database user"
+	dbAssistant := "database assistant"
+	activeUser := "active chat user"
+	fake := &memoryFakeStore{chatLogs: []store.ChatLog{
+		{ChatSessionID: "sess-normalize-conflict", TurnIndex: 2, Role: "user", Content: dbUser},
+		{ChatSessionID: "sess-normalize-conflict", TurnIndex: 2, Role: "assistant", Content: dbAssistant},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	result, err := srv.runAdminSessionNormalize(context.Background(), "sess-normalize-conflict", adminSessionNormalizeRequest{
+		RepairEntries: []dto.ChatLogRepairEntryRequest{{
+			TurnIndex:        2,
+			UserContent:      &activeUser,
+			AssistantContent: &dbAssistant,
+		}},
+		TurnIndices: []int{2},
+		SkipReindex: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("runAdminSessionNormalize: %v", err)
+	}
+	if !reflect.DeepEqual(intSliceFromAny(result["review_needed_turns"]), []int{2}) {
+		t.Fatalf("review turns=%#v result=%#v", result["review_needed_turns"], result)
+	}
+	rescan := mapFromAny(result["rescan"])
+	if stringFromMap(rescan, "reason") != "all_requested_turns_require_raw_review" ||
+		intFromAny(rescan["candidate_count"], -1) != 0 {
+		t.Fatalf("conflicting raw turn reached derived replay: %#v", rescan)
+	}
+	repair := mapFromAny(result["repair_replay"])
+	if intFromAny(repair["total_conflict_role_count"], 0) != 1 ||
+		!reflect.DeepEqual(intSliceFromAny(repair["conflict_turns"]), []int{2}) {
+		t.Fatalf("repair conflict result=%#v", repair)
 	}
 }
 

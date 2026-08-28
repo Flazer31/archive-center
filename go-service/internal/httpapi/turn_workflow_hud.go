@@ -823,14 +823,43 @@ func (l *turnWorkflowHUDLedger) setRecoveryActionStatus(
 	if entry == nil || entry.view.Error == nil {
 		return turnWorkflowHUDViewModel{}, false
 	}
+	now := time.Now().UTC()
+	normalizedStatus := strings.TrimSpace(status)
 	for index := range entry.view.Error.RecoveryActions {
 		action := &entry.view.Error.RecoveryActions[index]
 		if action.ID != strings.TrimSpace(actionID) {
 			continue
 		}
-		action.Status = strings.TrimSpace(status)
+		action.Status = normalizedStatus
 		action.StatusMessageKey = strings.TrimSpace(statusMessageKey)
-		l.touchLocked(entry, time.Now().UTC())
+		if normalizedStatus == "requested" || normalizedStatus == "running" {
+			entry.view.Status = "recovering"
+			entry.view.Severity = turnWorkflowHUDSeverityWarning
+			entry.view.EndedAt = nil
+			if stageKey := strings.TrimSpace(entry.view.Error.StageKey); stageKey != "" {
+				if stageIndex := turnWorkflowHUDStageIndex(entry.view.Stages, stageKey); stageIndex >= 0 {
+					stage := &entry.view.Stages[stageIndex]
+					stage.Status = "running"
+					stage.ReasonCode = "critic_reprocessing_running"
+					stage.StartedAt = timePtr(now)
+					stage.EndedAt = nil
+					stage.DurationMS = 0
+					entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
+				}
+			}
+			setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
+				Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
+				Status: "recovering", Disposition: "deferred", ReasonCode: "critic_reprocessing_running", Severity: turnWorkflowHUDSeverityWarning,
+			})
+			setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
+				Key: "finality", Owner: "go_backend", Scope: "current_request",
+				Status: "recovering", Disposition: "deferred", ReasonCode: "critic_reprocessing_running", Severity: turnWorkflowHUDSeverityWarning,
+			})
+			if entry.view.ChatSessionID != "" {
+				l.activeBySession[entry.view.ChatSessionID] = entry.view.RequestID
+			}
+		}
+		l.touchLocked(entry, now)
 		return cloneTurnWorkflowHUDView(entry.view), true
 	}
 	return turnWorkflowHUDViewModel{}, false
@@ -1953,6 +1982,27 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 		memoryAdmissionIndexVersion,
 	)
 	recoveryState := "requested"
+	updated, updatedOK := s.TurnWorkflows.setRecoveryActionStatus(
+		req.RequestID,
+		req.ActionID,
+		recoveryState,
+		"turn_hud.recovery.requested",
+	)
+	if !updatedOK {
+		writeError(w, http.StatusConflict, "recovery_action_stale", "turn workflow recovery action is no longer available")
+		return
+	}
+	recoveryFailed := func(code string) {
+		s.TurnWorkflows.updateRecoveryResult(
+			target.ChatSessionID,
+			target.LogicalTurn,
+			target.SourceRevision,
+			"terminal",
+			code,
+			artifactSaveResult{},
+		)
+	}
+	shouldWakeWorkers := false
 	reopened, reopenErr := reopener.ReopenMemoryReprocessingJob(
 		r.Context(),
 		idempotencyKey,
@@ -1962,7 +2012,7 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 	)
 	switch {
 	case reopenErr == nil && reopened:
-		s.wakeMemoryWorkers()
+		shouldWakeWorkers = true
 	case errors.Is(reopenErr, store.ErrMemoryReprocessingLeased):
 		recoveryState = "running"
 	case errors.Is(reopenErr, store.ErrNotFound):
@@ -1972,27 +2022,30 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 			source,
 			"turn_workflow_hud_recovery_requested",
 			time.Now().UTC(),
+			false,
 		)
 		if enqueueErr != nil {
+			recoveryFailed("recovery_enqueue_failed")
 			writeError(w, http.StatusInternalServerError, "recovery_enqueue_failed", enqueueErr.Error())
 			return
 		}
+		shouldWakeWorkers = true
 		if !inserted {
 			recoveryState = "running"
-			s.wakeMemoryWorkers()
 		}
 	case reopenErr != nil:
+		recoveryFailed("recovery_reopen_failed")
 		writeError(w, http.StatusInternalServerError, "recovery_reopen_failed", reopenErr.Error())
 		return
 	default:
 		recoveryState = "running"
-		s.wakeMemoryWorkers()
+		shouldWakeWorkers = true
 	}
 	statusMessageKey := "turn_hud.recovery.requested"
 	if recoveryState == "running" {
 		statusMessageKey = "turn_hud.recovery.running"
 	}
-	updated, updatedOK := s.TurnWorkflows.setRecoveryActionStatus(
+	updated, updatedOK = s.TurnWorkflows.setRecoveryActionStatus(
 		req.RequestID,
 		req.ActionID,
 		recoveryState,
@@ -2001,6 +2054,9 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 	if !updatedOK {
 		writeError(w, http.StatusConflict, "recovery_action_stale", "turn workflow recovery action is no longer available")
 		return
+	}
+	if shouldWakeWorkers {
+		s.wakeMemoryWorkers()
 	}
 	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
 		ChatSessionID: target.ChatSessionID,

@@ -188,8 +188,8 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" {
-		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || (reasoningTransport == "custom" && reasoningFamily == "deepseek_v4") {
+		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 			if reasoningFamily == "gpt" {
@@ -197,7 +197,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			}
 		}
 	} else if reasoningTransport == "openrouter" || reasoningTransport == "vercel" {
-		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning"] = map[string]any{"effort": effort}
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 			if reasoningFamily == "gpt" {
@@ -225,9 +225,9 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
 		normalizedEffort := "none"
 		switch effort {
-		case "high", "max":
+		case "low", "high", "max":
 			normalizedEffort = effort
-		case "low", "medium":
+		case "medium":
 			normalizedEffort = "high"
 		case "xhigh":
 			normalizedEffort = "max"
@@ -2224,7 +2224,7 @@ func proxyOllamaReasoningEffort(family, model, effort, glmThinkingType string) s
 	}
 }
 
-func proxyGatewayReasoningEffort(family, model, effort, glmThinkingType string) string {
+func proxyGatewayReasoningEffort(transport, family, model, effort, glmThinkingType string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	switch family {
 	case "glm":
@@ -2236,7 +2236,12 @@ func proxyGatewayReasoningEffort(family, model, effort, glmThinkingType string) 
 		switch effort {
 		case "none", "high", "max":
 			return effort
-		case "minimal", "low", "medium":
+		case "low":
+			if transport == "neuralwatt" && strings.Contains(strings.ToLower(strings.TrimSpace(model)), "flash") {
+				return "high"
+			}
+			return "low"
+		case "minimal", "medium":
 			return "high"
 		case "xhigh":
 			return "max"

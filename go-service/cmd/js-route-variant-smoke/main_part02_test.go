@@ -1071,6 +1071,20 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 	}
 }
 
+func TestArchiveCenterJSReconcilesRollbackBeforePendingFinalPersistence(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for name, block := range map[string]string{
+		"input":         extractArchiveCenterJSAsyncFunction(t, src, "onInputHook"),
+		"beforeRequest": extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
+	} {
+		reconcileAt := strings.Index(block, "await reconcileRollbackFromHostSignal()")
+		persistAt := strings.Index(block, "observePendingFinalConfirmationAtHostSignal(")
+		if reconcileAt < 0 || persistAt < 0 || reconcileAt > persistAt {
+			t.Fatalf("%s schedules pending-final persistence before rollback reconciliation", name)
+		}
+	}
+}
+
 func TestArchiveCenterJSAfterRequestStartsPersistenceWithoutBlockingVisibleOutput(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	afterRequest := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
