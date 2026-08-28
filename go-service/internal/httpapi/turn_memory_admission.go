@@ -518,7 +518,7 @@ func buildMemoryAdmissionEvidence(
 			CaptureStage:         "critic_extract",
 			CaptureVerification:  "verified",
 			CommittedGate:        "auto_grounded_excerpt",
-			LineageJSON:          mustCompactJSON(completeTurnEvidenceLineage("critic.evidence_excerpts", excerptIndex, languageContext)),
+			LineageJSON:          mustCompactJSON(completeTurnEvidenceLineage("critic.evidence_excerpts", excerptIndex, languageContext, stringFromMap(extraction, "input_mode"))),
 			SourceMessageIDsJSON: mustCompactJSON([]string{fmt.Sprintf("turn:%d", turnIndex)}),
 			CreatedAt:            now,
 		}

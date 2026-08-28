@@ -14,13 +14,22 @@ import (
 )
 
 type adminRescanRequest struct {
-	ChatSessionID      string         `json:"chat_session_id"`
-	MaxItems           int            `json:"max_items"`
-	TurnIndices        []int          `json:"turn_indices"`
-	ClientMeta         map[string]any `json:"client_meta"`
-	DryRun             bool           `json:"dry_run"`
-	Background         bool           `json:"background"`
-	CanonicalRawReplay bool           `json:"-"`
+	ChatSessionID      string                               `json:"chat_session_id"`
+	MaxItems           int                                  `json:"max_items"`
+	TurnIndices        []int                                `json:"turn_indices"`
+	ClientMeta         map[string]any                       `json:"client_meta"`
+	DryRun             bool                                 `json:"dry_run"`
+	Background         bool                                 `json:"background"`
+	CanonicalRawReplay bool                                 `json:"-"`
+	SourceObservations map[int]adminRescanSourceObservation `json:"-"`
+}
+
+type adminRescanSourceObservation struct {
+	AssistantMessageID    string
+	AssistantGenerationID string
+	AssistantContentHash  string
+	InputMode             string
+	UserInputState        string
 }
 
 func (s *Server) runAdminRescan(ctx context.Context, sid string, req adminRescanRequest) (map[string]any, error) {
@@ -281,6 +290,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 					turn,
 					roleMap["user"],
 					roleMap["assistant"],
+					req.SourceObservations[turn],
 					now,
 				)
 				if source != nil {
@@ -839,10 +849,13 @@ func adminRescanCanonicalRawSourceRevision(
 	turn int,
 	userText string,
 	assistantText string,
+	observation adminRescanSourceObservation,
 	observedAt time.Time,
 ) *store.MemorySourceRevision {
 	sid = strings.TrimSpace(sid)
-	if sid == "" || turn <= 0 || userText == "" || assistantText == "" {
+	userText = strings.TrimSpace(userText)
+	assistantText = strings.TrimSpace(assistantText)
+	if sid == "" || turn <= 0 || assistantText == "" {
 		return nil
 	}
 	if observedAt.IsZero() {
@@ -850,8 +863,14 @@ func adminRescanCanonicalRawSourceRevision(
 	}
 	content := strings.TrimSpace(strings.Join([]string{userText, assistantText}, "\n"))
 	contentHash := fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
-	userHash := fmt.Sprintf("%x", sha256.Sum256([]byte(userText)))
-	assistantHash := fmt.Sprintf("%x", sha256.Sum256([]byte(assistantText)))
+	userHash := ""
+	if userText != "" {
+		userHash = fmt.Sprintf("%x", sha256.Sum256([]byte(userText)))
+	}
+	assistantHash := strings.TrimSpace(observation.AssistantContentHash)
+	if assistantHash == "" {
+		assistantHash = fmt.Sprintf("%x", sha256.Sum256([]byte(assistantText)))
+	}
 	revisionSeed := strings.Join([]string{
 		"canonical_raw_reprocessing.v1",
 		sid,
@@ -866,6 +885,8 @@ func adminRescanCanonicalRawSourceRevision(
 		ChatSessionID:                sid,
 		LogicalTurnID:                "canonical_turn_" + revisionHash,
 		TurnIndex:                    turn,
+		SourceMessageID:              strings.TrimSpace(observation.AssistantMessageID),
+		SourceGenerationID:           strings.TrimSpace(observation.AssistantGenerationID),
 		BranchState:                  "not_exposed",
 		UserContent:                  userText,
 		AssistantContent:             assistantText,

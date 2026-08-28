@@ -741,6 +741,21 @@ func (d *dualWriteStore) ListActiveSourceRevisions(
 	return nil, ErrNotEnabled
 }
 
+func (d *dualWriteStore) ListSourceRevisions(
+	ctx context.Context,
+	sid string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	if reader, ok := d.primary.(SourceRevisionHistoryLister); ok {
+		return reader.ListSourceRevisions(ctx, sid, fromTurn, toTurn)
+	}
+	if reader, ok := d.shadow.(SourceRevisionHistoryLister); ok {
+		return reader.ListSourceRevisions(ctx, sid, fromTurn, toTurn)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) InvalidateSourceRevisions(ctx context.Context, sid string, fromTurn int, lifecycleState, reason string, invalidatedAt time.Time) error {
 	primary, primaryOK := memoryLifecycleSourceStore(d.primary)
 	shadow, shadowOK := memoryLifecycleSourceStore(d.shadow)

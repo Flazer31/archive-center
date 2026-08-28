@@ -133,9 +133,12 @@ func (m *mariadbStore) RegisterAcceptedSourceRevision(ctx context.Context, sourc
 	if err := canonicalRows.Err(); err != nil {
 		return result, err
 	}
-	if userRows != 1 || assistantRows != 1 ||
-		canonicalUser != source.UserContent ||
-		canonicalAssistant != source.AssistantContent {
+	userInputMissing := strings.TrimSpace(source.UserContent) == ""
+	userRowsValid := userRows == 1 && canonicalUser == source.UserContent
+	if userInputMissing {
+		userRowsValid = userRows == 0
+	}
+	if !userRowsValid || assistantRows != 1 || canonicalAssistant != source.AssistantContent {
 		return result, ErrSourceRevisionConflict
 	}
 
@@ -170,7 +173,6 @@ func validateMemorySourceRevision(source *MemorySourceRevision) error {
 		strings.TrimSpace(source.ChatSessionID) == "" ||
 		strings.TrimSpace(source.LogicalTurnID) == "" ||
 		source.TurnIndex <= 0 ||
-		strings.TrimSpace(source.UserContent) == "" ||
 		strings.TrimSpace(source.AssistantContent) == "" ||
 		strings.TrimSpace(source.CombinedContentHash) == "" ||
 		source.HostObservedAtMS <= 0 {
@@ -386,11 +388,33 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 	fromTurn int,
 	toTurn int,
 ) ([]MemorySourceRevision, error) {
+	return m.listSourceRevisions(ctx, chatSessionID, fromTurn, toTurn, true)
+}
+
+func (m *mariadbStore) ListSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	return m.listSourceRevisions(ctx, chatSessionID, fromTurn, toTurn, false)
+}
+
+func (m *mariadbStore) listSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+	activeOnly bool,
+) ([]MemorySourceRevision, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	where := "chat_session_id = ? AND lifecycle_state = 'active'"
+	where := "chat_session_id = ?"
 	args := []any{strings.TrimSpace(chatSessionID)}
+	if activeOnly {
+		where += " AND lifecycle_state = 'active'"
+	}
 	if fromTurn > 0 {
 		where += " AND turn_index >= ?"
 		args = append(args, fromTurn)
@@ -407,7 +431,7 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 		       host_observed_at_ms, lifecycle_state
 		FROM memory_source_revisions
 		WHERE `+where+`
-		ORDER BY turn_index, id
+		ORDER BY turn_index, CASE WHEN lifecycle_state = 'active' THEN 0 ELSE 1 END, id DESC
 	`, args...)
 	if err != nil {
 		return nil, err

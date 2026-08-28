@@ -126,6 +126,20 @@ type ActiveSourceRevisionLister interface {
 	) ([]MemorySourceRevision, error)
 }
 
+// SourceRevisionHistoryLister is the read-only recovery view of source
+// revisions for one explicitly selected session.  Normal turn processing and
+// rollback continue to use ActiveSourceRevisionLister; session normalization
+// may additionally inspect inactive revisions so a deleted user side can be
+// restored without another LLM call.
+type SourceRevisionHistoryLister interface {
+	ListSourceRevisions(
+		context.Context,
+		string,
+		int,
+		int,
+	) ([]MemorySourceRevision, error)
+}
+
 type MemoryDerivationDependency struct {
 	ID                 int64
 	ContractVersion    string

@@ -365,6 +365,12 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	}
 	criticUserInput := boundCompleteTurnCriticInput(sanitizedUserInput, 0)
 	criticAssistantContent := boundCompleteTurnCriticInput(sanitizedAssistantContent, 0)
+	criticInputMode := "paired"
+	criticUserInputState := "observed"
+	if strings.TrimSpace(criticUserInput) == "" && strings.TrimSpace(criticAssistantContent) != "" {
+		criticInputMode = "assistant_only"
+		criticUserInputState = "missing"
+	}
 	if strings.TrimSpace(criticUserInput+"\n"+criticAssistantContent) == "" {
 		err := newCriticPipelineError("CRITIC_INPUT_EMPTY", "input", false, 0, errors.New("critic_input_empty_after_sanitize"))
 		trace := criticFailureTrace(promptSource, cfg, 0, err, "")
@@ -526,6 +532,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	languageContextJSON, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
 	inputBudgetTrace := map[string]any{
 		"contract_version":             completeTurnCriticInputBudgetObservationContract,
+		"input_mode":                   criticInputMode,
+		"user_input_state":             criticUserInputState,
 		"user_input_chars":             len([]rune(criticUserInput)),
 		"assistant_content_chars":      len([]rune(criticAssistantContent)),
 		"current_turn_chars":           len([]rune(criticUserInput)) + len([]rune(criticAssistantContent)),
@@ -731,6 +739,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["request_overrides"] = requestOverrides
 	}
 	trace["critic_archive_ledger"] = criticArchiveLedgerTrace
+	trace["input_mode"] = criticInputMode
+	trace["user_input_state"] = criticUserInputState
 	trace["context_selection"] = contextSelectionTrace
 	trace["active_world_rule_contract"] = activeWorldRuleTrace
 	trace["input_snapshot"] = snapshotTrace
@@ -739,6 +749,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		trace["memory_write_contract"] = completeTurnMemoryWriteContract(languageContext)
 	}
 	normalized := normalizeCriticExtraction(parsed)
+	normalized["input_mode"] = criticInputMode
+	normalized["user_input_state"] = criticUserInputState
 	worldRuleCount := len(worldRuleItemsForSave(normalized))
 	if worldRuleCount > 0 {
 		trace["world_rule_audit"] = map[string]any{
@@ -1484,9 +1496,18 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		ledgerInput = archiveLedger[0]
 	}
 	ledger, _ := json.Marshal(ledgerInput)
+	inputMode := "paired"
+	userInputState := "observed"
+	if strings.TrimSpace(userInput) == "" && strings.TrimSpace(assistantContent) != "" {
+		inputMode = "assistant_only"
+		userInputState = "missing"
+	}
 	return strings.Join([]string{
 		fmt.Sprintf("chat_session_id: %s", sid),
 		fmt.Sprintf("turn_index: %d", turnIndex),
+		fmt.Sprintf("input_mode: %s", inputMode),
+		fmt.Sprintf("user_input_state: %s", userInputState),
+		"When input_mode is assistant_only, extract only claims grounded in the assistant output. Do not invent missing user actions or dialogue. Keep every independently valid extracted item even when another field has no grounded item.",
 		"",
 		"<Latest_Turn>",
 		"[User]",

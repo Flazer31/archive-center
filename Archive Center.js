@@ -17540,8 +17540,8 @@
         "tail_hash_guard",
       ],
       historyDiffMode: "common_prefix_plus_suffix",
-      primaryTargetResolver: "history_diff_then_ledger_anchor",
-      fallbackResolver: "assistant_output_sequence_only",
+      primaryTargetResolver: "backend_source_revision_then_client_sequence_hint",
+      fallbackResolver: "assistant_output_sequence_hint_only",
       ledgerStorage: "plugin_storage_and_sync_cache",
       ledgerEntryFields: ["message_index", "role", "turn_index", "fingerprint"],
       supportedDeleteShapes: [
@@ -17550,7 +17550,7 @@
         "historical_contiguous_delete",
       ],
       duplicateGuard: "session_history_diff_signature",
-      runtimeStatus: "guard_enabled",
+      runtimeStatus: "host_observation_only",
     };
   }
 
@@ -17563,14 +17563,16 @@
       const resolvedTrackedTurnIndex = typeof trackedTurnIndex === "number" && trackedTurnIndex >= 0
         ? trackedTurnIndex
         : assistantMessageCount;
-      const completedTurnFloor = Math.max(0, resolvedTrackedTurnIndex - assistantMessageCount);
       let completedTurnsSeen = 0;
       const entries = compactMessages.map(function(message, messageIndex) {
         const role = message && message.role === "assistant" ? "assistant" : "user";
         if (role === "assistant") completedTurnsSeen += 1;
+        // This is only the ordinal observed in the current RisuAI message list.
+        // It is not a canonical Archive Center turn. Go resolves the real turn
+        // from source revisions before authorizing any rollback.
         const turnIndex = role === "assistant"
-          ? Math.max(1, completedTurnFloor + completedTurnsSeen)
-          : Math.max(1, completedTurnFloor + completedTurnsSeen + 1);
+          ? Math.max(1, completedTurnsSeen)
+          : Math.max(1, completedTurnsSeen + 1);
         const fingerprint = computeTailHashFromSnapshotMessages([{ role, content: String(message && message.content || "") }]);
         return {
           messageIndex,
@@ -17583,6 +17585,7 @@
         policyVersion: "or1f.v1",
         trackedTurnIndex: resolvedTrackedTurnIndex,
         assistantMessageCount,
+        turnIndexSource: "assistant_sequence_observation_only",
         messageCount: compactMessages.length,
         entries,
       };
@@ -18866,7 +18869,10 @@
   // turn-range policy; this adapter only transports stable host observations.
   function buildRollbackAssistantObservations(messages) {
     try {
-      return (Array.isArray(messages) ? messages : [])
+      let activeAssistantOrdinal = 0;
+      const list = Array.isArray(messages) ? messages : [];
+      const activeWindowStart = getRisuActiveMessageWindowStart(list);
+      return list
         .map(function(message, index) {
           const comparable = extractComparableMessageRoleAndContent(message);
           if (!comparable || comparable.role !== "assistant" || !String(comparable.content || "").trim()) return null;
@@ -18877,11 +18883,38 @@
           const observedIndex = Number.isInteger(message && message.risuMessageIndex)
             ? message.risuMessageIndex
             : index;
+          const disabled = index < activeWindowStart || (rawMessage && (rawMessage.disabled === true || rawMessage.disabled === "allBefore"));
+          const streaming = !!(rawMessage && (
+            rawMessage.isStreaming === true ||
+            rawMessage.streaming === true ||
+            (generationInfo && generationInfo.isStreaming === true)
+          ));
+          if (!disabled && !streaming) activeAssistantOrdinal += 1;
+          let adjacentUser = null;
+          for (let priorIndex = index - 1; priorIndex >= activeWindowStart; priorIndex--) {
+            const prior = list[priorIndex];
+            const priorComparable = extractComparableMessageRoleAndContent(prior);
+            if (!priorComparable) continue;
+            if (priorComparable.role === "user") adjacentUser = { message: prior, comparable: priorComparable };
+            break;
+          }
+          const adjacentUserIndex = adjacentUser && Number.isInteger(adjacentUser.message && adjacentUser.message.risuMessageIndex)
+            ? adjacentUser.message.risuMessageIndex
+            : (adjacentUser ? index - 1 : null);
           return {
             message_id: rawMessage && rawMessage.chatId != null ? String(rawMessage.chatId) : "",
             generation_id: generationInfo && generationInfo.generationId != null ? String(generationInfo.generationId) : "",
             content_hash: computeOrchestrationDirtyHashOr1c(String(comparable.content || "")),
             message_index: observedIndex,
+            risuAssistantMessageIndex: observedIndex,
+            risuUserMessageIndex: Number.isInteger(adjacentUserIndex) ? adjacentUserIndex : null,
+            observedPairOrdinal: disabled || streaming ? 0 : activeAssistantOrdinal,
+            assistant_content: String(comparable.content || ""),
+            adjacent_user_present: !!adjacentUser,
+            adjacent_user_content: adjacentUser ? String(adjacentUser.comparable.content || "") : "",
+            disabled_state: disabled ? "disabled" : "active",
+            streaming_state: streaming ? "streaming" : "not_streaming",
+            final_state: disabled ? "inactive" : (streaming ? "pending" : "active_final"),
           };
         })
         .filter(Boolean);
@@ -20267,7 +20300,7 @@
     };
   }
 
-  async function requestBackendSessionRoutingTurnResolution(sessionId, mode, observation) {
+  async function requestBackendSessionRoutingTurnResolution(sessionId, mode, observation, requestOptions = {}) {
     const observed = observation && typeof observation === "object" && !Array.isArray(observation)
       ? observation
       : {};
@@ -20319,14 +20352,20 @@
             assistant_message_id: String(pair && (pair.assistantMessageId || pair.assistant_message_id || pair.message_id) || ""),
             assistant_generation_id: String(pair && (pair.assistantGenerationId || pair.assistant_generation_id || pair.generation_id) || ""),
             assistant_content_hash: String(pair && (pair.assistantContentHash || pair.assistant_content_hash || pair.content_hash) || ""),
+            assistant_content: String(pair && (pair.assistantContent || pair.assistant_content) || ""),
+            adjacent_user_present: !!(pair && (pair.adjacentUserPresent === true || pair.adjacent_user_present === true)),
+            adjacent_user_content: String(pair && (pair.adjacentUserContent || pair.adjacent_user_content) || ""),
+            assistant_disabled_state: String(pair && (pair.assistantDisabledState || pair.assistant_disabled_state || pair.disabled_state) || ""),
+            assistant_streaming_state: String(pair && (pair.assistantStreamingState || pair.assistant_streaming_state || pair.streaming_state) || ""),
+            assistant_final_state: String(pair && (pair.assistantFinalState || pair.assistant_final_state || pair.final_state) || ""),
           };
         }),
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
         ...(observed.worldlineObservation && typeof observed.worldlineObservation === "object" ? {
           worldline_observation: observed.worldlineObservation,
         } : {}),
-        ...(observed.routingContext ? {
-          routing_context: String(observed.routingContext),
+        ...((requestOptions && requestOptions.routingContext) || observed.routingContext ? {
+          routing_context: String((requestOptions && requestOptions.routingContext) || observed.routingContext),
         } : {}),
       },
     });
@@ -20407,6 +20446,9 @@
               generation_id: String(item && item.generation_id || ""),
               content_hash: String(item && item.content_hash || ""),
               message_index: Number.isInteger(item && item.message_index) ? item.message_index : -1,
+              disabled_state: String(item && item.disabled_state || ""),
+              streaming_state: String(item && item.streaming_state || ""),
+              final_state: String(item && item.final_state || ""),
             };
           }),
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
@@ -37169,6 +37211,11 @@
       turn_index: turnIndex,
       user_content: userContent,
       assistant_content: assistantContent,
+      assistant_message_id: String(entry.assistant_message_id || ""),
+      assistant_generation_id: String(entry.assistant_generation_id || ""),
+      assistant_content_hash: String(entry.assistant_content_hash || ""),
+      input_mode: String(entry.input_mode || (userContent ? "paired" : "assistant_only")),
+      user_input_state: String(entry.user_input_state || (userContent ? "observed" : "missing")),
       created_at: String(entry.created_at || ""),
       source: String(entry.source || fallbackSource || "local"),
     };
@@ -37414,19 +37461,31 @@
       const turnIndex = parseInt(row && row.turn_index, 10);
       if (isNaN(turnIndex) || turnIndex < 1) continue;
       if (row && (row.user || row.assistant)) {
-        const entry = byTurn.get(turnIndex) || { turnIndex, user: "", assistant: "", rowCount: 0 };
-        if (row.user && !entry.user) entry.user = normalizeActiveChatRescanCompareText(row.user.content);
-        if (row.assistant && !entry.assistant) entry.assistant = normalizeActiveChatRescanCompareText(row.assistant.content);
+        const entry = byTurn.get(turnIndex) || { turnIndex, user: "", assistant: "", userPresent: false, assistantPresent: false, rowCount: 0 };
+        if (row.user) {
+          entry.userPresent = true;
+          if (!entry.user) entry.user = normalizeActiveChatRescanCompareText(row.user.content);
+        }
+        if (row.assistant) {
+          entry.assistantPresent = true;
+          if (!entry.assistant) entry.assistant = normalizeActiveChatRescanCompareText(row.assistant.content);
+        }
         entry.rowCount += Number(row.raw_row_count || (row.user ? 1 : 0) + (row.assistant ? 1 : 0));
         byTurn.set(turnIndex, entry);
         continue;
       }
       const role = String(row && row.role || "").trim().toLowerCase();
       if (role !== "user" && role !== "assistant") continue;
-      const entry = byTurn.get(turnIndex) || { turnIndex, user: "", assistant: "", rowCount: 0 };
+      const entry = byTurn.get(turnIndex) || { turnIndex, user: "", assistant: "", userPresent: false, assistantPresent: false, rowCount: 0 };
       const content = normalizeActiveChatRescanCompareText(row && row.content);
-      if (role === "user" && !entry.user) entry.user = content;
-      if (role === "assistant" && !entry.assistant) entry.assistant = content;
+      if (role === "user") {
+        entry.userPresent = true;
+        if (!entry.user) entry.user = content;
+      }
+      if (role === "assistant") {
+        entry.assistantPresent = true;
+        if (!entry.assistant) entry.assistant = content;
+      }
       entry.rowCount += 1;
       byTurn.set(turnIndex, entry);
     }
@@ -37465,11 +37524,14 @@
       if (isNaN(turnIndex) || turnIndex < 1) continue;
       const dbRaw = dbRawMap.get(turnIndex) || null;
       const derived = derivedMap.get(turnIndex) || null;
-      const userMatches = !!(dbRaw && dbRaw.user && dbRaw.user === normalizeActiveChatRescanCompareText(pair.userContent));
-      const assistantMatches = !!(dbRaw && dbRaw.assistant && dbRaw.assistant === normalizeActiveChatRescanCompareText(pair.assistantContent));
+      const inputMode = String(pair && pair.inputMode || (String(pair && pair.userContent || "").trim() ? "paired" : "assistant_only"));
+      const userMatches = inputMode === "assistant_only"
+        ? !!(dbRaw && !dbRaw.userPresent)
+        : !!(dbRaw && dbRaw.userPresent && dbRaw.user === normalizeActiveChatRescanCompareText(pair.userContent));
+      const assistantMatches = !!(dbRaw && dbRaw.assistantPresent && dbRaw.assistant === normalizeActiveChatRescanCompareText(pair.assistantContent));
       const rawStatus = userMatches && assistantMatches
         ? "present"
-        : dbRaw && (dbRaw.user || dbRaw.assistant)
+        : dbRaw && (dbRaw.userPresent || dbRaw.assistantPresent)
           ? "mismatch_or_partial"
           : "missing";
       const derivedTotal = derived ? Number(derived.derivedTotal || 0) : 0;
@@ -37478,15 +37540,17 @@
         turn_index: turnIndex,
         raw_status: rawStatus,
         derived_status: derivedStatus,
-        user_present: !!(dbRaw && dbRaw.user),
-        assistant_present: !!(dbRaw && dbRaw.assistant),
+        input_mode: inputMode,
+        user_input_state: String(pair && pair.userInputState || (inputMode === "assistant_only" ? "missing" : "observed")),
+        user_present: !!(dbRaw && dbRaw.userPresent),
+        assistant_present: !!(dbRaw && dbRaw.assistantPresent),
         derived_total: derivedTotal,
         memory_count: derived ? Number(derived.memory || 0) : 0,
         evidence_count: derived ? Number(derived.evidence || 0) : 0,
         kg_count: derived ? Number(derived.kg || 0) : 0,
         episode_count: derived ? Number(derived.episode || 0) : 0,
         episode_ranges: derived && Array.isArray(derived.episodeRanges) ? derived.episodeRanges.slice(0, 3) : [],
-        preview: String(pair.userContent || "").slice(0, 120),
+        preview: String(pair.userContent || pair.assistantContent || "").slice(0, 120),
       });
     }
     return rows;
@@ -37630,19 +37694,34 @@
         pairSource = "db_raw_role_fallback";
       }
     }
-    const assistantObservations = buildRollbackAssistantObservations(messages);
+    let assistantResolutionCounts = {};
+    let unresolvedAssistantObservations = [];
+    const allChatMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
+    const assistantObservations = buildRollbackAssistantObservations(allChatMessages);
     if (assistantObservations.length > 0) {
-      const assistantSourceResolution = await requestBackendSessionRoutingTurnResolution(sid, "batch", assistantObservations);
+      const assistantSourceResolution = await requestBackendSessionRoutingTurnResolution(
+        sid,
+        "batch",
+        assistantObservations,
+        { routingContext: "automatic_active_chat_full_sweep" }
+      );
       const resolvedAssistantSources = assistantSourceResolution && Array.isArray(assistantSourceResolution.resolvedObservations)
         ? assistantSourceResolution.resolvedObservations
         : [];
       if (assistantSourceResolution.status === "backend_unavailable" || resolvedAssistantSources.length !== assistantObservations.length) {
         throw new Error("session_routing_assistant_source_resolution_unavailable");
       }
-      const sourceBackedPairs = resolvedAssistantSources.map(function(item, index) {
+      assistantResolutionCounts = assistantSourceResolution.backendDecision && assistantSourceResolution.backendDecision.observation_counts
+        ? assistantSourceResolution.backendDecision.observation_counts
+        : {};
+      unresolvedAssistantObservations = resolvedAssistantSources.filter(function(item) {
+        return item && String(item.turn_identity_state || "") === "unresolved";
+      });
+      const assistantTimelinePairs = resolvedAssistantSources.map(function(item, index) {
         if (!item || Number(item.observation_index) !== index ||
-            String(item.resolution || "") !== "existing_turn_by_assistant_source" ||
-            Number(item.turn_index) < 1 || !String(item.stored_assistant_content || "").trim()) {
+            Number(item.turn_index) < 1 ||
+            String(item.turn_identity_state || "") === "unresolved" ||
+            String(item.resolution || "") === "inactive_assistant_observation") {
           return null;
         }
         const assistantObservation = assistantObservations[index] || {};
@@ -37657,10 +37736,11 @@
           .map(function(message) {
             return { role: String(message && message.role || ""), content: String(message && message.content || "") };
           });
-        const userContent = String(item.stored_user_content || "");
-        const assistantContent = String(item.stored_assistant_content || "");
+        const userContent = String(item.stored_user_content || assistantObservation.adjacent_user_content || "");
+        const assistantContent = String(item.stored_assistant_content || assistantObservation.assistant_content || "");
+        if (!assistantContent.trim()) return null;
         return {
-          observedPairOrdinal: Number(item.turn_index),
+          observedPairOrdinal: Number(assistantObservation.observedPairOrdinal || item.turn_index),
           userContent,
           assistantContent,
           contextMessages,
@@ -37677,23 +37757,33 @@
           sourceRevision: String(item.source_revision || ""),
           turnIndex: Number(item.turn_index),
           localTurnIndex: Number(item.local_turn_index || item.turn_index || 0),
-          turnIndexSource: "active_source_revision",
-          turnResolution: "existing_turn_by_assistant_source",
+          turnIndexSource: String(item.source || "assistant_observation_order"),
+          turnResolution: String(item.resolution || "assistant_observation"),
+          inputMode: String(item.input_mode || (userContent ? "paired" : "assistant_only")),
+          userInputState: String(item.user_input_state || (userContent ? "observed" : "missing")),
+          turnIdentityState: String(item.turn_identity_state || "resolved"),
+          sourceLifecycleState: String(item.source_lifecycle_state || ""),
         };
       }).filter(Boolean);
-      if (sourceBackedPairs.length > 0) {
+      if (assistantTimelinePairs.length > 0) {
         const pairsByTurn = new Map();
         pairs.forEach(function(pair) {
           const turnIndex = Number(pair && pair.turnIndex || 0);
           if (turnIndex > 0) pairsByTurn.set(turnIndex, pair);
         });
-        sourceBackedPairs.forEach(function(pair) {
-          pairsByTurn.set(Number(pair.turnIndex), pair);
+        assistantTimelinePairs.forEach(function(pair) {
+          const turnIndex = Number(pair.turnIndex);
+          const existing = pairsByTurn.get(turnIndex);
+          pairsByTurn.set(turnIndex, Object.assign({}, existing || {}, pair, {
+            contextMessages: Array.isArray(existing && existing.contextMessages) && existing.contextMessages.length > 0
+              ? existing.contextMessages
+              : pair.contextMessages,
+          }));
         });
         pairs = Array.from(pairsByTurn.values()).sort(function(left, right) {
           return Number(left && left.turnIndex || 0) - Number(right && right.turnIndex || 0);
         });
-        pairSource = "backend_active_source_revision";
+        pairSource = "backend_assistant_timeline";
       }
     }
     const derivedMap = buildActiveChatRescanDerivedMap(timelineResult.items);
@@ -37722,6 +37812,9 @@
       derivedMap,
       pairSource,
       pairs,
+      assistantObservationCount: assistantObservations.length,
+      assistantResolutionCounts,
+      unresolvedAssistantObservations,
       rows,
       rawMissingTurns,
       rawMismatchTurns,
@@ -37774,6 +37867,11 @@
         risu_db_root_keys: plan.rawShape.risu_db_root_keys,
         active_pair_source: plan.pairSource,
         active_pair_count: plan.pairs.length,
+        assistant_output_count: Number(plan.assistantObservationCount || 0),
+        paired_output_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.paired || 0),
+        db_input_recovered_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.stored_pair_recovered || 0),
+        assistant_only_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.assistant_only || 0),
+        unresolved_output_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.unresolved || 0),
         db_chat_log_rows_checked: plan.dbRows.length,
         db_raw_turns_checked: plan.dbRawMap.size,
         timeline_items_checked: plan.timelineResult.items.length,
@@ -37805,8 +37903,7 @@
   function buildSessionNormalizeRepairEntriesFromDryRunPlan(plan) {
     const entries = [];
     const repairCandidateSet = new Set(
-      (Array.isArray(plan && plan.rawMissingTurns) ? plan.rawMissingTurns : [])
-        .concat(Array.isArray(plan && plan.rawMismatchTurns) ? plan.rawMismatchTurns : [])
+      (Array.isArray(plan && plan.processableTurns) ? plan.processableTurns : [])
         .map(function(turn) { return Number(turn); })
     );
     if (repairCandidateSet.size === 0) return entries;
@@ -37818,6 +37915,11 @@
           turn_index: turnIndex,
           user_content: String(pair && pair.userContent || ""),
           assistant_content: String(pair && pair.assistantContent || ""),
+          assistant_message_id: String(pair && pair.assistantMessageId || ""),
+          assistant_generation_id: String(pair && pair.assistantGenerationId || ""),
+          assistant_content_hash: String(pair && pair.assistantContentHash || ""),
+          input_mode: String(pair && pair.inputMode || ""),
+          user_input_state: String(pair && pair.userInputState || ""),
           source: "active_chat_session_normalize",
         }, "active_chat_session_normalize");
       })
@@ -37860,6 +37962,7 @@
         : (hasFailure ? t("sessionNormalize.completedWithErrors") : t("sessionNormalize.completed")));
     const countItems = [
       [t("sessionNormalize.count.raw"), Number(after.raw_complete_turns || 0) + "/" + Number(after.raw_turns || 0)],
+      ["output only", Number(after.raw_assistant_only_turns || 0)],
       [t("sessionNormalize.count.memories"), Number(after.memories || 0)],
       [t("sessionNormalize.count.evidence"), Number(after.direct_evidence || 0)],
       [t("sessionNormalize.count.kg"), Number(after.kg_triples || 0)],
@@ -37984,6 +38087,11 @@
           planMeta = {
             active_chat_plan_status: "ok",
             active_chat_pair_count: Array.isArray(plan.pairs) ? plan.pairs.length : 0,
+            active_chat_assistant_output_count: Number(plan.assistantObservationCount || 0),
+            active_chat_paired_output_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.paired || 0),
+            active_chat_db_input_recovered_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.stored_pair_recovered || 0),
+            active_chat_assistant_only_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.assistant_only || 0),
+            active_chat_unresolved_output_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.unresolved || 0),
             active_chat_raw_missing_count: Array.isArray(plan.rawMissingTurns) ? plan.rawMissingTurns.length : 0,
             active_chat_raw_mismatch_count: Array.isArray(plan.rawMismatchTurns) ? plan.rawMismatchTurns.length : 0,
             active_chat_derived_missing_count: Array.isArray(plan.derivedMissingTurns) ? plan.derivedMissingTurns.length : 0,
@@ -43412,6 +43520,11 @@
               : ''
           ) +
           '<br>active pairs: ' + Number(r.active_pair_count || 0) +
+          ' / assistant outputs: ' + Number(r.assistant_output_count || 0) +
+          ' / complete pairs: ' + Number(r.paired_output_count || 0) +
+          ' / DB input restored: ' + Number(r.db_input_recovered_count || 0) +
+          ' / output only: ' + Number(r.assistant_only_count || 0) +
+          ' / unresolved: ' + Number(r.unresolved_output_count || 0) +
           ' / pair source: ' + escapeAttr(String(r.active_pair_source || "active_chat_role_parse")) +
           ' / DB raw rows: ' + Number(r.db_chat_log_rows_checked || 0) +
           ' / DB turns: ' + Number(r.db_raw_turns_checked || 0) +

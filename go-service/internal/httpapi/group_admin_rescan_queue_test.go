@@ -434,6 +434,7 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 		source.TurnIndex,
 		source.UserContent,
 		source.AssistantContent,
+		adminRescanSourceObservation{},
 		time.Unix(1, 0).UTC(),
 	)
 	later := adminRescanCanonicalRawSourceRevision(
@@ -441,6 +442,7 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 		source.TurnIndex,
 		source.UserContent,
 		source.AssistantContent,
+		adminRescanSourceObservation{},
 		time.Unix(2, 0).UTC(),
 	)
 	repeated := adminRescanCanonicalRawSourceRevision(
@@ -448,6 +450,7 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 		source.TurnIndex,
 		source.UserContent,
 		source.AssistantContent,
+		adminRescanSourceObservation{},
 		time.Unix(1, 0).UTC(),
 	)
 	if earlier == nil || later == nil || repeated == nil ||
@@ -463,6 +466,156 @@ func TestAdminRescanCanonicalRawPairRebuildsThroughSharedSourceOwner(t *testing.
 	artifacts, _ := response["artifact_counts"].(map[string]int)
 	if artifacts["memories"] != 1 {
 		t.Fatalf("artifacts=%+v response=%+v", artifacts, response)
+	}
+}
+
+func TestAdminRescanCanonicalAssistantOnlyRebuildsGroundedDerivedArtifacts(t *testing.T) {
+	base := newAdminDuplicateReprocessingStore()
+	base.source.AssistantContent = "At dawn, Mina finds the brass key under the desk and smiles."
+	base.logs = []store.ChatLog{{
+		ChatSessionID: base.source.ChatSessionID,
+		TurnIndex:     base.source.TurnIndex,
+		Role:          "assistant",
+		Content:       base.source.AssistantContent,
+	}}
+	st := &adminCanonicalRawReprocessingStore{adminDuplicateReprocessingStore: base}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+	oldClient := proxyHTTPClient
+	criticCalls := 0
+	criticRequest := ""
+	criticContent := criticWireJSONForTest(map[string]any{
+		"turn_summary":     "Mina found the brass key under the desk.",
+		"importance_score": 7,
+		"evidence_excerpts": []any{
+			"Mina finds the brass key under the desk",
+			42,
+		},
+	})
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		criticCalls++
+		body, _ := io.ReadAll(req.Body)
+		criticRequest = string(body)
+		payload, _ := json.Marshal(map[string]any{
+			"choices": []any{map[string]any{
+				"message": map[string]any{"content": criticContent},
+			}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	response, err := srv.runAdminRescan(
+		context.Background(),
+		base.source.ChatSessionID,
+		adminRescanRequest{
+			TurnIndices:        []int{base.source.TurnIndex},
+			CanonicalRawReplay: true,
+			SourceObservations: map[int]adminRescanSourceObservation{
+				base.source.TurnIndex: {
+					AssistantMessageID:    "assistant-only-message",
+					AssistantGenerationID: "assistant-only-generation",
+					AssistantContentHash:  prepareOR1CHash(base.source.AssistantContent),
+					InputMode:             "assistant_only",
+					UserInputState:        "missing",
+				},
+			},
+			ClientMeta: map[string]any{
+				"critic": map[string]any{
+					"api_key":    "test-key",
+					"endpoint":   "https://api.example.com/v1",
+					"model":      "critic",
+					"provider":   "openai",
+					"timeout_ms": 45000,
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response["status"] != "ok" || intFromAny(response["succeeded"], -1) != 1 ||
+		criticCalls != 1 || len(st.registered) != 1 || len(st.admissions) == 0 {
+		t.Fatalf("response=%+v critic_calls=%d registered=%d admissions=%d", response, criticCalls, len(st.registered), len(st.admissions))
+	}
+	source := st.registered[0]
+	if source.UserContent != "" || source.AssistantContent != base.source.AssistantContent ||
+		source.SourceMessageID != "assistant-only-message" ||
+		source.SourceGenerationID != "assistant-only-generation" {
+		t.Fatalf("assistant-only canonical source=%+v", source)
+	}
+	if !strings.Contains(criticRequest, `input_mode: assistant_only`) ||
+		!strings.Contains(criticRequest, `user_input_state: missing`) ||
+		!strings.Contains(criticRequest, base.source.AssistantContent) {
+		t.Fatalf("assistant-only critic request=%q", criticRequest)
+	}
+	lineageSeen := false
+	lineages := []string{}
+	for _, admission := range st.admissions {
+		for _, evidence := range admission.Evidence {
+			lineages = append(lineages, evidence.LineageJSON)
+			if strings.Contains(evidence.LineageJSON, `"source_role":"assistant_output"`) &&
+				strings.Contains(evidence.LineageJSON, `"user_input_state":"missing"`) {
+				lineageSeen = true
+			}
+		}
+	}
+	if !lineageSeen {
+		resultJSON := ""
+		if len(st.admissions) > 0 && st.admissions[0] != nil {
+			resultJSON = st.admissions[0].ResultJSON
+		}
+		t.Fatalf("assistant output evidence lineage was not preserved: %q result=%s", lineages, resultJSON)
+	}
+	firstAdmission := st.admissions[0]
+	st.registered[0].DerivedAdmissionState = "committed"
+	st.registered[0].DerivedAdmissionVersion = store.MemoryAdmissionContract
+	st.registered[0].DerivedExtractorVersion = completeTurnCriticPipelineVersion
+	st.registered[0].DerivedIndexVersion = memoryAdmissionIndexVersion
+	st.registered[0].DerivedResultHash = firstAdmission.ResultHash
+	st.registered[0].DerivedResultJSON = firstAdmission.ResultJSON
+	st.auditLogs = append(st.auditLogs, store.AuditLog{
+		ChatSessionID: base.source.ChatSessionID,
+		EventType:     "critic_ingest_trace",
+		TargetType:    "turn",
+		TargetID:      int64(base.source.TurnIndex),
+		DetailsJSON: mustCompactJSON(map[string]any{
+			"pipeline_complete":  true,
+			"source_revision":    st.registered[0].SourceRevision,
+			"derivation_version": store.MemoryAdmissionContract,
+			"extractor_version":  completeTurnCriticPipelineVersion,
+			"index_version":      memoryAdmissionIndexVersion,
+		}),
+	})
+	st.admissions = nil
+	repeated, err := srv.runAdminRescan(
+		context.Background(),
+		base.source.ChatSessionID,
+		adminRescanRequest{
+			TurnIndices:        []int{base.source.TurnIndex},
+			CanonicalRawReplay: true,
+			SourceObservations: map[int]adminRescanSourceObservation{
+				base.source.TurnIndex: {
+					AssistantMessageID:    "assistant-only-message",
+					AssistantGenerationID: "assistant-only-generation",
+					AssistantContentHash:  prepareOR1CHash(base.source.AssistantContent),
+					InputMode:             "assistant_only",
+					UserInputState:        "missing",
+				},
+			},
+		},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skipped := repeated["skipped_turns"].([]map[string]any)
+	if criticCalls != 1 || len(st.registered) != 1 || len(st.admissions) != 0 ||
+		intFromAny(repeated["skipped"], 0) != 1 || len(skipped) != 1 ||
+		skipped[0]["reason"] != "derived_projection_complete" {
+		t.Fatalf("assistant-only replay was not idempotent: repeated=%+v critic_calls=%d sources=%d admissions=%d", repeated, criticCalls, len(st.registered), len(st.admissions))
 	}
 }
 

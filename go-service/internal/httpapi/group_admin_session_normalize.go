@@ -170,6 +170,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			DryRun:             req.DryRun,
 			Background:         false,
 			CanonicalRawReplay: true,
+			SourceObservations: adminSessionNormalizeSourceObservations(entries),
 		}
 		res, err := s.runAdminRescanWithProgress(ctx, sid, rescanReq, adminSessionNormalizeProgressAdapter(progress, "critic_rescan_backfill", 18, 52))
 		if err != nil {
@@ -337,6 +338,21 @@ func adminSessionNormalizeRepairEntries(req adminSessionNormalizeRequest) []dto.
 		if current.Source == nil || strings.TrimSpace(*current.Source) == "" {
 			current.Source = item.Source
 		}
+		if current.AssistantMessageID == nil || strings.TrimSpace(*current.AssistantMessageID) == "" {
+			current.AssistantMessageID = item.AssistantMessageID
+		}
+		if current.AssistantGenerationID == nil || strings.TrimSpace(*current.AssistantGenerationID) == "" {
+			current.AssistantGenerationID = item.AssistantGenerationID
+		}
+		if current.AssistantContentHash == nil || strings.TrimSpace(*current.AssistantContentHash) == "" {
+			current.AssistantContentHash = item.AssistantContentHash
+		}
+		if current.InputMode == nil || strings.TrimSpace(*current.InputMode) == "" {
+			current.InputMode = item.InputMode
+		}
+		if current.UserInputState == nil || strings.TrimSpace(*current.UserInputState) == "" {
+			current.UserInputState = item.UserInputState
+		}
 		byTurn[item.TurnIndex] = current
 	}
 	turns := make([]int, 0, len(byTurn))
@@ -349,6 +365,30 @@ func adminSessionNormalizeRepairEntries(req adminSessionNormalizeRequest) []dto.
 		out = append(out, byTurn[turn])
 	}
 	return out
+}
+
+func adminSessionNormalizeSourceObservations(entries []dto.ChatLogRepairEntryRequest) map[int]adminRescanSourceObservation {
+	out := map[int]adminRescanSourceObservation{}
+	for _, entry := range entries {
+		if entry.TurnIndex <= 0 {
+			continue
+		}
+		out[entry.TurnIndex] = adminRescanSourceObservation{
+			AssistantMessageID:    stringFromOptional(entry.AssistantMessageID),
+			AssistantGenerationID: stringFromOptional(entry.AssistantGenerationID),
+			AssistantContentHash:  stringFromOptional(entry.AssistantContentHash),
+			InputMode:             stringFromOptional(entry.InputMode),
+			UserInputState:        stringFromOptional(entry.UserInputState),
+		}
+	}
+	return out
+}
+
+func stringFromOptional(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func adminSessionNormalizeClientMeta(raw map[string]any) map[string]any {
@@ -433,22 +473,27 @@ func adminSessionNormalizeMetaKeys(meta map[string]any) []string {
 
 func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) (map[string]any, []string) {
 	counts := map[string]any{
-		"chat_log_rows":        0,
-		"raw_turns":            0,
-		"raw_complete_turns":   0,
-		"raw_partial_turns":    0,
-		"starter_turn_present": false,
-		"memories":             0,
-		"direct_evidence":      0,
-		"kg_triples":           0,
-		"world_rules":          0,
-		"episode_summaries":    0,
-		"chapter_summaries":    0,
-		"arc_summaries":        0,
-		"saga_digests":         0,
-		"min_turn":             0,
-		"max_turn":             0,
-		"partial_turn_preview": []int{},
+		"chat_log_rows":               0,
+		"raw_turns":                   0,
+		"raw_complete_turns":          0,
+		"raw_partial_turns":           0,
+		"raw_assistant_only_turns":    0,
+		"raw_user_only_turns":         0,
+		"raw_processable_turns":       0,
+		"starter_turn_present":        false,
+		"memories":                    0,
+		"direct_evidence":             0,
+		"kg_triples":                  0,
+		"world_rules":                 0,
+		"episode_summaries":           0,
+		"chapter_summaries":           0,
+		"arc_summaries":               0,
+		"saga_digests":                0,
+		"min_turn":                    0,
+		"max_turn":                    0,
+		"partial_turn_preview":        []int{},
+		"assistant_only_turn_preview": []int{},
+		"user_only_turn_preview":      []int{},
 	}
 	warnings := []string{}
 	logs, err := s.Store.ListChatLogs(ctx, sid, 0, 0)
@@ -479,6 +524,8 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 			roleByTurn[log.TurnIndex][role] = true
 		}
 		partialTurns := []int{}
+		assistantOnlyTurns := []int{}
+		userOnlyTurns := []int{}
 		completeTurns := 0
 		dialogueTurns := 0
 		starterTurnPresent := false
@@ -495,16 +542,26 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 				completeTurns++
 			} else {
 				partialTurns = append(partialTurns, turn)
+				if roles["assistant"] {
+					assistantOnlyTurns = append(assistantOnlyTurns, turn)
+				} else if roles["user"] {
+					userOnlyTurns = append(userOnlyTurns, turn)
+				}
 			}
 		}
 		counts["chat_log_rows"] = len(logs)
 		counts["raw_turns"] = dialogueTurns
 		counts["raw_complete_turns"] = completeTurns
 		counts["raw_partial_turns"] = len(partialTurns)
+		counts["raw_assistant_only_turns"] = len(assistantOnlyTurns)
+		counts["raw_user_only_turns"] = len(userOnlyTurns)
+		counts["raw_processable_turns"] = completeTurns + len(assistantOnlyTurns)
 		counts["starter_turn_present"] = starterTurnPresent
 		counts["min_turn"] = minTurn
 		counts["max_turn"] = maxTurn
 		counts["partial_turn_preview"] = uniqueSortedNonNegativeInts(partialTurns)
+		counts["assistant_only_turn_preview"] = uniqueSortedNonNegativeInts(assistantOnlyTurns)
+		counts["user_only_turn_preview"] = uniqueSortedNonNegativeInts(userOnlyTurns)
 	}
 	if memories, err := s.Store.ListMemories(ctx, sid, 0, 0); err == nil {
 		counts["memories"] = len(memories)
@@ -582,7 +639,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 }
 
 func adminSessionNormalizeConflictTurns(snapshot map[string]any) []int {
-	return uniqueSortedInts(intSliceFromAny(snapshot["partial_turn_preview"]))
+	return uniqueSortedInts(intSliceFromAny(snapshot["user_only_turn_preview"]))
 }
 
 func intSliceFromAny(v any) []int {

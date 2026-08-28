@@ -1542,6 +1542,31 @@ func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *t
 	}
 }
 
+func TestAdminSessionNormalizeTreatsAssistantOnlyAsProcessableAndUserOnlyAsReview(t *testing.T) {
+	const sid = "sess-normalize-role-counts"
+	fake := &memoryFakeStore{chatLogs: []store.ChatLog{
+		{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "assistant-only output"},
+		{ChatSessionID: sid, TurnIndex: 2, Role: "user", Content: "user-only input"},
+		{ChatSessionID: sid, TurnIndex: 3, Role: "user", Content: "complete input"},
+		{ChatSessionID: sid, TurnIndex: 3, Role: "assistant", Content: "complete output"},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	snapshot, warnings := srv.adminSessionNormalizeSnapshot(context.Background(), sid)
+	if len(warnings) != 0 ||
+		intFromAny(snapshot["raw_turns"], 0) != 3 ||
+		intFromAny(snapshot["raw_complete_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_assistant_only_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_user_only_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_processable_turns"], 0) != 2 {
+		t.Fatalf("snapshot=%+v warnings=%+v", snapshot, warnings)
+	}
+	if got := adminSessionNormalizeConflictTurns(snapshot); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("review turns=%v, want only user-only turn 2", got)
+	}
+}
+
 func TestAdminSessionNormalizeCancellationReachesBlockedRawChatQuery(t *testing.T) {
 	userText := "The traveler reaches the old gate."
 	assistantText := "The guard refuses entry until dawn."

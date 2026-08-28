@@ -429,7 +429,7 @@ func completeTurnMemoryWriteContract(languageContext map[string]any) map[string]
 	}
 }
 
-func completeTurnEvidenceLineage(source string, excerptIndex int, languageContext map[string]any) map[string]any {
+func completeTurnEvidenceLineage(source string, excerptIndex int, languageContext map[string]any, inputMode ...string) map[string]any {
 	lineage := map[string]any{
 		"source":                     source,
 		"excerpt_index":              excerptIndex,
@@ -439,6 +439,10 @@ func completeTurnEvidenceLineage(source string, excerptIndex int, languageContex
 		lineage["lane"] = "raw_evidence"
 		lineage["raw_evidence_rewritten"] = false
 		lineage["language_context"] = languageContext
+	}
+	if len(inputMode) > 0 && strings.TrimSpace(inputMode[0]) == "assistant_only" {
+		lineage["source_role"] = "assistant_output"
+		lineage["user_input_state"] = "missing"
 	}
 	return lineage
 }

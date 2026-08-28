@@ -2594,8 +2594,9 @@ func TestRollbackAssistantObservationsUseRisuMetadataAndContentHash(t *testing.T
 		}
 	}
 	src := readArchiveCenterJS(t)
+	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
 	functionBody := extractArchiveCenterJSFunction(t, src, "buildRollbackAssistantObservations")
-	script := functionBody + `
+	script := activeWindowBody + "\n" + functionBody + `
 function extractComparableMessageRoleAndContent(message) { return {role:message.role,content:message.content}; }
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || ""); }
 const observations = buildRollbackAssistantObservations([
@@ -2610,12 +2611,54 @@ if (observations[0].message_id !== "assistant-1" || observations[0].generation_i
 if (observations[0].content_hash !== "hash:assistant one" || observations[1].content_hash !== "hash:assistant two") {
   throw new Error("content hash fallback was not preserved: "+JSON.stringify(observations));
 }
+if (!observations[0].adjacent_user_present || observations[0].adjacent_user_content !== "user") {
+  throw new Error("adjacent user observation was not preserved: "+JSON.stringify(observations[0]));
+}
+if (observations[1].adjacent_user_present) {
+  throw new Error("assistant-only observation invented an adjacent user: "+JSON.stringify(observations[1]));
+}
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("rollback assistant observation fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRollbackLedgerDoesNotShiftAssistantOrdinalsByTrackedTurnDrift(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for rollback ledger drift fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functionBody := extractArchiveCenterJSFunction(t, src, "buildRollbackTurnLedgerOr1f")
+	script := functionBody + `
+function compactSnapshotMessages(messages) { return messages; }
+function computeTailHashFromSnapshotMessages(messages) { return "hash:"+messages.length; }
+const messages = [];
+for (let turn = 1; turn <= 27; turn += 1) {
+  messages.push({role:"user",content:"user "+turn});
+  messages.push({role:"assistant",content:"assistant "+turn});
+}
+const ledger = buildRollbackTurnLedgerOr1f(messages, 32);
+const assistants = ledger.entries.filter(entry => entry.role === "assistant");
+if (assistants.length !== 27 || assistants[0].turnIndex !== 1 || assistants[26].turnIndex !== 27) {
+  throw new Error("tracked-turn drift shifted assistant observations: "+JSON.stringify(assistants.slice(0,2)));
+}
+if (ledger.turnIndexSource !== "assistant_sequence_observation_only" || ledger.trackedTurnIndex !== 32) {
+  throw new Error("ledger observation metadata was not separated: "+JSON.stringify(ledger));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("rollback ledger drift fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -3472,14 +3515,15 @@ async function computeActiveChatRescanDryRunPlan() {
     messages: [{role:"user"},{role:"assistant"}],
     rawMissingTurns: [1],
     rawMismatchTurns: [2],
-    derivedMissingTurns: [3],
-    pairs: [1,2,3].map(turn => ({turnIndex:turn,userContent:"user "+turn,assistantContent:"assistant "+turn})),
-  };
+		derivedMissingTurns: [3],
+		processableTurns: [1,2,3],
+		pairs: [1,2,3].map(turn => ({turnIndex:turn,userContent:"user "+turn,assistantContent:"assistant "+turn})),
+	};
 }
 (async () => {
   const bundle = await buildChatLogRepairReplayFallbackBundleFromActiveChat("session-active");
   assertEqual(bundle.blocked === true, false, "raw mismatch must not block all active-chat repair candidates");
-  assertEqual(JSON.stringify(bundle.candidateTurnIndices), JSON.stringify([1,2]), "only raw missing or mismatch observations are sent to backend repair owner");
+	assertEqual(JSON.stringify(bundle.candidateTurnIndices), JSON.stringify([1,2,3]), "all processable observations are sent to the backend repair owner");
   assertEqual(bundle.derivedMissingTurns[0], 3, "derived mismatch remains visible without becoming a raw-repair blocker");
 })().catch(err => { console.error(err); process.exit(1); });
 `
@@ -3622,6 +3666,7 @@ let allInherited = false;
 async function getCurrentChatSessionId() { return "child"; }
 async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
 function extractActiveChatComparableMessages() { return allInherited ? [{}] : []; }
+function extractActiveChatMessageList() { return extractActiveChatComparableMessages(); }
 function summarizeActiveChatRawMessageShape() { return {unparsed_count:0,sample_keys:[],reference_keys:[],raw_sample_types:[],primitive_reference_count:0,active_chat_keys:[],risu_db_root_keys:[]}; }
 async function explorerFetchAllChatLogsForSession() { return {items:[],limited:false}; }
 async function explorerFetchTimelineItemsForSessionDryRun() { return {items:[]}; }
@@ -3694,6 +3739,7 @@ function extractActiveChatComparableMessages() {
   ];
   return allUsersRemoved ? full.filter(message => message.role === "assistant") : full;
 }
+function extractActiveChatMessageList() { return extractActiveChatComparableMessages(); }
 function summarizeActiveChatRawMessageShape() { return {unparsed_count:0}; }
 async function explorerFetchAllChatLogsForSession() { return {items:[],limited:false}; }
 async function explorerFetchTimelineItemsForSessionDryRun() { return {items:[]}; }

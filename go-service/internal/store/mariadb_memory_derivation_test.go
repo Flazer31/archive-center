@@ -84,6 +84,43 @@ func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	}
 }
 
+func TestMariaDBSourceRevisionRegistrationAcceptsCanonicalAssistantOnlyTurn(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	now := time.Date(2026, 8, 28, 1, 2, 3, 0, time.UTC)
+	source := testMemorySourceRevision(now)
+	source.SourceRevision = "sar_assistant_only"
+	source.LogicalTurnID = "lt_assistant_only"
+	source.UserContent = ""
+	source.UserObservedContentHash = ""
+	combinedHash := sha256.Sum256([]byte(source.AssistantContent))
+	source.CombinedContentHash = hex.EncodeToString(combinedHash[:])
+
+	mock.ExpectBegin()
+	expectSourceRegistrationTailLock(mock, source)
+	mock.ExpectQuery("SELECT source_revision, combined_content_hash, raw_user_content, raw_assistant_content").
+		WithArgs(source.ChatSessionID, source.LogicalTurnID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"source_revision", "combined_content_hash", "raw_user_content", "raw_assistant_content"}))
+	mock.ExpectQuery("SELECT role, content").
+		WithArgs(source.ChatSessionID, source.TurnIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"role", "content"}).
+			AddRow("assistant", source.AssistantContent))
+	mock.ExpectExec("INSERT INTO memory_source_revisions").WillReturnResult(sqlmock.NewResult(12, 1))
+	mock.ExpectCommit()
+
+	registered, err := m.RegisterAcceptedSourceRevision(context.Background(), source)
+	if err != nil || !registered.Inserted || registered.Idempotent || source.ID != 12 {
+		t.Fatalf("assistant-only registration=%+v id=%d err=%v", registered, source.ID, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBSourceRevisionRegistrationRejectsAmbiguousActiveSources(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

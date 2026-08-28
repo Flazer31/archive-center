@@ -69,10 +69,26 @@ type rollbackDecisionRequest struct {
 }
 
 type rollbackAssistantObservation struct {
-	MessageID    string `json:"message_id,omitempty"`
-	GenerationID string `json:"generation_id,omitempty"`
-	ContentHash  string `json:"content_hash,omitempty"`
-	MessageIndex int    `json:"message_index"`
+	MessageID      string `json:"message_id,omitempty"`
+	GenerationID   string `json:"generation_id,omitempty"`
+	ContentHash    string `json:"content_hash,omitempty"`
+	MessageIndex   int    `json:"message_index"`
+	DisabledState  string `json:"disabled_state,omitempty"`
+	StreamingState string `json:"streaming_state,omitempty"`
+	FinalState     string `json:"final_state,omitempty"`
+}
+
+func rollbackAssistantObservationEligible(observation rollbackAssistantObservation) bool {
+	if strings.TrimSpace(observation.DisabledState) == "disabled" ||
+		strings.TrimSpace(observation.StreamingState) == "streaming" {
+		return false
+	}
+	switch strings.TrimSpace(observation.FinalState) {
+	case "inactive", "pending":
+		return false
+	default:
+		return true
+	}
 }
 
 type rollbackAssistantDeletionEvidence struct {
@@ -230,6 +246,9 @@ func verifyRollbackAssistantDeletionEvidence(
 	findMatch := func(source store.MemorySourceRevision, identityOnly bool) int {
 		search := func(start int) int {
 			for index := start; index < len(observations); index++ {
+				// Disabled or still-streaming output is not a cold-start candidate,
+				// but it is still present in the host chat and therefore cannot be
+				// deletion evidence.
 				if used[index] {
 					continue
 				}
@@ -577,6 +596,12 @@ type routingTurnObservation struct {
 	AssistantMessageID        string `json:"assistant_message_id,omitempty"`
 	AssistantGenerationID     string `json:"assistant_generation_id,omitempty"`
 	AssistantContentHash      string `json:"assistant_content_hash,omitempty"`
+	AssistantContent          string `json:"assistant_content,omitempty"`
+	AdjacentUserPresent       bool   `json:"adjacent_user_present"`
+	AdjacentUserContent       string `json:"adjacent_user_content,omitempty"`
+	AssistantDisabledState    string `json:"assistant_disabled_state,omitempty"`
+	AssistantStreamingState   string `json:"assistant_streaming_state,omitempty"`
+	AssistantFinalState       string `json:"assistant_final_state,omitempty"`
 }
 
 type routingTurnResolvedObservation struct {
@@ -589,8 +614,12 @@ type routingTurnResolvedObservation struct {
 	Resolution                string `json:"resolution"`
 	Source                    string `json:"source"`
 	SourceRevision            string `json:"source_revision,omitempty"`
+	SourceLifecycleState      string `json:"source_lifecycle_state,omitempty"`
 	StoredUserContent         string `json:"stored_user_content,omitempty"`
 	StoredAssistantContent    string `json:"stored_assistant_content,omitempty"`
+	InputMode                 string `json:"input_mode,omitempty"`
+	UserInputState            string `json:"user_input_state,omitempty"`
+	TurnIdentityState         string `json:"turn_identity_state,omitempty"`
 }
 
 type sessionRoutingTurnResolutionResponse struct {
@@ -614,6 +643,7 @@ type sessionRoutingTurnResolutionResponse struct {
 	MinFromTurn            int                              `json:"min_from_turn"`
 	BaselineApplied        bool                             `json:"baseline_applied"`
 	ResolvedObservations   []routingTurnResolvedObservation `json:"resolved_observations,omitempty"`
+	ObservationCounts      map[string]int                   `json:"observation_counts,omitempty"`
 	Worldline              *worldlineViewModel              `json:"worldline,omitempty"`
 }
 
@@ -681,15 +711,29 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 	if !hasAssistantEvidence {
 		return resp
 	}
-	lister, ok := s.Store.(store.ActiveSourceRevisionLister)
-	if !ok {
+	var sources []store.MemorySourceRevision
+	var err error
+	if strings.TrimSpace(req.RoutingContext) == automaticActiveChatFullSweep {
+		if history, ok := s.Store.(store.SourceRevisionHistoryLister); ok {
+			sources, err = history.ListSourceRevisions(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0)
+		} else if active, ok := s.Store.(store.ActiveSourceRevisionLister); ok {
+			sources, err = active.ListActiveSourceRevisions(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0)
+		} else {
+			resp.Status = "error"
+			resp.Code = "assistant_source_resolution_unavailable"
+			resp.Resolution = "assistant_source_resolution_unavailable"
+			resp.ResolvedObservations = nil
+			return resp
+		}
+	} else if active, ok := s.Store.(store.ActiveSourceRevisionLister); ok {
+		sources, err = active.ListActiveSourceRevisions(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0)
+	} else {
 		resp.Status = "error"
 		resp.Code = "assistant_source_resolution_unavailable"
 		resp.Resolution = "assistant_source_resolution_unavailable"
 		resp.ResolvedObservations = nil
 		return resp
 	}
-	sources, err := lister.ListActiveSourceRevisions(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0)
 	if err != nil {
 		resp.Status = "error"
 		resp.Code = "assistant_source_resolution_failed"
@@ -697,26 +741,74 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 		resp.ResolvedObservations = nil
 		return resp
 	}
-	activeSources := make([]store.MemorySourceRevision, 0, len(sources))
+	if strings.TrimSpace(req.RoutingContext) == automaticActiveChatFullSweep && s.Store != nil {
+		sourceTurns := map[int]bool{}
+		for _, source := range sources {
+			if source.TurnIndex > 0 {
+				sourceTurns[source.TurnIndex] = true
+			}
+		}
+		if logs, listErr := s.Store.ListChatLogs(ctx, strings.TrimSpace(req.ChatSessionID), 0, 0); listErr == nil {
+			rolesByTurn := map[int]map[string]string{}
+			for _, log := range logs {
+				if log.TurnIndex <= 0 || sourceTurns[log.TurnIndex] {
+					continue
+				}
+				role := strings.ToLower(strings.TrimSpace(log.Role))
+				if role != "user" && role != "assistant" {
+					continue
+				}
+				if rolesByTurn[log.TurnIndex] == nil {
+					rolesByTurn[log.TurnIndex] = map[string]string{}
+				}
+				rolesByTurn[log.TurnIndex][role] = log.Content
+			}
+			for turn, roles := range rolesByTurn {
+				assistant := strings.TrimSpace(roles["assistant"])
+				if assistant == "" {
+					continue
+				}
+				sources = append(sources, store.MemorySourceRevision{
+					ChatSessionID:                strings.TrimSpace(req.ChatSessionID),
+					TurnIndex:                    turn,
+					UserContent:                  strings.TrimSpace(roles["user"]),
+					AssistantContent:             assistant,
+					AssistantObservedContentHash: prepareOR1CHash(assistant),
+					LifecycleState:               "canonical_raw",
+				})
+			}
+		}
+	}
+	candidateSources := make([]store.MemorySourceRevision, 0, len(sources))
 	for _, source := range sources {
-		if source.LifecycleState != "active" || source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
+		if strings.TrimSpace(source.ChatSessionID) != strings.TrimSpace(req.ChatSessionID) ||
+			source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
 			continue
 		}
-		activeSources = append(activeSources, source)
+		candidateSources = append(candidateSources, source)
 	}
-	sort.SliceStable(activeSources, func(i, j int) bool {
-		if activeSources[i].TurnIndex != activeSources[j].TurnIndex {
-			return activeSources[i].TurnIndex < activeSources[j].TurnIndex
+	sort.SliceStable(candidateSources, func(i, j int) bool {
+		if candidateSources[i].TurnIndex != candidateSources[j].TurnIndex {
+			return candidateSources[i].TurnIndex < candidateSources[j].TurnIndex
 		}
-		return activeSources[i].ID < activeSources[j].ID
+		leftActive := candidateSources[i].LifecycleState == "active"
+		rightActive := candidateSources[j].LifecycleState == "active"
+		if leftActive != rightActive {
+			return leftActive
+		}
+		if candidateSources[i].HostObservedAtMS != candidateSources[j].HostObservedAtMS {
+			return candidateSources[i].HostObservedAtMS > candidateSources[j].HostObservedAtMS
+		}
+		return candidateSources[i].ID > candidateSources[j].ID
 	})
 
 	usedObservations := make([]bool, len(req.Observations))
-	matchedSources := make([]bool, len(activeSources))
-	matches := make(map[int]int, len(activeSources))
+	matchedSources := make([]bool, len(candidateSources))
+	matchedTurns := make(map[int]bool, len(candidateSources))
+	matches := make(map[int]int, len(candidateSources))
 	matchPass := func(identityOnly bool) {
-		for sourceIndex, source := range activeSources {
-			if matchedSources[sourceIndex] {
+		for sourceIndex, source := range candidateSources {
+			if matchedSources[sourceIndex] || matchedTurns[source.TurnIndex] {
 				continue
 			}
 			for observationIndex, observation := range req.Observations {
@@ -724,16 +816,27 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 					continue
 				}
 				candidate := rollbackAssistantObservation{
-					MessageID:    observation.AssistantMessageID,
-					GenerationID: observation.AssistantGenerationID,
-					ContentHash:  observation.AssistantContentHash,
+					MessageID:      observation.AssistantMessageID,
+					GenerationID:   observation.AssistantGenerationID,
+					ContentHash:    observation.AssistantContentHash,
+					DisabledState:  observation.AssistantDisabledState,
+					StreamingState: observation.AssistantStreamingState,
+					FinalState:     observation.AssistantFinalState,
+				}
+				if !rollbackAssistantObservationEligible(candidate) {
+					continue
 				}
 				if !rollbackAssistantObservationMatchesSource(source, candidate, identityOnly) {
 					continue
 				}
 				matches[observationIndex] = sourceIndex
 				usedObservations[observationIndex] = true
-				matchedSources[sourceIndex] = true
+				matchedTurns[source.TurnIndex] = true
+				for relatedIndex := range candidateSources {
+					if candidateSources[relatedIndex].TurnIndex == source.TurnIndex {
+						matchedSources[relatedIndex] = true
+					}
+				}
 				break
 			}
 		}
@@ -748,6 +851,18 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 			break
 		}
 		observation := req.Observations[index]
+		candidate := rollbackAssistantObservation{
+			DisabledState:  observation.AssistantDisabledState,
+			StreamingState: observation.AssistantStreamingState,
+			FinalState:     observation.AssistantFinalState,
+		}
+		if !rollbackAssistantObservationEligible(candidate) {
+			resp.ResolvedObservations[index].Resolution = "inactive_assistant_observation"
+			resp.ResolvedObservations[index].Source = "host_observation"
+			resp.ResolvedObservations[index].TurnIndex = 0
+			resp.ResolvedObservations[index].TurnIdentityState = "inactive"
+			continue
+		}
 		if strings.TrimSpace(observation.AssistantMessageID) == "" &&
 			strings.TrimSpace(observation.AssistantGenerationID) == "" &&
 			strings.TrimSpace(observation.AssistantContentHash) == "" {
@@ -755,18 +870,151 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 		}
 		sourceIndex, matched := matches[index]
 		if !matched {
-			resp.ResolvedObservations[index].Resolution = "unmatched_assistant_source"
-			resp.ResolvedObservations[index].Source = "active_source_revision_unmatched"
+			resp.ResolvedObservations[index].Resolution = "new_assistant_observation"
+			resp.ResolvedObservations[index].Source = "assistant_observation_order"
+			resp.ResolvedObservations[index].StoredAssistantContent = observation.AssistantContent
+			if observation.AdjacentUserPresent {
+				resp.ResolvedObservations[index].InputMode = "paired"
+				resp.ResolvedObservations[index].UserInputState = "observed"
+				resp.ResolvedObservations[index].StoredUserContent = observation.AdjacentUserContent
+			} else {
+				resp.ResolvedObservations[index].InputMode = "assistant_only"
+				resp.ResolvedObservations[index].UserInputState = "missing"
+			}
 			continue
 		}
-		source := activeSources[sourceIndex]
+		source := candidateSources[sourceIndex]
 		resp.ResolvedObservations[index].LocalTurnIndex = source.TurnIndex
 		resp.ResolvedObservations[index].TurnIndex = source.TurnIndex
 		resp.ResolvedObservations[index].Resolution = "existing_turn_by_assistant_source"
-		resp.ResolvedObservations[index].Source = "active_source_revision"
+		resp.ResolvedObservations[index].Source = "source_revision"
 		resp.ResolvedObservations[index].SourceRevision = strings.TrimSpace(source.SourceRevision)
-		resp.ResolvedObservations[index].StoredUserContent = source.UserContent
-		resp.ResolvedObservations[index].StoredAssistantContent = source.AssistantContent
+		resp.ResolvedObservations[index].SourceLifecycleState = strings.TrimSpace(source.LifecycleState)
+		resp.ResolvedObservations[index].TurnIdentityState = "source_matched"
+		resp.ResolvedObservations[index].StoredAssistantContent = extractionFirstNonEmpty(observation.AssistantContent, source.AssistantContent)
+		switch {
+		case observation.AdjacentUserPresent:
+			resp.ResolvedObservations[index].InputMode = "paired"
+			resp.ResolvedObservations[index].UserInputState = "observed"
+			resp.ResolvedObservations[index].StoredUserContent = observation.AdjacentUserContent
+		case strings.TrimSpace(source.UserContent) != "":
+			resp.ResolvedObservations[index].InputMode = "stored_pair_recovered"
+			resp.ResolvedObservations[index].UserInputState = "restored_from_source_revision"
+			resp.ResolvedObservations[index].StoredUserContent = source.UserContent
+		default:
+			resp.ResolvedObservations[index].InputMode = "assistant_only"
+			resp.ResolvedObservations[index].UserInputState = "missing"
+		}
+	}
+	resp = resolveAssistantObservationTurnIdentities(req, candidateSources, resp)
+	resp.ObservationCounts = map[string]int{}
+	for _, item := range resp.ResolvedObservations {
+		if item.InputMode != "" {
+			resp.ObservationCounts[item.InputMode]++
+		}
+		if item.TurnIdentityState == "inactive" {
+			resp.ObservationCounts["inactive"]++
+		} else if item.TurnIdentityState == "unresolved" {
+			resp.ObservationCounts["unresolved"]++
+		} else if item.TurnIndex > 0 {
+			resp.ObservationCounts["resolved"]++
+		}
+	}
+	return resp
+}
+
+func resolveAssistantObservationTurnIdentities(
+	req sessionRoutingTurnResolutionRequest,
+	sources []store.MemorySourceRevision,
+	resp sessionRoutingTurnResolutionResponse,
+) sessionRoutingTurnResolutionResponse {
+	if len(resp.ResolvedObservations) == 0 {
+		return resp
+	}
+	eligibleIndices := []int{}
+	for index := range resp.ResolvedObservations {
+		if resp.ResolvedObservations[index].TurnIdentityState != "inactive" {
+			eligibleIndices = append(eligibleIndices, index)
+		}
+	}
+	anchorPositions := []int{}
+	for position, index := range eligibleIndices {
+		if resp.ResolvedObservations[index].TurnIdentityState == "source_matched" {
+			anchorPositions = append(anchorPositions, position)
+		}
+	}
+	markResolved := func(index, turn int, state string) {
+		item := &resp.ResolvedObservations[index]
+		item.LocalTurnIndex = turn
+		item.TurnIndex = turn
+		item.TurnIdentityState = state
+	}
+	markUnresolved := func(fromPosition, toPosition int) {
+		for position := fromPosition; position < toPosition; position++ {
+			index := eligibleIndices[position]
+			if resp.ResolvedObservations[index].TurnIdentityState == "source_matched" {
+				continue
+			}
+			resp.ResolvedObservations[index].TurnIndex = 0
+			resp.ResolvedObservations[index].Resolution = "assistant_turn_identity_unresolved"
+			resp.ResolvedObservations[index].TurnIdentityState = "unresolved"
+		}
+	}
+	if len(anchorPositions) == 0 {
+		if len(sources) > 0 {
+			markUnresolved(0, len(eligibleIndices))
+			return resp
+		}
+		for position, index := range eligibleIndices {
+			turn := resp.ResolvedObservations[index].TurnIndex
+			if turn <= 0 {
+				turn = position + 1
+			}
+			markResolved(index, turn, "ordered_new_session")
+		}
+		return resp
+	}
+
+	firstAnchorPosition := anchorPositions[0]
+	firstAnchorIndex := eligibleIndices[firstAnchorPosition]
+	firstTurn := resp.ResolvedObservations[firstAnchorIndex].TurnIndex
+	if firstTurn == firstAnchorPosition+1 {
+		for position := 0; position < firstAnchorPosition; position++ {
+			markResolved(eligibleIndices[position], position+1, "source_bounded_order")
+		}
+	} else {
+		markUnresolved(0, firstAnchorPosition)
+	}
+	for anchorIndex := 0; anchorIndex+1 < len(anchorPositions); anchorIndex++ {
+		leftPosition, rightPosition := anchorPositions[anchorIndex], anchorPositions[anchorIndex+1]
+		leftIndex, rightIndex := eligibleIndices[leftPosition], eligibleIndices[rightPosition]
+		leftTurn := resp.ResolvedObservations[leftIndex].TurnIndex
+		rightTurn := resp.ResolvedObservations[rightIndex].TurnIndex
+		gapCount := rightPosition - leftPosition - 1
+		if rightTurn-leftTurn == gapCount+1 {
+			for offset := 1; offset <= gapCount; offset++ {
+				markResolved(eligibleIndices[leftPosition+offset], leftTurn+offset, "source_bounded_order")
+			}
+		} else {
+			markUnresolved(leftPosition+1, rightPosition)
+		}
+	}
+	lastAnchorPosition := anchorPositions[len(anchorPositions)-1]
+	lastAnchorIndex := eligibleIndices[lastAnchorPosition]
+	lastTurn := resp.ResolvedObservations[lastAnchorIndex].TurnIndex
+	hasLaterStoredTurn := false
+	for _, source := range sources {
+		if source.TurnIndex > lastTurn {
+			hasLaterStoredTurn = true
+			break
+		}
+	}
+	if hasLaterStoredTurn {
+		markUnresolved(lastAnchorPosition+1, len(eligibleIndices))
+	} else {
+		for position := lastAnchorPosition + 1; position < len(eligibleIndices); position++ {
+			markResolved(eligibleIndices[position], lastTurn+(position-lastAnchorPosition), "source_tail_order")
+		}
 	}
 	return resp
 }
@@ -1049,9 +1297,8 @@ func (s *Server) applyAutomaticWorldlineBackfillBoundary(
 	if req.Mode != "pair" && req.Mode != "batch" {
 		return resp
 	}
-	automaticSweep := strings.TrimSpace(req.RoutingContext) == automaticActiveChatFullSweep
 	worldline := currentWorldlineViewModel(ctx, s.Store, req.ChatSessionID)
-	if !automaticSweep && worldline.State == "not_applicable" {
+	if worldline.State == "not_applicable" {
 		return resp
 	}
 	resp.Worldline = &worldline
@@ -1081,6 +1328,14 @@ func (s *Server) applyAutomaticWorldlineBackfillBoundary(
 	if req.Mode == "batch" {
 		for index := range resp.ResolvedObservations {
 			item := &resp.ResolvedObservations[index]
+			if item.TurnIdentityState == "source_matched" {
+				continue
+			}
+			if item.TurnIdentityState == "unresolved" {
+				item.Resolution = "assistant_turn_identity_unresolved"
+				item.TurnIndex = 0
+				continue
+			}
 			if item.ObservedPairOrdinal > 0 {
 				item.LocalTurnIndex = item.ObservedPairOrdinal
 				item.Source = "observed_pair_ordinal"

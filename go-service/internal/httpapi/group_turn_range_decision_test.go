@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,29 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func TestAssistantTimelineRecoveryRegressionFixtureIsVersioned(t *testing.T) {
+	raw, err := os.ReadFile("testdata/assistant_timeline_recovery_cases.v1.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fixture struct {
+		ContractVersion string           `json:"contract_version"`
+		Cases           []map[string]any `json:"cases"`
+	}
+	if err := json.Unmarshal(raw, &fixture); err != nil {
+		t.Fatal(err)
+	}
+	caseIDs := map[string]bool{}
+	for _, item := range fixture.Cases {
+		caseIDs[stringFromMap(item, "id")] = true
+	}
+	if fixture.ContractVersion != "assistant_timeline_recovery_cases.v1" ||
+		!caseIDs["deleted_tail_36_38_poisoned_client_anchor"] ||
+		!caseIDs["deleted_user_inputs_keep_all_assistant_outputs"] {
+		t.Fatalf("fixture=%+v ids=%+v", fixture, caseIDs)
+	}
+}
 
 type durableRoutingBaselineStore struct {
 	store.Store
@@ -1682,6 +1706,97 @@ func TestRollbackDecisionHandlerDerivesEarliestDeletedAssistantFromActiveSources
 	}
 }
 
+func TestRollbackDecisionHandlerIgnoresPoisonedCounterAnchorAndUsesDeletedSourceTurn(t *testing.T) {
+	const sid = "char_1_cid_deleted_36_38"
+	decisionStore := &rollbackDecisionChatLogStore{Store: store.NewNoopStore()}
+	observations := make([]rollbackAssistantObservation, 0, 35)
+	for turn := 1; turn <= 38; turn++ {
+		content := fmt.Sprintf("assistant output %d", turn)
+		decisionStore.logs = append(decisionStore.logs, store.ChatLog{
+			ChatSessionID: sid,
+			TurnIndex:     turn,
+			Role:          "assistant",
+			Content:       content,
+		})
+		decisionStore.activeSources = append(decisionStore.activeSources, store.MemorySourceRevision{
+			ChatSessionID:                sid,
+			TurnIndex:                    turn,
+			SourceMessageID:              fmt.Sprintf("assistant-%d", turn),
+			AssistantContent:             content,
+			AssistantObservedContentHash: prepareOR1CHash(content),
+			LifecycleState:               "active",
+		})
+		if turn <= 35 {
+			observations = append(observations, rollbackAssistantObservation{
+				MessageID:    fmt.Sprintf("assistant-%d", turn),
+				ContentHash:  prepareOR1CHash(content),
+				MessageIndex: turn - 1,
+			})
+		}
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	payload, err := json.Marshal(rollbackDecisionRequest{
+		ChatSessionID:             sid,
+		RequestSource:             "auto",
+		CandidateFromTurn:         3,
+		FirstRemovedTurn:          3,
+		LedgerAnchorTurn:          3,
+		RemovedAssistantCount:     3,
+		DeletionObserved:          true,
+		AssistantObservationScope: "full_active_chat",
+		AssistantObservations:     observations,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(string(payload)))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Allowed || response.FromTurn != 36 || response.RequestedFromTurn != 3 || response.DecisionToken == "" {
+		t.Fatalf("poisoned client anchor was not replaced by exact source evidence: %+v", response)
+	}
+}
+
+func TestRollbackDecisionTreatsDisabledObservedAssistantAsPresent(t *testing.T) {
+	const sid = "char_1_cid_disabled_output_present"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store: store.NewNoopStore(),
+		logs:  []store.ChatLog{{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "still stored"}},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1",
+			AssistantContent: "still stored", LifecycleState: "active",
+		}},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":1,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","message_index":0,"disabled_state":"disabled"}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.Allowed || response.Reason != "assistant_output_not_removed" {
+		t.Fatalf("disabled but present assistant was treated as deleted: %+v", response)
+	}
+}
+
 func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testing.T) {
 	const sid = "char_1_cid_middle_assistant_removed"
 	decisionStore := &rollbackDecisionChatLogStore{
@@ -1729,7 +1844,8 @@ func TestSessionRoutingBatchResolvesAssistantObservationsAgainstActiveSources(t 
 	decisionStore := &rollbackDecisionChatLogStore{
 		Store: store.NewNoopStore(),
 		activeSources: []store.MemorySourceRevision{
-			{SourceRevision: "rev-1", ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", UserContent: "stored user 1", AssistantContent: "stored assistant 1", LifecycleState: "active"},
+			{ID: 999, SourceRevision: "foreign-rev-1", ChatSessionID: "another-session", TurnIndex: 1, SourceMessageID: "assistant-1", UserContent: "foreign user", AssistantContent: "stored assistant 1", LifecycleState: "active"},
+			{ID: 1, SourceRevision: "rev-1", ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", UserContent: "stored user 1", AssistantContent: "stored assistant 1", LifecycleState: "active"},
 			{SourceRevision: "rev-2", ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", UserContent: "stored user 2", AssistantContent: "stored assistant 2", LifecycleState: "active"},
 		},
 	}
@@ -1757,9 +1873,71 @@ func TestSessionRoutingBatchResolvesAssistantObservationsAgainstActiveSources(t 
 	for index, item := range response.ResolvedObservations {
 		wantTurn := index + 1
 		if item.TurnIndex != wantTurn || item.Resolution != "existing_turn_by_assistant_source" ||
+			item.InputMode != "stored_pair_recovered" || item.UserInputState != "restored_from_source_revision" ||
 			item.StoredUserContent != fmt.Sprintf("stored user %d", wantTurn) ||
 			item.StoredAssistantContent != fmt.Sprintf("stored assistant %d", wantTurn) {
 			t.Fatalf("resolved[%d]=%+v", index, item)
+		}
+	}
+}
+
+func TestSessionRoutingFullSweepRecoversStoredPairsAndAssistantOnlyOutputs(t *testing.T) {
+	const sid = "char_1_cid_179_messages"
+	decisionStore := &rollbackDecisionChatLogStore{Store: store.NewNoopStore()}
+	observations := make([]routingTurnObservation, 0, 84)
+	for turn := 1; turn <= 84; turn++ {
+		content := fmt.Sprintf("assistant output %d", turn)
+		observations = append(observations, routingTurnObservation{
+			ObservationIndex:     turn - 1,
+			ObservedPairOrdinal:  turn,
+			AssistantMessageID:   fmt.Sprintf("assistant-%d", turn),
+			AssistantContentHash: prepareOR1CHash(content),
+			AssistantContent:     content,
+			AssistantFinalState:  "active_final",
+			AdjacentUserPresent:  false,
+		})
+		if turn <= 15 {
+			decisionStore.activeSources = append(decisionStore.activeSources, store.MemorySourceRevision{
+				SourceRevision:               fmt.Sprintf("rev-%d", turn),
+				ChatSessionID:                sid,
+				TurnIndex:                    turn,
+				SourceMessageID:              fmt.Sprintf("assistant-%d", turn),
+				UserContent:                  fmt.Sprintf("stored user %d", turn),
+				AssistantContent:             content,
+				AssistantObservedContentHash: prepareOR1CHash(content),
+				LifecycleState:               "active",
+			})
+		}
+	}
+	req := sessionRoutingTurnResolutionRequest{
+		ChatSessionID:  sid,
+		Mode:           "batch",
+		RoutingContext: automaticActiveChatFullSweep,
+		Observations:   observations,
+	}
+	server := &Server{Store: decisionStore}
+	response := server.applyAssistantSourceRoutingResolution(
+		context.Background(),
+		req,
+		calculateSessionRoutingTurnResolution(req),
+	)
+	if len(response.ResolvedObservations) != 84 ||
+		response.ObservationCounts["resolved"] != 84 ||
+		response.ObservationCounts["stored_pair_recovered"] != 15 ||
+		response.ObservationCounts["assistant_only"] != 69 ||
+		response.ObservationCounts["unresolved"] != 0 {
+		t.Fatalf("full sweep counts=%+v resolved=%d", response.ObservationCounts, len(response.ResolvedObservations))
+	}
+	for index, item := range response.ResolvedObservations {
+		turn := index + 1
+		if item.TurnIndex != turn {
+			t.Fatalf("resolved[%d]=%+v, want turn %d", index, item, turn)
+		}
+		if turn <= 15 && (item.InputMode != "stored_pair_recovered" || item.StoredUserContent == "") {
+			t.Fatalf("stored pair was not recovered at turn %d: %+v", turn, item)
+		}
+		if turn > 15 && (item.InputMode != "assistant_only" || item.StoredUserContent != "" || item.StoredAssistantContent == "") {
+			t.Fatalf("assistant-only output was not retained at turn %d: %+v", turn, item)
 		}
 	}
 }
