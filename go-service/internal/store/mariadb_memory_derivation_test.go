@@ -15,6 +15,30 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
+func TestMariaDBNextMemoryReprocessingWakeAtUsesDurableQueueTime(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	wakeAt := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
+
+	mock.ExpectQuery("SELECT MIN\\(CASE").
+		WillReturnRows(sqlmock.NewRows([]string{"next_wake_at"}).AddRow(wakeAt))
+
+	got, err := m.NextMemoryReprocessingWakeAt(context.Background())
+	if err != nil {
+		t.Fatalf("next wake: %v", err)
+	}
+	if !got.Equal(wakeAt) {
+		t.Fatalf("next wake=%s, want %s", got, wakeAt)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBSourceRevisionRegistrationIsIdempotentAndExact(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {

@@ -727,3 +727,73 @@ DB schema, 테스트 패키지는 변경하지 않았다.
 무결성을 확인한 것이다. 실제 RisuAI에 갱신된 plugin을 다시 로드한 뒤 HUD,
 Provider 재처리와 사용자 DB 복구가 작동하는지는 위 실환경 항목으로 별도
 확인해야 한다.
+
+## 13. 4.0.9 Provider 대기 지시·토큰 소진 HUD 보완
+
+기록일: 2026-08-29 KST
+상태: `source_verified_package_refresh_pending`
+
+### 추가 사용자 피드백
+
+- NeuralWatt가 HTTP 524와 함께 `retry_after: 120`을 반환했지만 Critic 파생
+  기억 재처리가 1초 뒤 다시 호출돼 같은 장애 구간을 반복해서 두드렸다.
+- `CRITIC_OUTPUT_TOKEN_EXHAUSTED`가 표시돼도 실제 요청 출력 한도, Provider의
+  종료 사유, 출력·추론 토큰을 턴 HUD에서 확인할 수 없었다.
+- 사용자가 Critic 자동 재처리 사이의 기본 간격을 직접 지정하고, Provider가
+  더 긴 대기를 요구할 때만 그 시간을 우선하게 해 달라고 요청했다.
+
+### 구현
+
+- 설정에 `평론가 자동 재처리 간격 (초)`를 추가했다. 기본값은 30초이고
+  1~3600초 범위이며 JavaScript는 값 전달과 화면 표시만 담당한다.
+- Go는 Critic 실패 작업마다 `max(사용자 기본 간격, Provider 대기 지시)`를
+  계산해 기존 MariaDB `retry_after`에 기록한다. Vector·DB 작업 큐의 간격은
+  바꾸지 않았다.
+- HTTP `Retry-After`의 초·HTTP-date 형식과 JSON의 최상위 또는 `error` 객체
+  안 `retry_after` 숫자·숫자 문자열을 provider allowlist 없이 읽는다.
+- 잘못된 대기 값은 그 힌트만 무시하고 설정 간격을 사용한다. 오류 본문과
+  재처리 작업, 기존 원문·파생 기억은 제거하지 않는다.
+- 최초 complete-turn Critic 실패도 계산된 시각을 durable job과 HUD에 남기고
+  그 시각에 one-shot worker wake를 예약한다. 숨겨진 Provider 재호출이나 새
+  queue를 추가하지 않았다.
+- 서버 재시작 때에도 MariaDB에 남은 가장 이른 `retry_after` 또는 lease 만료
+  시각을 읽어 같은 one-shot timer를 다시 건다. 별도 polling, 병렬 queue,
+  추적되지 않는 `time.AfterFunc` 예약은 추가하지 않았다.
+- 실제 턴 실패 HUD와 자동 복구 HUD 모두에 가능한 필드를 각각 독립적으로
+  표시한다: `native_finish_reason`, `termination_kind`, 입력·출력·추론·전체
+  토큰, 요청한 `max_tokens`·`max_completion_tokens`, `retry_after_seconds`,
+  `next_retry_at`, 현재 시도와 최대 시도.
+- 특정 토큰 필드가 없으면 그 필드만 생략한다. 다른 진단이나 정상 기억을
+  함께 없애지 않는다.
+- 출력 토큰 소진·잘린 JSON은 계속 실패와 재처리 대상으로 남으며, 잘린
+  내용을 합성해 저장하지 않는다.
+
+### 회귀 검증
+
+- 설정 30초보다 Provider 120초가 길면 120초가 선택됨
+- 설정 180초가 Provider 120초보다 길면 180초가 유지됨
+- 잘못된 `retry_after`만 무시되고 오류 본문은 보존됨
+- HTTP 헤더 90초와 JSON 120초가 함께 있으면 120초가 보존됨
+- OpenAI 호환 호출 오류 반환 경로에서 response metadata가 사라지지 않음
+- HUD에서 한 토큰 필드가 없어도 나머지 종료·토큰 필드가 보존됨
+- 기존 1초 worker wake 회귀는 테스트 설정을 명시적 1초로 두어 원래 목적을
+  유지하고, 제품 기본값을 다시 1초로 되돌리지 않음
+- 미래 `retry_after`가 이미 DB에 있는 상태에서 worker를 새로 시작해도 해당
+  시각에 작업이 재개됨
+- MariaDB의 가장 이른 durable wake 시각 조회 회귀 통과
+- `go test ./internal/httpapi -count=1`: 통과
+- `go test ./cmd/js-route-variant-smoke -count=1`: 번들 Node 지정 후 통과
+- `Archive Center.js` 번들 Node 구문 검사: 통과
+- `go test ./... -count=1`: 통과
+
+### 넣지 않은 정책
+
+- NeuralWatt 모델명·endpoint allowlist
+- 지수 backoff, 무제한 retry, Provider 숨은 재호출
+- 잘린 Critic JSON 합성 저장
+- 한 진단값 오류를 이유로 전체 오류 응답·기억·작업 삭제
+- JavaScript timer 또는 재처리 정책
+- Vector·DB 큐 간격 변경
+
+테스트 패키지 최종 경로·manifest·hash는 전체 Go 검증과 동일 위치 패키지
+갱신 뒤 이 절에 추가한다.

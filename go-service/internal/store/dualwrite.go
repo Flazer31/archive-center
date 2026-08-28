@@ -798,6 +798,16 @@ func (d *dualWriteStore) ClaimMemoryReprocessingJob(ctx context.Context, owner s
 	return nil, ErrNotEnabled
 }
 
+func (d *dualWriteStore) NextMemoryReprocessingWakeAt(ctx context.Context) (time.Time, error) {
+	if primary, ok := d.primary.(MemoryReprocessingWakeScheduleStore); ok {
+		return primary.NextMemoryReprocessingWakeAt(ctx)
+	}
+	if shadow, ok := d.shadow.(MemoryReprocessingWakeScheduleStore); ok {
+		return shadow.NextMemoryReprocessingWakeAt(ctx)
+	}
+	return time.Time{}, ErrNotEnabled
+}
+
 func (d *dualWriteStore) CompleteMemoryReprocessingJob(ctx context.Context, id int64, owner string, now time.Time) error {
 	if primary, ok := d.primary.(MemoryReprocessingJobStore); ok {
 		return primary.CompleteMemoryReprocessingJob(ctx, id, owner, now)

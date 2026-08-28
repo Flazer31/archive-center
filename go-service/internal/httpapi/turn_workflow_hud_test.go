@@ -496,7 +496,7 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 	)
 	if !ledger.updateRecoveryResultWithAttempt(
 		"session-recovery", 22, "sar-terminal", "terminal", "CRITIC_RETRY_LIMIT_REACHED", artifactSaveResult{},
-		4, 4, time.Time{},
+		4, 4, time.Time{}, nil,
 	) {
 		t.Fatal("terminal recovery result did not update the HUD")
 	}
@@ -513,6 +513,40 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 	if details["retry_attempt"] != "4" || details["retry_max_attempts"] != "4" ||
 		details["retry_state"] != "exhausted" {
 		t.Fatalf("terminal recovery retry details=%+v", details)
+	}
+}
+
+func TestCriticProviderHUDDetailsPreserveIndependentTokenFields(t *testing.T) {
+	details := criticProviderHUDDetails(map[string]any{
+		"provider": "neuralwatt",
+		"model":    "critic-model",
+		"provider_response": map[string]any{
+			"native_finish_reason": "length",
+			"termination_kind":     "length",
+			"output_tokens":        4096,
+			"reasoning_tokens":     1024,
+		},
+		"provider_call_budget_ledger": map[string]any{
+			"contract_version":                providerCallBudgetLedgerContractV1,
+			"owner":                           "go",
+			"requested_max_completion_tokens": 30000,
+		},
+	})
+	got := map[string]string{}
+	for _, detail := range details {
+		got[detail.Key] = detail.Value
+	}
+	for key, want := range map[string]string{
+		"provider": "neuralwatt", "native_finish_reason": "length",
+		"output_tokens": "4096", "reasoning_tokens": "1024",
+		"requested_max_completion_tokens": "30000",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s=%q want=%q details=%+v", key, got[key], want, details)
+		}
+	}
+	if _, exists := got["input_tokens"]; exists {
+		t.Fatalf("missing input token field should stay absent: %+v", details)
 	}
 }
 

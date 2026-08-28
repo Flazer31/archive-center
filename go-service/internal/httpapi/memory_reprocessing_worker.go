@@ -14,13 +14,14 @@ import (
 )
 
 const (
-	criticRetryLimitUnconfigured = "CRITIC_RETRY_LIMIT_UNCONFIGURED"
-	criticRetryLimitReached      = "CRITIC_RETRY_LIMIT_REACHED"
-	memoryWorkerConfigDeferred   = "RUNTIME_CONFIG_NOT_SYNCED"
-	memoryWorkerRetryDelay       = time.Second
-	memoryReprocessingPerWake    = 4
-	memoryVectorGroupsPerWake    = 8
-	memoryVectorDeleteEvery      = 4
+	criticRetryLimitUnconfigured      = "CRITIC_RETRY_LIMIT_UNCONFIGURED"
+	criticRetryLimitReached           = "CRITIC_RETRY_LIMIT_REACHED"
+	memoryWorkerConfigDeferred        = "RUNTIME_CONFIG_NOT_SYNCED"
+	memoryWorkerOperationalRetryDelay = time.Second
+	criticReprocessingDefaultInterval = 30 * time.Second
+	memoryReprocessingPerWake         = 4
+	memoryVectorGroupsPerWake         = 8
+	memoryVectorDeleteEvery           = 4
 )
 
 type memoryReprocessingProcessResult struct {
@@ -32,6 +33,7 @@ type memoryReprocessingProcessResult struct {
 	Attempt        int
 	MaxAttempts    int
 	RetryAfter     time.Time
+	RetryDelay     time.Duration
 }
 
 type acceptedSourceDerivationResult struct {
@@ -41,6 +43,7 @@ type acceptedSourceDerivationResult struct {
 	CriticFailure      map[string]any
 	CriticTrace        map[string]any
 	AuditCriticFailure bool
+	RetryDelay         time.Duration
 }
 
 type acceptedSourceDerivationOptions struct {
@@ -106,12 +109,7 @@ func (s *Server) runMemoryWorkers(ctx context.Context, owner string) {
 		retryWake = retryTimer.C
 		retryScheduledAt = at
 	}
-	// A separate one-shot startup wake picks up a persisted one-second retry
-	// that may not yet be due during the immediate startup drain. It does not
-	// replace an exact retry timer produced by a job and it is not polling.
-	startupRetryWake := time.AfterFunc(memoryWorkerRetryDelay, s.wakeMemoryWorkers)
 	defer func() {
-		startupRetryWake.Stop()
 		if retryTimer != nil {
 			retryTimer.Stop()
 		}
@@ -187,11 +185,10 @@ func (s *Server) processMemoryWorkerWake(
 		if err != nil || !result.Processed {
 			break
 		}
-		// The worker is single-threaded. Wait until every retry scheduled by this
-		// drain is due, otherwise a later retry can be missed after an earlier,
-		// already-due job completes quickly and the queue has no new wake source.
+		// Wake at the earliest retry produced by this drain. After that wake, the
+		// durable schedule query below rediscovers the next queued retry.
 		if result.State == "retryable" && !result.RetryAfter.IsZero() &&
-			(retryWakeAt.IsZero() || result.RetryAfter.After(retryWakeAt)) {
+			(retryWakeAt.IsZero() || result.RetryAfter.Before(retryWakeAt)) {
 			retryWakeAt = result.RetryAfter
 		}
 		reprocessingProcessed++
@@ -217,6 +214,12 @@ func (s *Server) processMemoryWorkerWake(
 	}
 	if reprocessingProcessed == memoryReprocessingPerWake || vectorGroupsProcessed == memoryVectorGroupsPerWake {
 		s.wakeMemoryWorkers()
+	}
+	if schedule, ok := s.Store.(store.MemoryReprocessingWakeScheduleStore); ok {
+		if next, err := schedule.NextMemoryReprocessingWakeAt(ctx); err == nil &&
+			!next.IsZero() && (retryWakeAt.IsZero() || next.Before(retryWakeAt)) {
+			retryWakeAt = next
+		}
 	}
 	return retryWakeAt
 }
@@ -287,6 +290,7 @@ func (s *Server) processMemoryReprocessingOnce(
 	)
 	result.State = derivation.State
 	result.Failure = derivation.Failure
+	result.RetryDelay = derivation.RetryDelay
 	if derivation.AuditCriticFailure {
 		s.recordMemoryReprocessingCriticFailure(
 			context.WithoutCancel(ctx),
@@ -345,6 +349,7 @@ func (s *Server) processMemoryReprocessingOnce(
 				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
 				result.State, result.Failure, artifactSaveResult{},
 				result.Attempt, result.MaxAttempts, result.RetryAfter,
+				criticProviderHUDDetails(derivation.CriticTrace),
 			)
 		}
 		return result, retryErr
@@ -483,6 +488,7 @@ func (s *Server) processAcceptedSourceRevisionWithOptions(
 				return result
 			}
 			result.State = "retryable"
+			result.RetryDelay = criticReprocessingDelay(s.runtimeConfigSnapshot(), result.CriticTrace)
 			return result
 		}
 		extraction = criticExtraction
@@ -693,13 +699,17 @@ func (s *Server) retryMemoryReprocessingJob(
 		}
 		return err
 	}
+	retryDelay := memoryWorkerOperationalRetryDelay
+	if result != nil && result.RetryDelay > 0 {
+		retryDelay = result.RetryDelay
+	}
 	if result != nil {
 		result.State = "retryable"
 		result.Failure = strings.TrimSpace(failure)
-		result.RetryAfter = now.Add(memoryWorkerRetryDelay)
+		result.RetryAfter = now.Add(retryDelay)
 	}
 	err := jobs.FailMemoryReprocessingJob(
-		ctx, job.ID, leaseOwner, now, now.Add(memoryWorkerRetryDelay), false, failure,
+		ctx, job.ID, leaseOwner, now, now.Add(retryDelay), false, failure,
 	)
 	if errors.Is(err, store.ErrSourceRevisionStale) {
 		if result != nil {
@@ -709,4 +719,24 @@ func (s *Server) retryMemoryReprocessingJob(
 		return nil
 	}
 	return err
+}
+
+func criticReprocessingDelay(runtimeConfig RuntimeConfig, criticTrace map[string]any) time.Duration {
+	seconds := runtimeConfig.CriticReprocessingIntervalSec
+	if seconds <= 0 {
+		seconds = int(criticReprocessingDefaultInterval / time.Second)
+	}
+	if seconds > 3600 {
+		seconds = 3600
+	}
+	providerResponse := mapFromAny(criticTrace["provider_response"])
+	providerSeconds := intFromAny(providerResponse["retry_after_seconds"], 0)
+	if providerSeconds <= 0 {
+		ledger := mapFromAny(criticTrace["provider_call_budget_ledger"])
+		providerSeconds = intFromAny(ledger["retry_after_seconds"], 0)
+	}
+	if providerSeconds > seconds {
+		seconds = providerSeconds
+	}
+	return time.Duration(seconds) * time.Second
 }

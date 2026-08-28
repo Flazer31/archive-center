@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -325,7 +326,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		}
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("OpenAI-like provider returned invalid JSON")
@@ -438,7 +439,7 @@ func proxyCallOpenAIResponses(ctx context.Context, req dto.ProxyPluginMainReques
 		return nil, http.StatusBadGateway, callErr
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("Responses provider returned invalid JSON")
@@ -644,7 +645,7 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		return nil, http.StatusBadGateway, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	content := proxyExtractClaudeText(data)
 	finishReason := strings.TrimSpace(extractionStringFromAny(data["stop_reason"]))
@@ -732,7 +733,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		if vertex {
 			detail = proxyVertexEndpointErrorDetail(status, target, data, raw)
 		}
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(detail, apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(detail, apiKey))
 	}
 	content := proxyExtractGeminiText(data)
 	candidate := map[string]any{}
@@ -1258,6 +1259,9 @@ func proxyDoJSON(ctx context.Context, target string, headers map[string]string, 
 	if err := json.Unmarshal(rawBytes, &data); err != nil {
 		data = nil
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data = proxyAttachHTTPFailureMetadata(data, resp.StatusCode, resp.Header, time.Now().UTC())
+	}
 	return resp.StatusCode, data, raw, nil
 }
 
@@ -1290,6 +1294,7 @@ func proxyDoNeuralWattFlex(ctx context.Context, target string, headers map[strin
 		if json.Unmarshal(rawBytes, &data) != nil {
 			data = nil
 		}
+		data = proxyAttachHTTPFailureMetadata(data, resp.StatusCode, resp.Header, time.Now().UTC())
 		return resp.StatusCode, data, raw, nil
 	}
 
@@ -1784,6 +1789,66 @@ func proxyAttachGeminiUsage(resp, upstream map[string]any, trace map[string]any)
 }
 
 const proxyResponseMetadataKey = "_archive_center_response_meta"
+
+func proxyAttachHTTPFailureMetadata(data map[string]any, status int, headers http.Header, now time.Time) map[string]any {
+	if data == nil {
+		data = map[string]any{}
+	}
+	meta := mapFromAny(data[proxyResponseMetadataKey])
+	if len(meta) == 0 {
+		meta = map[string]any{
+			"contract_version": "archive_center.provider_response.v1",
+			"adapter":          "http_error",
+			"usage_reported":   false,
+		}
+	}
+	meta["http_status"] = status
+	if retryAfterSeconds := proxyRetryAfterSeconds(headers, data, now); retryAfterSeconds > 0 {
+		meta["retry_after_seconds"] = retryAfterSeconds
+	}
+	data[proxyResponseMetadataKey] = meta
+	return data
+}
+
+func proxyRetryAfterSeconds(headers http.Header, data map[string]any, now time.Time) int {
+	seconds := proxyRetryAfterSecondsFromValue(data["retry_after"])
+	if nested := mapFromAny(data["error"]); len(nested) > 0 {
+		seconds = maxInt(seconds, proxyRetryAfterSecondsFromValue(nested["retry_after"]))
+	}
+	if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+		if parsed := proxyRetryAfterSecondsFromValue(raw); parsed > 0 {
+			seconds = maxInt(seconds, parsed)
+		} else if retryAt, err := http.ParseTime(raw); err == nil {
+			delay := retryAt.Sub(now)
+			if delay > 0 {
+				seconds = maxInt(seconds, int((delay+time.Second-1)/time.Second))
+			}
+		}
+	}
+	return seconds
+}
+
+func proxyRetryAfterSecondsFromValue(value any) int {
+	var seconds float64
+	switch typed := value.(type) {
+	case float64:
+		seconds = typed
+	case float32:
+		seconds = float64(typed)
+	case int:
+		seconds = float64(typed)
+	case int64:
+		seconds = float64(typed)
+	case json.Number:
+		seconds, _ = typed.Float64()
+	case string:
+		seconds, _ = strconv.ParseFloat(strings.TrimSpace(typed), 64)
+	}
+	if seconds <= 0 {
+		return 0
+	}
+	return int(math.Ceil(seconds))
+}
 
 func buildProxyResponseMetadata(adapter, finishReason string, usage map[string]any) map[string]any {
 	meta := map[string]any{

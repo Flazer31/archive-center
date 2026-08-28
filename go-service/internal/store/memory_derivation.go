@@ -185,6 +185,13 @@ type MemoryReprocessingJobStore interface {
 	FailMemoryReprocessingJob(ctx context.Context, jobID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
 }
 
+// MemoryReprocessingWakeScheduleStore exposes only the next durable wake time
+// for the existing reprocessing queue. The worker uses it to restore its
+// one-shot timer after a backend restart without polling or claiming work early.
+type MemoryReprocessingWakeScheduleStore interface {
+	NextMemoryReprocessingWakeAt(context.Context) (time.Time, error)
+}
+
 // MemoryReprocessingJobReopener is an optional administrative capability. It
 // reopens the exact idempotent job and resets only its active source revision's
 // committed admission snapshot. Raw source content and projected secondary

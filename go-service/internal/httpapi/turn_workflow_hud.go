@@ -950,7 +950,7 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 ) bool {
 	return l.updateRecoveryResultWithAttempt(
 		chatSessionID, logicalTurn, sourceRevision, state, failure, saveResult,
-		0, 0, time.Time{},
+		0, 0, time.Time{}, nil,
 	)
 }
 
@@ -964,6 +964,7 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResultWithAttempt(
 	attempt int,
 	maxAttempts int,
 	retryAfter time.Time,
+	providerDetails []turnWorkflowHUDDetail,
 ) bool {
 	if l == nil {
 		return false
@@ -1005,6 +1006,9 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResultWithAttempt(
 	}
 	if !retryAfter.IsZero() {
 		setTurnWorkflowHUDErrorDetail(matched.view.Error, "next_retry_at", retryAfter.UTC().Format(time.RFC3339Nano))
+	}
+	for _, detail := range providerDetails {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, detail.Key, detail.Value)
 	}
 	switch state {
 	case "completed", "skipped_ooc":
@@ -1085,6 +1089,39 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResultWithAttempt(
 	}
 	l.touchLocked(matched, now)
 	return true
+}
+
+func criticProviderHUDDetails(criticTrace map[string]any) []turnWorkflowHUDDetail {
+	providerResponse := mapFromAny(criticTrace["provider_response"])
+	ledger := safeProviderCallBudgetLedger(criticTrace["provider_call_budget_ledger"])
+	details := make([]turnWorkflowHUDDetail, 0, 12)
+	appendString := func(key string, sources ...map[string]any) {
+		for _, source := range sources {
+			if source == nil {
+				continue
+			}
+			if value, ok := source[key]; ok {
+				text := strings.TrimSpace(extractionStringFromAny(value))
+				if text != "" {
+					details = append(details, turnWorkflowHUDDetail{Key: key, Value: truncateRunes(text, 1000)})
+					return
+				}
+			}
+		}
+	}
+	appendString("provider", criticTrace)
+	appendString("model", criticTrace)
+	appendString("http_status", criticTrace, providerResponse, ledger)
+	appendString("native_finish_reason", providerResponse, ledger)
+	appendString("termination_kind", providerResponse, ledger)
+	appendString("input_tokens", providerResponse, ledger)
+	appendString("output_tokens", providerResponse, ledger)
+	appendString("reasoning_tokens", providerResponse, ledger)
+	appendString("total_tokens", providerResponse, ledger)
+	appendString("requested_max_tokens", ledger)
+	appendString("requested_max_completion_tokens", ledger)
+	appendString("retry_after_seconds", providerResponse, ledger)
+	return details
 }
 
 func setTurnWorkflowHUDErrorDetail(hudError *turnWorkflowHUDError, key, value string) {
@@ -2072,6 +2109,7 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 			source,
 			"turn_workflow_hud_recovery_requested",
 			time.Now().UTC(),
+			time.Time{},
 			false,
 		)
 		if enqueueErr != nil {

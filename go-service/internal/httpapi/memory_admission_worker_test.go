@@ -148,6 +148,30 @@ type memoryReprocessingDrainStore struct {
 	completed chan int64
 }
 
+func (f *memoryReprocessingDrainStore) NextMemoryReprocessingWakeAt(context.Context) (time.Time, error) {
+	var next time.Time
+	for _, item := range f.queue {
+		if item == nil || item.RetryAfter.IsZero() {
+			continue
+		}
+		if next.IsZero() || item.RetryAfter.Before(next) {
+			next = item.RetryAfter
+		}
+	}
+	for _, item := range f.claimed {
+		if item == nil || item.LeaseUntil.IsZero() {
+			continue
+		}
+		if next.IsZero() || item.LeaseUntil.Before(next) {
+			next = item.LeaseUntil
+		}
+	}
+	if next.IsZero() {
+		return time.Time{}, store.ErrNotFound
+	}
+	return next, nil
+}
+
 func (f *memoryReprocessingDrainStore) ClaimMemoryReprocessingJob(
 	_ context.Context,
 	owner string,
@@ -1589,6 +1613,7 @@ func TestMemoryReprocessingRetryRunsWhenItsStoredDelayExpires(t *testing.T) {
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
 			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+			CriticReprocessingIntervalSec: 1,
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1603,6 +1628,75 @@ func TestMemoryReprocessingRetryRunsWhenItsStoredDelayExpires(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatalf("stored retry did not run automatically: calls=%d queue=%+v", callCount, st.queue)
+	}
+}
+
+func TestMemoryReprocessingFutureRetrySurvivesWorkerRestart(t *testing.T) {
+	now := time.Now().UTC()
+	source := &store.MemorySourceRevision{
+		SourceRevision: "revision-restart-retry", ChatSessionID: "session-restart-retry",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("f", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(source)
+	completed := make(chan int64, 1)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+			Store: store.NewNoopStore(), nextEvidenceID: 500,
+		},
+		queue: []*store.MemoryReprocessingJob{{
+			ID: 10, ChatSessionID: source.ChatSessionID, SourceRevision: source.SourceRevision,
+			DerivationVersion: store.MemoryAdmissionContract,
+			ExtractorVersion:  completeTurnCriticPipelineVersion,
+			IndexVersion:      memoryAdmissionIndexVersion,
+			RetryAfter:        now.Add(100 * time.Millisecond),
+			CreatedAt:         now,
+		}},
+		sources:   map[string]*store.MemorySourceRevision{source.SourceRevision: source},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina found the brass key.", "importance_score": 7,
+			"evidence_excerpts": []any{"Mina found a brass key."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	select {
+	case id := <-completed:
+		if id != 10 || callCount != 1 {
+			t.Fatalf("id=%d calls=%d", id, callCount)
+		}
+	case <-time.After(600 * time.Millisecond):
+		t.Fatalf("persisted future retry was stranded after restart: calls=%d queue=%+v", callCount, st.queue)
 	}
 }
 
@@ -1675,6 +1769,7 @@ func TestMemoryReprocessingMultipleStoredRetryTimesAllWake(t *testing.T) {
 			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
 			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
 			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+			CriticReprocessingIntervalSec: 1,
 		},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1708,6 +1803,24 @@ func TestRuntimeConfigSyncSignalsMemoryWorker(t *testing.T) {
 	case <-wake:
 	default:
 		t.Fatal("runtime config sync did not signal the memory worker")
+	}
+}
+
+func TestCriticReprocessingDelayUsesConfiguredBaseAndLongerProviderHint(t *testing.T) {
+	trace := map[string]any{
+		"provider_response": map[string]any{"retry_after_seconds": 120},
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 30}, trace); got != 120*time.Second {
+		t.Fatalf("provider hint delay=%s", got)
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 180}, trace); got != 180*time.Second {
+		t.Fatalf("configured base delay=%s", got)
+	}
+	malformed := map[string]any{
+		"provider_response": map[string]any{"retry_after_seconds": "later"},
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 30}, malformed); got != 30*time.Second {
+		t.Fatalf("malformed hint changed base delay=%s", got)
 	}
 }
 

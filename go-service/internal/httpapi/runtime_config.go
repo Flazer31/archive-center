@@ -71,6 +71,7 @@ type RuntimeConfig struct {
 	SourceSearchPlannerReasoningBudget *int64
 	LLMRetryCount                      int
 	FailedQueueMaxAttempts             int
+	CriticReprocessingIntervalSec      int
 	TopK                               int64
 }
 
@@ -283,6 +284,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setIntPtr("sourceSearchPlannerReasoningBudgetTokens", &s.RuntimeConfig.SourceSearchPlannerReasoningBudget)
 	setClampedInt("llmRetryCount", &s.RuntimeConfig.LLMRetryCount, 0, 10)
 	setClampedInt("failedQueueMaxAttempts", &s.RuntimeConfig.FailedQueueMaxAttempts, 1, 11)
+	setClampedInt("criticReprocessingIntervalSec", &s.RuntimeConfig.CriticReprocessingIntervalSec, 1, 3600)
 	setInt("topK", &s.RuntimeConfig.TopK)
 
 	return updated

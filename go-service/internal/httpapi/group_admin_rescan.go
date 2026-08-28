@@ -485,6 +485,8 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 							&candidates[0],
 							derivation.Failure,
 							now,
+							now.Add(derivation.RetryDelay),
+							true,
 						)
 						if enqueueErr != nil {
 							warnings = append(
@@ -498,7 +500,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 				}
 			default:
 				inserted, enqueueErr := s.enqueueSourceRevisionReprocessingJob(
-					ctx, queue, &candidates[0], "admin_rescan_requested", now,
+					ctx, queue, &candidates[0], "admin_rescan_requested", now, time.Time{}, true,
 				)
 				if enqueueErr != nil {
 					failed++

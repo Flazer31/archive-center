@@ -252,6 +252,7 @@
     failedQueueMaxSize: 50,          // 실패 큐 최대 크기 (10-200)
     failedQueueMaxAgeDays: 7,        // 실패 큐 항목 최대 보관 일수 (1-30)
     failedQueueMaxAttempts: 4,       // 실패 큐 transport 최대 시도 횟수 (1-11)
+    criticReprocessingIntervalSec: 30, // 평론가 파생 기억 자동 재처리 기본 간격 (초)
     // ── E-5: Narrative Guide Mode ──
     narrativeGuideMode: "auto",      // auto / off / standard / romantic / action / mature_soft / mature_direct
     narrativeGuideStrength: "weak",  // none / weak / medium / strong / extreme / maximum
@@ -393,6 +394,8 @@
       "settings.label.failedQueueMaxSize": "실패 큐 최대 크기",
       "settings.label.failedQueueMaxAgeDays": "실패 큐 보관 일수",
       "settings.label.failedQueueMaxAttempts": "실패 큐 최대 시도 횟수",
+      "settings.label.criticReprocessingIntervalSec": "평론가 자동 재처리 간격 (초)",
+      "settings.hint.criticReprocessingIntervalSec": "Provider가 더 긴 대기를 요구하면 해당 시간이 우선됩니다.",
       "settings.narrativeMode.auto": "Auto (AI가 장면에 맞게 자동 결정)",
       "settings.narrativeMode.off": "Off (비활성)",
       "settings.narrativeMode.standard": "Standard (일반 서사)",
@@ -1738,6 +1741,8 @@
       "settings.label.failedQueueMaxSize": "Failed Queue Max Size",
       "settings.label.failedQueueMaxAgeDays": "Failed Queue Retention (days)",
       "settings.label.failedQueueMaxAttempts": "Failed Queue Max Attempts",
+      "settings.label.criticReprocessingIntervalSec": "Critic Auto-Reprocessing Interval (sec)",
+      "settings.hint.criticReprocessingIntervalSec": "A longer provider-requested delay takes priority.",
       "settings.narrativeMode.auto": "Auto (AI decides per scene)",
       "settings.narrativeMode.off": "Off",
       "settings.narrativeMode.standard": "Standard (General Narrative)",
@@ -2865,6 +2870,8 @@
       "settings.label.failedQueueMaxSize": "失敗キュー最大サイズ",
       "settings.label.failedQueueMaxAgeDays": "失敗キュー保持日数",
       "settings.label.failedQueueMaxAttempts": "失敗キュー最大試行回数",
+      "settings.label.criticReprocessingIntervalSec": "評論家の自動再処理間隔（秒）",
+      "settings.hint.criticReprocessingIntervalSec": "Provider がより長い待機時間を指定した場合は、その時間を優先します。",
       "settings.narrativeMode.auto": "Auto（AIが場面に合わせて自動決定）",
       "settings.narrativeMode.off": "Off（無効）",
       "settings.narrativeMode.standard": "Standard（一般ナラティブ）",
@@ -11451,6 +11458,7 @@
     merged.failedQueueMaxSize = sanitizeNumber(merged.failedQueueMaxSize, 50, 10, 200);
     merged.failedQueueMaxAgeDays = sanitizeNumber(merged.failedQueueMaxAgeDays, 7, 1, 30);
     merged.failedQueueMaxAttempts = sanitizeNumber(merged.failedQueueMaxAttempts, 4, 1, 11);
+    merged.criticReprocessingIntervalSec = sanitizeNumber(merged.criticReprocessingIntervalSec, 30, 1, 3600);
     merged.directiveBudgetRatio = sanitizeNumber(merged.directiveBudgetRatio, 0.35, 0.05, 0.80);
     merged.memoryBudgetRatio = sanitizeNumber(merged.memoryBudgetRatio, 0.40, 0.05, 0.80);
     merged.wakeUpBudgetRatio = sanitizeNumber(merged.wakeUpBudgetRatio, 0.15, 0.0, 0.50);
@@ -11680,6 +11688,7 @@
       criticTimeout: Math.ceil(getSubLlmTimeoutSettingMs(s.subLlmTimeoutMs) / 1000),
       embeddingTimeout: s.embeddingTimeout,
       failedQueueMaxAttempts: failedQueueMaxAttempts(),
+      criticReprocessingIntervalSec: sanitizeNumber(s.criticReprocessingIntervalSec, DEFAULT_SETTINGS.criticReprocessingIntervalSec, 1, 3600),
     };
 
     const result = await safeCall(() => bridgeFetch("/config/update", {
@@ -50641,6 +50650,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <label>${t('settings.label.failedQueueMaxAttempts')}</label>
           <input type="number" id="mo-failedQueueMaxAttempts" value="${s.failedQueueMaxAttempts}" min="1" max="11" step="1">
         </div>
+        <div class="mo-row">
+          <label>${t('settings.label.criticReprocessingIntervalSec')}</label>
+          <input type="number" id="mo-criticReprocessingIntervalSec" value="${s.criticReprocessingIntervalSec}" min="1" max="3600" step="1">
+          <small>${t('settings.hint.criticReprocessingIntervalSec')}</small>
+        </div>
       </div>
     </details>
 
@@ -51797,6 +51811,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             failedQueueMaxSize: $("mo-failedQueueMaxSize").value,
             failedQueueMaxAgeDays: $("mo-failedQueueMaxAgeDays").value,
             failedQueueMaxAttempts: $("mo-failedQueueMaxAttempts").value,
+            criticReprocessingIntervalSec: $("mo-criticReprocessingIntervalSec").value,
             narrativeGuideMode: $("mo-narrativeGuideMode").value,
             narrativeGuideStrength: $("mo-narrativeGuideStrength").value,
             publisherGuidanceFormat: $("mo-publisherGuidanceFormat").value,

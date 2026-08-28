@@ -920,6 +920,9 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();`,
 		`topK: $("mo-topK").value`,
 		`failedQueueMaxAttempts: failedQueueMaxAttempts(),`,
+		`criticReprocessingIntervalSec: sanitizeNumber(s.criticReprocessingIntervalSec, DEFAULT_SETTINGS.criticReprocessingIntervalSec, 1, 3600),`,
+		`id="mo-criticReprocessingIntervalSec"`,
+		`criticReprocessingIntervalSec: $("mo-criticReprocessingIntervalSec").value,`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

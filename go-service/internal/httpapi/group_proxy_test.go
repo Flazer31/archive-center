@@ -31,6 +31,61 @@ func strPtr(v string) *string {
 	return &v
 }
 
+func TestProxyHTTPFailureMetadataKeepsLongestRetryAfterHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(524)
+		_, _ = w.Write([]byte(`{"retry_after":120,"detail":"origin timeout"}`))
+	}))
+	defer server.Close()
+
+	status, data, raw, err := proxyDoJSON(context.Background(), server.URL, nil, map[string]any{"test": true})
+	if err != nil || status != 524 || !strings.Contains(raw, "origin timeout") {
+		t.Fatalf("status=%d raw=%q err=%v", status, raw, err)
+	}
+	meta := mapFromAny(data[proxyResponseMetadataKey])
+	if got := intFromAny(meta["retry_after_seconds"], 0); got != 120 {
+		t.Fatalf("retry_after_seconds=%d meta=%+v", got, meta)
+	}
+	provider := "custom"
+	endpoint := server.URL
+	apiKey := "test-key"
+	model := "test-model"
+	upstream, upstreamStatus, upstreamErr := performProxyPluginMainWithRetryBudget(
+		context.Background(),
+		dto.ProxyPluginMainRequest{
+			Provider: &provider, Endpoint: &endpoint, APIKey: &apiKey, Model: &model,
+			Messages: []any{map[string]any{"role": "user", "content": "test"}},
+		},
+		nil,
+	)
+	if upstreamErr == nil || upstreamStatus != 524 {
+		t.Fatalf("upstream status=%d err=%v response=%+v", upstreamStatus, upstreamErr, upstream)
+	}
+	if got := intFromAny(mapFromAny(upstream[proxyResponseMetadataKey])["retry_after_seconds"], 0); got != 120 {
+		t.Fatalf("provider retry hint was discarded: got=%d response=%+v", got, upstream)
+	}
+}
+
+func TestProxyHTTPFailureMetadataIgnoresOnlyMalformedRetryHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"retry_after":"later","detail":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	status, data, raw, err := proxyDoJSON(context.Background(), server.URL, nil, map[string]any{"test": true})
+	if err != nil || status != http.StatusTooManyRequests || !strings.Contains(raw, "rate limited") {
+		t.Fatalf("status=%d raw=%q err=%v", status, raw, err)
+	}
+	if got := intFromAny(mapFromAny(data[proxyResponseMetadataKey])["retry_after_seconds"], 0); got != 0 {
+		t.Fatalf("malformed hint should be ignored, got=%d data=%+v", got, data)
+	}
+	if extractionStringFromAny(data["detail"]) != "rate limited" {
+		t.Fatalf("valid error body was discarded: %+v", data)
+	}
+}
+
 func int64Ptr(v int64) *int64 {
 	return &v
 }

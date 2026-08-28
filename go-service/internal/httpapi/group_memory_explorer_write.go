@@ -990,7 +990,7 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		}
 		inserted, err := s.enqueueSourceRevisionReprocessingJob(
 			r.Context(), queue, &sources[0], "explorer_regenerate_requested",
-			time.Now().UTC(),
+			time.Now().UTC(), time.Time{}, true,
 		)
 		if err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]any{

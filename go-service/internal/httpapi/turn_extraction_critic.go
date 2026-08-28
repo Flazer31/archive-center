@@ -581,6 +581,8 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 	if maxCompletionTokens <= 0 {
 		maxCompletionTokens = maxTokens
 	}
+	callLedger["requested_max_tokens"] = maxTokens
+	callLedger["requested_max_completion_tokens"] = maxCompletionTokens
 	temp := cfg.Temperature
 	req := dto.ProxyPluginMainRequest{
 		APIKey:              &cfg.APIKey,

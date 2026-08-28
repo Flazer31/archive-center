@@ -21,6 +21,7 @@ var _ SourceRevisionStore = (*mariadbStore)(nil)
 var _ CriticInputSnapshotStore = (*mariadbStore)(nil)
 var _ MemoryDerivationLifecycleAvailability = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobStore = (*mariadbStore)(nil)
+var _ MemoryReprocessingWakeScheduleStore = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobReopener = (*mariadbStore)(nil)
 var _ MemoryVectorOutboxStore = (*mariadbStore)(nil)
 var _ MemoryVectorMaterializedCompletionStore = (*mariadbStore)(nil)
@@ -959,6 +960,33 @@ func (m *mariadbStore) ClaimMemoryReprocessingJob(ctx context.Context, leaseOwne
 	}
 	committed = true
 	return job, nil
+}
+
+func (m *mariadbStore) NextMemoryReprocessingWakeAt(ctx context.Context) (time.Time, error) {
+	if err := m.ensureDB(); err != nil {
+		return time.Time{}, err
+	}
+	var next sql.NullTime
+	err := m.db.QueryRowContext(ctx, `
+		SELECT MIN(CASE
+		         WHEN j.status = 'leased' THEN j.lease_until
+		         ELSE j.retry_after
+		       END)
+		FROM memory_reprocessing_jobs j
+		JOIN memory_source_revisions s ON s.source_revision = j.source_revision
+		WHERE s.lifecycle_state = 'active'
+		  AND (
+		    (j.status IN ('pending', 'retryable') AND j.retry_after IS NOT NULL)
+		    OR (j.status = 'leased' AND j.lease_until IS NOT NULL)
+		  )
+	`).Scan(&next)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !next.Valid || next.Time.IsZero() {
+		return time.Time{}, ErrNotFound
+	}
+	return next.Time, nil
 }
 
 // selectMemoryReprocessingJobForLease treats retry_after as an exclusive wake
