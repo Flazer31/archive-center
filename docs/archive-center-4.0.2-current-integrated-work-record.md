@@ -731,7 +731,7 @@ Provider 재처리와 사용자 DB 복구가 작동하는지는 위 실환경 �
 ## 13. 4.0.9 Provider 대기 지시·토큰 소진 HUD 보완
 
 기록일: 2026-08-29 KST
-상태: `source_verified_package_refresh_pending`
+상태: `source_and_test_package_verified_live_recheck_required`
 
 ### 추가 사용자 피드백
 
@@ -795,5 +795,22 @@ Provider 재처리와 사용자 DB 복구가 작동하는지는 위 실환경 �
 - JavaScript timer 또는 재처리 정책
 - Vector·DB 큐 간격 변경
 
-테스트 패키지 최종 경로·manifest·hash는 전체 Go 검증과 동일 위치 패키지
-갱신 뒤 이 절에 추가한다.
+### 갱신된 4.0.9 Windows 테스트 패키지
+
+- source commit: `31fe12ac60a457ed92e7f859af7c53f73368844f`
+- package source dirty: `false`
+- 경로:
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test/Archive Center 4.0.9 Windows Auto Install Package.zip`
+- package status: `green`, `release_ready=true`
+- `automatic_update_apply=true`, `direct_update_supported=true`
+- source/package `Archive Center.js` SHA-256:
+  `aca07cdce8f95cd6421f0269ee8d60ed21ea632877fb01722187add45a73d86f`
+- ZIP size: `12,159,556 bytes`
+- ZIP SHA-256:
+  `f7bab74439269f6288065232a54be9805c422a12844cf53f5089ee7f98860cab`
+- 외부 checksum 파일과 실제 ZIP hash 일치
+- 패키지 `Archive Center.js` 번들 Node 구문 검사 통과
+
+이 증거는 소스·빌드 산출물·manifest·ZIP 무결성을 확인한 것이다. 실제
+NeuralWatt 524, 토큰 소진 응답, 연속 실패 후 수동 재처리 전환과 서버 재시작
+후 예약 복원은 갱신된 패키지를 RisuAI에 로드한 실환경에서 별도로 확인한다.

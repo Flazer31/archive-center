@@ -123,6 +123,19 @@
 
 ## 5. 테스트 패키지
 
-기존 4.0.9 테스트 패키지와 같은 위치에서 정식 빌더로 갱신한다. 새 이름의
-병렬 패키지를 만들거나 패키지 내부 파일을 손으로 고치지 않는다. 최종 source
-commit, manifest, 관리 파일 검증, ZIP SHA-256은 빌드 완료 뒤 추가 기록한다.
+기존 4.0.9 테스트 패키지와 같은 위치에서 정식 빌더로 갱신했다. 새 이름의
+병렬 패키지를 만들거나 패키지 내부 파일을 손으로 고치지 않았다.
+
+- source commit: `31fe12ac60a457ed92e7f859af7c53f73368844f`
+- package source dirty: `false`
+- package status: `green`, `release_ready=true`
+- `automatic_update_apply=true`, `direct_update_supported=true`
+- source/package `Archive Center.js` SHA-256:
+  `aca07cdce8f95cd6421f0269ee8d60ed21ea632877fb01722187add45a73d86f`
+- ZIP size: `12,159,556 bytes`
+- ZIP SHA-256:
+  `f7bab74439269f6288065232a54be9805c422a12844cf53f5089ee7f98860cab`
+- 외부 checksum과 실제 ZIP hash 일치
+
+패키지·소스 동일성과 자동 업데이트 manifest는 확인됐다. 갱신된 패키지를
+실제 RisuAI에 로드한 HUD, Provider, MariaDB/Chroma 동작은 별도 실환경 검증이다.
