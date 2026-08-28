@@ -620,3 +620,108 @@ DB schema, 테스트 패키지는 변경하지 않았다.
   `session_fork_lineage`로 표현 가능한지 우선 검증한다.
 - 실제 구현 전 공식 RisuAI와 PocketRisu의 branch·copy·import에서 각 필드가
   어떻게 보존되는지 fixture와 실환경으로 다시 확인한다.
+
+## 12. 4.0.9 assistant 출력 복구·정확한 rollback·재처리 HUD 보완
+
+기록일: 2026-08-28 KST
+상태: `source_and_test_package_verified_live_recheck_required`
+
+### 사용자 피드백
+
+이번 작업은 서로 이어져 있던 다음 세 현장 보고를 함께 처리했다.
+
+1. 36~38번 assistant 출력을 삭제했는데 JavaScript의 누적 턴 수와 현재
+   assistant 수 차이가 삭제 시작점으로 사용돼 3턴부터 rollback된 사례가
+   있었다. 이 과정에서 평론가 실패가 누적 턴 수 drift를 키웠다.
+2. 사용자 입력을 대량 삭제한 179개 원본 메시지 채팅에서 입력·출력이 모두
+   남은 15턴만 콜드 스타트 후보가 되고, 입력 없이 assistant 출력만 남은
+   항목은 파생 기억 후보에서 빠졌다.
+3. 평론가 실패 뒤 HUD가 `기억 복구 중`에 머물렀고, 저장된 `retry_after`가
+   도래해도 외부 wake가 없으면 worker가 다시 실행되지 않았다. 별도로 실제
+   turn 64의 raw·derived 저장은 완료됐지만 HUD가 `본문 응답 기다리는 중`에
+   남은 사례도 확인됐다.
+
+### 구현된 수정
+
+- JavaScript는 모든 assistant 출력의 메시지 위치, message/generation ID,
+  출력 hash·원문, 인접 사용자 입력 유무와 최종 상태를 관측해 Go에 전달한다.
+- Go는 기존 active source revision과 관측된 assistant 출력을 직접 비교해
+  `paired`, `stored_pair_recovered`, `assistant_only`로 분류한다.
+- 사용자 입력만 사라지고 assistant 출력이 남은 턴은 삭제하지 않는다. 실제로
+  사라진 assistant source revision의 canonical 턴을 rollback 시작점으로
+  사용한다. 36~38번 출력 삭제 fixture에서는 `from_turn=36`이다.
+- 콜드 스타트·명시적 정상화는 입력·출력 pair만이 아니라 활성 assistant 출력
+  전체를 후보로 사용한다. DB에 입력이 남아 있으면 LLM 없이 원래 pair를
+  복원하고, 입력이 어디에도 없으면 `assistant_only`로 평론가에 전달한다.
+- `assistant_only` 평론가는 출력 원문에 근거한 항목만 생성하며, 가짜 사용자
+  입력을 만들지 않는다. 직접 근거에는 assistant 출력 출처 계보가 남는다.
+- 완료된 source revision과 파생 projection은 재사용해 같은 콜드 스타트를
+  반복해도 중복 호출·중복 저장하지 않는다. 실패·누락 턴은 다음 정상화에서
+  다시 후보가 된다.
+- 평론가 재처리 worker는 DB에 저장한 `retry_after`에 맞춰 단일 one-shot
+  timer로 다시 깨어난다. 폴링이나 provider 숨은 재시도는 추가하지 않았다.
+- 한 drain에서 여러 턴이 서로 다른 재시도 시각을 받으면, 같은 drain의 모든
+  예약이 실행 가능해진 시각에 한 번 깨워 뒤쪽 턴이 잠들지 않게 했다.
+- HUD는 재처리의 현재 시도, 최대 시도, 다음 시각과 `scheduled` 또는
+  `exhausted` 상태를 Go ViewModel의 상세 정보로 표시한다. 마지막 시도까지
+  실패하면 실패 상태와 수동 재처리 동작을 다시 표시한다.
+- complete-turn 뒤 HUD를 찾을 때 Go ledger가 실제 사용한
+  `client_meta.turn_workflow_request_id`를 우선한다. 과거 요청일 수 있는 cached
+  source-to-final lineage ID는 진단 fallback으로만 남겼다.
+
+### 넣지 않은 정책
+
+- 사용자 입력 누락 하나로 턴 전체를 삭제하지 않는다.
+- assistant-only 항목 하나가 잘못됐다는 이유로 다른 정상 파생 항목을 버리지
+  않는다.
+- 출력 내용 hash가 비슷하다는 이유로 다른 CID·branch를 자동 병합하지 않는다.
+- 브라우저 polling, 무제한 자동 재시도, raw-chat 추정 fallback을 추가하지
+  않는다.
+- 평론가 실패나 timeout을 턴 번호 증가 또는 삭제 근거로 사용하지 않는다.
+
+### 자동 검증
+
+- 36~38번 출력 삭제가 3턴이 아닌 36턴부터 rollback되는 회귀: 통과
+- tracked turn drift가 assistant ordinal을 앞쪽으로 이동시키지 않는 회귀: 통과
+- 사용자 입력만 삭제된 기존 턴 유지: 통과
+- 179개 원본 사례의 84개 assistant 출력 중 저장 pair 15개와
+  assistant-only 69개 복구: 통과
+- assistant-only 평론가 생성·assistant 출처 근거·반복 정상화 멱등성: 통과
+- branch·복사 세션의 현재 세션 source 범위 격리: 통과
+- 단일 및 복수 `retry_after` 자동 실행: 통과
+- 재처리 완료와 최대 횟수 소진 HUD 전환: 통과
+- backend ledger request ID 우선과 HUD 단일 event stream: 통과
+- `Archive Center.js` Node 구문 검사: 통과
+- Go 전체 `go test ./... -count=1`: 통과
+
+### 실환경에서 다시 확인할 항목
+
+- 갱신된 4.0.9 테스트 패키지를 RisuAI에 실제 로드한 뒤, 본문 출력 직후 HUD가
+  평론가·저장 단계로 이어져 terminal 상태가 되는지 확인한다.
+- 실제 Provider가 연속 실패할 때 HUD의 시도 수가 증가하고 마지막 실패에서
+  `exhausted`와 수동 재처리가 보이는지 확인한다.
+- 복사한 사용자 DB에서 179개 메시지 정상화를 두 번 실행해 DB 행·Vector가
+  중복되지 않는지 확인한다.
+- 실제 36~38번 assistant 출력 삭제에서 MariaDB와 ChromaDB가 36턴 이후만
+  무효화하는지 확인한다.
+
+### 4.0.9 Windows 테스트 패키지 갱신
+
+- 기존 경로를 새 이름으로 복제하지 않고 같은 위치에서 정식 빌더로 갱신했다.
+- 경로:
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test`
+- 패키지:
+  `Archive Center 4.0.9 Windows Auto Install Package.zip`
+- manifest 상태: `green`
+- `release_ready=true`, `automatic_update_apply=true`
+- 관리 파일 46개, 누락 0, 크기 불일치 0, SHA-256 불일치 0
+- source/package `Archive Center.js` SHA-256:
+  `c7dd5e9dbb5264343ba0df2bde5c516660947c907a91ed6232c293e64056220a`
+- ZIP 크기: `12,155,003 bytes`
+- ZIP SHA-256:
+  `203cf8687ef06fba3713ce2449956abaeb797a0e6b82e5698a2fa4f17309b8b8`
+
+이 증거는 현재 source와 Windows 테스트 패키지의 동일성과 패키지 내부
+무결성을 확인한 것이다. 실제 RisuAI에 갱신된 plugin을 다시 로드한 뒤 HUD,
+Provider 재처리와 사용자 DB 복구가 작동하는지는 위 실환경 항목으로 별도
+확인해야 한다.

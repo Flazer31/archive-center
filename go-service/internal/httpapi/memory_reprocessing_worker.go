@@ -29,6 +29,9 @@ type memoryReprocessingProcessResult struct {
 	SourceRevision string
 	State          string
 	Failure        string
+	Attempt        int
+	MaxAttempts    int
+	RetryAfter     time.Time
 }
 
 type acceptedSourceDerivationResult struct {
@@ -78,13 +81,51 @@ func (s *Server) StartMemoryWorkers(ctx context.Context) bool {
 }
 
 func (s *Server) runMemoryWorkers(ctx context.Context, owner string) {
+	var retryTimer *time.Timer
+	var retryWake <-chan time.Time
+	var retryScheduledAt time.Time
+	scheduleRetryWake := func(at time.Time) {
+		if at.IsZero() || (!retryScheduledAt.IsZero() && !at.Before(retryScheduledAt)) {
+			return
+		}
+		delay := time.Until(at)
+		if delay < 0 {
+			delay = 0
+		}
+		if retryTimer == nil {
+			retryTimer = time.NewTimer(delay)
+		} else {
+			if !retryTimer.Stop() {
+				select {
+				case <-retryTimer.C:
+				default:
+				}
+			}
+			retryTimer.Reset(delay)
+		}
+		retryWake = retryTimer.C
+		retryScheduledAt = at
+	}
+	// A separate one-shot startup wake picks up a persisted one-second retry
+	// that may not yet be due during the immediate startup drain. It does not
+	// replace an exact retry timer produced by a job and it is not polling.
+	startupRetryWake := time.AfterFunc(memoryWorkerRetryDelay, s.wakeMemoryWorkers)
+	defer func() {
+		startupRetryWake.Stop()
+		if retryTimer != nil {
+			retryTimer.Stop()
+		}
+	}()
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-s.memoryWorkerWakeChannel():
+		case <-retryWake:
+			retryWake = nil
+			retryScheduledAt = time.Time{}
 		}
-		s.processMemoryWorkerWake(ctx, owner, time.Now().UTC())
+		scheduleRetryWake(s.processMemoryWorkerWake(ctx, owner, time.Now().UTC()))
 	}
 }
 
@@ -128,15 +169,16 @@ func (s *Server) processMemoryWorkerWake(
 	ctx context.Context,
 	owner string,
 	_ time.Time,
-) {
+) time.Time {
 	runtimeConfig := s.runtimeConfigSnapshot()
 	if !runtimeConfig.Synced {
-		return
+		return time.Time{}
 	}
 	leaseDuration := memoryWorkerLeaseDuration(runtimeConfig)
 	if leaseDuration <= 0 {
-		return
+		return time.Time{}
 	}
+	var retryWakeAt time.Time
 	reprocessingProcessed := 0
 	for ctx.Err() == nil && reprocessingProcessed < memoryReprocessingPerWake {
 		result, err := s.processMemoryReprocessingOnce(
@@ -144,6 +186,13 @@ func (s *Server) processMemoryWorkerWake(
 		)
 		if err != nil || !result.Processed {
 			break
+		}
+		// The worker is single-threaded. Wait until every retry scheduled by this
+		// drain is due, otherwise a later retry can be missed after an earlier,
+		// already-due job completes quickly and the queue has no new wake source.
+		if result.State == "retryable" && !result.RetryAfter.IsZero() &&
+			(retryWakeAt.IsZero() || result.RetryAfter.After(retryWakeAt)) {
+			retryWakeAt = result.RetryAfter
 		}
 		reprocessingProcessed++
 	}
@@ -169,6 +218,7 @@ func (s *Server) processMemoryWorkerWake(
 	if reprocessingProcessed == memoryReprocessingPerWake || vectorGroupsProcessed == memoryVectorGroupsPerWake {
 		s.wakeMemoryWorkers()
 	}
+	return retryWakeAt
 }
 
 func (s *Server) processMemoryReprocessingOnce(
@@ -204,6 +254,8 @@ func (s *Server) processMemoryReprocessingOnce(
 	result.Processed = true
 	result.JobID = job.ID
 	result.SourceRevision = job.SourceRevision
+	result.Attempt = job.Attempts
+	result.MaxAttempts = s.runtimeConfigSnapshot().FailedQueueMaxAttempts
 
 	source, err := sources.GetSourceRevision(ctx, job.ChatSessionID, job.SourceRevision)
 	if err != nil {
@@ -289,9 +341,10 @@ func (s *Server) processMemoryReprocessingOnce(
 			ctx, jobs, job, leaseOwner, now, &result, result.Failure,
 		)
 		if retryErr == nil && s.TurnWorkflows != nil {
-			s.TurnWorkflows.updateRecoveryResult(
+			s.TurnWorkflows.updateRecoveryResultWithAttempt(
 				source.ChatSessionID, source.TurnIndex, source.SourceRevision,
 				result.State, result.Failure, artifactSaveResult{},
+				result.Attempt, result.MaxAttempts, result.RetryAfter,
 			)
 		}
 		return result, retryErr
@@ -606,6 +659,11 @@ func (s *Server) retryMemoryReprocessingJob(
 		return fmt.Errorf("memory reprocessing job is missing")
 	}
 	maxAttempts := s.runtimeConfigSnapshot().FailedQueueMaxAttempts
+	if result != nil {
+		result.Attempt = job.Attempts
+		result.MaxAttempts = maxAttempts
+		result.RetryAfter = time.Time{}
+	}
 	terminalCode := ""
 	switch {
 	case maxAttempts < 1 || maxAttempts > 11:
@@ -638,6 +696,7 @@ func (s *Server) retryMemoryReprocessingJob(
 	if result != nil {
 		result.State = "retryable"
 		result.Failure = strings.TrimSpace(failure)
+		result.RetryAfter = now.Add(memoryWorkerRetryDelay)
 	}
 	err := jobs.FailMemoryReprocessingJob(
 		ctx, job.ID, leaseOwner, now, now.Add(memoryWorkerRetryDelay), false, failure,

@@ -142,9 +142,10 @@ type memoryWorkerEventStore struct {
 
 type memoryReprocessingDrainStore struct {
 	*memoryAdmissionWorkerStore
-	queue   []*store.MemoryReprocessingJob
-	sources map[string]*store.MemorySourceRevision
-	claimed map[int64]*store.MemoryReprocessingJob
+	queue     []*store.MemoryReprocessingJob
+	sources   map[string]*store.MemorySourceRevision
+	claimed   map[int64]*store.MemoryReprocessingJob
+	completed chan int64
 }
 
 func (f *memoryReprocessingDrainStore) ClaimMemoryReprocessingJob(
@@ -200,7 +201,14 @@ func (f *memoryReprocessingDrainStore) CompleteMemoryReprocessingJob(
 	now time.Time,
 ) error {
 	delete(f.claimed, id)
-	return f.memoryAdmissionWorkerStore.CompleteMemoryReprocessingJob(ctx, id, owner, now)
+	err := f.memoryAdmissionWorkerStore.CompleteMemoryReprocessingJob(ctx, id, owner, now)
+	if err == nil && f.completed != nil {
+		select {
+		case f.completed <- id:
+		default:
+		}
+	}
+	return err
 }
 
 func (f *memoryReprocessingDrainStore) FailMemoryReprocessingJob(
@@ -221,6 +229,22 @@ func (f *memoryReprocessingDrainStore) FailMemoryReprocessingJob(
 	return f.memoryAdmissionWorkerStore.FailMemoryReprocessingJob(
 		ctx, id, owner, now, retryAfter, permanent, failure,
 	)
+}
+
+func (f *memoryReprocessingDrainStore) EnqueueMemoryVectorOperation(context.Context, *store.MemoryVectorOutboxItem) (bool, error) {
+	return true, nil
+}
+
+func (f *memoryReprocessingDrainStore) ClaimMemoryVectorOperations(context.Context, string, time.Time, time.Duration) ([]*store.MemoryVectorOutboxItem, error) {
+	return nil, store.ErrNotFound
+}
+
+func (f *memoryReprocessingDrainStore) CompleteMemoryVectorOperation(context.Context, int64, string, time.Time) error {
+	return nil
+}
+
+func (f *memoryReprocessingDrainStore) FailMemoryVectorOperation(context.Context, int64, string, time.Time, time.Time, bool, string) error {
+	return nil
 }
 
 func (f *memoryWorkerEventStore) EnqueueMemoryVectorOperation(_ context.Context, item *store.MemoryVectorOutboxItem) (bool, error) {
@@ -1507,6 +1531,168 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 			"calls=%d failed=%v completed=%v admissions=%d queue=%+v",
 			callCount, st.failedJobs, st.completedJobs, len(st.admissions), st.queue,
 		)
+	}
+}
+
+func TestMemoryReprocessingRetryRunsWhenItsStoredDelayExpires(t *testing.T) {
+	now := time.Now().UTC()
+	source := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry", ChatSessionID: "session-retry",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("c", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(source)
+	base := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), nextEvidenceID: 300}
+	completed := make(chan int64, 1)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: base,
+		queue: []*store.MemoryReprocessingJob{{
+			ID: 7, ChatSessionID: source.ChatSessionID, SourceRevision: source.SourceRevision,
+			DerivationVersion: store.MemoryAdmissionContract,
+			ExtractorVersion:  completeTurnCriticPipelineVersion, IndexVersion: memoryAdmissionIndexVersion,
+			CreatedAt: now,
+		}},
+		sources:   map[string]*store.MemorySourceRevision{source.SourceRevision: source},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		if callCount == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"retry later"}}`)),
+			}, nil
+		}
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina found the brass key.", "importance_score": 7,
+			"evidence_excerpts": []any{"Mina found a brass key."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	select {
+	case id := <-completed:
+		if id != 7 || callCount != 2 || len(st.failedJobs) != 1 {
+			t.Fatalf("id=%d calls=%d failed=%v", id, callCount, st.failedJobs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("stored retry did not run automatically: calls=%d queue=%+v", callCount, st.queue)
+	}
+}
+
+func TestMemoryReprocessingMultipleStoredRetryTimesAllWake(t *testing.T) {
+	now := time.Now().UTC()
+	firstSource := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry-first", ChatSessionID: "session-retry-many",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the first drawer.", AssistantContent: "The first drawer was empty.",
+		CombinedContentHash: strings.Repeat("d", 64), LifecycleState: "active",
+	}
+	secondSource := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry-second", ChatSessionID: "session-retry-many",
+		LogicalTurnID: "turn:2", TurnIndex: 2,
+		UserContent: "Mina opened the second drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("e", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(firstSource)
+	attachCriticInputSnapshotForTest(secondSource)
+	base := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), nextEvidenceID: 400}
+	completed := make(chan int64, 2)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: base,
+		queue: []*store.MemoryReprocessingJob{
+			{ID: 8, ChatSessionID: firstSource.ChatSessionID, SourceRevision: firstSource.SourceRevision,
+				DerivationVersion: store.MemoryAdmissionContract, ExtractorVersion: completeTurnCriticPipelineVersion,
+				IndexVersion: memoryAdmissionIndexVersion, CreatedAt: now},
+			{ID: 9, ChatSessionID: secondSource.ChatSessionID, SourceRevision: secondSource.SourceRevision,
+				DerivationVersion: store.MemoryAdmissionContract, ExtractorVersion: completeTurnCriticPipelineVersion,
+				IndexVersion: memoryAdmissionIndexVersion, CreatedAt: now},
+		},
+		sources: map[string]*store.MemorySourceRevision{
+			firstSource.SourceRevision: firstSource, secondSource.SourceRevision: secondSource,
+		},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		if callCount <= 2 {
+			if callCount == 2 {
+				time.Sleep(250 * time.Millisecond)
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"retry later"}}`)),
+			}, nil
+		}
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina checked a drawer.", "importance_score": 6,
+			"evidence_excerpts": []any{"Mina checked a drawer."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	seen := map[int64]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-completed:
+			seen[id] = true
+		case <-time.After(4 * time.Second):
+			t.Fatalf("not every scheduled retry ran: completed=%v calls=%d queue=%+v", seen, callCount, st.queue)
+		}
+	}
+	if !seen[8] || !seen[9] || callCount != 4 || len(st.failedJobs) != 2 {
+		t.Fatalf("completed=%v calls=%d failed=%v", seen, callCount, st.failedJobs)
 	}
 }
 

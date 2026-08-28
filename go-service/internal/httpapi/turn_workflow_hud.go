@@ -948,6 +948,23 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 	failure string,
 	saveResult artifactSaveResult,
 ) bool {
+	return l.updateRecoveryResultWithAttempt(
+		chatSessionID, logicalTurn, sourceRevision, state, failure, saveResult,
+		0, 0, time.Time{},
+	)
+}
+
+func (l *turnWorkflowHUDLedger) updateRecoveryResultWithAttempt(
+	chatSessionID string,
+	logicalTurn int,
+	sourceRevision string,
+	state string,
+	failure string,
+	saveResult artifactSaveResult,
+	attempt int,
+	maxAttempts int,
+	retryAfter time.Time,
+) bool {
 	if l == nil {
 		return false
 	}
@@ -974,6 +991,21 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 		return false
 	}
 	now := time.Now().UTC()
+	if matched.view.Error == nil {
+		matched.view.Error = &turnWorkflowHUDError{
+			MessageKey: "turn_hud.error.critic_llm_failed",
+			StageKey:   turnWorkflowStageCriticLLM,
+		}
+	}
+	if attempt > 0 {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_attempt", strconv.Itoa(attempt))
+	}
+	if maxAttempts > 0 {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_max_attempts", strconv.Itoa(maxAttempts))
+	}
+	if !retryAfter.IsZero() {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "next_retry_at", retryAfter.UTC().Format(time.RFC3339Nano))
+	}
 	switch state {
 	case "completed", "skipped_ooc":
 		setTurnWorkflowHUDCountValues(&matched.view, turnWorkflowHUDCountsFromArtifactSave(saveResult))
@@ -1011,11 +1043,12 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 			delete(l.activeBySession, chatSessionID)
 		}
 	case "retryable":
-		if matched.view.Error != nil {
-			for index := range matched.view.Error.RecoveryActions {
-				matched.view.Error.RecoveryActions[index].Status = "running"
-				matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.running"
-			}
+		matched.view.Error.Code = strings.TrimSpace(failure)
+		matched.view.Error.Retryable = true
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_state", "scheduled")
+		for index := range matched.view.Error.RecoveryActions {
+			matched.view.Error.RecoveryActions[index].Status = "running"
+			matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.running"
 		}
 		matched.view.Status = "recovering"
 		matched.view.Severity = turnWorkflowHUDSeverityWarning
@@ -1029,6 +1062,10 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 		}
 		if strings.TrimSpace(failure) != "" {
 			matched.view.Error.Code = strings.TrimSpace(failure)
+		}
+		if state == "terminal" && (strings.HasPrefix(strings.TrimSpace(failure), criticRetryLimitReached) ||
+			strings.HasPrefix(strings.TrimSpace(failure), criticRetryLimitUnconfigured)) {
+			setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_state", "exhausted")
 		}
 		matched.view.Error.Retryable = state != "stale_rejected"
 		for index := range matched.view.Error.RecoveryActions {
@@ -1048,6 +1085,19 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 	}
 	l.touchLocked(matched, now)
 	return true
+}
+
+func setTurnWorkflowHUDErrorDetail(hudError *turnWorkflowHUDError, key, value string) {
+	if hudError == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	for index := range hudError.Details {
+		if hudError.Details[index].Key == key {
+			hudError.Details[index].Value = value
+			return
+		}
+	}
+	hudError.Details = append(hudError.Details, turnWorkflowHUDDetail{Key: key, Value: value})
 }
 
 func (l *turnWorkflowHUDLedger) setMemorySelection(requestID string, selection turnWorkflowHUDMemorySelection) {

@@ -494,8 +494,9 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 		true,
 		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
 	)
-	if !ledger.updateRecoveryResult(
+	if !ledger.updateRecoveryResultWithAttempt(
 		"session-recovery", 22, "sar-terminal", "terminal", "CRITIC_RETRY_LIMIT_REACHED", artifactSaveResult{},
+		4, 4, time.Time{},
 	) {
 		t.Fatal("terminal recovery result did not update the HUD")
 	}
@@ -504,6 +505,14 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 		failed.Error.Code != "CRITIC_RETRY_LIMIT_REACHED" ||
 		len(failed.Error.RecoveryActions) != 1 || failed.Error.RecoveryActions[0].Status != "available" {
 		t.Fatalf("terminal recovery view=%+v found=%t", failed, ok)
+	}
+	details := map[string]string{}
+	for _, detail := range failed.Error.Details {
+		details[detail.Key] = detail.Value
+	}
+	if details["retry_attempt"] != "4" || details["retry_max_attempts"] != "4" ||
+		details["retry_state"] != "exhausted" {
+		t.Fatalf("terminal recovery retry details=%+v", details)
 	}
 }
 

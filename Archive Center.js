@@ -14564,6 +14564,16 @@
     return { html, action: available ? action : null };
   }
 
+  function turnWorkflowHUDErrorDetailsHTML(error) {
+    return (Array.isArray(error && error.details) ? error.details : []).map(function(entry) {
+      const row = entry && typeof entry === "object" ? entry : {};
+      const key = String(row.key || "detail").trim() || "detail";
+      const value = String(row.value == null ? "" : row.value).trim();
+      if (!value) return "";
+      return `<div style="${TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE}">${escapeTurnWorkflowHUDHTML(key + "=" + value)}</div>`;
+    }).filter(Boolean).join("");
+  }
+
   function buildTurnWorkflowHUDPresentation(view) {
     const severity = String(view.severity || "normal");
     if (String(view.display_mode || "") === "notice") {
@@ -14599,6 +14609,7 @@
     if (view.status === "recovering") {
       const error = view.error && typeof view.error === "object" ? view.error : {};
       const recoveryPresentation = turnWorkflowHUDRecoveryPresentation(error);
+      const errorDetailsHTML = turnWorkflowHUDErrorDetailsHTML(error);
       const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
       const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
       const meta = [
@@ -14614,6 +14625,7 @@
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
           + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running"))}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
+          + errorDetailsHTML
           + turnWorkflowHUDCountLedgerHTML(countPresentation)
           + turnWorkflowHUDStageLedgerHTML(view)
           + turnWorkflowHUDWarningListHTML(view)
@@ -14634,13 +14646,7 @@
         stage && stage.label_key ? t(stage.label_key) : "",
         error.retryable === true ? t("turn_hud.retryable") : t("turn_hud.not_retryable"),
       ].filter(Boolean).join(" · ");
-      const errorDetailsHTML = (Array.isArray(error.details) ? error.details : []).map(function(entry) {
-        const row = entry && typeof entry === "object" ? entry : {};
-        const key = String(row.key || "detail").trim() || "detail";
-        const value = String(row.value == null ? "" : row.value).trim();
-        if (!value) return "";
-        return `<div style="${TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE}">${escapeTurnWorkflowHUDHTML(key + "=" + value)}</div>`;
-      }).filter(Boolean).join("");
+      const errorDetailsHTML = turnWorkflowHUDErrorDetailsHTML(error);
       return {
         terminal: true,
         closeButtonOnly: turnWorkflowHUDCloseButtonOnly(view),
@@ -15165,7 +15171,10 @@
     const lineage = meta && meta.source_to_final_lineage_observation && typeof meta.source_to_final_lineage_observation === "object"
       ? meta.source_to_final_lineage_observation
       : null;
-    return String(lineage && lineage.archive_center_request_correlation_id || meta && meta.turn_workflow_request_id || "").trim();
+    // Go completes the HUD ledger identified by client_meta.turn_workflow_request_id.
+    // A cached source-to-final lineage may describe an older request, so it is
+    // diagnostic fallback only and must not replace the backend-owned HUD key.
+    return String(meta && meta.turn_workflow_request_id || lineage && lineage.archive_center_request_correlation_id || "").trim();
   }
 
   const archiveUpdateState = {

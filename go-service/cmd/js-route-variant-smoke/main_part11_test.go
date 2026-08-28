@@ -859,6 +859,20 @@ function responseFromLines(lines) {
 	}
 }
 
+func TestCompleteTurnHUDUsesBackendLedgerRequestBeforeCachedLineage(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	requestID := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDRequestIdFromCompleteBody")
+	backendKey := strings.Index(requestID, "meta && meta.turn_workflow_request_id")
+	lineageFallback := strings.Index(requestID, "lineage && lineage.archive_center_request_correlation_id")
+	if backendKey < 0 || lineageFallback < 0 || backendKey > lineageFallback {
+		t.Fatalf("complete-turn HUD key is not aligned with the backend ledger owner: %s", requestID)
+	}
+	presentation := extractArchiveCenterJSFunction(t, src, "buildTurnWorkflowHUDPresentation")
+	if !strings.Contains(presentation, "turnWorkflowHUDErrorDetailsHTML(error)") {
+		t.Fatal("recovering HUD does not render retry attempt details")
+	}
+}
+
 func TestTurnWorkflowHUDTransportFailureClassificationAndPersistenceRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
