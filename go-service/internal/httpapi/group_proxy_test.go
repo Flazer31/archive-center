@@ -406,6 +406,132 @@ func TestProxyVertexEmptyContentPreservesActual2xxStatus(t *testing.T) {
 	}
 }
 
+func TestProxyClaudeReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://api.anthropic.example/v1/messages" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"stop_reason":"max_tokens",
+				"content":[{"type":"thinking","thinking":"reasoning only","text":"{\"turn_summary\":\"must not become final\"}"}],
+				"usage":{"input_tokens":40,"output_tokens":128}
+			}`)),
+		}, nil
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("anthropic-key"),
+		Endpoint: strPtr("https://api.anthropic.example"),
+		Model:    strPtr("claude-test"),
+		Provider: strPtr("claude"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || status != http.StatusOK {
+		t.Fatalf("Claude reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Claude thinking block became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "max_tokens" || metadata["termination_kind"] != "length" || intFromAny(metadata["output_tokens"], 0) != 128 {
+		t.Fatalf("Claude termination metadata=%#v", metadata)
+	}
+}
+
+func TestProxyGeminiReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"thought":true,"text":"{\"turn_summary\":\"must not become final\"}"}]}}],
+				"usageMetadata":{"promptTokenCount":80,"candidatesTokenCount":16,"thoughtsTokenCount":16,"totalTokenCount":96}
+			}`)),
+		}, nil
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("gemini-key"),
+		Endpoint: strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("gemini"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || status != http.StatusOK {
+		t.Fatalf("Gemini reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Gemini thought part became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "MAX_TOKENS" || metadata["termination_kind"] != "length" || intFromAny(metadata["reasoning_tokens"], 0) != 16 {
+		t.Fatalf("Gemini termination metadata=%#v", metadata)
+	}
+}
+
+func TestProxyVertexReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	credential := testVertexServiceAccountJSON(t)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-test:generateContent":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"thought":true,"text":"reasoning only"}]}}],
+					"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":12,"thoughtsTokenCount":12,"totalTokenCount":72}
+				}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   &credential,
+		Endpoint: strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("vertex"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || exhaustedErr.Provider != "vertex" || status != http.StatusOK {
+		t.Fatalf("Vertex reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Vertex thought part became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "MAX_TOKENS" || metadata["termination_kind"] != "length" || intFromAny(metadata["reasoning_tokens"], 0) != 12 {
+		t.Fatalf("Vertex termination metadata=%#v", metadata)
+	}
+}
+
 func TestProxyLocalRequestErrorsAreTypedSeparatelyFromUpstreamHTTP(t *testing.T) {
 	assertLocal := func(t *testing.T, status int, err error, wantStage string) {
 		t.Helper()

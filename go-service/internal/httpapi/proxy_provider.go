@@ -651,9 +651,13 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	finishReason := strings.TrimSpace(extractionStringFromAny(data["stop_reason"]))
 	resp := proxyNormalizeChatResponse(content, model, finishReason)
 	proxyAttachClaudeUsage(resp, data, overrideTrace)
-	resp[proxyResponseMetadataKey] = buildProxyResponseMetadata("anthropic_messages", finishReason, mapFromAny(data["usage"]))
+	responseMeta := buildProxyResponseMetadata("anthropic_messages", finishReason, mapFromAny(data["usage"]))
+	resp[proxyResponseMetadataKey] = responseMeta
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	if content == "" && policy.Purpose != "publisher" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return resp, status, &proxyFinalOutputExhaustedError{Provider: "claude"}
+		}
 		return resp, status, &proxyEmptyContentError{Provider: "claude"}
 	}
 	return resp, http.StatusOK, nil
@@ -743,9 +747,13 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	finishReason := strings.TrimSpace(extractionStringFromAny(candidate["finishReason"]))
 	resp := proxyNormalizeChatResponse(content, model, finishReason)
 	proxyAttachGeminiUsage(resp, data, overrideTrace)
-	resp[proxyResponseMetadataKey] = buildProxyResponseMetadata("google_generate_content", finishReason, mapFromAny(data["usageMetadata"]))
+	responseMeta := buildProxyResponseMetadata("google_generate_content", finishReason, mapFromAny(data["usageMetadata"]))
+	resp[proxyResponseMetadataKey] = responseMeta
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	if content == "" && policy.Purpose != "publisher" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return resp, status, &proxyFinalOutputExhaustedError{Provider: geminiProvider}
+		}
 		return resp, status, &proxyEmptyContentError{Provider: geminiProvider}
 	}
 	return resp, http.StatusOK, nil
@@ -2389,6 +2397,10 @@ func proxyExtractClaudeText(data map[string]any) string {
 	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		item := mapFromAny(block)
+		blockType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["type"])))
+		if strings.Contains(blockType, "thinking") || strings.Contains(blockType, "reasoning") {
+			continue
+		}
 		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
 		if text != "" {
 			parts = append(parts, text)
