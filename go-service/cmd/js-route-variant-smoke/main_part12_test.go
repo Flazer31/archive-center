@@ -820,56 +820,6 @@ function pushTurnHistory() {}
 	}
 }
 
-func TestOfficialAfterRequestFinalDoesNotRequireOptionalOrchestrationPendingState(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for afterRequest pending-state independence fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	acceptFinal := extractJSFunctionBlockForTest(t, src, "function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent)")
-	script := `
-let lastOrchResult = null;
-function normalizeAssistantPersistenceCandidate(value){ return String(value || "").trim(); }
-function computeOrchestrationDirtyHashOr1c(value){ return "hash:" + String(value || ""); }
-` + acceptFinal + `
-const context = {
-  state:"captured",
-  requestId:"request-11",
-  sessionId:"session-1",
-  requestType:"model",
-  hostChatId:"host-chat-1",
-  requestMessageCount:21,
-  userMessageIndex:20,
-  userObservedContent:"current user input",
-  userObservedContentHash:"hash:current user input",
-};
-const accepted = acceptRisuAfterRequestFinal("session-1", "model", null, context, "visible final response");
-if (!accepted.accepted || accepted.reason !== "after_request_final_accepted" || context.state !== "accepted") {
-  throw new Error("official afterRequest final still depends on optional pending state: " + JSON.stringify(accepted));
-}
-const mismatchContext = Object.assign({}, context, {state:"captured", acceptedObservation:null, acceptedObservationKey:""});
-const rejected = acceptRisuAfterRequestFinal(
-  "session-1",
-  "model",
-  {requestId:"different-request", orchResult:null},
-  mismatchContext,
-  "another response"
-);
-if (rejected.reason !== "after_request_correlation_mismatch" || mismatchContext.state !== "captured") {
-  throw new Error("mismatched pending state was discarded instead of retained for exact host observation: " + JSON.stringify(rejected));
-}
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("afterRequest pending-state independence fixture failed: %v\n%s", err, out)
-	}
-}
-
 func TestRisuLifecycleRegistrationAndRemovalAreIndependent(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -1142,39 +1092,6 @@ if (!result || result.contextMessages.length!==messages.length ||
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("post-output persistence context fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestFeedbackOneNormalAndPostOutputRoutesStayConnected(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	onBefore := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
-	onAfter := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
-
-	for _, required := range []string{
-		"buildPostOutputSecondaryRequestContext(mainRequestActiveMessages)",
-		"rememberNonMainRequestSkip(orchSessionId, postOutputDecision, \"beforeRequest\")",
-		"post_output_secondary_request",
-	} {
-		if !strings.Contains(onBefore, required) {
-			t.Fatalf("beforeRequest post-output route is disconnected: missing %q", required)
-		}
-	}
-	for _, required := range []string{
-		"const sourceAcceptanceFinality = finalObservation.accepted === true",
-		"persistAfterRequestContent",
-		"continueAcceptedFinalPersistence(persistenceOrchResult, sourceAcceptanceFinality)",
-	} {
-		if !strings.Contains(onAfter, required) {
-			t.Fatalf("normal afterRequest persistence route is disconnected: missing %q", required)
-		}
-	}
-	if strings.Contains(onAfter, "after_request_final_not_accepted") {
-		t.Fatal("afterRequest correlation rejection still blocks normal persistence")
-	}
-	for _, forbidden := range []string{"onPostprocessedRisuOutput"} {
-		if strings.Contains(src, forbidden) {
-			t.Fatalf("feedback-one route retained forbidden output hook %q", forbidden)
-		}
 	}
 }
 
@@ -1640,7 +1557,7 @@ function debugLog() {}
 	}
 }
 
-func TestRisuOutputDoesNotOwnCommittedPersistence(t *testing.T) {
+func TestRisuOutputDelegatesExactCommittedOutputToCanonicalAfterRequestOwner(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -1654,16 +1571,35 @@ func TestRisuOutputDoesNotOwnCommittedPersistence(t *testing.T) {
 	script := onOutput + `
 const _risuHookLifecycle = {output:"registered"};
 const _finalConfirmationRequestBySession = new Map([
-  ["session-a",{sessionId:"session-a",state:"captured",characterIndex:1,chatIndex:2,hostChatId:"chat-a"}],
-  ["session-b",{sessionId:"session-b",state:"captured",characterIndex:8,chatIndex:9,hostChatId:"chat-b"}],
+  ["session-a",{sessionId:"session-a",state:"captured",requestType:"model",characterIndex:1,chatIndex:2,hostChatId:"chat-a"}],
+  ["session-b",{sessionId:"session-b",state:"captured",requestType:"model",characterIndex:8,chatIndex:9,hostChatId:"chat-b"}],
 ]);
-let persistenceCalls = 0;
+const delegated = [];
+let observationCalls = 0;
+let directPersistenceCalls = 0;
 function observePendingFinalConfirmationAtHostSignal(sessionId,source,snapshot){
-  persistenceCalls++;
-  return Promise.resolve({accepted:true});
+  observationCalls++;
+  if(sessionId!=="session-a" || source!=="output" || !snapshot || snapshot.messageIndex!==1) {
+    throw new Error("output observation escaped exact A coordinates");
+  }
+  return Promise.resolve({
+    accepted:true,
+    readyForPersistence:false,
+    assistantContent:"A output",
+    observation:{
+      accepted:true,
+      contract_version:"source_acceptance_observation.v1",
+      session_id:"session-a",
+      finality_source:"risu_output",
+      host_signal_source:"output",
+    },
+  });
 }
+function onAfterRequest(content,type,observation){ delegated.push({content,type,observation}); return content; }
+function backfillOneActiveChatCompletedTurn(){ directPersistenceCalls++; throw new Error("output used an alternate persistence path"); }
 function buildRisuWorldlineObservationFromMessages(){ return null; }
 function requestBackendSessionRoutingTurnResolution(){ throw new Error("ordinary output must not route a worldline"); }
+function recordRisuHookLifecycle() {}
 function debugLog() {}
 function warnLog() {}
 (async()=>{
@@ -1673,8 +1609,15 @@ function warnLog() {}
   });
   if(result!==undefined) throw new Error("output listener became blocking");
   await new Promise(resolve=>setTimeout(resolve,0));
-  if(persistenceCalls!==0) {
-    throw new Error("output listener attempted committed persistence: "+String(persistenceCalls));
+  if(observationCalls!==1 || delegated.length!==1 || directPersistenceCalls!==0) {
+    throw new Error("exact output did not delegate once through the canonical path: "+JSON.stringify({observationCalls,delegated,directPersistenceCalls}));
+  }
+  if(delegated[0].content!=="A output" || delegated[0].type!=="model" ||
+     !delegated[0].observation || delegated[0].observation.session_id!=="session-a") {
+    throw new Error("output delegated the wrong content/session: "+JSON.stringify(delegated[0]));
+  }
+  if(delegated.some(row=>row.observation && row.observation.session_id==="session-b")) {
+    throw new Error("A output delegated to B");
   }
 })().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
 `
@@ -1772,6 +1715,575 @@ func TestLongRunningHostOperationsCarryCapturedSessionContext(t *testing.T) {
 				t.Fatalf("%s lost captured-session wiring %q", area, marker)
 			}
 		}
+	}
+}
+
+// This regression loads the production plugin as one program and invokes the
+// callbacks that it actually registers with the RisuAI API.  Only the host,
+// DOM/storage, and HTTP boundaries are substituted.  The substitutes record
+// every call and reject routes or coordinates outside the fixture so copied
+// test-only lifecycle logic cannot make the assertion pass.
+func TestFullArchiveCenterRuntimeKeepsCommittedOutputWithCapturedSessionAfterChatSwitch(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for the full Archive Center runtime lifecycle regression")
+		}
+	}
+	archivePath := filepath.Join(archiveCenterRoot(t), "Archive Center.js")
+	script := `
+const fs = require("fs");
+const archivePath = process.argv[2];
+const source = fs.readFileSync(archivePath, "utf8");
+const callbacks = { input: null, beforeRequest: null, afterRequest: null, output: null, unload: null };
+const registrations = [];
+const backendCalls = [];
+const unexpected = [];
+const completed = [];
+const completeTurnAttempts = [];
+const persistedLogs = new Map();
+const storageValues = new Map();
+const chars = [{ chaId: "character-fixture", name: "Fixture Character" }];
+const chats = [
+  { id: "fixture-chat-a", name: "A", isStreaming: false, message: [] },
+  { id: "fixture-chat-b", name: "B", isStreaming: false, message: [] },
+  {
+    id: "fixture-chat-child", name: "Child", isStreaming: false,
+    message: [
+      { role: "user", data: "Parent user", chatId: "parent-user", time: 900 },
+      { role: "char", data: "Parent output", chatId: "parent-output", time: 901,
+        generationInfo: { generationId: "parent-generation" } },
+      { role: "char", data: "{{specialcomment::branchedfrom::fixture-chat-a::1}}", disabled: true,
+        chatId: "branch-marker", time: 902 },
+    ],
+  },
+];
+let currentCharacterIndex = 0;
+let currentChatIndex = 0;
+let sequence = 0;
+let holdNextOutputBranchRouting = false;
+let releaseOutputBranchRouting = null;
+let rejectNextCompleteTurn = false;
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message);
+}
+function clone(value) {
+  return value == null ? value : JSON.parse(JSON.stringify(value));
+}
+function response(payload, status = 200) {
+  const text = JSON.stringify(payload);
+  return {
+    status,
+    ok: status >= 200 && status < 300,
+    async json() { return clone(payload); },
+    async text() { return text; },
+  };
+}
+function sessionIDFor(chatIndex) {
+  return "char_" + currentCharacterIndex + "_cid_" + chats[chatIndex].id;
+}
+function fixtureChatIndexForSession(sessionID) {
+  return chats.findIndex((chat, index) => sessionIDFor(index) === sessionID);
+}
+function parseBody(init) {
+  if (!init || init.body == null || init.body === "") return null;
+  if (typeof init.body !== "string") return clone(init.body);
+  return JSON.parse(init.body);
+}
+function logsKey(sessionID, turnIndex) {
+  return String(sessionID) + "|" + String(turnIndex);
+}
+async function waitFor(predicate, label) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > 4000) throw new Error("timed out waiting for " + label);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+}
+
+const settings = {
+  enabled: true,
+  dbEnabled: true,
+  supervisorEnabled: false,
+  injectionEnabled: false,
+  lorebookReferenceMode: "off",
+  rollbackAutoEnabled: false,
+  turnWorkflowHUDEnabled: false,
+  pluginMainApplyMode: "off",
+  pluginMainRewriteOptIn: false,
+  narrativeGuideMode: "off",
+  requestTimeoutMs: 1000,
+  llmRetryCount: 0,
+};
+storageValues.set("risu_memory_orchestrator_settings", JSON.stringify(settings));
+
+global.localStorage = {
+  getItem(key) { return storageValues.has(String(key)) ? storageValues.get(String(key)) : null; },
+  setItem(key, value) { storageValues.set(String(key), String(value)); },
+  removeItem(key) { storageValues.delete(String(key)); },
+};
+global.window = {
+  location: { protocol: "http:", hostname: "localhost", host: "localhost" },
+  addEventListener() {},
+  removeEventListener() {},
+};
+global.location = global.window.location;
+global.navigator = { userAgent: "archive-center-full-runtime-test" };
+global.document = {
+  body: { appendChild() {} },
+  head: { appendChild() {} },
+  documentElement: { appendChild() {} },
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  getElementById() { return null; },
+  createElement() { return { style: {}, dataset: {}, appendChild() {}, remove() {}, addEventListener() {} }; },
+};
+global.fetch = async function unexpectedGlobalFetch(url) {
+  unexpected.push("global fetch " + String(url));
+  throw new Error("unexpected global fetch");
+};
+global.confirm = function() { throw new Error("unexpected confirm"); };
+global.alert = function() { throw new Error("unexpected alert"); };
+global.prompt = function() { throw new Error("unexpected prompt"); };
+
+const persistentStorage = {
+  async getItem(key) { return storageValues.has(String(key)) ? storageValues.get(String(key)) : null; },
+  async setItem(key, value) { storageValues.set(String(key), String(value)); },
+  async removeItem(key) { storageValues.delete(String(key)); },
+};
+
+const Risuai = {
+  pluginStorage: persistentStorage,
+  async getLocalPluginStorage() { return persistentStorage; },
+  async addRisuScriptHandler(name, callback) {
+    assert(name === "input", "unexpected script handler " + name);
+    assert(callbacks.input === null, "input handler registered twice");
+    callbacks.input = callback;
+    registrations.push("input");
+  },
+  async addRisuReplacer(name, callback) {
+    assert(name === "beforeRequest" || name === "afterRequest", "unexpected replacer " + name);
+    assert(callbacks[name] === null, name + " registered twice");
+    callbacks[name] = callback;
+    registrations.push(name);
+  },
+  async addRisuChatListener(name, callback) {
+    assert(name === "output", "unexpected chat listener " + name);
+    assert(callbacks.output === null, "output listener registered twice");
+    callbacks.output = callback;
+    registrations.push("output");
+  },
+  async onUnload(callback) { callbacks.unload = callback; },
+  async registerSetting() { registrations.push("setting"); },
+  async registerButton() { registrations.push("button"); },
+  async getCurrentCharacterIndex() { return currentCharacterIndex; },
+  async getCurrentChatIndex() { return currentChatIndex; },
+  async getCharacter() { return clone(chars[currentCharacterIndex]); },
+  async getChatFromIndex(characterIndex, chatIndex) {
+    if (characterIndex !== currentCharacterIndex && characterIndex !== 0) {
+      unexpected.push("character coordinate " + characterIndex);
+      throw new Error("unexpected character coordinate");
+    }
+    if (!Number.isInteger(chatIndex) || !chats[chatIndex]) {
+      unexpected.push("chat coordinate " + chatIndex);
+      throw new Error("unexpected chat coordinate");
+    }
+    return chats[chatIndex];
+  },
+  async nativeFetch(urlValue, init = {}) {
+    const url = new URL(String(urlValue));
+    const method = String(init.method || "GET").toUpperCase();
+    const body = parseBody(init);
+    backendCalls.push({ path: url.pathname, search: url.search, method, body });
+
+    if (url.pathname === "/config/update" && method === "POST") {
+      return response({ status: "ok", backend_instance_id: "fixture-backend", runtime_config_trace: {} });
+    }
+    if (url.pathname === "/session-routing/turn-resolution" && method === "POST") {
+      assert(body && typeof body.chat_session_id === "string" && body.chat_session_id, "turn resolution missing session");
+      const observedOrdinal = Math.max(0, Number(body.observed_pair_ordinal || 0));
+      const knownTurns = completed.filter(item => item.chat_session_id === body.chat_session_id).length;
+      const resolvedTurn = body.mode === "pair" ? Math.max(observedOrdinal, knownTurns + 1) : knownTurns;
+      const routingPayload = {
+        status: "ok",
+        contract_version: "session-routing.turn-resolution.v1",
+        resolution: "normal",
+        chat_session_id: body.chat_session_id,
+        identity_resolution: "fixture_exact_host_identity",
+        binding_acknowledged: true,
+        binding_required: false,
+        turn_index: resolvedTurn,
+        completed_turns: knownTurns,
+        local_turn_index: observedOrdinal,
+        resolved_observations: [],
+      };
+      if (body.worldline_observation) {
+        routingPayload.worldline = {
+          state: "confirmed",
+          reason: "fixture_exact_branch_marker",
+          parent_session_id: sessionIDFor(0),
+          child_session_id: body.chat_session_id,
+          fork_turn_index: 1,
+        };
+      }
+      if (
+        holdNextOutputBranchRouting
+        && body.worldline_observation
+        && body.worldline_observation.host_signal_source === "output"
+      ) {
+        holdNextOutputBranchRouting = false;
+        return await new Promise(resolve => {
+          releaseOutputBranchRouting = () => resolve(response(routingPayload));
+        });
+      }
+      return response(routingPayload);
+    }
+	if (url.pathname === "/prepare-turn" && method === "POST") {
+      assert(body && typeof body.chat_session_id === "string" && body.chat_session_id, "prepare-turn missing session");
+      return response({
+        status: "ok",
+        source: "fixture",
+        current_input_decision: { status: "deferred", reason_code: "fixture_owner_only" },
+		});
+	}
+	if (url.pathname.endsWith("/lorebook-reference/snapshots") && method === "POST") {
+		const snapshotSession = decodeURIComponent(url.pathname.split("/")[2] || "");
+		assert(fixtureChatIndexForSession(snapshotSession) >= 0,
+			"lorebook snapshot crossed fixture sessions: " + snapshotSession);
+		assert(body && Array.isArray(body.entries), "lorebook snapshot entries missing");
+		return response({ status: "ok", stored: true }, 201);
+	}
+    if (url.pathname.startsWith("/canonical/") && url.pathname.endsWith("/chat-logs") && method === "GET") {
+      const parts = url.pathname.split("/");
+      const sessionID = decodeURIComponent(parts[2]);
+      const fromTurn = Number(url.searchParams.get("from_turn"));
+      return response({ status: "ok", items: clone(persistedLogs.get(logsKey(sessionID, fromTurn)) || []) });
+    }
+	if (url.pathname.startsWith("/canonical/") && url.pathname.endsWith("/chat-logs") && method === "POST") {
+      const parts = url.pathname.split("/");
+      const sessionID = decodeURIComponent(parts[2]);
+      assert(body && body.chat_session_id === sessionID, "chat-log repair crossed sessions");
+      const key = logsKey(sessionID, body.turn_index);
+      const rows = persistedLogs.get(key) || [];
+      rows.push({ role: body.role, content: body.content, turn_index: body.turn_index });
+      persistedLogs.set(key, rows);
+		return response({ status: "ok", saved: true });
+	}
+	if (url.pathname === "/timeline" && method === "GET") {
+		const timelineSession = String(url.searchParams.get("sessionId") || "");
+		assert(fixtureChatIndexForSession(timelineSession) >= 0,
+			"timeline refresh crossed fixture sessions: " + timelineSession);
+		return response({ status: "ok", items: [], total: 0 });
+	}
+	if (url.pathname === "/sessions" && method === "GET") {
+		return response({ status: "ok", sessions: [] });
+	}
+	if (url.pathname === "/step23/capture-verification" && method === "POST") {
+		assert(body && fixtureChatIndexForSession(body.chat_session_id) >= 0,
+			"capture verification crossed fixture sessions");
+		return response({ status: "ok", record_id: backendCalls.length });
+	}
+	if (url.pathname === "/maintenance/enqueue" && method === "POST") {
+		assert(body && fixtureChatIndexForSession(body.chat_session_id) >= 0,
+			"maintenance enqueue crossed fixture sessions");
+		return response({ status: "ok", queued: true });
+	}
+	if (url.pathname === "/complete-turn" && method === "POST") {
+		assert(body && typeof body.chat_session_id === "string" && body.chat_session_id, "complete-turn missing session");
+		assert(typeof body.user_input === "string" && body.user_input, "complete-turn missing user input");
+		assert(typeof body.assistant_content === "string" && body.assistant_content, "complete-turn missing assistant output");
+		const finality = body.client_meta && body.client_meta.source_acceptance_observation;
+		if (!finality || finality.contract_version !== "source_acceptance_observation.v1"
+			|| finality.finality_source !== "risu_output") {
+			const alreadyPersisted = completed.some(item => item.chat_session_id === body.chat_session_id
+				&& item.assistant_content === body.assistant_content);
+			const inheritedBranchSource = body.chat_session_id === sessionIDFor(2)
+				&& body.user_input === "Parent user"
+				&& body.assistant_content === "Parent output";
+			assert(alreadyPersisted || inheritedBranchSource,
+				"non-output path tried to canonically persist a new fixture turn");
+			return response({
+				status: "rejected",
+				code: inheritedBranchSource ? "fixture_inherited_parent_not_child_turn" : "fixture_source_already_persisted",
+				queue_action: "discard",
+				retryable: false,
+				turn_index: body.turn_index,
+				fail_reasons: [],
+			});
+		}
+		const expectedSession = body.user_input.includes("A input") ? sessionIDFor(0)
+			: body.user_input.includes("B input") ? sessionIDFor(1)
+			: body.user_input.includes("Child input") ? sessionIDFor(2) : "";
+		assert(expectedSession, "unexpected complete-turn user content " + body.user_input);
+		assert(body.chat_session_id === expectedSession,
+			"cross-session complete-turn: expected " + expectedSession + " got " + body.chat_session_id);
+		const expectedChatIndex = fixtureChatIndexForSession(expectedSession);
+		assert(finality && finality.contract_version === "source_acceptance_observation.v1" && finality.finality_source === "risu_output",
+			"complete-turn was not owned by the official output callback");
+		assert(finality.host_signal_source === "output", "complete-turn did not retain the official output signal");
+		assert(finality.host_chat_id === chats[expectedChatIndex].id,
+			"complete-turn finality used the wrong host chat");
+		assert(finality.message_index === chats[expectedChatIndex].message.length - 1,
+			"complete-turn finality used the wrong committed message index");
+		const exactCommittedMessage = chats[expectedChatIndex].message[finality.message_index];
+		assert(exactCommittedMessage && exactCommittedMessage.generationInfo
+			&& finality.generation_id === exactCommittedMessage.generationInfo.generationId,
+			"complete-turn finality used the wrong generation");
+		assert([
+			"matched_committed_content",
+			"different_from_committed_content",
+			"not_observed_streaming_or_unexposed",
+		].includes(finality.after_request_candidate_state),
+			chats[expectedChatIndex].name + " carried an unknown afterRequest diagnostic state");
+		completeTurnAttempts.push(clone(body));
+		if (rejectNextCompleteTurn) {
+			rejectNextCompleteTurn = false;
+			return response({
+				status: "rejected",
+				code: "fixture_new_observation_required",
+				queue_action: "retry_after_new_observation",
+				retryable: true,
+				turn_index: body.turn_index,
+				fail_reasons: ["fixture_new_observation_required"],
+			});
+		}
+		completed.push(clone(body));
+		persistedLogs.set(logsKey(body.chat_session_id, body.turn_index), [
+			{ role: "user", content: body.user_input, turn_index: body.turn_index },
+        { role: "assistant", content: body.assistant_content, turn_index: body.turn_index },
+      ]);
+      return response({
+        status: "ok",
+        save_ok: true,
+        critic_triggered: true,
+        turn_index: body.turn_index,
+        chat_logs_saved: 2,
+        fail_reasons: [],
+      });
+    }
+
+    unexpected.push(method + " " + url.pathname + url.search);
+    throw new Error("unexpected backend route " + method + " " + url.pathname + url.search);
+  },
+};
+global.Risuai = Risuai;
+global.risuai = Risuai;
+
+(async function run() {
+  await eval(source);
+  assert(typeof callbacks.input === "function", "production input callback was not registered");
+  assert(typeof callbacks.beforeRequest === "function", "production beforeRequest callback was not registered");
+  assert(typeof callbacks.afterRequest === "function", "production afterRequest callback was not registered");
+  assert(typeof callbacks.output === "function", "production output callback was not registered");
+
+  const userA = { role: "user", data: "A input " + (++sequence), chatId: "user-a", time: 1000 + sequence };
+  chats[0].message.push(userA);
+  currentChatIndex = 0;
+  await callbacks.input(userA.data);
+  await callbacks.beforeRequest({ messages: [{ role: "user", content: userA.data }] }, "model");
+
+	// A and B are both outstanding before A's coordinate-free afterRequest fires.
+	// That native callback is intentionally ambiguous; the exact official output
+	// callback must still bind and persist A without consuming B's context.
+	const userB = { role: "user", data: "B input " + (++sequence), chatId: "user-b", time: 1000 + sequence };
+	chats[1].message.push(userB);
+	currentChatIndex = 1;
+	await callbacks.input(userB.data);
+	await callbacks.beforeRequest({ messages: [{ role: "user", content: userB.data }] }, "model");
+
+	const outputA = "A output " + (++sequence);
+	const returnedA = callbacks.afterRequest(outputA, "model");
+	assert(returnedA === outputA, "ambiguous A afterRequest changed the fixture output unexpectedly");
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 0, "ambiguous A afterRequest persisted before an exact output observation");
+
+  const assistantA = {
+    role: "char", data: outputA, chatId: "assistant-a", time: 1000 + sequence,
+    generationInfo: { generationId: "generation-a" },
+  };
+  chats[0].message.push(assistantA);
+  callbacks.output({
+    char: chars[0], chat: chats[0], characterIndex: 0, chatIndex: 0,
+    messageIndex: chats[0].message.length - 1,
+  });
+	await waitFor(() => completed.length === 1, "A complete-turn from the production output listener");
+	assert(completed[0].chat_session_id === sessionIDFor(0), "A final was not persisted to A");
+	assert(completed[0].assistant_content === outputA, "A final content was not the committed output");
+	assert(completed[0].client_meta.source_acceptance_observation.after_request_candidate_state
+		=== "not_observed_streaming_or_unexposed",
+		"ambiguous A afterRequest was not retained as a candidate-absence diagnostic");
+	assert(completed.filter(item => item.chat_session_id === sessionIDFor(1)).length === 0,
+		"A output consumed or persisted B's pending request");
+	callbacks.output({
+		char: chars[0], chat: chats[0], characterIndex: 0, chatIndex: 0,
+		messageIndex: chats[0].message.length - 1,
+	});
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 1, "duplicate A output scheduled another complete-turn");
+
+	const outputB = "B output " + (++sequence);
+	const mismatchedCandidateB = "B stale candidate " + (++sequence);
+	const returnedB = callbacks.afterRequest(mismatchedCandidateB, "model");
+	assert(returnedB === mismatchedCandidateB, "B afterRequest changed the fixture candidate unexpectedly");
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 1, "B afterRequest persisted before its exact output observation");
+	const assistantB = {
+    role: "char", data: outputB, chatId: "assistant-b", time: 1000 + sequence,
+    generationInfo: { generationId: "generation-b" },
+  };
+  chats[1].message.push(assistantB);
+	callbacks.output({
+    char: chars[0], chat: chats[1], characterIndex: 0, chatIndex: 1,
+		messageIndex: chats[1].message.length - 1,
+	});
+	await waitFor(() => completed.length === 2, "B complete-turn from the production output listener");
+	callbacks.output({
+		char: chars[0], chat: chats[1], characterIndex: 0, chatIndex: 1,
+		messageIndex: chats[1].message.length - 1,
+	});
+	await new Promise(resolve => setTimeout(resolve, 50));
+	assert(completed.length === 2, "B output callback scheduled a duplicate complete-turn");
+  assert(completed[1].chat_session_id === sessionIDFor(1), "B final was not persisted to B");
+  assert(completed[1].assistant_content === outputB, "B final content mismatch");
+	assert(completed[1].assistant_content !== mismatchedCandidateB,
+		"B candidate content substituted the exact official output");
+	assert(completed[1].client_meta.source_acceptance_observation.after_request_candidate_state
+		=== "different_from_committed_content",
+		"B candidate mismatch was not retained as a diagnostic");
+
+	// The official output callback may arrive before afterRequest.  A callback
+	// for the user anchor (or any stale/wrong slot) cannot confirm the turn, but
+	// the exact committed slot is itself authoritative and runs the same
+	// canonical persistence pipeline once.
+	const userA2 = { role: "user", data: "A input " + (++sequence), chatId: "user-a-2", time: 1000 + sequence };
+	chats[0].message.push(userA2);
+	currentChatIndex = 0;
+	await callbacks.input(userA2.data);
+	await callbacks.beforeRequest({ messages: [{ role: "user", content: userA2.data }] }, "model");
+	callbacks.output({
+		char: chars[0], chat: chats[0], characterIndex: 0, chatIndex: 0,
+		messageIndex: chats[0].message.length - 1,
+	});
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 2, "wrong output messageIndex persisted the A2 request");
+
+	const outputA2 = "A output " + (++sequence);
+	chats[0].message.push({
+		role: "char", data: outputA2, chatId: "assistant-a-2", time: 1000 + sequence,
+		generationInfo: { generationId: "generation-a-2" },
+	});
+	callbacks.output({
+		char: chars[0], chat: chats[0], characterIndex: 0, chatIndex: 0,
+		messageIndex: chats[0].message.length - 1,
+	});
+	await waitFor(() => completed.length === 3, "A2 output-first complete-turn");
+	assert(completed[2].chat_session_id === sessionIDFor(0), "A2 output-first final escaped A");
+	assert(completed[2].client_meta.source_acceptance_observation.after_request_candidate_state
+		=== "not_observed_streaming_or_unexposed",
+		"output-first A2 did not retain candidate absence as a diagnostic");
+	const returnedA2 = callbacks.afterRequest(outputA2, "model");
+	assert(returnedA2 === outputA2, "A2 afterRequest changed the fixture output unexpectedly");
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 3, "late A2 afterRequest scheduled another complete-turn");
+	callbacks.output({
+		char: chars[0], chat: chats[0], characterIndex: 0, chatIndex: 0,
+		messageIndex: chats[0].message.length - 1,
+	});
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 3, "duplicate A2 output scheduled another complete-turn");
+
+	// A first branch output must not persist until the backend has confirmed the
+	// branch lineage for the same frozen child session.  No-marker A/B requests
+	// above remain direct and unchanged.
+	const userChild = {
+		role: "user", data: "Child input " + (++sequence), chatId: "user-child", time: 1000 + sequence,
+	};
+	chats[2].message.push(userChild);
+	currentChatIndex = 2;
+	await callbacks.input(userChild.data);
+	await callbacks.beforeRequest({ messages: [{ role: "user", content: userChild.data }] }, "model");
+	const outputChild = "Child output " + (++sequence);
+	const returnedChild = callbacks.afterRequest(outputChild, "model");
+	assert(returnedChild === outputChild, "child afterRequest changed the fixture output unexpectedly");
+	chats[2].message.push({
+		role: "char", data: outputChild, chatId: "assistant-child", time: 1000 + sequence,
+		generationInfo: { generationId: "generation-child" },
+	});
+	holdNextOutputBranchRouting = true;
+	callbacks.output({
+		char: chars[0], chat: chats[2], characterIndex: 0, chatIndex: 2,
+		messageIndex: chats[2].message.length - 1,
+	});
+	await waitFor(() => typeof releaseOutputBranchRouting === "function", "held child output routing request");
+	assert(completed.length === 3, "child complete-turn ran before branch routing confirmation");
+	releaseOutputBranchRouting();
+	await waitFor(() => completed.length === 4, "child complete-turn after branch routing confirmation");
+	assert(completed[3].chat_session_id === sessionIDFor(2), "branch final was not persisted to the frozen child session");
+
+	// A backend source-acceptance rejection remains durably recorded for the
+	// existing retry-after-new-observation path.  Replaying the same output is
+	// not itself a new observation and must not submit a duplicate request.
+	const userB2 = { role: "user", data: "B input " + (++sequence), chatId: "user-b-2", time: 1000 + sequence };
+	chats[1].message.push(userB2);
+	currentChatIndex = 1;
+	await callbacks.input(userB2.data);
+	await callbacks.beforeRequest({ messages: [{ role: "user", content: userB2.data }] }, "model");
+	const outputB2 = "B output " + (++sequence);
+	callbacks.afterRequest(outputB2, "model");
+	chats[1].message.push({
+		role: "char", data: outputB2, chatId: "assistant-b-2", time: 1000 + sequence,
+		generationInfo: { generationId: "generation-b-2" },
+	});
+	rejectNextCompleteTurn = true;
+	const attemptsBeforeRejectedOutput = completeTurnAttempts.length;
+	callbacks.output({
+		char: chars[0], chat: chats[1], characterIndex: 0, chatIndex: 1,
+		messageIndex: chats[1].message.length - 1,
+	});
+	await waitFor(() => completeTurnAttempts.length === attemptsBeforeRejectedOutput + 1,
+		"backend-rejected B2 complete-turn attempt");
+	assert(completed.length === 4, "backend-rejected B2 was reported as durably saved");
+	await waitFor(
+		() => Array.from(storageValues.keys()).some(key => key.includes("pendingFinalConfirmation")),
+		"durable pending-final recovery state",
+	);
+	const pendingRecoveryStorageKey = Array.from(storageValues.keys())
+		.find(key => key.includes("pendingFinalConfirmation"));
+	const pendingRecoveryDocument = JSON.parse(storageValues.get(pendingRecoveryStorageKey));
+	assert(Array.isArray(pendingRecoveryDocument.items)
+		&& pendingRecoveryDocument.items.some(item => item
+			&& item.state === "pending"
+			&& item.payload
+			&& item.payload.chat_session_id === sessionIDFor(1)
+			&& item.payload.assistant_content === outputB2
+			&& item.reason === "fixture_new_observation_required"),
+		"backend rejection did not retain the exact B2 retry payload");
+	callbacks.output({
+		char: chars[0], chat: chats[1], characterIndex: 0, chatIndex: 1,
+		messageIndex: chats[1].message.length - 1,
+	});
+	await new Promise(resolve => setTimeout(resolve, 30));
+	assert(completeTurnAttempts.length === attemptsBeforeRejectedOutput + 1,
+		"duplicate rejected output bypassed retry-after-new-observation state");
+
+	assert(completed.every(item => fixtureChatIndexForSession(item.chat_session_id) >= 0),
+		"complete-turn escaped the captured fixture sessions");
+  assert(unexpected.length === 0, "unexpected boundary calls: " + JSON.stringify(unexpected));
+})().catch(error => {
+	console.error(error && error.stack || error);
+	console.error("completed=" + JSON.stringify(completed));
+	console.error("backendCalls=" + JSON.stringify(backendCalls));
+	if (unexpected.length) console.error("unexpected=" + JSON.stringify(unexpected));
+	process.exitCode = 1;
+});
+`
+	cmd := exec.Command(nodePath, "-", archivePath)
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("full Archive Center A/B lifecycle regression failed: %v\n%s", err, out)
 	}
 }
 

@@ -18876,6 +18876,7 @@
 
   function onRisuOutput(snapshot) {
     try {
+      recordRisuHookLifecycle("output", "callback_observed");
       const chat = snapshot && snapshot.chat && typeof snapshot.chat === "object" ? snapshot.chat : null;
       const messages = chat && Array.isArray(chat.message) ? chat.message : null;
       const characterIndex = Number.isInteger(snapshot && snapshot.characterIndex)
@@ -18889,20 +18890,68 @@
         : -1;
       const hostChatId = String(chat && chat.id || "").trim();
       if (!messages) return;
-
-      // Freeze the exact Host marker/source facts before dispatch. The output
-      // hook transports branch marker facts independently of turn save.
-      const worldlineObservation = buildRisuWorldlineObservationFromMessages(messages, Date.now(), "output");
-      if (!worldlineObservation) return;
-      _risuHookLifecycle.output = "callback_observed";
       if (characterIndex < 0 || chatIndex < 0 || messageIndex < 0 || !hostChatId) {
-        debugLog("[worldline] output callback missing branch observation coordinates");
+        debugLog("[output] callback missing committed-message coordinates");
         return;
       }
       const stableCharacterId = String(
         snapshot && snapshot.char && snapshot.char.chaId || ""
       ).trim();
       const requestedSessionId = "char_" + String(characterIndex) + "_cid_" + hostChatId;
+
+      // afterRequest exposes response text but no character/chat coordinates.
+      // The official output listener is therefore the first callback that can
+      // bind a committed assistant message to the exact frozen RisuAI chat.
+      // Reuse the request context captured by beforeRequest; Go still owns the
+      // canonical turn and persistence decision.
+      const matchingRequestContexts = Array.from(_finalConfirmationRequestBySession.values()).filter(function(requestContext) {
+        return !!requestContext
+          && (requestContext.state === "captured" || requestContext.state === "candidate_observed")
+          && Number(requestContext.characterIndex) === characterIndex
+          && Number(requestContext.chatIndex) === chatIndex
+          && String(requestContext.hostChatId || "") === hostChatId;
+      });
+      const worldlineObservation = buildRisuWorldlineObservationFromMessages(messages, Date.now(), "output");
+      if (matchingRequestContexts.length === 1) {
+        const requestContext = matchingRequestContexts[0];
+        const committedSessionId = String(requestContext.sessionId || "").trim();
+        Promise.resolve().then(async function confirmRoutingThenCommittedOutput() {
+          let routing = null;
+          if (worldlineObservation) {
+            routing = await requestBackendSessionRoutingTurnResolution(committedSessionId, "identity", {
+              stableCharacterId,
+              stableCharacterIdState: stableCharacterId ? "observed" : "unobserved",
+              hostChatId,
+              hostChatIdState: "observed",
+              worldlineObservation,
+            });
+            if (!routing || !routing.worldline || routing.worldline.state !== "confirmed") {
+              return {
+                accepted: false,
+                reason: String(
+                  routing && routing.worldline && routing.worldline.reason
+                  || routing && routing.status
+                  || "worldline_ownership_unresolved"
+                ),
+              };
+            }
+          }
+          const result = await observePendingFinalConfirmationAtHostSignal(committedSessionId, "output", snapshot);
+          if (result && result.accepted === true && result.observation && result.assistantContent) {
+            onAfterRequest(result.assistantContent, String(requestContext.requestType || "model"), result.observation);
+          }
+          return result;
+        }).then(function recordCommittedOutputObservation(result) {
+          debugLog("[output] committed assistant observation:", String(result && result.reason || "unknown"));
+        }).catch(function reportCommittedOutputObservationFailure(err) {
+          warnLog("onRisuOutput final confirmation failed:", err && err.message);
+        });
+        return;
+      }
+
+      // A branch marker still has to reach the backend even when no request is
+      // awaiting final-output persistence for this exact chat.
+      if (!worldlineObservation) return;
       Promise.resolve().then(function routeFrozenWorldlineObservation() {
         return requestBackendSessionRoutingTurnResolution(requestedSessionId, "identity", {
           stableCharacterId,
@@ -18926,19 +18975,14 @@
     const sid = String(sessionId || "").trim();
     const requestType = String(type || "model");
     if (!requestContext) return { observed: false, reason: "request_context_missing" };
-    if (requestContext.state === "accepted") {
-      return {
-        observed: false,
-        accepted: true,
-        duplicate: true,
-        reason: "already_accepted_after_request",
-        observation: requestContext.acceptedObservation || null,
-      };
-    }
     if (requestContext.state === "superseded" || requestContext.state === "terminal") {
       return { observed: false, reason: "request_superseded_or_terminal" };
     }
-    if (requestContext.state !== "captured" && requestContext.state !== "candidate_observed") {
+    if (
+      requestContext.state !== "captured"
+      && requestContext.state !== "candidate_observed"
+      && requestContext.state !== "accepted"
+    ) {
       return { observed: false, reason: "request_context_not_captured" };
     }
     const correlationId = String(requestContext.requestId || "").trim();
@@ -18960,83 +19004,36 @@
     }
     const finalHash = computeOrchestrationDirtyHashOr1c(finalContent);
     const observedAtMs = Date.now();
-    const observation = {
-      accepted: true,
-      contract_version: "source_acceptance_observation.v3",
-      host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1",
-      observed_at_ms: observedAtMs,
-      session_id: sid,
-      finality_source: "risu_afterRequest",
-      finality_state: "received_final_response",
-      host_signal_source: "afterRequest",
-      archive_center_request_correlation_id: correlationId,
-      request_id_provenance: "archive_center_correlation",
-      request_correlation_state: "matched_before_request_context",
-      request_type: requestType,
-      response_role: "assistant",
-      after_request_content_hash: finalHash,
-      after_request_candidate_state: "accepted_from_official_callback",
-      host_chat_id: String(requestContext.hostChatId || ""),
-      host_chat_id_state: requestContext.hostChatId ? "observed_before_request" : "unobserved",
-      chat_streaming_state: "not_exposed_by_risu_afterRequest",
-      active_message_count: 0,
-      request_message_count: Number(requestContext.requestMessageCount || 0),
-      message_index: -1,
-      message_role: "",
-      message_chat_id: "",
-      message_chat_id_state: "not_exposed_by_risu_afterRequest",
-      generation_id: "",
-      generation_id_state: "not_exposed_by_risu_afterRequest",
-      branch_id: "",
-      branch_id_state: "not_exposed_by_risuai",
-      message_swipe_id: -1,
-      message_swipe_id_state: "unobserved",
-      message_time_ms: 0,
-      message_time_state: "not_exposed_by_risu_afterRequest",
-      user_message_index: Number.isInteger(requestContext.userMessageIndex)
-        ? requestContext.userMessageIndex
-        : -1,
-      user_observed_pair_ordinal: Math.max(0, Math.floor(Number(requestContext.userObservedPairOrdinal || 0))),
-      user_message_chat_id: String(requestContext.userMessageChatId || ""),
-      user_message_chat_id_state: requestContext.userMessageChatId ? "observed_before_request" : "unobserved",
-      user_message_time_ms: Number(requestContext.userMessageTimeMs || 0),
-      user_message_time_state: requestContext.userMessageTimeMs > 0 ? "observed_before_request" : "unobserved",
-      user_observed_content_hash: String(requestContext.userObservedContentHash || ""),
-      user_content: String(requestContext.userObservedContent || ""),
-      user_persistence_content_hash: String(requestContext.userObservedContentHash || ""),
-      observed_content_hash: finalHash,
-      persistence_content_hash: finalHash,
-      hash_algorithm: "or1c_utf16_djb2.v1",
-      position_observation: "not_exposed_by_risu_afterRequest",
-      later_active_turn_message_count: 0,
-      later_disabled_turn_message_count: 0,
-      later_non_turn_message_count: 0,
-      next_signal_active_role: "",
-      next_signal_user_index: -1,
-      next_signal_user_observed_content_hash: "",
-      message_disabled_state: "not_exposed_by_risu_afterRequest",
-      revision_state: "not_exposed_by_risuai",
-      prompt_memory_availability: "same_turn",
-    };
-    const observationKey = [
-      observation.finality_source,
-      correlationId,
-      finalHash,
-    ].join("|");
-    observation.observationKey = observationKey;
-    requestContext.state = "accepted";
+    if (requestContext.state === "accepted") {
+      const acceptedObservation = requestContext.acceptedObservation
+        && typeof requestContext.acceptedObservation === "object"
+        ? requestContext.acceptedObservation
+        : null;
+      if (!acceptedObservation || String(acceptedObservation.observed_content_hash || "") !== finalHash) {
+        return { observed: false, reason: "after_request_committed_content_mismatch" };
+      }
+      return {
+        observed: true,
+        accepted: true,
+        readyForPersistence: true,
+        reason: "committed_output_authoritative_persistence",
+        finalContent,
+        finalHash,
+        observation: acceptedObservation,
+      };
+    }
+    const duplicate = requestContext.state === "candidate_observed"
+      && String(requestContext.afterRequestCandidateHash || "") === finalHash;
+    requestContext.state = "candidate_observed";
     requestContext.afterRequestCandidateHash = finalHash;
     requestContext.afterRequestCandidateObservedAtMs = observedAtMs;
-    requestContext.acceptedObservationKey = observationKey;
-    requestContext.acceptedObservation = observation;
     return {
-      observed: true,
-      accepted: true,
-      reason: "after_request_final_accepted",
+      observed: !duplicate,
+      candidate: true,
+      duplicate,
+      reason: duplicate ? "after_request_candidate_already_observed" : "after_request_candidate_observed",
       finalContent,
       finalHash,
-      observation,
-      observationKey,
     };
   }
 
@@ -19047,7 +19044,12 @@
     const requestContext = _finalConfirmationRequestBySession.get(sid) || null;
     if (!requestContext) return Promise.resolve({ accepted: false, reason: "request_context_missing" });
     if (requestContext.state === "accepted") {
-      return Promise.resolve({ accepted: true, duplicate: true, reason: "host_final_already_scheduled" });
+      return Promise.resolve({
+        accepted: true,
+        duplicate: true,
+        reason: "host_final_already_observed",
+        observation: requestContext.acceptedObservation || null,
+      });
     }
     if (requestContext.hostSignalObservationPromise) return requestContext.hostSignalObservationPromise;
     if (requestContext.state !== "captured" && requestContext.state !== "candidate_observed") {
@@ -19066,6 +19068,10 @@
         const snapshotChatIndex = Number.isInteger(hostSnapshot && hostSnapshot.chatIndex)
           ? hostSnapshot.chatIndex
           : null;
+        const officialOutputObservation = String(signalSource || "") === "output" && !!snapshotChat;
+        const snapshotMessageIndex = Number.isInteger(hostSnapshot && hostSnapshot.messageIndex)
+          ? hostSnapshot.messageIndex
+          : -1;
         if (!snapshotChat && (!R || typeof R.getChatFromIndex !== "function")) {
           requestContext.state = priorState;
           return { accepted: false, reason: "active_chat_api_not_exposed" };
@@ -19108,30 +19114,66 @@
           requestContext.state = "terminal";
           return { accepted: false, reason: "user_anchor_changed_or_deleted" };
         }
-        let messageIndex = -1;
-        for (let index = userIndex + 1; index < messages.length; index++) {
-          const message = messages[index];
-          if (!message || message.disabled === true) continue;
-          if (message.role === "user") break;
-          if (message.role !== "char" || typeof message.data !== "string") continue;
-          const observedHash = computeOrchestrationDirtyHashOr1c(
-            normalizeAssistantPersistenceCandidate(message.data)
-          );
-          const generationId = message.generationInfo
-            && typeof message.generationInfo.generationId === "string"
-            ? message.generationInfo.generationId.trim()
+        let messageIndex = officialOutputObservation ? snapshotMessageIndex : -1;
+        if (officialOutputObservation) {
+          if (messageIndex <= userIndex || messageIndex >= messages.length) {
+            requestContext.state = priorState;
+            return { accepted: false, reason: "output_message_index_outside_request" };
+          }
+          for (let index = userIndex + 1; index < messageIndex; index++) {
+            const intervening = messages[index];
+            if (intervening && intervening.role === "user" && intervening.disabled !== true) {
+              requestContext.state = priorState;
+              return { accepted: false, reason: "output_message_after_different_user_anchor" };
+            }
+          }
+          const exactMessage = messages[messageIndex];
+          const observedHash = exactMessage && typeof exactMessage.data === "string"
+            ? computeOrchestrationDirtyHashOr1c(normalizeAssistantPersistenceCandidate(exactMessage.data))
             : "";
-          const messageTimeMs = typeof message.time === "number" && Number.isFinite(message.time)
-            ? Math.trunc(message.time)
+          const generationId = exactMessage
+            && exactMessage.generationInfo
+            && typeof exactMessage.generationInfo.generationId === "string"
+            ? exactMessage.generationInfo.generationId.trim()
+            : "";
+          const messageTimeMs = exactMessage && typeof exactMessage.time === "number" && Number.isFinite(exactMessage.time)
+            ? Math.trunc(exactMessage.time)
             : 0;
-          const replacesBaseline = index === Number(requestContext.baselineAssistantIndex)
+          const replacesBaseline = messageIndex === Number(requestContext.baselineAssistantIndex)
             && (
               observedHash !== String(requestContext.baselineAssistantContentHash || "")
               || (!!generationId && generationId !== String(requestContext.baselineGenerationId || ""))
               || (messageTimeMs > 0 && messageTimeMs !== Number(requestContext.baselineAssistantTimeMs || 0))
             );
-          if (index >= Number(requestContext.requestMessageCount || 0) || replacesBaseline) {
-            messageIndex = index;
+          if (messageIndex < Number(requestContext.requestMessageCount || 0) && !replacesBaseline) {
+            requestContext.state = priorState;
+            return { accepted: false, reason: "output_message_predates_request" };
+          }
+        } else {
+          for (let index = userIndex + 1; index < messages.length; index++) {
+            const message = messages[index];
+            if (!message || message.disabled === true) continue;
+            if (message.role === "user") break;
+            if (message.role !== "char" || typeof message.data !== "string") continue;
+            const observedHash = computeOrchestrationDirtyHashOr1c(
+              normalizeAssistantPersistenceCandidate(message.data)
+            );
+            const generationId = message.generationInfo
+              && typeof message.generationInfo.generationId === "string"
+              ? message.generationInfo.generationId.trim()
+              : "";
+            const messageTimeMs = typeof message.time === "number" && Number.isFinite(message.time)
+              ? Math.trunc(message.time)
+              : 0;
+            const replacesBaseline = index === Number(requestContext.baselineAssistantIndex)
+              && (
+                observedHash !== String(requestContext.baselineAssistantContentHash || "")
+                || (!!generationId && generationId !== String(requestContext.baselineGenerationId || ""))
+                || (messageTimeMs > 0 && messageTimeMs !== Number(requestContext.baselineAssistantTimeMs || 0))
+              );
+            if (index >= Number(requestContext.requestMessageCount || 0) || replacesBaseline) {
+              messageIndex = index;
+            }
           }
         }
         if (messageIndex < 0) {
@@ -19140,9 +19182,9 @@
         }
         const message = messages[messageIndex];
         const assistantContent = normalizeAssistantPersistenceCandidate(String(message.data || ""));
-        if (!assistantContent || message.disabled === true) {
-          requestContext.state = "terminal";
-          return { accepted: false, reason: "committed_assistant_empty_or_disabled" };
+        if (!assistantContent || message.role !== "char" || message.disabled === true) {
+          requestContext.state = officialOutputObservation ? priorState : "terminal";
+          return { accepted: false, reason: "committed_assistant_invalid_or_disabled" };
         }
         let laterActiveTurnMessageCount = 0;
         let laterDisabledTurnMessageCount = 0;
@@ -19176,13 +19218,24 @@
           ? Math.trunc(message.time)
           : 0;
         const observedContentHash = computeOrchestrationDirtyHashOr1c(assistantContent);
+        const positionObservation = officialOutputObservation
+          ? (messageIndex === messages.length - 1
+            ? "current_active_chat_tail"
+            : laterActiveTurnMessageCount === 0
+              ? "current_active_assistant_tail"
+              : "current_active_chat_message")
+          : "committed_before_next_host_signal";
         const observation = {
           accepted: true,
-          contract_version: "source_acceptance_observation.v2",
+          contract_version: officialOutputObservation
+            ? "source_acceptance_observation.v1"
+            : "source_acceptance_observation.v2",
           host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1",
           observed_at_ms: Date.now(),
           session_id: sid,
-          finality_source: "risu_next_host_signal_active_chat",
+          finality_source: officialOutputObservation
+            ? "risu_output"
+            : "risu_next_host_signal_active_chat",
           finality_state: "committed_assistant_observed",
           host_signal_source: String(signalSource || "beforeRequest"),
           archive_center_request_correlation_id: String(requestContext.requestId || ""),
@@ -19214,6 +19267,7 @@
           message_time_state: messageTimeMs > 0 ? "observed" : "unobserved",
           request_message_count: Number(requestContext.requestMessageCount || 0),
           user_message_index: userIndex,
+          user_observed_pair_ordinal: Number(requestContext.userObservedPairOrdinal || 0),
           user_message_chat_id: String(requestContext.userMessageChatId || ""),
           user_message_chat_id_state: requestContext.userMessageChatId ? "observed_before_request" : "unobserved",
           user_message_time_ms: Number(requestContext.userMessageTimeMs || 0),
@@ -19223,7 +19277,7 @@
           observed_content_hash: observedContentHash,
           persistence_content_hash: observedContentHash,
           hash_algorithm: "or1c_utf16_djb2.v1",
-          position_observation: "committed_before_next_host_signal",
+          position_observation: positionObservation,
           later_active_turn_message_count: laterActiveTurnMessageCount,
           later_disabled_turn_message_count: laterDisabledTurnMessageCount,
           later_non_turn_message_count: laterNonTurnMessageCount,
@@ -19232,7 +19286,8 @@
           next_signal_user_observed_content_hash: nextSignalUserObservedContentHash,
           message_disabled_state: "not_disabled",
           revision_state: "not_exposed_by_risuai",
-          prompt_memory_availability: "one_turn_late",
+          prompt_memory_availability: officialOutputObservation ? "same_turn" : "one_turn_late",
+          user_content: userContent,
         };
         const observationKey = [
           observation.finality_source,
@@ -19243,6 +19298,33 @@
         ].join("|");
         requestContext.state = "accepted";
         requestContext.acceptedObservationKey = observationKey;
+        requestContext.acceptedObservation = observation;
+        if (officialOutputObservation) {
+          const candidateMatched = !!requestContext.afterRequestCandidateHash
+            && requestContext.afterRequestCandidateHash === observedContentHash;
+          updateRuntimeState("lastStreamingAfterRequest", "ok", {
+            detail: candidateMatched
+              ? "committed assistant matched afterRequest candidate"
+              : "committed assistant observed; waiting for afterRequest candidate",
+            reason_code: candidateMatched
+              ? "committed_output_candidate_matched"
+              : "committed_output_waiting_for_after_request",
+            sessionId: sid,
+            signalSource: "output",
+            promptMemoryAvailability: candidateMatched ? "same_turn" : "pending_current_turn",
+          });
+          return {
+            accepted: true,
+            scheduled: false,
+            readyForPersistence: candidateMatched,
+            reason: candidateMatched
+              ? "committed_output_candidate_matched"
+              : "committed_output_waiting_for_after_request",
+            observation,
+            observationKey,
+            assistantContent,
+          };
+        }
         const comparable = extractActiveChatComparableMessages(chat);
         const pair = {
           userContent,
@@ -19291,6 +19373,20 @@
           }
           if (durable && lastOrchResult === pendingOrchResult) {
             lastOrchResult = null;
+          }
+          if (durable) {
+            const anotherPendingFinal = Array.from(_finalConfirmationRequestBySession.values()).some(function(candidate) {
+              return candidate !== requestContext
+                && !!candidate
+                && (
+                  candidate.state === "captured"
+                  || candidate.state === "candidate_observed"
+                  || candidate.state === "observing_host_signal"
+                );
+            });
+            if (!anotherPendingFinal) {
+              _effectiveInputAwaitingNewTurn = false;
+            }
           }
           updateRuntimeState("lastStreamingAfterRequest", durable ? "ok" : "warn", {
             detail: "host final persistence " + String(result && result.status || "unknown"),
@@ -28058,6 +28154,11 @@
       && sourceAcceptanceFinality.host_lifecycle_contract_version === "risu_host_lifecycle_observation.v1"
       && (
         (
+          sourceAcceptanceFinality.contract_version === "source_acceptance_observation.v1"
+          && sourceAcceptanceFinality.finality_source === "risu_output"
+          && sourceAcceptanceFinality.host_signal_source === "output"
+        )
+        || (
           sourceAcceptanceFinality.contract_version === "source_acceptance_observation.v2"
           && sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
         )
@@ -33319,15 +33420,46 @@
 
   function onAfterRequest(content, type) {
     try {
-      recordRisuHookLifecycle("afterRequest", "callback_observed");
+      const committedOutputFinality = arguments.length > 2 && arguments[2] && typeof arguments[2] === "object"
+        ? arguments[2]
+        : null;
+      if (!committedOutputFinality) {
+        recordRisuHookLifecycle("afterRequest", "callback_observed");
+      }
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
       const requestType = String(type || "model");
-      const matchingRequestContexts = Array.from(_finalConfirmationRequestBySession.values()).filter(function(requestContext) {
-        return !!requestContext
-          && (requestContext.state === "captured" || requestContext.state === "candidate_observed")
-          && String(requestContext.requestType || "model") === requestType;
-      });
+      const incomingAfterRequestContent = typeof content === "string"
+        ? normalizeAssistantPersistenceCandidate(sanitizeNarrativeOutputForDisplay(content))
+        : "";
+      const incomingAfterRequestHash = incomingAfterRequestContent
+        ? computeOrchestrationDirtyHashOr1c(incomingAfterRequestContent)
+        : "";
+      const committedSessionId = String(committedOutputFinality && committedOutputFinality.session_id || "").trim();
+      const committedRequestContext = committedSessionId
+        ? (_finalConfirmationRequestBySession.get(committedSessionId) || null)
+        : null;
+      const matchingRequestContexts = committedOutputFinality
+        ? (
+          committedRequestContext
+          && committedRequestContext.state === "accepted"
+          && String(committedRequestContext.requestType || "model") === requestType
+          && String(committedRequestContext.requestId || "") === String(committedOutputFinality.archive_center_request_correlation_id || "")
+            ? [committedRequestContext]
+            : []
+        )
+        : Array.from(_finalConfirmationRequestBySession.values()).filter(function(requestContext) {
+          if (!requestContext || String(requestContext.requestType || "model") !== requestType) return false;
+          if (requestContext.state === "captured" || requestContext.state === "candidate_observed") return true;
+          const observation = requestContext.state === "accepted"
+            && requestContext.acceptedObservation
+            && typeof requestContext.acceptedObservation === "object"
+            ? requestContext.acceptedObservation
+            : null;
+          return !!observation
+            && !!incomingAfterRequestHash
+            && String(observation.observed_content_hash || "") === incomingAfterRequestHash;
+        });
       const selectedRequestContext = matchingRequestContexts.length === 1
         ? matchingRequestContexts[0]
         : null;
@@ -33457,44 +33589,45 @@
           requestContext,
           finalContent
         );
-        if (finalObservation.accepted === true && finalObservation.duplicate === true) {
+        if (finalObservation.readyForPersistence === true && finalObservation.observation) {
+          requestContext.state = "terminal";
           updateRuntimeState("lastStreamingAfterRequest", "ok", {
-            detail: "duplicate official afterRequest ignored",
-            reason_code: String(finalObservation.reason || "already_accepted_after_request"),
+            detail: "committed output accepted; persistence scheduled",
+            reason_code: String(finalObservation.reason || "committed_output_candidate_matched"),
             sessionId: chatSessionId,
             requestType: String(type || "model"),
             promptMemoryAvailability: "same_turn",
           });
+          Promise.resolve().then(function persistCommittedOutputThroughCanonicalPipeline() {
+            return continueAcceptedFinalPersistence(persistenceOrchResult, finalObservation.observation);
+          }).catch(function(err) {
+            warnLog("committed output persistence failed:", err && err.message);
+            updateRuntimeState("lastError", "error", {
+              detail: "committed output persistence: " + String(err && err.message || "unknown"),
+            });
+          });
           return responseReturnContent;
         }
-        const sourceAcceptanceFinality = finalObservation.accepted === true
-          ? finalObservation.observation
-          : null;
-        updateRuntimeState("lastStreamingAfterRequest", "ok", {
-          detail: "afterRequest content accepted; persistence scheduled",
-          reason_code: "after_request_content_accepted",
+        updateRuntimeState("lastStreamingAfterRequest", finalObservation.candidate === true ? "watching" : "warn", {
+          detail: finalObservation.candidate === true
+            ? "afterRequest candidate observed; waiting for committed output"
+            : "afterRequest candidate unavailable; waiting for committed output",
+          reason_code: String(finalObservation.reason || "after_request_candidate_unavailable"),
           sessionId: chatSessionId,
           requestType: String(type || "model"),
-          promptMemoryAvailability: "same_turn",
-        });
-        Promise.resolve().then(function persistAfterRequestContent() {
-          return continueAcceptedFinalPersistence(persistenceOrchResult, sourceAcceptanceFinality);
-        }).catch(function(err) {
-          warnLog("afterRequest persistence failed:", err && err.message);
-          updateRuntimeState("lastError", "error", {
-            detail: "afterRequest persistence: " + String(err && err.message || "unknown"),
-          });
+          promptMemoryAvailability: "pending_current_turn",
         });
         return responseReturnContent;
       }
-      return continueAcceptedFinalPersistence(persistenceOrchResult, null);
+      return responseReturnContent;
 
       async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
         const hostFinalityAccepted = !!(
           sourceAcceptanceFinality
           && sourceAcceptanceFinality.accepted === true
           && (
-            sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
+            sourceAcceptanceFinality.finality_source === "risu_output"
+            || sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
             || sourceAcceptanceFinality.finality_source === "risu_afterRequest"
           )
         );
@@ -34680,7 +34813,13 @@
         logTurnTraceSummary();
       }
 
-      _effectiveInputAwaitingNewTurn = false;
+      const committedOutputDurable = !!(
+        (_ctOk && _ctResult && _ctResult.save_ok === true)
+        || completeTurnRetryQueued
+      );
+      if (!hostFinalityAccepted || committedOutputDurable) {
+        clearEffectiveInputAwaitingForRequest();
+      }
 
       lastOrchResult = null;
 
@@ -34701,7 +34840,9 @@
       return responseReturnContent;
       }
     } catch (err) {
-      _effectiveInputAwaitingNewTurn = false;
+      if (!committedOutputFinality) {
+        _effectiveInputAwaitingNewTurn = false;
+      }
       warnLog("onAfterRequest error:", err.message);
       updateRuntimeState("lastError", "error", { detail: "afterRequest: " + err.message });
       return content;

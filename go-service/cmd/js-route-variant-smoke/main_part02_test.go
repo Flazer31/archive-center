@@ -978,99 +978,6 @@ func TestArchiveCenterJSImmediateUpdateUsesOneServerAuthoritativeApplyCall(t *te
 	}
 }
 
-func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"const _pendingFinalConfirmations = new Map();",
-		"const _risuHookLifecycle = {",
-		"async function captureFinalConfirmationRequestContext(sessionId, type, requestId, hostContext = null)",
-		"function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent)",
-		"function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource, hostSnapshot = null)",
-		"async function drainPendingFinalConfirmations(signalSource)",
-		`contract_version: "source_acceptance_observation.v3"`,
-		`finality_source: "risu_afterRequest"`,
-		`finality_state: "received_final_response"`,
-		`host_signal_source: "afterRequest"`,
-		`prompt_memory_availability: "same_turn"`,
-		"function persistAfterRequestContent()",
-		`contract_version: "source_acceptance_observation.v2"`,
-		`host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1"`,
-		`finality_source: "risu_next_host_signal_active_chat"`,
-		`finality_state: "committed_assistant_observed"`,
-		`position_observation: "committed_before_next_host_signal"`,
-		`next_signal_user_observed_content_hash: nextSignalUserObservedContentHash`,
-		`request_id_provenance: "archive_center_correlation"`,
-		"persistAcceptedHostFinalWithoutBlockingRequest",
-		`prompt_memory_availability: "one_turn_late"`,
-		`recordRisuHookLifecycle("input", "callback_observed");`,
-		`recordRisuHookLifecycle("beforeRequest", "callback_observed");`,
-		`recordRisuHookLifecycle("afterRequest", "callback_observed");`,
-		`recordRisuHookLifecycle("beforeRequest", "registration_requested_unconfirmed");`,
-		"requested (host acceptance unconfirmed)",
-		"return responseReturnContent;",
-		"_pendingFinalConfirmationDrainRequested = true",
-		"pending.requestContext !== observation.requestContext",
-		"await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);",
-		"ensureActiveChatCompletedTurnsBackfilled(orchSessionId",
-		"async function removeRegisteredRisuHooksOnUnload()",
-		`await R.removeRisuScriptHandler("input", onInputHook);`,
-		`await R.removeRisuReplacer("beforeRequest", onBeforeRequest);`,
-		`await R.removeRisuReplacer("afterRequest", onAfterRequest);`,
-		"await R.onUnload(removeRegisteredRisuHooksOnUnload);",
-		`host_lifecycle_observation: String(observed.hostLifecycleObservation || "")`,
-		"Streaming Hook",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing event-driven final confirmation marker %q", needle)
-		}
-	}
-	for _, forbidden := range []string{
-		"STREAMING_AFTER_REQUEST_START_DELAY_MS",
-		"STREAMING_AFTER_REQUEST_POLL_INTERVAL_MS",
-		"STREAMING_AFTER_REQUEST_STABLE_POLLS",
-		"STREAMING_AFTER_REQUEST_OBSERVED_STREAM_QUIET_MS",
-		"STREAMING_AFTER_REQUEST_TIMEOUT_MS",
-		"STREAMING_AFTER_REQUEST_RECENT_RECOVERY_GRACE_MS",
-		"ROLLBACK_PROMOTED_ASSISTANT_SYNC_GRACE_MS",
-		"assessPromotedAssistantSyncRollbackGuard",
-		"pending_active_chat_confirmation",
-		"_streamingAfterRequestSyntheticCallDepth",
-		"pollStreamingAfterRequestWatch",
-		"armStreamingAfterRequestWatch",
-		"synthetic_after_request",
-		"characterData: true",
-		`kind: "host_candidate"`,
-		"async function observePendingFinalConfirmation(",
-		"onDisplayFinalitySignal",
-		`addRisuScriptHandler("display"`,
-		`drainPendingFinalConfirmations("native_afterRequest")`,
-		`drainPendingFinalConfirmations("risu_display")`,
-		"waiting for RisuAI active assistant tail",
-		"registerFinalConfirmationObserver",
-		"acceptRisuAfterRequestFinality",
-		"persistAcceptedAfterRequestWithoutBlockingDisplay",
-		"acceptRisuOutputFinal",
-		"persistOfficialRisuOutputWithoutBlockingHost",
-	} {
-		if strings.Contains(src, forbidden) {
-			t.Fatalf("Archive Center.js retains forbidden timer/synthetic finality marker %q", forbidden)
-		}
-	}
-	onBeforeRequestAt := strings.Index(src, "async function onBeforeRequest")
-	if onBeforeRequestAt < 0 {
-		t.Fatal("Archive Center.js missing onBeforeRequest")
-	}
-	onBeforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
-	captureAt := strings.Index(onBeforeRequest, "await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);")
-	if captureAt < 0 {
-		t.Fatal("RisuAI request coordinates are not captured at beforeRequest")
-	}
-	if strings.Contains(onBeforeRequest, "await checkAndAutoRollback(") {
-		t.Fatal("beforeRequest must not restore the removed counter/snapshot rollback heuristic")
-	}
-}
-
 func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	inputHook := extractArchiveCenterJSAsyncFunction(t, src, "onInputHook")
@@ -1100,44 +1007,6 @@ func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t 
 	}
 }
 
-func TestArchiveCenterJSAfterRequestStartsPersistenceWithoutBlockingVisibleOutput(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	afterRequest := extractArchiveCenterJSFunction(t, src, "onAfterRequest")
-	acceptAt := strings.Index(afterRequest, "const finalObservation = acceptRisuAfterRequestFinal(")
-	scheduleAt := strings.Index(afterRequest, "Promise.resolve().then(function persistAfterRequestContent()")
-	returnRelativeAt := -1
-	if scheduleAt >= 0 {
-		returnRelativeAt = strings.Index(afterRequest[scheduleAt:], "return responseReturnContent;")
-	}
-	if acceptAt < 0 || scheduleAt < 0 || returnRelativeAt < 0 {
-		t.Fatal("afterRequest final acceptance, persistence scheduling, or response return is missing")
-	}
-	returnAt := scheduleAt + returnRelativeAt
-	if !(acceptAt < scheduleAt && scheduleAt < returnAt) {
-		t.Fatal("afterRequest must accept the final response, schedule persistence, and return in order")
-	}
-	if strings.Contains(src, "async function onAfterRequest") {
-		t.Fatal("afterRequest remains async and can withhold the replacement response")
-	}
-	if strings.Contains(afterRequest[:returnAt], "await ") {
-		t.Fatal("afterRequest performs awaited work before returning the visible response")
-	}
-	if strings.Contains(afterRequest[:returnAt], "resolveAfterRequestWriteSessionId") {
-		t.Fatal("afterRequest performs session routing before returning the visible response")
-	}
-	if strings.Count(afterRequest, "function persistAfterRequestContent()") != 1 {
-		t.Fatal("afterRequest persistence schedule must have exactly one entry point")
-	}
-	for _, forbidden := range []string{"acceptRisuOutputFinal(", "persistOfficialRisuOutputWithoutBlockingHost"} {
-		if strings.Contains(src, forbidden) {
-			t.Fatalf("output listener must not own complete-turn finality: %q", forbidden)
-		}
-	}
-	if strings.Contains(afterRequest, "awaiting_risu_committed_output") {
-		t.Fatal("afterRequest still waits for the optional output callback before persistence")
-	}
-}
-
 func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -1151,7 +1020,6 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 	for _, required := range []string{
 		`addRisuChatListener("output", onRisuOutput)`,
 		`removeRisuChatListener("output", onRisuOutput)`,
-		`_risuHookLifecycle.output = "callback_observed"`,
 	} {
 		if !strings.Contains(src, required) {
 			t.Fatalf("Archive Center.js missing output worldline owner %q", required)
@@ -1164,9 +1032,7 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 		"sourceAcceptanceFinality",
 		"_committedOutputPersistenceBySession",
 		"continueAcceptedFinalPersistence(",
-		"observePendingFinalConfirmationAtHostSignal(",
 		"ensureActiveChatCompletedTurnsBackfilled(",
-		"recordRisuHookLifecycle(",
 		"updateRuntimeState(",
 	} {
 		if strings.Contains(callback, forbidden) {
@@ -1183,6 +1049,8 @@ let sharedFinalityStatus = "preserved";
 let finalPersistenceCalls = 0;
 let rejectRouting = false;
 const _risuHookLifecycle = {output: "registration_requested_unconfirmed"};
+const _finalConfirmationRequestBySession = new Map();
+function recordRisuHookLifecycle(name, state) { _risuHookLifecycle[name] = state; }
 function observePendingFinalConfirmationAtHostSignal(){ finalPersistenceCalls++; return Promise.resolve({accepted:false}); }
 function debugLog() {}
 function warnLog() {}
@@ -1200,7 +1068,7 @@ const ordinary = onRisuOutput({
 assert(ordinary === undefined, "output callback must return immediately, not a Promise");
 assert(sharedFinalityStatus === "preserved", "ordinary output changed shared finality status");
 assert(finalPersistenceCalls === 0, "ordinary output callback attempted final persistence");
-assert(_risuHookLifecycle.output === "registration_requested_unconfirmed", "ordinary output claimed branch callback evidence");
+assert(_risuHookLifecycle.output === "callback_observed", "ordinary output callback evidence was not recorded");
 const incompleteBranch = onRisuOutput({
   characterIndex: -1, chatIndex: -1, messageIndex: -1,
   chat: {id: "", message: [
