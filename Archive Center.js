@@ -1201,6 +1201,15 @@
       "timeline.worldline.forkTurn": "분기 턴",
       "timeline.worldline.reason": "상태 사유",
       "timeline.worldline.detail": "분기 계보",
+      "timeline.worldline.candidateParent": "확인된 부모 후보",
+      "timeline.worldline.candidateTurn": "분기 턴 선택",
+      "timeline.worldline.repair": "분기 계보 복구",
+      "timeline.worldline.repairConfirm": "자식 자료를 복사하거나 삭제하지 않고 부모와 분기점 연결만 복구합니다.\n\n부모: {parent}\n분기 턴: {turn}\n\n계속하시겠습니까?",
+      "timeline.worldline.repairing": "분기 계보 복구 중...",
+      "timeline.worldline.repairSuccess": "분기 계보를 복구했습니다.",
+      "timeline.worldline.repairFailed": "분기 계보 복구 실패: {reason}",
+      "timeline.worldline.reason.parent_fork_source_history_unresolved": "부모 세션의 기존 기록에서도 분기 원본 턴을 찾지 못했습니다.",
+      "timeline.worldline.reason.parent_fork_source_history_ambiguous": "같은 분기 표식과 일치하는 부모 턴이 여러 개입니다.",
       "timeline.worldline.state.confirmed": "확인됨",
       "timeline.worldline.state.unresolved": "확인 필요",
       "timeline.worldline.state.conflict": "충돌",
@@ -1243,6 +1252,9 @@
       "timeline.migration.reason.target_chroma_vectors_not_empty": "대상 세션에 이미 ChromaDB 벡터가 있습니다. 빈 새 채팅으로 이동하세요.",
       "timeline.migration.reason.target_session_id_required": "대상 세션 ID가 없습니다.",
       "timeline.migration.reason.target_session_not_empty": "대상 세션에 이미 DB 기록이 있습니다. 완전 이전에는 빈 새 채팅이 필요합니다.",
+      "timeline.migration.reason.target_reference_bindings_not_empty": "대상 세션에 원작·로어북 참조 바인딩이 있습니다.",
+      "timeline.migration.reason.target_background_jobs_not_empty": "대상 세션에 진행 중이거나 대기 중인 기억 작업이 있습니다.",
+      "timeline.migration.reason.session_migration_store_unavailable": "전체 대상 자료를 검사할 MariaDB 이전 저장소를 사용할 수 없습니다.",
       "timeline.migration.reason.unsupported_mode": "지원하지 않는 이전 모드입니다.",
       "timeline.migration.rollbackConfirm": "최근 세션 이전을 롤백합니다.\n\n이전: {id}\n원본: {source}\n대상: {target}\n\nrow_map에 기록된 복사 대상 행과 일치하는 ChromaDB 벡터만 삭제합니다.\n원본 잠금은 해제됩니다.\n\n계속하시겠습니까?",
       "timeline.migration.rollbackRunning": "세션 이전 롤백 중...",
@@ -1568,6 +1580,15 @@
       "timeline.worldline.forkTurn": "Fork turn",
       "timeline.worldline.reason": "Status reason",
       "timeline.worldline.detail": "Branch lineage",
+      "timeline.worldline.candidateParent": "Candidate parent",
+      "timeline.worldline.candidateTurn": "Select fork turn",
+      "timeline.worldline.repair": "Repair branch lineage",
+      "timeline.worldline.repairConfirm": "Repair only the parent and fork-point link without copying or deleting child data.\n\nParent: {parent}\nFork turn: {turn}\n\nContinue?",
+      "timeline.worldline.repairing": "Repairing branch lineage...",
+      "timeline.worldline.repairSuccess": "Branch lineage repaired.",
+      "timeline.worldline.repairFailed": "Branch lineage repair failed: {reason}",
+      "timeline.worldline.reason.parent_fork_source_history_unresolved": "No exact fork source turn was found in the parent session history.",
+      "timeline.worldline.reason.parent_fork_source_history_ambiguous": "Multiple parent turns match the same branch marker.",
       "timeline.worldline.state.confirmed": "Confirmed",
       "timeline.worldline.state.unresolved": "Needs confirmation",
       "timeline.worldline.state.conflict": "Conflict",
@@ -1638,6 +1659,9 @@
       "timeline.migration.reason.unsupported_mode": "Unsupported migration mode.",
       "timeline.migration.reason.source_session_has_no_archive_data": "The source session has no Archive Center data to move.",
       "timeline.migration.reason.target_session_not_empty": "The target session already has DB records. Complete migration requires an empty new chat.",
+      "timeline.migration.reason.target_reference_bindings_not_empty": "The target session has original-work or lorebook reference bindings.",
+      "timeline.migration.reason.target_background_jobs_not_empty": "The target session has queued or running memory work.",
+      "timeline.migration.reason.session_migration_store_unavailable": "The MariaDB migration store required to inspect all target artifacts is unavailable.",
       "timeline.migration.reason.target_chroma_vectors_not_empty": "The target session already has ChromaDB vectors. Move into an empty new chat.",
       "timeline.migration.reason.preview_blocked": "Preview was blocked. Check whether the target session is empty.",
       "timeline.migration.targetUnstable": "The current chat's stable CID could not be resolved. Select/refresh the new chat once and try again.",
@@ -2735,6 +2759,15 @@
       "timeline.worldline.forkTurn": "分岐ターン",
       "timeline.worldline.reason": "状態理由",
       "timeline.worldline.detail": "分岐系譜",
+      "timeline.worldline.candidateParent": "親候補",
+      "timeline.worldline.candidateTurn": "分岐ターンを選択",
+      "timeline.worldline.repair": "分岐系譜を復旧",
+      "timeline.worldline.repairConfirm": "子セッションの資料をコピー・削除せず、親と分岐点の接続だけを復旧します。\n\n親: {parent}\n分岐ターン: {turn}\n\n続行しますか？",
+      "timeline.worldline.repairing": "分岐系譜を復旧中...",
+      "timeline.worldline.repairSuccess": "分岐系譜を復旧しました。",
+      "timeline.worldline.repairFailed": "分岐系譜の復旧に失敗しました: {reason}",
+      "timeline.worldline.reason.parent_fork_source_history_unresolved": "親セッション履歴に一致する分岐元ターンがありません。",
+      "timeline.worldline.reason.parent_fork_source_history_ambiguous": "同じ分岐マーカーに一致する親ターンが複数あります。",
       "timeline.worldline.state.confirmed": "確認済み",
       "timeline.worldline.state.unresolved": "確認が必要",
       "timeline.worldline.state.conflict": "競合",
@@ -3592,6 +3625,9 @@
       "timeline.migration.reason.target_chroma_vectors_not_empty": "対象セッションには既にChromaDBベクトルがあります。空の新規チャットへ移動してください。",
       "timeline.migration.reason.target_session_id_required": "対象セッションIDがありません。",
       "timeline.migration.reason.target_session_not_empty": "対象セッションには既にDB記録があります。完全移行には空の新規チャットが必要です。",
+      "timeline.migration.reason.target_reference_bindings_not_empty": "対象セッションに原作・ロアブック参照バインディングがあります。",
+      "timeline.migration.reason.target_background_jobs_not_empty": "対象セッションに実行中または待機中の記憶処理があります。",
+      "timeline.migration.reason.session_migration_store_unavailable": "対象資料全体を確認するMariaDB移行ストアを利用できません。",
       "timeline.migration.reason.unsupported_mode": "未対応の移行モードです。",
       "timeline.migration.rollbackConfirm": "最新のセッション移行をロールバックします。\n\n移行: {id}\n元: {source}\n対象: {target}\n\nrow_mapに記録されたコピー先行と一致するChromaDBベクトルだけを削除します。\n元セッションのロックは解除されます。\n\n続行しますか？",
       "timeline.migration.rollbackRunning": "セッション移行をロールバック中...",
@@ -45142,6 +45178,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0B0D11}
 .mo-tl-load-note{text-align:center;color:#8a93aa;font-size:11px;padding:6px 0 2px}
 .mo-tl-kv{display:grid;grid-template-columns:90px 1fr;gap:6px 10px}
 .mo-tl-kv span:nth-child(odd){color:#8a93aa}
+.mo-tl-worldline-repair{display:flex;align-items:end;gap:10px;margin-top:14px;padding-top:14px;border-top:1px solid rgba(255,255,255,.07)}
+.mo-tl-worldline-repair label{display:grid;gap:6px;color:#8B909A;font-size:12px}.mo-tl-worldline-repair select{min-width:120px}
 .mo-subtabs{display:flex;gap:18px;flex-wrap:nowrap;padding:0 0 10px;border-bottom:1px solid rgba(255,255,255,.07);overflow-x:auto;scrollbar-width:none}
 .mo-subtabs::-webkit-scrollbar{display:none}
 .mo-subtab-btn{position:relative;flex:0 0 auto;background:transparent;border:0;color:#8B909A;border-radius:0;padding:8px 0;font-size:12px;cursor:pointer;white-space:nowrap}
@@ -46428,8 +46466,13 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       rawReasons = [fallback];
     }
     const translated = rawReasons.map(sessionMigrationReasonLabel).filter(Boolean);
+    const blockedArtifacts = result.blocked_artifacts && typeof result.blocked_artifacts === "object" ? result.blocked_artifacts : {};
+    const artifactText = Object.entries(blockedArtifacts)
+      .filter((entry) => Number(entry[1] || 0) > 0)
+      .map((entry) => String(entry[0]) + "=" + String(Number(entry[1] || 0)))
+      .join(", ");
     const warningText = warnings.filter(Boolean).join(", ");
-    return translated.concat(warningText ? [warningText] : []).filter(Boolean).join(", ") || fallback || "unknown";
+    return translated.concat(artifactText ? [artifactText] : [], warningText ? [warningText] : []).filter(Boolean).join(", ") || fallback || "unknown";
   }
 
   function setSessionMigrationUiStatus(status, message, meta = {}) {
@@ -46668,6 +46711,50 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     } finally {
       _sessionMigrationUi.running = false;
       refreshTimelineUI();
+    }
+  }
+
+  async function runTimelineWorldlineRepair(button) {
+    const childSessionId = String(button && button.getAttribute("data-worldline-repair-child") || "").trim();
+    const parentSessionId = String(button && button.getAttribute("data-worldline-repair-parent") || "").trim();
+    const sourceMessageId = String(button && button.getAttribute("data-worldline-repair-source-message") || "").trim();
+    const sourceRole = String(button && button.getAttribute("data-worldline-repair-source-role") || "").trim();
+    const turnSelect = document.getElementById("mo-worldline-repair-turn");
+    const forkTurn = Math.max(0, Math.floor(Number(turnSelect && turnSelect.value || 0)));
+    if (!childSessionId || !parentSessionId || !sourceMessageId || !["user", "char"].includes(sourceRole) || forkTurn <= 0) return false;
+    const confirmMessage = tf("timeline.worldline.repairConfirm", { parent: parentSessionId, turn: String(forkTurn) });
+    if (typeof confirm === "function" && !confirm(confirmMessage)) return false;
+    const originalText = button.textContent;
+    button.disabled = true;
+    button.textContent = t("timeline.worldline.repairing");
+    try {
+      const result = await bridgeFetch("/step23/fork-lineage", {
+        method: "POST",
+        body: {
+          operation: "lineage_repair",
+          chat_session_id: childSessionId,
+          copied_from_session_id: parentSessionId,
+          fork_turn: forkTurn,
+          fork_source_message_id: sourceMessageId,
+          fork_source_role: sourceRole,
+        },
+        timeoutMs: 15000,
+      });
+      if (!result || result.status !== "ok" || !result.worldline || result.worldline.state !== "confirmed") {
+        throw new Error(formatBridgeFailureForDisplay("/step23/fork-lineage", "lineage_repair_failed"));
+      }
+      _timelineState.sessionsError = "";
+      await loadTimelineData(true, { sessionId: childSessionId, skipRuntimeSessionResolve: true });
+      return true;
+    } catch (err) {
+      _timelineState.sessionsError = tf("timeline.worldline.repairFailed", { reason: err && err.message ? err.message : "unknown" });
+      refreshTimelineUI({ reloadPresentation: false });
+      return false;
+    } finally {
+      if (button && button.isConnected) {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
     }
   }
 
@@ -47927,6 +48014,17 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     const parentSession = String(worldline && worldline.parent_session_id || "");
     const forkTurn = Math.max(0, Math.floor(Number(worldline && worldline.fork_turn || 0)));
     const reason = String(worldline && worldline.reason || "");
+    const reasonKey = "timeline.worldline.reason." + reason;
+    const translatedReason = reason && t(reasonKey) !== reasonKey ? t(reasonKey) : reason;
+    const candidateParent = String(worldline && worldline.candidate_parent_session_id || "");
+    const candidateTurns = Array.from(new Set((Array.isArray(worldline && worldline.candidate_fork_turns) ? worldline.candidate_fork_turns : [])
+      .map((turn) => Math.max(0, Math.floor(Number(turn || 0)))).filter((turn) => turn > 0))).sort((a, b) => a - b);
+    const sourceMessageId = String(worldline && worldline.fork_source_message_id || "");
+    const sourceRole = String(worldline && worldline.fork_source_role || "");
+    const repairHtml = state !== "confirmed" && candidateParent && candidateTurns.length > 0 && sourceMessageId && ["user", "char"].includes(sourceRole)
+      ? '<div class="mo-tl-worldline-repair"><label><span>' + escapeAttr(t("timeline.worldline.candidateTurn")) + '</span><select id="mo-worldline-repair-turn">' + candidateTurns.map((turn) => '<option value="' + turn + '">#' + turn + '</option>').join("") + '</select></label>' +
+        '<button type="button" class="mo-btn mo-btn-info" data-worldline-repair-child="' + escapeAttr(currentSession) + '" data-worldline-repair-parent="' + escapeAttr(candidateParent) + '" data-worldline-repair-source-message="' + escapeAttr(sourceMessageId) + '" data-worldline-repair-source-role="' + escapeAttr(sourceRole) + '">' + escapeAttr(t("timeline.worldline.repair")) + '</button></div>'
+      : '';
     const selectedNode = timelineWorldlineSelectedNode(topology);
     const selectedNodeHtml = selectedNode
       ? '<div class="mo-tl-kv">' +
@@ -47940,9 +48038,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       '<div class="mo-tl-kv">' +
         '<span>' + escapeAttr(t("timeline.worldline.session")) + '</span><strong>' + escapeAttr(currentSession || "-") + '</strong>' +
         '<span>' + escapeAttr(t("timeline.worldline.parent")) + '</span><strong>' + escapeAttr(parentSession || "-") + '</strong>' +
+        (candidateParent && !parentSession ? '<span>' + escapeAttr(t("timeline.worldline.candidateParent")) + '</span><strong>' + escapeAttr(candidateParent) + '</strong>' : '') +
         '<span>' + escapeAttr(t("timeline.worldline.forkTurn")) + '</span><strong>' + (forkTurn > 0 ? '#' + escapeAttr(String(forkTurn)) : '-') + '</strong>' +
-        '<span>' + escapeAttr(t("timeline.worldline.reason")) + '</span><strong>' + escapeAttr(reason || "-") + '</strong>' +
+        '<span>' + escapeAttr(t("timeline.worldline.reason")) + '</span><strong>' + escapeAttr(translatedReason || "-") + '</strong>' +
       '</div>' +
+      repairHtml +
     '</div>';
   }
 
@@ -50961,6 +51061,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         timelineResetEditState();
         refreshTimelineUI({ reloadPresentation: false });
       });
+    }
+
+    const worldlineRepair = document.querySelector("[data-worldline-repair-child]");
+    if (worldlineRepair) {
+      worldlineRepair.addEventListener("click", () => runTimelineWorldlineRepair(worldlineRepair));
     }
 
     const reloadBtn = document.getElementById("mo-timeline-reload-btn");

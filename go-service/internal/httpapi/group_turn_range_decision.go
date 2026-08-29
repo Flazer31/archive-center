@@ -1204,22 +1204,52 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 		UserMessageChatID:      userAnchorMessageID,
 		UserMessageChatIDState: "observed",
 	})
-	matchingSources := make([]store.MemorySourceRevision, 0, 2)
-	for _, source := range parentSources {
-		if strings.TrimSpace(source.LogicalTurnID) == expectedUserLogicalTurnID && source.TurnIndex > 0 {
-			matchingSources = append(matchingSources, source)
-		}
-	}
-	if len(matchingSources) == 0 {
-		vm.Reason = "parent_active_fork_source_unresolved"
-		return vm
-	}
-	if len(matchingSources) > 1 {
+	matchingTurns := prioritizedWorldlineSourceTurns(
+		parentSources, expectedUserLogicalTurnID, sourceRole, sourceMessageID,
+	)
+	if len(matchingTurns) > 1 {
 		vm.State = "conflict"
 		vm.Reason = "parent_active_fork_source_conflict"
+		vm.CandidateParentID = parentSessionID
+		vm.CandidateForkTurns = matchingTurns
+		assessmentParentSessionID = parentSessionID
 		return vm
 	}
-	forkTurn := matchingSources[0].TurnIndex
+	confirmedReason := "official_branch_marker_validated"
+	if len(matchingTurns) == 0 {
+		historyStore, historyOK := s.Store.(store.SourceRevisionHistoryLister)
+		if !historyOK {
+			vm.Reason = "parent_source_history_store_unavailable"
+			vm.CandidateParentID = parentSessionID
+			assessmentParentSessionID = parentSessionID
+			return vm
+		}
+		history, historyErr := historyStore.ListSourceRevisions(ctx, parentSessionID, 0, 0)
+		if historyErr != nil {
+			vm.Reason = "parent_source_history_read_unavailable"
+			vm.CandidateParentID = parentSessionID
+			assessmentParentSessionID = parentSessionID
+			return vm
+		}
+		matchingTurns = prioritizedWorldlineSourceTurns(
+			history, expectedUserLogicalTurnID, sourceRole, sourceMessageID,
+		)
+		vm.CandidateParentID = parentSessionID
+		vm.CandidateForkTurns = matchingTurns
+		assessmentParentSessionID = parentSessionID
+		switch len(matchingTurns) {
+		case 0:
+			vm.Reason = "parent_fork_source_history_unresolved"
+			return vm
+		case 1:
+			confirmedReason = "official_branch_marker_historical_source_validated"
+		default:
+			vm.State = "conflict"
+			vm.Reason = "parent_fork_source_history_ambiguous"
+			return vm
+		}
+	}
+	forkTurn := matchingTurns[0]
 	inheritedThroughTurn, _ := worldlineInheritedThroughTurn(forkTurn, sourceRole)
 	assessmentParentSessionID = parentSessionID
 	assessmentForkTurn = forkTurn
@@ -1232,7 +1262,7 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 		ForkSourceMessageID:  sourceMessageID,
 		ForkSourceRole:       sourceRole,
 		InheritedThroughTurn: inheritedThroughTurn,
-		Reason:               "official_branch_marker_validated",
+		Reason:               confirmedReason,
 	}
 	return vm
 }
@@ -1250,7 +1280,15 @@ func persistRisuWorldlineAssessment(
 	if !ok || observation == nil {
 		return vm, errors.New("fork lineage store unavailable")
 	}
-	reasonJSON, err := json.Marshal(map[string]string{"reason": strings.TrimSpace(vm.Reason)})
+	candidateForkTurns := append([]int(nil), vm.CandidateForkTurns...)
+	if candidateForkTurns == nil {
+		candidateForkTurns = []int{}
+	}
+	reasonJSON, err := json.Marshal(map[string]any{
+		"reason":                      strings.TrimSpace(vm.Reason),
+		"candidate_parent_session_id": strings.TrimSpace(vm.CandidateParentID),
+		"candidate_fork_turns":        candidateForkTurns,
+	})
 	if err != nil {
 		return vm, err
 	}
@@ -1261,7 +1299,7 @@ func persistRisuWorldlineAssessment(
 		ContractVersion:     store.RisuWorldlineForkLineageContractVersion,
 		LineageState:        strings.TrimSpace(vm.State),
 		ChatSessionID:       strings.TrimSpace(vm.CurrentSessionID),
-		CopiedFromSessionID: strings.TrimSpace(parentSessionID),
+		CopiedFromSessionID: "",
 		ForkSourceMessageID: strings.TrimSpace(sourceMessageID),
 		ForkSourceRole:      strings.TrimSpace(sourceRole),
 		IdempotencyKey:      "risu-worldline:" + hex.EncodeToString(idempotencyHash[:]),
@@ -1272,12 +1310,56 @@ func persistRisuWorldlineAssessment(
 	}
 	if record.LineageState == "confirmed" {
 		record.ForkTurn = forkTurn
+		record.CopiedFromSessionID = strings.TrimSpace(parentSessionID)
 	}
 	saved, err := lineageStore.SaveForkLineageRecord(ctx, record)
 	if err != nil {
 		return vm, err
 	}
 	return worldlineViewModelFromRecord(saved), nil
+}
+
+func uniqueWorldlineSourceTurns(sources []store.MemorySourceRevision) []int {
+	seen := make(map[int]struct{}, len(sources))
+	turns := make([]int, 0, len(sources))
+	for _, source := range sources {
+		if source.TurnIndex <= 0 {
+			continue
+		}
+		if _, exists := seen[source.TurnIndex]; exists {
+			continue
+		}
+		seen[source.TurnIndex] = struct{}{}
+		turns = append(turns, source.TurnIndex)
+	}
+	sort.Ints(turns)
+	return turns
+}
+
+func prioritizedWorldlineSourceTurns(
+	sources []store.MemorySourceRevision,
+	expectedUserLogicalTurnID string,
+	sourceRole string,
+	sourceMessageID string,
+) []int {
+	if strings.TrimSpace(sourceRole) == "char" && strings.TrimSpace(sourceMessageID) != "" {
+		exactSourceMatches := make([]store.MemorySourceRevision, 0, 2)
+		for _, source := range sources {
+			if source.TurnIndex > 0 && strings.TrimSpace(source.SourceMessageID) == strings.TrimSpace(sourceMessageID) {
+				exactSourceMatches = append(exactSourceMatches, source)
+			}
+		}
+		if turns := uniqueWorldlineSourceTurns(exactSourceMatches); len(turns) > 0 {
+			return turns
+		}
+	}
+	logicalMatches := make([]store.MemorySourceRevision, 0, 2)
+	for _, source := range sources {
+		if source.TurnIndex > 0 && strings.TrimSpace(source.LogicalTurnID) == strings.TrimSpace(expectedUserLogicalTurnID) {
+			logicalMatches = append(logicalMatches, source)
+		}
+	}
+	return uniqueWorldlineSourceTurns(logicalMatches)
 }
 
 func risuWorldlineHostSignalSupported(source string) bool {

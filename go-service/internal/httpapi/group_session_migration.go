@@ -74,6 +74,8 @@ type sessionMigrationPreviewResponse struct {
 	Warnings             []string                      `json:"warnings"`
 	Counts               sessionMigrationPreviewCounts `json:"counts"`
 	TargetCounts         sessionMigrationPreviewCounts `json:"target_counts"`
+	TargetTableCounts    map[string]int                `json:"target_table_counts"`
+	BlockedArtifacts     map[string]int                `json:"blocked_artifacts"`
 	Chroma               sessionMigrationChromaPreview `json:"chroma"`
 	GeneratedAt          string                        `json:"generated_at"`
 }
@@ -101,57 +103,13 @@ func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Requ
 		mode = sessionMigrationModeCopyLock
 	}
 
-	blockedReasons := []string{}
-	warnings := []string{}
-	if sourceID == "" {
-		blockedReasons = append(blockedReasons, "source_session_id_required")
-	}
-	if targetID == "" {
-		blockedReasons = append(blockedReasons, "target_session_id_required")
-	}
-	if sourceID != "" && targetID != "" && sourceID == targetID {
-		blockedReasons = append(blockedReasons, "source_target_must_differ")
-	}
-	if !sessionMigrationModeSupported(mode) {
-		blockedReasons = append(blockedReasons, "unsupported_mode")
-		warnings = append(warnings, "supported_modes: "+sessionMigrationSupportedModesText())
-	}
-
-	sourceCounts, sourceWarnings, sourceErr := s.sessionMigrationPreviewCounts(r.Context(), sourceID)
-	if sourceErr != nil {
-		writeInternalError(w, sourceErr.Error())
+	blockedReasons, warnings, sourceCounts, targetCounts, chroma, targetOccupancy, err := s.sessionMigrationValidate(r.Context(), sourceID, targetID, mode)
+	if err != nil {
+		writeInternalError(w, err.Error())
 		return
 	}
-	warnings = append(warnings, sourceWarnings...)
-	targetCounts, targetWarnings, targetErr := s.sessionMigrationPreviewCounts(r.Context(), targetID)
-	if targetErr != nil {
-		writeInternalError(w, targetErr.Error())
-		return
-	}
-	warnings = append(warnings, targetWarnings...)
-
-	chroma := s.sessionMigrationPreviewChroma(r.Context(), sourceID, targetID)
-	warnings = append(warnings, chroma.Errors...)
-	sourceCounts.ChromaVectors = chroma.SourceVectors
-	targetCounts.ChromaVectors = chroma.TargetVectors
-
 	sourceExists := sourceCounts.CanonicalAndSubjectiveTotal > 0
-	targetEmpty := (targetCounts.CanonicalAndSubjectiveTotal == 0 || targetCounts.ReplaceableStarterOnly) && chroma.TargetVectors == 0
-	if sourceID != "" && !sourceExists {
-		blockedReasons = append(blockedReasons, "source_session_has_no_archive_data")
-	}
-	if targetID != "" && !targetEmpty {
-		blockedReasons = append(blockedReasons, "target_session_not_empty")
-	}
-	if chroma.TargetVectors > 0 {
-		blockedReasons = append(blockedReasons, "target_chroma_vectors_not_empty")
-	}
-	if targetCounts.ReplaceableStarterOnly {
-		warnings = append(warnings, "target_starter_turn_zero_will_be_replaced")
-	}
-	if sourceCounts.CanonicalAndSubjectiveTotal == 0 && chroma.SourceVectors > 0 {
-		warnings = append(warnings, "source_vectors_exist_without_canonical_rows")
-	}
+	targetEmpty := len(targetOccupancy.BlockingTables) == 0 && chroma.TargetVectors == 0
 
 	writeJSON(w, http.StatusOK, sessionMigrationPreviewResponse{
 		Status:               "ok",
@@ -171,6 +129,8 @@ func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Requ
 		Warnings:             warnings,
 		Counts:               sourceCounts,
 		TargetCounts:         targetCounts,
+		TargetTableCounts:    targetOccupancy.DirectTableCounts,
+		BlockedArtifacts:     targetOccupancy.BlockingTables,
 		Chroma:               chroma,
 		GeneratedAt:          time.Now().UTC().Format(time.RFC3339),
 	})
@@ -195,6 +155,9 @@ type sessionMigrationCompleteResponse struct {
 	TargetSessionID          string                        `json:"target_session_id"`
 	Mode                     string                        `json:"mode"`
 	Counts                   sessionMigrationPreviewCounts `json:"counts"`
+	TargetCounts             sessionMigrationPreviewCounts `json:"target_counts"`
+	TargetTableCounts        map[string]int                `json:"target_table_counts"`
+	BlockedArtifacts         map[string]int                `json:"blocked_artifacts"`
 	RowMapCount              int                           `json:"row_map_count"`
 	SourceLocked             bool                          `json:"source_locked"`
 	ChromaReindexRequired    bool                          `json:"chroma_reindex_required"`
@@ -251,7 +214,7 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		}
 	}
 
-	blockedReasons, warnings, sourceCounts, targetCounts, chroma, err := s.sessionMigrationValidate(r.Context(), sourceID, targetID, mode)
+	blockedReasons, warnings, sourceCounts, targetCounts, chroma, targetOccupancy, err := s.sessionMigrationValidate(r.Context(), sourceID, targetID, mode)
 	if err != nil {
 		writeInternalError(w, err.Error())
 		return
@@ -259,7 +222,10 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	if resumeContext != nil {
 		filtered := blockedReasons[:0]
 		for _, reason := range blockedReasons {
-			if reason == "target_session_not_empty" || reason == "target_chroma_vectors_not_empty" {
+			if reason == "target_session_not_empty" ||
+				reason == "target_reference_bindings_not_empty" ||
+				reason == "target_background_jobs_not_empty" ||
+				reason == "target_chroma_vectors_not_empty" {
 				continue
 			}
 			if reason == "source_session_has_no_archive_data" && resumeContext.Status == "source_cleaned" {
@@ -280,6 +246,9 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 			TargetSessionID:          targetID,
 			Mode:                     mode,
 			Counts:                   sourceCounts,
+			TargetCounts:             targetCounts,
+			TargetTableCounts:        targetOccupancy.DirectTableCounts,
+			BlockedArtifacts:         targetOccupancy.BlockingTables,
 			ManifestVersion:          store.SessionMigrationManifestVersion,
 			ManifestDirectTables:     manifestDirect,
 			ManifestIndirectTables:   manifestIndirect,
@@ -292,7 +261,6 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 			Warnings:                 warnings,
 			GeneratedAt:              time.Now().UTC().Format(time.RFC3339),
 		})
-		_ = targetCounts
 		_ = chroma
 		return
 	}
@@ -368,6 +336,9 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 			TargetSessionID:          targetID,
 			Mode:                     mode,
 			Counts:                   sourceCounts,
+			TargetCounts:             targetCounts,
+			TargetTableCounts:        targetOccupancy.DirectTableCounts,
+			BlockedArtifacts:         targetOccupancy.BlockingTables,
 			ManifestVersion:          store.SessionMigrationManifestVersion,
 			ManifestDirectTables:     manifestDirect,
 			ManifestIndirectTables:   manifestIndirect,
@@ -405,6 +376,9 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 	if err != nil {
 		var blocker *store.SessionMigrationBlockerError
 		if errors.As(err, &blocker) {
+			if blocker.Table != "" && blocker.Count > 0 {
+				targetOccupancy.BlockingTables = map[string]int{blocker.Table: blocker.Count}
+			}
 			writeResumeBlocked([]string{blocker.Code})
 			return
 		}
@@ -1553,7 +1527,7 @@ func (s *Server) sessionMigrationPreviewCounts(ctx context.Context, sessionID st
 	return counts, warnings, nil
 }
 
-func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetID, mode string) ([]string, []string, sessionMigrationPreviewCounts, sessionMigrationPreviewCounts, sessionMigrationChromaPreview, error) {
+func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetID, mode string) ([]string, []string, sessionMigrationPreviewCounts, sessionMigrationPreviewCounts, sessionMigrationChromaPreview, store.SessionMigrationOccupancy, error) {
 	blockedReasons := []string{}
 	warnings := []string{}
 	if sourceID == "" {
@@ -1572,12 +1546,12 @@ func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetI
 
 	sourceCounts, sourceWarnings, sourceErr := s.sessionMigrationPreviewCounts(ctx, sourceID)
 	if sourceErr != nil {
-		return nil, nil, sessionMigrationPreviewCounts{}, sessionMigrationPreviewCounts{}, sessionMigrationChromaPreview{}, sourceErr
+		return nil, nil, sessionMigrationPreviewCounts{}, sessionMigrationPreviewCounts{}, sessionMigrationChromaPreview{}, store.SessionMigrationOccupancy{}, sourceErr
 	}
 	warnings = append(warnings, sourceWarnings...)
 	targetCounts, targetWarnings, targetErr := s.sessionMigrationPreviewCounts(ctx, targetID)
 	if targetErr != nil {
-		return nil, nil, sessionMigrationPreviewCounts{}, sessionMigrationPreviewCounts{}, sessionMigrationChromaPreview{}, targetErr
+		return nil, nil, sessionMigrationPreviewCounts{}, sessionMigrationPreviewCounts{}, sessionMigrationChromaPreview{}, store.SessionMigrationOccupancy{}, targetErr
 	}
 	warnings = append(warnings, targetWarnings...)
 
@@ -1585,23 +1559,52 @@ func (s *Server) sessionMigrationValidate(ctx context.Context, sourceID, targetI
 	warnings = append(warnings, chroma.Errors...)
 	sourceCounts.ChromaVectors = chroma.SourceVectors
 	targetCounts.ChromaVectors = chroma.TargetVectors
+	targetOccupancy := store.SessionMigrationOccupancy{DirectTableCounts: map[string]int{}, BlockingTables: map[string]int{}}
+	if targetID != "" {
+		migrationStore, ok := s.Store.(store.SessionMigrationStore)
+		if !ok {
+			blockedReasons = append(blockedReasons, "session_migration_store_unavailable")
+		} else {
+			var occupancyErr error
+			targetOccupancy, occupancyErr = migrationStore.InspectSessionMigrationOccupancy(ctx, targetID)
+			if occupancyErr != nil {
+				return nil, nil, sessionMigrationPreviewCounts{}, sessionMigrationPreviewCounts{}, sessionMigrationChromaPreview{}, store.SessionMigrationOccupancy{}, occupancyErr
+			}
+		}
+	}
+	if targetOccupancy.DirectTableCounts == nil {
+		targetOccupancy.DirectTableCounts = map[string]int{}
+	}
+	if targetOccupancy.BlockingTables == nil {
+		targetOccupancy.BlockingTables = map[string]int{}
+	}
+	targetCounts.ReplaceableStarterOnly = targetOccupancy.ReplaceableStarterOnly
+	if count := targetOccupancy.DirectTableCounts["session_reference_bindings"]; count > targetCounts.ReferenceBindings {
+		targetCounts.ReferenceBindings = count
+	}
 
 	if sourceID != "" && sourceCounts.CanonicalAndSubjectiveTotal == 0 {
 		blockedReasons = append(blockedReasons, "source_session_has_no_archive_data")
 	}
-	if targetID != "" && ((targetCounts.CanonicalAndSubjectiveTotal > 0 && !targetCounts.ReplaceableStarterOnly) || targetCounts.ReferenceBindings > 0 || chroma.TargetVectors > 0) {
+	if targetID != "" && (len(targetOccupancy.BlockingTables) > 0 || chroma.TargetVectors > 0) {
 		blockedReasons = append(blockedReasons, "target_session_not_empty")
+	}
+	if targetOccupancy.BlockingTables["session_reference_bindings"] > 0 {
+		blockedReasons = append(blockedReasons, "target_reference_bindings_not_empty")
+	}
+	if targetOccupancy.BlockingTables["memory_reprocessing_jobs"] > 0 || targetOccupancy.BlockingTables["memory_vector_outbox"] > 0 {
+		blockedReasons = append(blockedReasons, "target_background_jobs_not_empty")
 	}
 	if chroma.TargetVectors > 0 {
 		blockedReasons = append(blockedReasons, "target_chroma_vectors_not_empty")
 	}
-	if targetCounts.ReplaceableStarterOnly {
+	if targetOccupancy.ReplaceableStarterOnly {
 		warnings = append(warnings, "target_starter_turn_zero_will_be_replaced")
 	}
 	if sourceCounts.CanonicalAndSubjectiveTotal == 0 && chroma.SourceVectors > 0 {
 		warnings = append(warnings, "source_vectors_exist_without_canonical_rows")
 	}
-	return blockedReasons, warnings, sourceCounts, targetCounts, chroma, nil
+	return blockedReasons, warnings, sourceCounts, targetCounts, chroma, targetOccupancy, nil
 }
 
 func sessionMigrationCountsFromStore(in store.SessionMigrationArtifactCounts) sessionMigrationPreviewCounts {

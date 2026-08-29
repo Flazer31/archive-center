@@ -65,6 +65,7 @@ type durableSessionIdentityBindingStore struct {
 	bindings         map[string]string
 	locks            map[string]string
 	sources          map[string][]store.MemorySourceRevision
+	history          map[string][]store.MemorySourceRevision
 	lineage          []store.ForkLineageRecord
 	baseline         *store.SessionRoutingBaseline
 	fail             bool
@@ -115,6 +116,20 @@ func (s *durableSessionIdentityBindingStore) BindSessionRoute(_ context.Context,
 
 func (s *durableSessionIdentityBindingStore) ListActiveSourceRevisions(_ context.Context, sid string, _, _ int) ([]store.MemorySourceRevision, error) {
 	return append([]store.MemorySourceRevision(nil), s.sources[sid]...), nil
+}
+
+func (s *durableSessionIdentityBindingStore) ListSourceRevisions(_ context.Context, sid string, fromTurn, toTurn int) ([]store.MemorySourceRevision, error) {
+	out := make([]store.MemorySourceRevision, 0, len(s.history[sid]))
+	for _, source := range s.history[sid] {
+		if fromTurn > 0 && source.TurnIndex < fromTurn {
+			continue
+		}
+		if toTurn > 0 && source.TurnIndex > toTurn {
+			continue
+		}
+		out = append(out, source)
+	}
+	return out, nil
 }
 
 func (s *durableSessionIdentityBindingStore) ListForkLineageRecords(_ context.Context, sid, _ string, limit int) ([]store.ForkLineageRecord, error) {
@@ -762,7 +777,7 @@ func TestResolveRisuWorldlineObservationRejectsWrongOrDuplicateUserAnchor(t *tes
 		vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
 			StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed", WorldlineObservation: newObservation("wrong-anchor"),
 		}, "child-session")
-		if vm.State != "unresolved" || vm.Reason != "parent_active_fork_source_unresolved" ||
+		if vm.State != "unresolved" || vm.Reason != "parent_fork_source_history_unresolved" ||
 			len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
 			t.Fatalf("wrong anchor worldline=%+v lineage=%+v", vm, st.lineage)
 		}
@@ -813,6 +828,74 @@ func TestResolveRisuWorldlineObservationStarterWithoutActiveSourceIsUnresolved(t
 	if vm.State != "unresolved" || vm.Reason != "fork_user_anchor_unresolved" || vm.ParentSessionID != "" || vm.ForkTurn != 0 ||
 		len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
 		t.Fatalf("starter worldline=%+v lineage=%+v", vm, st.lineage)
+	}
+}
+
+func TestResolveRisuWorldlineObservationRecoversUniqueHistoricalNormalizedSource(t *testing.T) {
+	historical := activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "old-user", "source-message", 7)
+	historical.LogicalTurnID = "canonical_turn_normalized"
+	historical.LifecycleState = "superseded"
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources:  map[string][]store.MemorySourceRevision{"parent-session": {}},
+		history:  map[string][]store.MemorySourceRevision{"parent-session": {historical}},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion: risuWorldlineObservationContract, HostSignalSource: "output",
+			BranchShapeContract: risuBranchShapeContract, ObservedAtMS: 1_776_000_000_100,
+			MarkerState: "observed", BranchMarker: "{{specialcomment::branchedfrom::parent-chat::Parent::source-message::}}", MarkerIndex: 2,
+			Messages: []risuWorldlineMessageObservation{{MessageIndex: 0, Role: "user", MessageChatID: "missing-user"}, {MessageIndex: 1, Role: "char", MessageChatID: "source-message"}, {MessageIndex: 2, Role: "comment", Disabled: true}},
+		},
+	}, "child-session")
+	if vm.State != "confirmed" || vm.ParentSessionID != "parent-session" || vm.ForkTurn != 7 || vm.Reason != "official_branch_marker_historical_source_validated" {
+		t.Fatalf("historical recovery=%+v", vm)
+	}
+	if historical.LifecycleState != "superseded" || len(st.lineage) != 1 || st.lineage[0].ForkTurn != 7 {
+		t.Fatalf("historical revision mutated or lineage missing: source=%+v lineage=%+v", historical, st.lineage)
+	}
+}
+
+func TestPrioritizedWorldlineSourceTurnsPrefersExactAssistantSourceID(t *testing.T) {
+	sources := []store.MemorySourceRevision{
+		{TurnIndex: 7, SourceMessageID: "assistant-source", LogicalTurnID: "normalized"},
+		{TurnIndex: 9, SourceMessageID: "other-source", LogicalTurnID: "expected-user-logical-turn"},
+	}
+	turns := prioritizedWorldlineSourceTurns(sources, "expected-user-logical-turn", "char", "assistant-source")
+	if fmt.Sprint(turns) != "[7]" {
+		t.Fatalf("exact assistant source ID did not take precedence: %v", turns)
+	}
+}
+
+func TestResolveRisuWorldlineObservationReportsAmbiguousHistoricalTurnsWithoutMutatingChild(t *testing.T) {
+	first := activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "old-user", "source-message", 7)
+	first.LogicalTurnID = "canonical_turn_a"
+	first.LifecycleState = "superseded"
+	second := first
+	second.TurnIndex = 9
+	second.SourceRevision = "other-revision"
+	st := &durableSessionIdentityBindingStore{
+		Store:    store.NewNoopStore(),
+		bindings: map[string]string{"character-stable\x00parent-chat": "parent-session"},
+		sources:  map[string][]store.MemorySourceRevision{"parent-session": {}},
+		history:  map[string][]store.MemorySourceRevision{"parent-session": {first, second}},
+	}
+	vm := (&Server{Store: st}).resolveRisuWorldlineObservation(context.Background(), sessionRoutingTurnResolutionRequest{
+		StableCharacterID: "character-stable", HostChatID: "child-chat", HostChatIDState: "observed",
+		WorldlineObservation: &risuWorldlineObservation{
+			ContractVersion: risuWorldlineObservationContract, HostSignalSource: "output",
+			BranchShapeContract: risuBranchShapeContract, ObservedAtMS: 1_776_000_000_100,
+			MarkerState: "observed", BranchMarker: "{{specialcomment::branchedfrom::parent-chat::Parent::source-message::}}", MarkerIndex: 2,
+			Messages: []risuWorldlineMessageObservation{{MessageIndex: 0, Role: "user", MessageChatID: "missing-user"}, {MessageIndex: 1, Role: "char", MessageChatID: "source-message"}, {MessageIndex: 2, Role: "comment", Disabled: true}},
+		},
+	}, "child-session")
+	if vm.State != "conflict" || vm.Reason != "parent_fork_source_history_ambiguous" || vm.CandidateParentID != "parent-session" || fmt.Sprint(vm.CandidateForkTurns) != "[7 9]" {
+		t.Fatalf("ambiguous recovery=%+v", vm)
+	}
+	if len(st.lineage) != 1 || st.lineage[0].CopiedFromSessionID != "" {
+		t.Fatalf("ambiguous recovery changed child lineage=%+v", st.lineage)
 	}
 }
 

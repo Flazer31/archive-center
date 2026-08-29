@@ -69,6 +69,56 @@ func (m *mariadbStore) GetSessionMigrationResumeContext(
 	return result, nil
 }
 
+func (m *mariadbStore) InspectSessionMigrationOccupancy(ctx context.Context, sessionID string) (SessionMigrationOccupancy, error) {
+	if err := m.ensureDB(); err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return classifySessionMigrationOccupancy(map[string]int{}, false), nil
+	}
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	defer tx.Rollback()
+	counts := make(map[string]int)
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		if _, ok := SessionMigrationExecutionPlanFor(entry.Table); !ok {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration manifest plan missing for %s", entry.Table)
+		}
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM `%s` WHERE `%s` = ?", entry.Table, entry.SessionColumn)
+		if err := tx.QueryRowContext(ctx, query, sid).Scan(&count); err != nil {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration occupancy %s: %w", entry.Table, err)
+		}
+		counts[entry.Table] = count
+	}
+	starter := false
+	if counts["chat_logs"] == 1 {
+		var turnIndex int
+		var role string
+		err := tx.QueryRowContext(ctx, `
+			SELECT turn_index, role
+			FROM chat_logs
+			WHERE chat_session_id = ?
+			LIMIT 1
+		`, sid).Scan(&turnIndex, &role)
+		if err != nil {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration occupancy chat_logs starter: %w", err)
+		}
+		starter = turnIndex == 0 && strings.EqualFold(strings.TrimSpace(role), "assistant")
+	}
+	occupancy := classifySessionMigrationOccupancy(counts, starter)
+	if err := tx.Commit(); err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	return occupancy, nil
+}
+
 func (m *mariadbStore) GetSessionRoutingBaseline(ctx context.Context, targetSessionID string) (*SessionRoutingBaseline, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
@@ -1044,12 +1094,12 @@ func sessionMigrationValidateManifestSnapshots(
 	targetRows map[string][]sessionMigrationRow,
 ) (bool, error) {
 	sourceTotal := 0
-	targetTotal := 0
+	targetCounts := make(map[string]int)
 	targetStarter := false
 	for _, entry := range manifest {
 		if entry.Direct {
 			sourceTotal += len(sourceRows[entry.Table])
-			targetTotal += len(targetRows[entry.Table])
+			targetCounts[entry.Table] = len(targetRows[entry.Table])
 		}
 	}
 	if sourceTotal == 0 {
@@ -1061,13 +1111,44 @@ func sessionMigrationValidateManifestSnapshots(
 		targetStarter = turn.Valid && strings.TrimSpace(turn.Text) == "0" &&
 			role.Valid && strings.EqualFold(strings.TrimSpace(role.Text), "assistant")
 	}
-	if targetStarter {
-		targetTotal--
+	occupancy := classifySessionMigrationOccupancy(targetCounts, targetStarter)
+	if len(occupancy.BlockingTables) > 0 {
+		tables := make([]string, 0, len(occupancy.BlockingTables))
+		for table := range occupancy.BlockingTables {
+			tables = append(tables, table)
+		}
+		sort.Strings(tables)
+		return false, &SessionMigrationBlockerError{
+			Code: "target_session_not_empty", Phase: "copy_transaction",
+			Table: tables[0], Count: occupancy.BlockingTables[tables[0]],
+		}
 	}
-	if targetTotal != 0 {
-		return false, errors.New("target session is not empty")
+	return occupancy.ReplaceableStarterOnly, nil
+}
+
+func classifySessionMigrationOccupancy(counts map[string]int, starter bool) SessionMigrationOccupancy {
+	direct := make(map[string]int, len(counts))
+	blocking := make(map[string]int)
+	total := 0
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		count := counts[entry.Table]
+		direct[entry.Table] = count
+		total += count
+		if count > 0 {
+			blocking[entry.Table] = count
+		}
 	}
-	return targetStarter, nil
+	replaceableStarterOnly := starter && total == 1 && direct["chat_logs"] == 1
+	if replaceableStarterOnly {
+		delete(blocking, "chat_logs")
+	}
+	return SessionMigrationOccupancy{
+		DirectTableCounts: direct, TotalDirectRows: total,
+		ReplaceableStarterOnly: replaceableStarterOnly, BlockingTables: blocking,
+	}
 }
 
 func sessionMigrationLegacyCountsFromManifest(sourceRows map[string][]sessionMigrationRow) SessionMigrationArtifactCounts {

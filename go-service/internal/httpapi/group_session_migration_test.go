@@ -63,6 +63,70 @@ type sessionMigrationPreviewStore struct {
 	cleanupReason       string
 	cleanupResult       *store.SessionMigrationCleanupResult
 	cleanupErr          error
+	occupancyBySession  map[string]map[string]int
+}
+
+func (s *sessionMigrationPreviewStore) InspectSessionMigrationOccupancy(_ context.Context, sessionID string) (store.SessionMigrationOccupancy, error) {
+	counts := map[string]int{}
+	for _, item := range s.chatLogs {
+		if item.ChatSessionID == sessionID {
+			counts["chat_logs"]++
+		}
+	}
+	for _, item := range s.effectiveInputs {
+		if item.ChatSessionID == sessionID {
+			counts["effective_input_logs"]++
+		}
+	}
+	for _, item := range s.memories {
+		if item.ChatSessionID == sessionID {
+			counts["memories"]++
+		}
+	}
+	for _, item := range s.evidence {
+		if item.ChatSessionID == sessionID {
+			counts["direct_evidence_records"]++
+		}
+	}
+	for _, item := range s.triples {
+		if item.ChatSessionID == sessionID {
+			counts["kg_triples"]++
+		}
+	}
+	for _, item := range s.episodes {
+		if item.ChatSessionID == sessionID {
+			counts["episode_summaries"]++
+		}
+	}
+	for _, item := range s.subjective {
+		if item.SourceChatSessionID == sessionID {
+			counts["protagonist_entity_memories"]++
+		}
+	}
+	for table, count := range s.occupancyBySession[sessionID] {
+		counts[table] = count
+	}
+	total := 0
+	blocking := map[string]int{}
+	for table, count := range counts {
+		total += count
+		if count > 0 {
+			blocking[table] = count
+		}
+	}
+	starter := false
+	if total == 1 && counts["chat_logs"] == 1 {
+		for _, item := range s.chatLogs {
+			if item.ChatSessionID == sessionID && item.TurnIndex == 0 && strings.EqualFold(strings.TrimSpace(item.Role), "assistant") {
+				starter = true
+				delete(blocking, "chat_logs")
+			}
+		}
+	}
+	return store.SessionMigrationOccupancy{
+		DirectTableCounts: counts, TotalDirectRows: total,
+		ReplaceableStarterOnly: starter, BlockingTables: blocking,
+	}, nil
 }
 
 type sourceLockDrainObservingStore struct {
@@ -568,6 +632,45 @@ func TestSessionMigratePreviewAllowsEmptyTargetDryRun(t *testing.T) {
 	}
 }
 
+func TestSessionMigratePreviewBlocksReferenceBindingOnlyTargetAndReportsCount(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_target"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sourceID}},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {"session_reference_bindings": 1},
+		},
+	}
+	resp := performSessionMigrationPreview(t, st, &sessionMigrationPreviewVector{}, map[string]string{
+		"source_session_id": sourceID, "target_session_id": targetID,
+	})
+	if !resp.Blocked || resp.TargetEmpty || resp.BlockedArtifacts["session_reference_bindings"] != 1 || resp.TargetTableCounts["session_reference_bindings"] != 1 {
+		t.Fatalf("reference-only target preview=%+v", resp)
+	}
+	for _, reason := range []string{"target_session_not_empty", "target_reference_bindings_not_empty"} {
+		if !sessionMigrationContainsString(resp.BlockedReasons, reason) {
+			t.Fatalf("missing %q in %#v", reason, resp.BlockedReasons)
+		}
+	}
+}
+
+func TestSessionMigratePreviewBlocksManifestOnlyWorkQueueTarget(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_target"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sourceID}},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {"memory_reprocessing_jobs": 2},
+		},
+	}
+	resp := performSessionMigrationPreview(t, st, &sessionMigrationPreviewVector{}, map[string]string{
+		"source_session_id": sourceID, "target_session_id": targetID,
+	})
+	if !resp.Blocked || resp.BlockedArtifacts["memory_reprocessing_jobs"] != 2 || !sessionMigrationContainsString(resp.BlockedReasons, "target_background_jobs_not_empty") {
+		t.Fatalf("work-queue target preview=%+v", resp)
+	}
+}
+
 func TestSessionMigratePreviewAllowsTargetWithOnlyStarterTurnZero(t *testing.T) {
 	sourceID := "char_59_cid_source"
 	targetID := "char_59_cid_fresh"
@@ -703,6 +806,12 @@ func TestSessionMigrateCompletePostVectorResumeRevalidatesInsideFenceBeforeConsu
 		chatLogs: []store.ChatLog{
 			{ID: 1, ChatSessionID: sourceID},
 			{ID: 11, ChatSessionID: targetID},
+		},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {
+				"session_reference_bindings": 1,
+				"memory_reprocessing_jobs":   1,
+			},
 		},
 		resumeContext: &store.SessionMigrationResumeContext{
 			MigrationID: 42, Status: "vector_reindexed",

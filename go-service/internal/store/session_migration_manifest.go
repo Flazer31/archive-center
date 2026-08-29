@@ -132,6 +132,7 @@ type SessionMigrationBlockerError struct {
 	Code  string
 	Phase string
 	Table string
+	Count int
 }
 
 func (e *SessionMigrationBlockerError) Error() string {
@@ -144,6 +145,9 @@ func (e *SessionMigrationBlockerError) Error() string {
 	}
 	if e.Table != "" {
 		parts = append(parts, "table="+e.Table)
+	}
+	if e.Count > 0 {
+		parts = append(parts, fmt.Sprintf("count=%d", e.Count))
 	}
 	return strings.Join(parts, ": ")
 }

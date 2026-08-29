@@ -79,6 +79,29 @@ func sessionMigrationExpectEmptyCurrentManifestReads(
 	return sessionMigrationStringHash(fingerprintParts...)
 }
 
+func TestClassifySessionMigrationOccupancyUsesEveryDirectManifestTable(t *testing.T) {
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		occupancy := classifySessionMigrationOccupancy(map[string]int{entry.Table: 1}, false)
+		if occupancy.TotalDirectRows != 1 || occupancy.BlockingTables[entry.Table] != 1 {
+			t.Fatalf("direct manifest table %s was not classified: %+v", entry.Table, occupancy)
+		}
+	}
+}
+
+func TestClassifySessionMigrationOccupancyAllowsOnlyExactStarterRow(t *testing.T) {
+	starter := classifySessionMigrationOccupancy(map[string]int{"chat_logs": 1}, true)
+	if !starter.ReplaceableStarterOnly || len(starter.BlockingTables) != 0 {
+		t.Fatalf("exact starter should be replaceable: %+v", starter)
+	}
+	withBinding := classifySessionMigrationOccupancy(map[string]int{"chat_logs": 1, "session_reference_bindings": 1}, true)
+	if withBinding.ReplaceableStarterOnly || withBinding.BlockingTables["chat_logs"] != 1 || withBinding.BlockingTables["session_reference_bindings"] != 1 {
+		t.Fatalf("starter plus binding must be blocked: %+v", withBinding)
+	}
+}
+
 func sessionMigrationRequireBlockerCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var blocker *SessionMigrationBlockerError

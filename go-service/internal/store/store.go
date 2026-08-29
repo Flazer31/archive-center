@@ -334,6 +334,17 @@ type SessionMigrationArtifactCounts struct {
 	ReplaceableStarterOnly      bool `json:"replaceable_starter_only"`
 }
 
+// SessionMigrationOccupancy is the manifest-wide, read-only view used by both
+// migration preview and the final transaction to decide whether a target is
+// empty. DirectTableCounts includes every direct manifest table, including
+// queued work and lineage/reference rows that are not part of legacy counters.
+type SessionMigrationOccupancy struct {
+	DirectTableCounts      map[string]int `json:"direct_table_counts"`
+	TotalDirectRows        int            `json:"total_direct_rows"`
+	ReplaceableStarterOnly bool           `json:"replaceable_starter_only"`
+	BlockingTables         map[string]int `json:"blocking_tables"`
+}
+
 // SessionMigrationCompleteRequest is the MariaDB copy phase for complete
 // session migration/copy. It is intentionally scoped to an empty target session.
 type SessionMigrationCompleteRequest struct {
@@ -391,6 +402,7 @@ type SessionMigrationVectorDocument struct {
 // SessionMigrationStore performs the write phase of session migration.
 // Implementations must use one transaction and write row provenance.
 type SessionMigrationStore interface {
+	InspectSessionMigrationOccupancy(ctx context.Context, sessionID string) (SessionMigrationOccupancy, error)
 	GetSessionMigrationResumeContext(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationResumeContext, error)
 	CompleteSessionMigration(ctx context.Context, req SessionMigrationCompleteRequest) (*SessionMigrationCompleteResult, error)
 }

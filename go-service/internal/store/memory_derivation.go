@@ -130,7 +130,9 @@ type ActiveSourceRevisionLister interface {
 // revisions for one explicitly selected session.  Normal turn processing and
 // rollback continue to use ActiveSourceRevisionLister; session normalization
 // may additionally inspect inactive revisions so a deleted user side can be
-// restored without another LLM call.
+// restored without another LLM call. Explicit branch-lineage repair may use
+// the same bounded session history to recover an exact fork coordinate; it
+// must not reactivate or rewrite any revision.
 type SourceRevisionHistoryLister interface {
 	ListSourceRevisions(
 		context.Context,
