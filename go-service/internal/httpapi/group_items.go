@@ -20,7 +20,7 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "missing_param", "chat_session_id is required")
 		return
 	}
-	catalog, err := s.entityIdentityCatalogForSession(r.Context(), sid, "item")
+	catalog, err := s.entityIdentityCatalogForSession(r.Context(), sid, "")
 	if err != nil {
 		if !errors.Is(err, store.ErrNotEnabled) {
 			writeInternalError(w, err.Error())
@@ -28,6 +28,8 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 		}
 		catalog = characterIdentityCatalog{Identities: map[string]store.EntityIdentity{}, Surfaces: []store.EntityIdentitySurface{}, Links: []store.EntityIdentityLink{}}
 	}
+	identityRead := buildItemIdentityReadIndex(sid, catalog)
+	catalog = identityRead.Catalog
 
 	historyScope := explorerHistoryScope(r.Context(), s.Store, sid, 0, 0)
 	triples, err := listExplorerHistoryKGTriples(r.Context(), s.Store, historyScope.Segments)
@@ -41,7 +43,9 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 	if len(triples) > 200 {
 		triples = triples[:200]
 	}
-	aliases := s.itemIdentityAliases(r.Context(), sid, catalog)
+	canonicalCharactersBySession := map[string]map[string]string{
+		sid: s.characterCanonicalSurfaceMapForRead(r.Context(), sid, identityRead.AllCatalog),
+	}
 	items := []map[string]any{}
 	seen := map[string]bool{}
 	for _, triple := range triples {
@@ -51,21 +55,34 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 		itemName := strings.TrimSpace(triple.Object)
 		stableID := ""
 		if triple.ChatSessionID == sid {
-			itemName, stableID = s.canonicalEntitySurfaceOfKind(r.Context(), sid, itemName, "item")
+			itemName, stableID = identityRead.CanonicalSurface(itemName)
 		}
 		key := comparableEntityKey(itemName)
 		if key == "" || seen[key] {
 			continue
 		}
 		seen[key] = true
+		ownerName := strings.TrimSpace(triple.Subject)
+		ownerSID := strings.TrimSpace(triple.ChatSessionID)
+		if ownerSID == "" {
+			ownerSID = sid
+		}
+		canonicalCharacters, loaded := canonicalCharactersBySession[ownerSID]
+		if !loaded {
+			canonicalCharacters = s.characterCanonicalSurfaceMapForRead(r.Context(), ownerSID)
+			canonicalCharactersBySession[ownerSID] = canonicalCharacters
+		}
+		if canonical := strings.TrimSpace(canonicalCharacters[comparableEntityKey(ownerName)]); canonical != "" {
+			ownerName = canonical
+		}
 		row := explorerHistoryItem(map[string]any{
 			"id": triple.ID, "item": itemName,
-			"owner":     s.canonicalCharacterName(r.Context(), triple.ChatSessionID, triple.Subject),
+			"owner":     ownerName,
 			"predicate": triple.Predicate, "source_turn": nullablePositiveInt(triple.SourceTurn),
 		}, sid, triple.ChatSessionID)
 		if stableID != "" {
 			row["stable_entity_id"] = stableID
-			row["aliases"] = nonNilSlice(aliases[stableID])
+			row["aliases"] = nonNilSlice(identityRead.Aliases[stableID])
 		}
 		items = append(items, row)
 	}
@@ -76,7 +93,7 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 	}
 	sort.Strings(identityIDs)
 	for _, id := range identityIDs {
-		rootID := s.characterIdentityRoot(r.Context(), sid, id)
+		rootID := identityRead.RootID(id)
 		identity, exists := catalog.Identities[rootID]
 		if !exists {
 			continue
@@ -88,7 +105,7 @@ func (s *Server) handleItemsGet(w http.ResponseWriter, r *http.Request) {
 		seen[key] = true
 		items = append(items, map[string]any{
 			"item": identity.CanonicalLabel, "stable_entity_id": rootID,
-			"aliases": nonNilSlice(aliases[rootID]), "mutation_allowed": true,
+			"aliases": nonNilSlice(identityRead.Aliases[rootID]), "mutation_allowed": true,
 			"history_ownership": "current_branch", "source_session_id": sid,
 		})
 	}
@@ -287,14 +304,181 @@ func itemIdentityPredicate(predicate string) bool {
 	return false
 }
 
-func (s *Server) canonicalEntitySurfaceOfKind(ctx context.Context, sid, surface, entityKind string) (string, string) {
-	surface = strings.TrimSpace(surface)
-	resolver, ok := s.Store.(store.UniqueActiveEntitySurfaceIdentityResolver)
-	if !ok || surface == "" {
-		return surface, ""
+// durableItemIdentityPredicate is deliberately narrower than the explorer's
+// display predicate. Session normalization may create durable identity rows,
+// so only an exact, already accepted item relation is eligible; substring
+// matches such as "causes" must remain display-only observations.
+func durableItemIdentityPredicate(predicate string) bool {
+	switch strings.ToLower(strings.TrimSpace(predicate)) {
+	case "has", "have", "owns", "own",
+		"carry", "carries", "carried", "held", "hold", "holds",
+		"wield", "wields", "wielded",
+		"equip", "equips", "equipped",
+		"use", "uses", "used",
+		"item", "weapon", "artifact", "tool", "inventory",
+		"소유", "보유", "장비", "무기", "아이템", "획득":
+		return true
+	default:
+		return false
 	}
-	resolved, err := resolver.ResolveUniqueActiveEntityIdentityBySurface(ctx, sid, comparableEntityKey(surface))
-	if err != nil || resolved.EntityKind != entityKind {
+}
+
+type itemIdentityReadIndex struct {
+	AllCatalog         characterIdentityCatalog
+	Catalog            characterIdentityCatalog
+	Roots              map[string]string
+	CanonicalBySurface map[string]store.ResolvedEntityIdentity
+	Aliases            map[string][]string
+}
+
+func buildItemIdentityReadIndex(sid string, all characterIdentityCatalog) itemIdentityReadIndex {
+	itemCatalog := characterIdentityCatalog{
+		Identities: map[string]store.EntityIdentity{},
+		Surfaces:   nonNilSlice(all.Surfaces),
+		Links:      nonNilSlice(all.Links),
+	}
+	for id, identity := range all.Identities {
+		if identity.ChatSessionID == sid && identity.EntityKind == "item" {
+			itemCatalog.Identities[id] = identity
+		}
+	}
+	index := itemIdentityReadIndex{
+		AllCatalog: all, Catalog: itemCatalog, Roots: map[string]string{},
+		CanonicalBySurface: map[string]store.ResolvedEntityIdentity{}, Aliases: map[string][]string{},
+	}
+	targets := map[string]map[string]bool{}
+	invalidRoot := map[string]bool{}
+	for _, link := range all.Links {
+		if link.ChatSessionID != sid || link.LinkKind != store.EntityIdentityLinkKindCanonicalEquivalence ||
+			link.LinkState != store.EntityIdentityLinkStateReviewed {
+			continue
+		}
+		sourceID := strings.TrimSpace(link.SourceEntityID)
+		targetID := strings.TrimSpace(link.TargetEntityID)
+		if _, sourceOK := itemCatalog.Identities[sourceID]; !sourceOK {
+			continue
+		}
+		if _, targetOK := itemCatalog.Identities[targetID]; !targetOK {
+			invalidRoot[sourceID] = true
+			continue
+		}
+		if targets[sourceID] == nil {
+			targets[sourceID] = map[string]bool{}
+		}
+		targets[sourceID][targetID] = true
+	}
+	var rootFor func(string, map[string]bool) string
+	rootFor = func(entityID string, visiting map[string]bool) string {
+		if invalidRoot[entityID] {
+			return ""
+		}
+		if root, ok := index.Roots[entityID]; ok {
+			return root
+		}
+		if visiting[entityID] || len(targets[entityID]) > 1 {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		visiting[entityID] = true
+		root := entityID
+		for targetID := range targets[entityID] {
+			root = rootFor(targetID, visiting)
+		}
+		delete(visiting, entityID)
+		if root == "" {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		index.Roots[entityID] = root
+		return root
+	}
+	for id := range itemCatalog.Identities {
+		rootFor(id, map[string]bool{})
+	}
+
+	type surfaceCandidate struct {
+		resolved map[string]store.ResolvedEntityIdentity
+		blocked  bool
+	}
+	candidates := map[string]*surfaceCandidate{}
+	addSurface := func(surface, entityID string) {
+		key := comparableEntityKey(surface)
+		if key == "" {
+			return
+		}
+		candidate := candidates[key]
+		if candidate == nil {
+			candidate = &surfaceCandidate{resolved: map[string]store.ResolvedEntityIdentity{}}
+			candidates[key] = candidate
+		}
+		if _, ok := itemCatalog.Identities[entityID]; !ok {
+			candidate.blocked = true
+			return
+		}
+		rootID := rootFor(entityID, map[string]bool{})
+		root, ok := itemCatalog.Identities[rootID]
+		if !ok || rootID == "" || strings.TrimSpace(root.CanonicalLabel) == "" {
+			candidate.blocked = true
+			return
+		}
+		candidate.resolved[rootID] = store.ResolvedEntityIdentity{
+			StableEntityID: rootID, IdentityNamespace: root.IdentityNamespace,
+			EntityKind: root.EntityKind, CanonicalLabel: root.CanonicalLabel,
+		}
+	}
+	for _, surface := range all.Surfaces {
+		if surface.ChatSessionID == sid {
+			addSurface(surface.SurfaceText, strings.TrimSpace(surface.StableEntityID))
+		}
+	}
+	for key, candidate := range candidates {
+		if candidate.blocked || len(candidate.resolved) != 1 {
+			continue
+		}
+		for _, resolved := range candidate.resolved {
+			index.CanonicalBySurface[key] = resolved
+		}
+	}
+	for id, identity := range itemCatalog.Identities {
+		rootID := rootFor(id, map[string]bool{})
+		root, exists := itemCatalog.Identities[rootID]
+		if !exists {
+			continue
+		}
+		if label := strings.TrimSpace(identity.CanonicalLabel); label != "" && comparableEntityKey(label) != comparableEntityKey(root.CanonicalLabel) {
+			index.Aliases[rootID] = appendUniqueString(index.Aliases[rootID], label)
+		}
+	}
+	for _, surface := range all.Surfaces {
+		entityID := strings.TrimSpace(surface.StableEntityID)
+		if _, exists := itemCatalog.Identities[entityID]; !exists {
+			continue
+		}
+		rootID := rootFor(entityID, map[string]bool{})
+		root, exists := itemCatalog.Identities[rootID]
+		if !exists {
+			continue
+		}
+		label := strings.TrimSpace(surface.SurfaceText)
+		if label != "" && comparableEntityKey(label) != comparableEntityKey(root.CanonicalLabel) {
+			index.Aliases[rootID] = appendUniqueString(index.Aliases[rootID], label)
+		}
+	}
+	return index
+}
+
+func (i itemIdentityReadIndex) RootID(entityID string) string {
+	entityID = strings.TrimSpace(entityID)
+	if root := strings.TrimSpace(i.Roots[entityID]); root != "" {
+		return root
+	}
+	return entityID
+}
+
+func (i itemIdentityReadIndex) CanonicalSurface(surface string) (string, string) {
+	surface = strings.TrimSpace(surface)
+	resolved, ok := i.CanonicalBySurface[comparableEntityKey(surface)]
+	if !ok {
 		return surface, ""
 	}
 	label := strings.TrimSpace(resolved.CanonicalLabel)
@@ -302,32 +486,6 @@ func (s *Server) canonicalEntitySurfaceOfKind(ctx context.Context, sid, surface,
 		label = surface
 	}
 	return label, strings.TrimSpace(resolved.StableEntityID)
-}
-
-func (s *Server) itemIdentityAliases(ctx context.Context, sid string, catalog characterIdentityCatalog) map[string][]string {
-	aliases := map[string][]string{}
-	for id, identity := range catalog.Identities {
-		rootID := s.characterIdentityRoot(ctx, sid, id)
-		root, exists := catalog.Identities[rootID]
-		if !exists {
-			continue
-		}
-		if label := strings.TrimSpace(identity.CanonicalLabel); label != "" && comparableEntityKey(label) != comparableEntityKey(root.CanonicalLabel) {
-			aliases[rootID] = appendUniqueString(aliases[rootID], label)
-		}
-	}
-	for _, surface := range catalog.Surfaces {
-		rootID := s.characterIdentityRoot(ctx, sid, surface.StableEntityID)
-		root, exists := catalog.Identities[rootID]
-		if !exists {
-			continue
-		}
-		label := strings.TrimSpace(surface.SurfaceText)
-		if label != "" && comparableEntityKey(label) != comparableEntityKey(root.CanonicalLabel) {
-			aliases[rootID] = appendUniqueString(aliases[rootID], label)
-		}
-	}
-	return aliases
 }
 
 func itemIdentityLinkItems(catalog characterIdentityCatalog) []map[string]any {

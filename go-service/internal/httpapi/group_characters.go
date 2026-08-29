@@ -339,7 +339,7 @@ func (s *Server) entityIdentityCatalogForSession(ctx context.Context, sid, entit
 	}
 	catalog := characterIdentityCatalog{Identities: map[string]store.EntityIdentity{}, Surfaces: nonNilSlice(surfaces), Links: nonNilSlice(links)}
 	for _, identity := range identities {
-		if identity.ChatSessionID == sid && identity.EntityKind == entityKind {
+		if identity.ChatSessionID == sid && (entityKind == "" || identity.EntityKind == entityKind) {
 			catalog.Identities[strings.TrimSpace(identity.StableEntityID)] = identity
 		}
 	}
@@ -687,14 +687,29 @@ func (s *Server) canonicalizeCharacterKGTriplesForRead(ctx context.Context, sid 
 // catalog without issuing one database lookup per KG endpoint. Ambiguous or
 // broken reviewed links are omitted from the map, leaving the original KG
 // label intact for that surface.
-func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid string) map[string]string {
+func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid string, preloaded ...characterIdentityCatalog) map[string]string {
 	out := map[string]string{}
 	sid = strings.TrimSpace(sid)
 	if sid == "" || s.Store == nil {
 		return out
 	}
-	catalog, err := s.characterIdentityCatalogForSession(ctx, sid)
-	if err != nil || len(catalog.Identities) == 0 {
+	catalog := characterIdentityCatalog{}
+	if len(preloaded) > 0 {
+		catalog = preloaded[0]
+	} else {
+		var err error
+		catalog, err = s.characterIdentityCatalogForSession(ctx, sid)
+		if err != nil {
+			return out
+		}
+	}
+	characterIdentities := map[string]store.EntityIdentity{}
+	for id, identity := range catalog.Identities {
+		if identity.ChatSessionID == sid && identity.EntityKind == "character" {
+			characterIdentities[id] = identity
+		}
+	}
+	if len(characterIdentities) == 0 {
 		return out
 	}
 
@@ -706,10 +721,10 @@ func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid st
 		}
 		sourceID := strings.TrimSpace(link.SourceEntityID)
 		targetID := strings.TrimSpace(link.TargetEntityID)
-		if _, ok := catalog.Identities[sourceID]; !ok {
+		if _, ok := characterIdentities[sourceID]; !ok {
 			continue
 		}
-		if _, ok := catalog.Identities[targetID]; !ok {
+		if _, ok := characterIdentities[targetID]; !ok {
 			continue
 		}
 		if targets[sourceID] == nil {
@@ -760,12 +775,12 @@ func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid st
 			candidate = &surfaceCandidate{roots: map[string]string{}}
 			candidates[key] = candidate
 		}
-		if _, ok := catalog.Identities[entityID]; !ok {
+		if _, ok := characterIdentities[entityID]; !ok {
 			candidate.blocked = true
 			return
 		}
 		rootID := rootFor(entityID, map[string]bool{})
-		identity, ok := catalog.Identities[rootID]
+		identity, ok := characterIdentities[rootID]
 		label := strings.TrimSpace(identity.CanonicalLabel)
 		if !ok || rootID == "" || label == "" {
 			candidate.blocked = true
@@ -773,7 +788,7 @@ func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid st
 		}
 		candidate.roots[rootID] = label
 	}
-	for id, identity := range catalog.Identities {
+	for id, identity := range characterIdentities {
 		addSurface(identity.CanonicalLabel, id)
 	}
 	for _, surface := range catalog.Surfaces {

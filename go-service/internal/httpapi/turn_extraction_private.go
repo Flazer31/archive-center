@@ -841,6 +841,25 @@ func (s *Server) canonicalSubjectiveEntityOwner(ctx context.Context, sid, rawKey
 	if proposed != "" {
 		canonicalName = strings.TrimSpace(s.canonicalCharacterName(ctx, sid, proposed))
 	}
+	return subjectiveEntityOwnerCanonicalFromName(rawKey, rawName, canonicalName)
+}
+
+func subjectiveEntityOwnerCanonicalFromReadMap(rawKey, rawName string, canonicalBySurface map[string]string) subjectiveEntityOwnerCanonical {
+	rawKey = strings.TrimSpace(rawKey)
+	rawName = strings.TrimSpace(rawName)
+	proposed := strings.TrimSpace(firstNonEmpty(rawName, rawKey))
+	canonicalName := proposed
+	if resolved := strings.TrimSpace(canonicalBySurface[comparableEntityKey(proposed)]); resolved != "" {
+		canonicalName = resolved
+	}
+	return subjectiveEntityOwnerCanonicalFromName(rawKey, rawName, canonicalName)
+}
+
+func subjectiveEntityOwnerCanonicalFromName(rawKey, rawName, canonicalName string) subjectiveEntityOwnerCanonical {
+	rawKey = strings.TrimSpace(rawKey)
+	rawName = strings.TrimSpace(rawName)
+	proposed := strings.TrimSpace(firstNonEmpty(rawName, rawKey))
+	canonicalName = strings.TrimSpace(canonicalName)
 	if canonicalName == "" {
 		canonicalName = proposed
 	}
@@ -886,11 +905,15 @@ func (s *Server) canonicalSubjectiveEntityOwner(ctx context.Context, sid, rawKey
 	return out
 }
 
-func (s *Server) canonicalizeSubjectiveEntityMemoryForRead(ctx context.Context, sid string, memory store.ProtagonistEntityMemory) store.ProtagonistEntityMemory {
+func canonicalizeSubjectiveEntityMemoryWithReadMap(memory store.ProtagonistEntityMemory, canonicalBySurface map[string]string) store.ProtagonistEntityMemory {
 	if subjectiveEntityMemoryHasAnyTag(memory, "entity_manual_owner_edit", "entity_force_merged") {
 		return memory
 	}
-	owner := s.canonicalSubjectiveEntityOwner(ctx, sid, firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey), firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName))
+	owner := subjectiveEntityOwnerCanonicalFromReadMap(
+		firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey),
+		firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName),
+		canonicalBySurface,
+	)
 	if owner.Key == "" {
 		return memory
 	}
@@ -907,9 +930,13 @@ func (s *Server) canonicalizeSubjectiveEntityMemoryForRead(ctx context.Context, 
 }
 
 func (s *Server) canonicalizeSubjectiveEntityMemoriesForRead(ctx context.Context, sid string, memories []store.ProtagonistEntityMemory) []store.ProtagonistEntityMemory {
+	return canonicalizeSubjectiveEntityMemoriesWithReadMap(memories, s.characterCanonicalSurfaceMapForRead(ctx, sid))
+}
+
+func canonicalizeSubjectiveEntityMemoriesWithReadMap(memories []store.ProtagonistEntityMemory, canonicalBySurface map[string]string) []store.ProtagonistEntityMemory {
 	out := make([]store.ProtagonistEntityMemory, 0, len(memories))
 	for _, memory := range memories {
-		out = append(out, s.canonicalizeSubjectiveEntityMemoryForRead(ctx, sid, memory))
+		out = append(out, canonicalizeSubjectiveEntityMemoryWithReadMap(memory, canonicalBySurface))
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].SourceTurn != out[j].SourceTurn {

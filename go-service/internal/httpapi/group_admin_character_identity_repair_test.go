@@ -119,3 +119,77 @@ func TestSessionNormalizeRepairsOnlyMissingExactCharacterIdentities(t *testing.T
 		t.Fatalf("repeated repair was not idempotent: result=%#v identities=%d surfaces=%d", repeat, len(fake.savedIdentities), len(fake.savedSurfaces))
 	}
 }
+
+func TestSessionNormalizeRepairsMissingExactItemIdentitiesWithoutReprocessing(t *testing.T) {
+	const sid = "sess-normalize-items"
+	fake := &normalizeCharacterIdentityStore{
+		characterIdentityMergeFakeStore: &characterIdentityMergeFakeStore{
+			narrativeFakeStore: &narrativeFakeStore{kgTriples: []store.KGTriple{
+				{ID: 4, ChatSessionID: sid, Subject: "강한얼", Predicate: "소유", Object: "가죽 전대", SourceTurn: 4},
+				{ID: 5, ChatSessionID: sid, Subject: "강한얼", Predicate: "장비", Object: "은전 주머니", SourceTurn: 5},
+				{ID: 6, ChatSessionID: sid, Subject: "화재", Predicate: "causes", Object: "연기", SourceTurn: 6},
+				{ID: 7, ChatSessionID: sid, Subject: "강한얼", Predicate: "haste", Object: "성급함", SourceTurn: 7},
+				{ID: 9, ChatSessionID: sid, Subject: "강한얼", Predicate: "소유", Object: "출처 모호한 물품", SourceTurn: 9},
+			}},
+			identities: []store.EntityIdentity{
+				{StableEntityID: "silver-pouch", ChatSessionID: sid, IdentityNamespace: "session_item", EntityKind: "item", CanonicalLabel: "은전 주머니"},
+			},
+		},
+		sources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, SourceRevision: "rev-4", LogicalTurnID: "turn-4", TurnIndex: 4, LifecycleState: "active", CombinedContentHash: "hash-4"},
+			{ChatSessionID: sid, SourceRevision: "rev-5", LogicalTurnID: "turn-5", TurnIndex: 5, LifecycleState: "active", CombinedContentHash: "hash-5"},
+			{ChatSessionID: sid, SourceRevision: "rev-6", LogicalTurnID: "turn-6", TurnIndex: 6, LifecycleState: "active", CombinedContentHash: "hash-6"},
+			{ChatSessionID: sid, SourceRevision: "rev-7", LogicalTurnID: "turn-7", TurnIndex: 7, LifecycleState: "active", CombinedContentHash: "hash-7"},
+			{ChatSessionID: sid, SourceRevision: "rev-9-a", LogicalTurnID: "turn-9-a", TurnIndex: 9, LifecycleState: "active"},
+			{ChatSessionID: sid, SourceRevision: "rev-9-b", LogicalTurnID: "turn-9-b", TurnIndex: 9, LifecycleState: "active"},
+		},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	originalKGCount := len(fake.kgTriples)
+
+	dryRun := srv.repairMissingCharacterIdentities(context.Background(), sid, true)
+	if intFromAny(dryRun["item_candidates"], 0) != 3 || intFromAny(dryRun["would_create"], 0) != 2 {
+		t.Fatalf("item dry-run result=%#v", dryRun)
+	}
+	if len(fake.savedIdentities) != 0 || len(fake.savedSurfaces) != 0 {
+		t.Fatal("item identity dry-run performed writes")
+	}
+
+	result := srv.repairMissingCharacterIdentities(context.Background(), sid, false)
+	if result["status"] != "ok" || intFromAny(result["item_created_identities"], 0) != 1 || intFromAny(result["item_created_surfaces"], 0) != 2 {
+		t.Fatalf("item repair result=%#v", result)
+	}
+	if intFromAny(result["skipped"], 0) != 1 {
+		t.Fatalf("ambiguous item source was not reported separately: %#v", result)
+	}
+	var leatherIdentity *store.EntityIdentity
+	for index := range fake.savedIdentities {
+		if fake.savedIdentities[index].CanonicalLabel == "가죽 전대" {
+			leatherIdentity = &fake.savedIdentities[index]
+		}
+	}
+	if leatherIdentity == nil || leatherIdentity.EntityKind != "item" || leatherIdentity.IdentityNamespace != "session_item" ||
+		leatherIdentity.SourceRevision != "rev-4" || leatherIdentity.SourceTurn != 4 {
+		t.Fatalf("missing item identity did not use exact name/source revision: %#v", fake.savedIdentities)
+	}
+	surfaceSources := map[string]string{}
+	for _, surface := range fake.savedSurfaces {
+		surfaceSources[surface.SurfaceText] = surface.SourceRevision
+	}
+	if surfaceSources["가죽 전대"] != "rev-4" || surfaceSources["은전 주머니"] != "rev-5" {
+		t.Fatalf("item surfaces did not preserve exact source revisions: %#v", fake.savedSurfaces)
+	}
+	if surfaceSources["연기"] != "" || surfaceSources["성급함"] != "" {
+		t.Fatalf("partial predicate matches created durable item surfaces: %#v", fake.savedSurfaces)
+	}
+	if len(fake.kgTriples) != originalKGCount {
+		t.Fatal("item identity repair rewrote KG history")
+	}
+
+	repeat := srv.repairMissingCharacterIdentities(context.Background(), sid, false)
+	if intFromAny(repeat["item_created_identities"], 0) != 0 || intFromAny(repeat["item_created_surfaces"], 0) != 0 ||
+		len(fake.savedIdentities) != 1 || len(fake.savedSurfaces) != 2 {
+		t.Fatalf("repeated item identity repair was not idempotent: result=%#v identities=%d surfaces=%d", repeat, len(fake.savedIdentities), len(fake.savedSurfaces))
+	}
+}

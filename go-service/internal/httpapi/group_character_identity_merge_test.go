@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -30,6 +31,40 @@ type kgIdentityCountingStore struct {
 	identityReads int
 	surfaceReads  int
 	linkReads     int
+}
+
+type entityExplorerIdentityCountingStore struct {
+	*characterIdentityMergeFakeStore
+	identityReads      int
+	surfaceReads       int
+	linkReads          int
+	uniqueSurfaceReads int
+	reviewedRootReads  int
+}
+
+func (f *entityExplorerIdentityCountingStore) ListActiveEntityIdentities(ctx context.Context, sid string) ([]store.EntityIdentity, error) {
+	f.identityReads++
+	return f.characterIdentityMergeFakeStore.ListActiveEntityIdentities(ctx, sid)
+}
+
+func (f *entityExplorerIdentityCountingStore) ListActiveEntityIdentitySurfaces(ctx context.Context, sid string) ([]store.EntityIdentitySurface, error) {
+	f.surfaceReads++
+	return f.characterIdentityMergeFakeStore.ListActiveEntityIdentitySurfaces(ctx, sid)
+}
+
+func (f *entityExplorerIdentityCountingStore) ListReviewedEntityIdentityLinks(ctx context.Context, sid string) ([]store.EntityIdentityLink, error) {
+	f.linkReads++
+	return f.characterIdentityMergeFakeStore.ListReviewedEntityIdentityLinks(ctx, sid)
+}
+
+func (f *entityExplorerIdentityCountingStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Context, sid, normalized string) (store.ResolvedEntityIdentity, error) {
+	f.uniqueSurfaceReads++
+	return f.characterIdentityMergeFakeStore.ResolveUniqueActiveEntityIdentityBySurface(ctx, sid, normalized)
+}
+
+func (f *entityExplorerIdentityCountingStore) ResolveReviewedCanonicalEntityID(ctx context.Context, sid, sourceID string) (string, error) {
+	f.reviewedRootReads++
+	return f.characterIdentityMergeFakeStore.ResolveReviewedCanonicalEntityID(ctx, sid, sourceID)
 }
 
 func (f *kgIdentityCountingStore) ListActiveEntityIdentities(_ context.Context, sid string) ([]store.EntityIdentity, error) {
@@ -350,6 +385,212 @@ func TestExplorerKGCanonicalizesOnlySelectedPageWithBulkIdentityReads(t *testing
 	}
 	if fake.memoryFakeStore.deletedKGID != 0 || len(fake.memoryFakeStore.updatedKG) != 0 {
 		t.Fatal("KG read projection mutated source rows")
+	}
+}
+
+func TestSubjectiveMemoryPageCanonicalizesWithOneCatalogRead(t *testing.T) {
+	const sid = "sess-subjective-page"
+	base := abelIdentityMergeFixture()
+	base.links = []store.EntityIdentityLink{
+		characterIdentityManualLink(sid, "abel-id", "abelstein-id", store.EntityIdentityLinkStateReviewed),
+	}
+	for index := range base.identities {
+		base.identities[index].ChatSessionID = sid
+	}
+	for index := range base.surfaces {
+		base.surfaces[index].ChatSessionID = sid
+	}
+	base.subjective = make([]store.ProtagonistEntityMemory, 1000)
+	for index := range base.subjective {
+		base.subjective[index] = store.ProtagonistEntityMemory{
+			ID: int64(index + 1), SourceChatSessionID: sid,
+			OwnerEntityKey: "abel-id", OwnerEntityName: "아벨",
+			PersonaEntityKey: "abel-id", PersonaEntityName: "아벨",
+			MemoryText: fmt.Sprintf("주관 기억 %d", index+1), SourceTurn: index + 1,
+		}
+	}
+	fake := &entityExplorerIdentityCountingStore{characterIdentityMergeFakeStore: base}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/subjective-entity-memories?source_chat_session_id="+sid+"&limit=20", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("subjective page status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	items := sliceFromAny(response["items"])
+	if len(items) != 20 || response["has_more"] != true {
+		t.Fatalf("subjective page size/has_more=%d/%v", len(items), response["has_more"])
+	}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if stringFromMap(item, "owner_entity_name") != "아벨슈타인" {
+			t.Fatalf("subjective owner was not canonicalized: %#v", item)
+		}
+	}
+	if fake.identityReads != 1 || fake.surfaceReads != 1 || fake.linkReads != 1 {
+		t.Fatalf("catalog reads identities/surfaces/links=%d/%d/%d want one request-local catalog", fake.identityReads, fake.surfaceReads, fake.linkReads)
+	}
+	if fake.uniqueSurfaceReads != 0 || fake.reviewedRootReads != 0 {
+		t.Fatalf("subjective page issued per-item resolver calls unique/root=%d/%d", fake.uniqueSurfaceReads, fake.reviewedRootReads)
+	}
+}
+
+func TestItemsGetUsesOneAllKindCatalogWithoutPerItemResolvers(t *testing.T) {
+	const sid = "sess-items-bulk"
+	base := abelIdentityMergeFixture()
+	base.links = []store.EntityIdentityLink{
+		characterIdentityManualLink(sid, "abel-id", "abelstein-id", store.EntityIdentityLinkStateReviewed),
+	}
+	for index := range base.identities {
+		base.identities[index].ChatSessionID = sid
+	}
+	for index := range base.surfaces {
+		base.surfaces[index].ChatSessionID = sid
+	}
+	base.kgTriples = make([]store.KGTriple, 1000)
+	for index := range base.kgTriples {
+		label := fmt.Sprintf("도구-%04d", index+1)
+		stableID := fmt.Sprintf("item-%04d", index+1)
+		base.kgTriples[index] = store.KGTriple{
+			ID: int64(index + 1), ChatSessionID: sid, Subject: "아벨",
+			Predicate: "소유", Object: label, SourceTurn: index + 1,
+		}
+		base.identities = append(base.identities, store.EntityIdentity{
+			StableEntityID: stableID, ChatSessionID: sid, IdentityNamespace: "session_item",
+			EntityKind: "item", CanonicalLabel: label,
+		})
+		base.surfaces = append(base.surfaces, store.EntityIdentitySurface{
+			StableEntityID: stableID, ChatSessionID: sid, SurfaceKind: "display_name",
+			SurfaceText: label, NormalizedSurface: comparableEntityKey(label),
+		})
+	}
+	fake := &entityExplorerIdentityCountingStore{characterIdentityMergeFakeStore: base}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	response := itemIdentityGetHTTP(t, mux, "/items/"+sid)
+	items := sliceFromAny(response["items"])
+	if len(items) == 0 {
+		t.Fatal("items endpoint returned no page")
+	}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if owner := strings.TrimSpace(stringFromMap(item, "owner")); owner != "" && owner != "아벨슈타인" {
+			t.Fatalf("item owner=%q want canonical character owner", owner)
+		}
+	}
+	if fake.identityReads != 1 || fake.surfaceReads != 1 || fake.linkReads != 1 {
+		t.Fatalf("catalog reads identities/surfaces/links=%d/%d/%d want one all-kind catalog", fake.identityReads, fake.surfaceReads, fake.linkReads)
+	}
+	if fake.uniqueSurfaceReads != 0 || fake.reviewedRootReads != 0 {
+		t.Fatalf("items endpoint issued per-item resolver calls unique/root=%d/%d", fake.uniqueSurfaceReads, fake.reviewedRootReads)
+	}
+}
+
+func TestItemsGetDoesNotTreatCanonicalLabelAsImplicitSurface(t *testing.T) {
+	const sid = "sess-item-label-not-surface"
+	base := &characterIdentityMergeFakeStore{
+		narrativeFakeStore: &narrativeFakeStore{kgTriples: []store.KGTriple{{
+			ID: 1, ChatSessionID: sid, Subject: "강한얼", Predicate: "소유", Object: "전대", SourceTurn: 1,
+		}}},
+		identities: []store.EntityIdentity{{
+			StableEntityID: "leather-pouch", ChatSessionID: sid, IdentityNamespace: "session_item",
+			EntityKind: "item", CanonicalLabel: "가죽 전대",
+		}},
+	}
+	fake := &entityExplorerIdentityCountingStore{characterIdentityMergeFakeStore: base}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	response := itemIdentityGetHTTP(t, mux, "/items/"+sid)
+	items := sliceFromAny(response["items"])
+	if len(items) != 2 {
+		t.Fatalf("items=%#v want KG observation plus identity card", items)
+	}
+	byName := map[string]map[string]any{}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		byName[stringFromMap(item, "item")] = item
+	}
+	if _, exists := byName["전대"]["stable_entity_id"]; exists {
+		t.Fatalf("KG text resolved through an implicit canonical-label surface: %#v", byName["전대"])
+	}
+	if stringFromMap(byName["가죽 전대"], "stable_entity_id") != "leather-pouch" {
+		t.Fatalf("identity-only card was lost: %#v", byName["가죽 전대"])
+	}
+}
+
+func TestSubjectiveAliasRepairPlanUsesOneCatalogRead(t *testing.T) {
+	const sid = "sess-subjective-repair-bulk"
+	base := abelIdentityMergeFixture()
+	base.links = []store.EntityIdentityLink{
+		characterIdentityManualLink(sid, "abel-id", "abelstein-id", store.EntityIdentityLinkStateReviewed),
+	}
+	for index := range base.identities {
+		base.identities[index].ChatSessionID = sid
+	}
+	for index := range base.surfaces {
+		base.surfaces[index].ChatSessionID = sid
+	}
+	memories := make([]store.ProtagonistEntityMemory, 1000)
+	for index := range memories {
+		memories[index] = store.ProtagonistEntityMemory{
+			ID: int64(index + 1), SourceChatSessionID: sid,
+			OwnerEntityKey: "abel-id", OwnerEntityName: "아벨",
+			PersonaEntityKey: "abel-id", PersonaEntityName: "아벨",
+			MemoryText: fmt.Sprintf("주관 기억 %d", index+1), SourceTurn: index + 1,
+		}
+	}
+	fake := &entityExplorerIdentityCountingStore{characterIdentityMergeFakeStore: base}
+	srv := setupTestServer()
+	srv.Store = fake
+	plan := srv.buildSubjectiveEntityAliasRepairPlan(context.Background(), sid, memories)
+	if plan.Scanned != len(memories) {
+		t.Fatalf("repair plan scanned=%d want %d", plan.Scanned, len(memories))
+	}
+	if fake.identityReads != 1 || fake.surfaceReads != 1 || fake.linkReads != 1 {
+		t.Fatalf("repair catalog reads identities/surfaces/links=%d/%d/%d want one", fake.identityReads, fake.surfaceReads, fake.linkReads)
+	}
+	if fake.uniqueSurfaceReads != 0 || fake.reviewedRootReads != 0 {
+		t.Fatalf("alias repair issued per-item resolver calls unique/root=%d/%d", fake.uniqueSurfaceReads, fake.reviewedRootReads)
+	}
+}
+
+func TestEntityIdentityCatalogKindFilterRemainsScoped(t *testing.T) {
+	fake := itemIdentityMergeFixture()
+	srv := setupTestServer()
+	srv.Store = fake
+	itemCatalog, err := srv.entityIdentityCatalogForSession(context.Background(), "sess-abel", "item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(itemCatalog.Identities) == 0 {
+		t.Fatal("item catalog unexpectedly empty")
+	}
+	for _, identity := range itemCatalog.Identities {
+		if identity.EntityKind != "item" {
+			t.Fatalf("kind-scoped catalog leaked %q identity", identity.EntityKind)
+		}
+	}
+	allCatalog, err := srv.entityIdentityCatalogForSession(context.Background(), "sess-abel", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	kinds := map[string]bool{}
+	for _, identity := range allCatalog.Identities {
+		kinds[identity.EntityKind] = true
+	}
+	if !kinds["item"] || !kinds["character"] {
+		t.Fatalf("all-kind catalog kinds=%#v", kinds)
 	}
 }
 

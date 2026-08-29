@@ -313,6 +313,8 @@ func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid strin
 		"status": "ok", "chat_session_id": sid, "dry_run": dryRun,
 		"candidates": 0, "created_identities": 0, "created_surfaces": 0,
 		"would_create": 0, "skipped": 0, "failed": 0, "skipped_items": []any{}, "errors": []any{},
+		"character_candidates": 0, "character_created_identities": 0, "character_created_surfaces": 0,
+		"item_candidates": 0, "item_created_identities": 0, "item_created_surfaces": 0,
 	}
 	writer, writerOK := s.Store.(store.EntityIdentityWriter)
 	catalogReader, catalogOK := s.Store.(store.EntityIdentityCatalogReader)
@@ -412,6 +414,7 @@ func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid strin
 			return candidates[i].ID < candidates[j].ID
 		})
 		result["candidates"] = intFromAny(result["candidates"], 0) + 1
+		result["character_candidates"] = intFromAny(result["character_candidates"], 0) + 1
 		name := strings.TrimSpace(candidates[0].CharacterName)
 		ids := uniqueNonEmptyStrings(identityIDsByName[key])
 		if len(ids) > 1 {
@@ -463,6 +466,7 @@ func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid strin
 				continue
 			}
 			result["created_identities"] = intFromAny(result["created_identities"], 0) + 1
+			result["character_created_identities"] = intFromAny(result["character_created_identities"], 0) + 1
 		}
 		surfaceKey := entityIdentityIdempotencyKey("session_normalize_character_surface", stableID, key, source.SourceRevision)
 		surface := store.EntityIdentitySurface{
@@ -480,6 +484,133 @@ func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid strin
 			continue
 		}
 		result["created_surfaces"] = intFromAny(result["created_surfaces"], 0) + 1
+		result["character_created_surfaces"] = intFromAny(result["character_created_surfaces"], 0) + 1
+	}
+
+	activeItemIdentities := map[string]store.EntityIdentity{}
+	itemIdentityIDsByName := map[string][]string{}
+	for _, identity := range identities {
+		id := strings.TrimSpace(identity.StableEntityID)
+		if identity.ChatSessionID != sid || identity.EntityKind != "item" || id == "" {
+			continue
+		}
+		activeItemIdentities[id] = identity
+		if key := comparableEntityKey(identity.CanonicalLabel); key != "" {
+			itemIdentityIDsByName[key] = appendUniqueString(itemIdentityIDsByName[key], id)
+		}
+	}
+	itemSurfaceExistsByName := map[string]bool{}
+	for _, surface := range surfaces {
+		if surface.ChatSessionID != sid {
+			continue
+		}
+		if _, ok := activeItemIdentities[strings.TrimSpace(surface.StableEntityID)]; !ok {
+			continue
+		}
+		if key := comparableEntityKey(surface.SurfaceText); key != "" {
+			itemSurfaceExistsByName[key] = true
+		}
+	}
+	itemTriples, itemListErr := s.Store.ListKGTriples(ctx, sid)
+	if itemListErr != nil {
+		result["failed"] = intFromAny(result["failed"], 0) + 1
+		errorsOut = append(errorsOut, map[string]any{"stage": "list_item_kg_triples", "detail": itemListErr.Error()})
+	} else {
+		triplesByName := map[string][]store.KGTriple{}
+		itemNameOrder := []string{}
+		for _, triple := range itemTriples {
+			name := strings.TrimSpace(triple.Object)
+			key := comparableEntityKey(name)
+			if triple.ChatSessionID != sid || !durableItemIdentityPredicate(triple.Predicate) || name == "" || key == "" || itemSurfaceExistsByName[key] {
+				continue
+			}
+			if _, seen := triplesByName[key]; !seen {
+				itemNameOrder = append(itemNameOrder, key)
+			}
+			triplesByName[key] = append(triplesByName[key], triple)
+		}
+		sort.Strings(itemNameOrder)
+		for _, key := range itemNameOrder {
+			candidates := triplesByName[key]
+			sort.SliceStable(candidates, func(i, j int) bool {
+				if candidates[i].SourceTurn != candidates[j].SourceTurn {
+					return candidates[i].SourceTurn < candidates[j].SourceTurn
+				}
+				return candidates[i].ID < candidates[j].ID
+			})
+			result["candidates"] = intFromAny(result["candidates"], 0) + 1
+			result["item_candidates"] = intFromAny(result["item_candidates"], 0) + 1
+			name := strings.TrimSpace(candidates[0].Object)
+			ids := uniqueNonEmptyStrings(itemIdentityIDsByName[key])
+			if len(ids) > 1 {
+				result["skipped"] = intFromAny(result["skipped"], 0) + 1
+				skippedOut = append(skippedOut, map[string]any{"item_name": name, "reason": "multiple_existing_item_identities"})
+				continue
+			}
+			var triple store.KGTriple
+			var source store.MemorySourceRevision
+			foundSource := false
+			for _, candidate := range candidates {
+				turnSources := activeSourcesByTurn[candidate.SourceTurn]
+				if len(turnSources) == 1 {
+					triple = candidate
+					source = turnSources[0]
+					foundSource = true
+					break
+				}
+			}
+			if !foundSource {
+				result["skipped"] = intFromAny(result["skipped"], 0) + 1
+				skippedOut = append(skippedOut, map[string]any{"item_name": name, "reason": "unique_active_source_revision_not_found"})
+				continue
+			}
+			result["would_create"] = intFromAny(result["would_create"], 0) + 1
+			if dryRun {
+				continue
+			}
+			now := time.Now().UTC()
+			idempotencyKey := entityIdentityIdempotencyKey("session_normalize_item", source.SourceRevision, key)
+			stableID := ""
+			if len(ids) == 1 {
+				stableID = ids[0]
+			} else {
+				stableID = entityIdentityStableID("entity", sid, idempotencyKey)
+				identity := store.EntityIdentity{
+					StableEntityID: stableID, ChatSessionID: sid, IdentityNamespace: "session_item", EntityKind: "item",
+					CanonicalLabel: name, LifecycleState: "active", ReviewState: store.EntityIdentityReviewStateSourceObserved,
+					PresenceAuthority: "observed", OccurrenceAuthority: "derived_kg_item",
+					SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+					SourceLogicalTurnID: source.LogicalTurnID, SourceMessageID: source.SourceMessageID,
+					SourceGenerationID: source.SourceGenerationID, SourceContentHash: source.CombinedContentHash,
+					SourceTurn: triple.SourceTurn, IdempotencyKey: idempotencyKey, MappingRevision: 1,
+					FirstSeenTurn: triple.SourceTurn, LastSeenTurn: triple.SourceTurn, CreatedAt: now, UpdatedAt: now,
+				}
+				if err := writer.SaveEntityIdentity(ctx, &identity); err != nil {
+					result["failed"] = intFromAny(result["failed"], 0) + 1
+					errorsOut = append(errorsOut, map[string]any{"item_name": name, "stage": "save_item_identity", "detail": err.Error()})
+					continue
+				}
+				result["created_identities"] = intFromAny(result["created_identities"], 0) + 1
+				result["item_created_identities"] = intFromAny(result["item_created_identities"], 0) + 1
+			}
+			surfaceKey := entityIdentityIdempotencyKey("session_normalize_item_surface", stableID, key, source.SourceRevision)
+			surface := store.EntityIdentitySurface{
+				SurfaceID: entityIdentityStableID("surface", sid, surfaceKey), StableEntityID: stableID,
+				ChatSessionID: sid, IdentityNamespace: "session_item", SurfaceKind: "display_name",
+				SurfaceText: name, NormalizedSurface: key, Scope: store.EntityIdentitySurfaceScopeCurrent,
+				ValidFromTurn: triple.SourceTurn, SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+				SourceTurn: triple.SourceTurn, SourceSpanStart: -1, SourceSpanEnd: -1,
+				ReviewState: store.EntityIdentityReviewStateSourceObserved, IdempotencyKey: surfaceKey,
+				CreatedAt: now, UpdatedAt: now,
+			}
+			if err := writer.SaveEntityIdentitySurface(ctx, &surface); err != nil {
+				result["failed"] = intFromAny(result["failed"], 0) + 1
+				errorsOut = append(errorsOut, map[string]any{"item_name": name, "stage": "save_item_surface", "detail": err.Error()})
+				continue
+			}
+			result["created_surfaces"] = intFromAny(result["created_surfaces"], 0) + 1
+			result["item_created_surfaces"] = intFromAny(result["item_created_surfaces"], 0) + 1
+		}
 	}
 	result["skipped_items"] = skippedOut
 	result["errors"] = errorsOut
@@ -839,6 +970,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"memory_rows_before":             memories,
 		"advanced_tools_consolidated":    []string{"active_chat_dry_run", "repair_replay", "admin_rescan", "hierarchy_backfill", "admin_reindex"},
 		"character_identity_repair":      "missing_exact_character_names_only",
+		"item_identity_repair":           "missing_exact_kg_item_names_only",
 		"visible_trim_delete_protection": "enabled",
 	}
 }

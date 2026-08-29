@@ -89,6 +89,36 @@ func (f *identityAliasLinkRecordingStore) SaveEntityIdentityLink(_ context.Conte
 	return nil
 }
 
+func (f *identityAliasLinkRecordingStore) ListActiveEntityIdentities(_ context.Context, sid string) ([]store.EntityIdentity, error) {
+	out := make([]store.EntityIdentity, 0, len(f.identities))
+	for _, identity := range f.identities {
+		if identity != nil && identity.ChatSessionID == sid {
+			out = append(out, *identity)
+		}
+	}
+	return out, nil
+}
+
+func (f *identityAliasLinkRecordingStore) ListActiveEntityIdentitySurfaces(_ context.Context, sid string) ([]store.EntityIdentitySurface, error) {
+	out := make([]store.EntityIdentitySurface, 0, len(f.surfaces))
+	for _, surface := range f.surfaces {
+		if surface != nil && surface.ChatSessionID == sid {
+			out = append(out, *surface)
+		}
+	}
+	return out, nil
+}
+
+func (f *identityAliasLinkRecordingStore) ListReviewedEntityIdentityLinks(_ context.Context, sid string) ([]store.EntityIdentityLink, error) {
+	out := make([]store.EntityIdentityLink, 0, len(f.links))
+	for _, link := range f.links {
+		if link != nil && link.ChatSessionID == sid && link.LinkState == store.EntityIdentityLinkStateReviewed {
+			out = append(out, *link)
+		}
+	}
+	return out, nil
+}
+
 func (f *identityAliasLinkRecordingStore) ResolveUniqueActiveEntityIdentityBySurface(_ context.Context, sid, normalizedSurface string) (store.ResolvedEntityIdentity, error) {
 	canonicalIDs := map[string]bool{}
 	for _, surface := range f.surfaces {
