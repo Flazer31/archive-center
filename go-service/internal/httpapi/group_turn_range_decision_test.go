@@ -40,11 +40,14 @@ func TestAssistantTimelineRecoveryRegressionFixtureIsVersioned(t *testing.T) {
 
 type durableRoutingBaselineStore struct {
 	store.Store
-	baseline *store.SessionRoutingBaseline
+	*rollbackRouteBindingFixture
+	baseline      *store.SessionRoutingBaseline
+	activeSources []store.MemorySourceRevision
 }
 
 type rollbackDecisionChatLogStore struct {
 	store.Store
+	*rollbackRouteBindingFixture
 	logs             []store.ChatLog
 	activeSources    []store.MemorySourceRevision
 	baseline         *store.SessionRoutingBaseline
@@ -59,8 +62,74 @@ type rollbackDecisionChatLogStore struct {
 // existing rollbackRecordingStore.
 type rollbackDecisionExecutionStore struct {
 	*rollbackRecordingStore
+	*rollbackRouteBindingFixture
 	logs          []store.ChatLog
 	activeSources []store.MemorySourceRevision
+}
+
+type rollbackRoutedRecordingStore struct {
+	*rollbackRecordingStore
+	*rollbackRouteBindingFixture
+}
+
+const (
+	rollbackTestStableCharacterID = "rollback-test-character"
+	rollbackTestHostChatID        = "rollback-test-chat"
+)
+
+// rollbackRouteBindingFixture implements the production ResolveExisting store
+// contract used by the rollback handlers. Tests may advance revision to model a
+// route remap without replacing the handler or duplicating its policy.
+type rollbackRouteBindingFixture struct {
+	stableCharacterID string
+	hostChatID        string
+	canonicalSID      string
+	revision          uint64
+}
+
+func newRollbackRouteBindingFixture(canonicalSID string) *rollbackRouteBindingFixture {
+	return &rollbackRouteBindingFixture{
+		stableCharacterID: rollbackTestStableCharacterID,
+		hostChatID:        rollbackTestHostChatID,
+		canonicalSID:      canonicalSID,
+		revision:          1,
+	}
+}
+
+func (f *rollbackRouteBindingFixture) BindSessionRoute(_ context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	if f == nil || req.Mode != store.SessionRouteBindingModeResolveExisting ||
+		strings.TrimSpace(req.StableCharacterID) != f.stableCharacterID ||
+		strings.TrimSpace(req.HostChatID) != f.hostChatID ||
+		strings.TrimSpace(f.canonicalSID) == "" {
+		return nil, store.ErrNotFound
+	}
+	return &store.SessionRouteBindingResult{
+		Binding: store.SessionRouteBinding{
+			ContractVersion:    store.SessionRouteBindingContractVersion,
+			StableCharacterID:  f.stableCharacterID,
+			HostChatID:         f.hostChatID,
+			CanonicalSessionID: f.canonicalSID,
+			BindingState:       "active",
+			Revision:           f.revision,
+		},
+		ReadbackVerified: true,
+	}, nil
+}
+
+func (s *durableRoutingBaselineStore) BindSessionRoute(ctx context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	return s.rollbackRouteBindingFixture.BindSessionRoute(ctx, req)
+}
+
+func (s *rollbackDecisionChatLogStore) BindSessionRoute(ctx context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	return s.rollbackRouteBindingFixture.BindSessionRoute(ctx, req)
+}
+
+func (s *rollbackDecisionExecutionStore) BindSessionRoute(ctx context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	return s.rollbackRouteBindingFixture.BindSessionRoute(ctx, req)
+}
+
+func (s *rollbackRoutedRecordingStore) BindSessionRoute(ctx context.Context, req store.SessionRouteBindingRequest) (*store.SessionRouteBindingResult, error) {
+	return s.rollbackRouteBindingFixture.BindSessionRoute(ctx, req)
 }
 
 func (s *rollbackDecisionExecutionStore) LatestSessionTurnIndex(context.Context, string) (int, error) {
@@ -733,6 +802,23 @@ func (s *durableRoutingBaselineStore) GetSessionRoutingBaseline(context.Context,
 	return s.baseline, nil
 }
 
+func (s *durableRoutingBaselineStore) ListActiveSourceRevisions(
+	_ context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]store.MemorySourceRevision, error) {
+	result := make([]store.MemorySourceRevision, 0, len(s.activeSources))
+	for _, item := range s.activeSources {
+		if item.ChatSessionID != chatSessionID || item.LifecycleState != "active" ||
+			(fromTurn > 0 && item.TurnIndex < fromTurn) || (toTurn > 0 && item.TurnIndex > toTurn) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
 func activeSourceRevisionForUserAnchor(parentSessionID, parentHostChatID, userMessageID, assistantMessageID string, turn int) store.MemorySourceRevision {
 	return store.MemorySourceRevision{
 		LogicalTurnID: completeTurnLogicalTurnID(parentSessionID, completeTurnSourceObservation{
@@ -1239,11 +1325,16 @@ func TestRollbackDecisionProtectsCopiedSessionBaseline(t *testing.T) {
 func TestSessionRoutingHandlerUsesDurableCopiedBaselineWhenClientBaselineIsMissing(t *testing.T) {
 	const sid = "char_1_cid_copy_target"
 	server := &Server{Store: &durableRoutingBaselineStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		baseline: &store.SessionRoutingBaseline{
 			MigrationID: 42, SourceSessionID: "source", TargetSessionID: sid,
 			Mode: store.SessionMigrationModeCopyKeepSource, ImportedThroughTurn: 8,
 		},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: sid, TurnIndex: 9, SourceMessageID: "assistant-9",
+			AssistantContent: "deleted assistant", LifecycleState: "active",
+		}},
 	}}
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
@@ -1646,23 +1737,34 @@ func TestSessionRoutingMatchingCanonicalTailDisablesLostCopyOffset(t *testing.T)
 func TestRollbackDecisionHandlerUsesDurableCopiedBaselineWhenClientBaselineIsMissing(t *testing.T) {
 	const sid = "char_1_cid_copy_target"
 	server := &Server{Store: &durableRoutingBaselineStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		baseline: &store.SessionRoutingBaseline{
 			MigrationID: 42, SourceSessionID: "source", TargetSessionID: sid,
 			Mode: store.SessionMigrationModeCopyKeepSource, ImportedThroughTurn: 8,
 		},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: sid, TurnIndex: 9, SourceMessageID: "assistant-9",
+			AssistantContent: "deleted assistant", LifecycleState: "active",
+		}},
 	}}
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":1,
 		"first_removed_turn":1,
 		"visible_completed_turns":0,
 		"backend_latest_turn":9,
-		"deletion_observed":true
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[]
 	}`))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
@@ -1711,13 +1813,25 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 	const sid = "char_1_cid_copy_target"
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
-	recordingStore := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	recordingStore := &rollbackDecisionExecutionStore{
+		rollbackRecordingStore:      &rollbackRecordingStore{Store: store.NewNoopStore()},
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+		logs:                        []store.ChatLog{{ChatSessionID: sid, TurnIndex: 9, Role: "assistant", Content: "deleted assistant"}},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: sid, TurnIndex: 9, SourceMessageID: "assistant-9",
+			AssistantContent: "deleted assistant", LifecycleState: "active",
+		}},
+	}
 	server := &Server{Cfg: cfg, Store: recordingStore}
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
 	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"reason":"active_chat_tail_missing_from_runtime",
 		"candidate_from_turn":1,
@@ -1725,7 +1839,9 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 		"visible_completed_turns":0,
 		"backend_latest_turn":9,
 		"deletion_observed":true,
-		"ledger_verified":true
+		"ledger_verified":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[]
 	}`))
 	decisionRec := httptest.NewRecorder()
 	mux.ServeHTTP(decisionRec, decisionReq)
@@ -1740,7 +1856,7 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 		t.Fatalf("decision=%+v", decision)
 	}
 
-	rollbackReq := httptest.NewRequest(http.MethodDelete, "/rollback/9?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken, nil)
+	rollbackReq := httptest.NewRequest(http.MethodDelete, "/rollback/9?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken+"&assistant_observation_digest="+decision.AssistantObservationDigest, nil)
 	rollbackRec := httptest.NewRecorder()
 	mux.ServeHTTP(rollbackRec, rollbackReq)
 	if rollbackRec.Code != http.StatusOK {
@@ -1760,13 +1876,20 @@ func TestRollbackDecisionTokenKeepsOperationSourceThroughTerminalHUD(t *testing.
 	const sid = "char_1_cid_postprocessor_replace"
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
-	recordingStore := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	recordingStore := &rollbackRoutedRecordingStore{
+		rollbackRecordingStore:      &rollbackRecordingStore{Store: store.NewNoopStore()},
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+	}
 	server := &Server{Cfg: cfg, Store: recordingStore}
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 
 	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"postprocessor_final_replace",
 		"candidate_from_turn":9,
 		"backend_latest_turn":9,
@@ -1795,7 +1918,7 @@ func TestRollbackDecisionTokenKeepsOperationSourceThroughTerminalHUD(t *testing.
 	// the canonical owner of this operation and must keep the original source.
 	rollbackReq := httptest.NewRequest(
 		http.MethodDelete,
-		"/rollback/9?chat_session_id="+sid+"&req_source=manual&decision_token="+decision.DecisionToken,
+		"/rollback/9?chat_session_id="+sid+"&req_source=manual&decision_token="+decision.DecisionToken+"&assistant_observation_digest="+decision.AssistantObservationDigest,
 		nil,
 	)
 	rollbackRec := httptest.NewRecorder()
@@ -1832,8 +1955,8 @@ func TestRollbackDecisionCarriesTypedSupersession(t *testing.T) {
 		t.Fatalf("supersession decision=%+v", decision)
 	}
 	ledger := newRollbackDecisionLedger()
-	record := ledger.issue(decision.ChatSessionID, decision.FromTurn, "adapter", decision.LifecycleAction)
-	consumed, ok := ledger.consume(record.Token, decision.ChatSessionID, decision.FromTurn)
+	record := ledger.issue(rollbackDecisionRecord{SessionID: decision.ChatSessionID, FromTurn: decision.FromTurn, RequestSource: "adapter", LifecycleAction: decision.LifecycleAction})
+	consumed, ok := ledger.consume(record.Token, decision.ChatSessionID, decision.FromTurn, "")
 	if !ok || consumed.LifecycleAction != store.LogicalTurnLifecycleSuperseded {
 		t.Fatalf("typed supersession was not preserved by decision token: %+v ok=%v", consumed, ok)
 	}
@@ -1853,8 +1976,9 @@ func TestRollbackDecisionRejectsUnknownLifecycleAction(t *testing.T) {
 func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing.T) {
 	const sid = "char_1_cid_user_only_tail"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
-		logs:  []store.ChatLog{{ChatSessionID: sid, TurnIndex: 9, Role: "user", Content: "saved input only"}},
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+		logs:                        []store.ChatLog{{ChatSessionID: sid, TurnIndex: 9, Role: "user", Content: "saved input only"}},
 	}
 	server := &Server{Store: decisionStore}
 	mux := http.NewServeMux()
@@ -1862,6 +1986,10 @@ func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":9,
 		"removed_assistant_count":0,
@@ -1892,7 +2020,8 @@ func TestRollbackDecisionHandlerVerifiesIncompleteUserOnlyBackendTail(t *testing
 func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 	const sid = "char_1_cid_manual_delete"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		logs: []store.ChatLog{
 			{ChatSessionID: sid, TurnIndex: 5, Role: "user", Content: "target"},
 			{ChatSessionID: sid, TurnIndex: 6, Role: "user", Content: "u"},
@@ -1905,6 +2034,10 @@ func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"manual",
 		"candidate_from_turn":5,
 		"deletion_observed":true,
@@ -1929,7 +2062,8 @@ func TestRollbackDecisionHandlerResolvesMissingBackendLatestTurn(t *testing.T) {
 func TestRollbackDecisionHandlerRetainsCompletedTurnsWhenOnlyUserInputsDisappear(t *testing.T) {
 	const sid = "char_1_cid_user_inputs_removed"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		logs: []store.ChatLog{
 			{ChatSessionID: sid, TurnIndex: 1, Role: "user", Content: "u1"},
 			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
@@ -1947,6 +2081,10 @@ func TestRollbackDecisionHandlerRetainsCompletedTurnsWhenOnlyUserInputsDisappear
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":2,
 		"removed_assistant_count":1,
@@ -1971,7 +2109,8 @@ func TestRollbackDecisionHandlerRetainsCompletedTurnsWhenOnlyUserInputsDisappear
 func TestRollbackDecisionHandlerDerivesEarliestDeletedAssistantFromActiveSources(t *testing.T) {
 	const sid = "char_1_cid_assistant_removed"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		logs: []store.ChatLog{
 			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
 			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
@@ -1987,6 +2126,10 @@ func TestRollbackDecisionHandlerDerivesEarliestDeletedAssistantFromActiveSources
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":1,
 		"removed_assistant_count":0,
@@ -2011,7 +2154,8 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 	const sid = "char_1_cid_real_observed_delete"
 	recorder := &rollbackRecordingStore{Store: store.NewNoopStore()}
 	executionStore := &rollbackDecisionExecutionStore{
-		rollbackRecordingStore: recorder,
+		rollbackRecordingStore:      recorder,
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		logs: []store.ChatLog{
 			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
 			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
@@ -2029,6 +2173,10 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 
 	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":0,
 		"deletion_observed":true,
@@ -2049,6 +2197,9 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 	if !decision.Allowed || decision.FromTurn != 2 || decision.DecisionToken == "" {
 		t.Fatalf("real decision did not identify deleted turn 2: %+v", decision)
 	}
+	if decision.ContractVersion != rollbackDecisionContractVersion || decision.RouteBindingRevision != executionStore.revision || decision.AssistantObservationDigest == "" {
+		t.Fatalf("decision did not bind v2 route and assistant evidence: %+v", decision)
+	}
 	detectedHUD := mapFromAny(decision.TurnWorkflowHUD)
 	wantRequestID := "rollback:" + sid + ":2:auto"
 	if detectedHUD["request_id"] != wantRequestID || detectedHUD["status"] != "running" {
@@ -2057,7 +2208,7 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 
 	rollbackReq := httptest.NewRequest(
 		http.MethodDelete,
-		"/rollback/2?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken,
+		"/rollback/2?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken+"&assistant_observation_digest="+decision.AssistantObservationDigest,
 		nil,
 	)
 	rollbackRec := httptest.NewRecorder()
@@ -2091,9 +2242,193 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 	}
 }
 
+func TestRollbackDecisionV2RejectsCrossRouteSessionWithoutMutation(t *testing.T) {
+	const (
+		requestedSID = "session-a"
+		canonicalSID = "session-b"
+	)
+	recorder := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	executionStore := &rollbackDecisionExecutionStore{
+		rollbackRecordingStore:      recorder,
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(canonicalSID),
+		logs:                        []store.ChatLog{{ChatSessionID: canonicalSID, TurnIndex: 1, Role: "assistant", Content: "b output"}},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: canonicalSID, TurnIndex: 1, SourceMessageID: "b-assistant-1",
+			AssistantContent: "b output", LifecycleState: "active",
+		}},
+	}
+	server := &Server{Store: executionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+requestedSID+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
+		"request_source":"auto",
+		"candidate_from_turn":1,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if rec.Code != http.StatusOK || decision.Allowed || decision.Reason != "session_route_canonical_mismatch" || decision.DecisionToken != "" {
+		t.Fatalf("cross-route decision=%+v status=%d", decision, rec.Code)
+	}
+	if len(recorder.deletes) != 0 || len(recorder.audits) != 0 {
+		t.Fatalf("cross-route observation mutated session A: deletes=%+v audits=%+v", recorder.deletes, recorder.audits)
+	}
+}
+
+func TestRollbackDecisionV2RejectsRouteRevisionChangeBeforeMutation(t *testing.T) {
+	const sid = "session-route-revision"
+	recorder := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	route := newRollbackRouteBindingFixture(sid)
+	executionStore := &rollbackDecisionExecutionStore{
+		rollbackRecordingStore:      recorder,
+		rollbackRouteBindingFixture: route,
+		logs:                        []store.ChatLog{{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "deleted output"}},
+		activeSources: []store.MemorySourceRevision{{
+			ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1",
+			AssistantContent: "deleted output", LifecycleState: "active",
+		}},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	server := &Server{Cfg: cfg, Store: executionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
+		"request_source":"auto",
+		"candidate_from_turn":1,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[]
+	}`))
+	decisionRec := httptest.NewRecorder()
+	mux.ServeHTTP(decisionRec, decisionReq)
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(decisionRec.Body.Bytes(), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Allowed || decision.DecisionToken == "" || decision.RouteBindingRevision != route.revision {
+		t.Fatalf("decision=%+v", decision)
+	}
+
+	route.revision++
+	rollbackReq := httptest.NewRequest(
+		http.MethodDelete,
+		"/rollback/1?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken+"&assistant_observation_digest="+decision.AssistantObservationDigest,
+		nil,
+	)
+	rollbackRec := httptest.NewRecorder()
+	mux.ServeHTTP(rollbackRec, rollbackReq)
+	var result map[string]any
+	if err := json.Unmarshal(rollbackRec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	if rollbackRec.Code != http.StatusConflict || result["code"] != "rollback_session_route_changed" {
+		t.Fatalf("route change response=%d %+v", rollbackRec.Code, result)
+	}
+	if len(recorder.deletes) != 0 || len(recorder.audits) != 0 {
+		t.Fatalf("route change mutated session: deletes=%+v audits=%+v", recorder.deletes, recorder.audits)
+	}
+}
+
+func TestRollbackDecisionV2PendingOutputDoesNotIssueToken(t *testing.T) {
+	const sid = "session-pending-output"
+	server := &Server{Store: &rollbackRoutedRecordingStore{
+		rollbackRecordingStore:      &rollbackRecordingStore{Store: store.NewNoopStore()},
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+	}}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
+		"request_source":"postprocessor_final_replace",
+		"candidate_from_turn":1,
+		"deletion_observed":true,
+		"pending_output_guard":true,
+		"lifecycle_action_observation":"superseded"
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed || decision.Reason != "pending_output_guard" || decision.DecisionToken != "" {
+		t.Fatalf("pending output decision=%+v", decision)
+	}
+}
+
+func TestRollbackDecisionV2KeepsCompleteObservationsWhenAnotherIsIncomplete(t *testing.T) {
+	const sid = "session-partial-observation"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "present output"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "deleted output"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", AssistantContent: "present output", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", AssistantContent: "deleted output", LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
+		"request_source":"auto",
+		"candidate_from_turn":1,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","message_index":0},
+			{"message_index":-1,"disabled_state":"unknown"}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &decision); err != nil {
+		t.Fatal(err)
+	}
+	if !decision.Allowed || decision.FromTurn != decisionStore.activeSources[1].TurnIndex || decision.DecisionToken == "" {
+		t.Fatalf("complete observation was discarded: %+v", decision)
+	}
+	if len(decision.IncompleteAssistantObservations) != 1 || decision.IncompleteAssistantObservations[0].ObservationIndex != 1 {
+		t.Fatalf("incomplete observations=%+v", decision.IncompleteAssistantObservations)
+	}
+}
+
 func TestRollbackDecisionHandlerIgnoresPoisonedCounterAnchorAndUsesDeletedSourceTurn(t *testing.T) {
 	const sid = "char_1_cid_deleted_36_38"
-	decisionStore := &rollbackDecisionChatLogStore{Store: store.NewNoopStore()}
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+	}
 	observations := make([]rollbackAssistantObservation, 0, 35)
 	for turn := 1; turn <= 38; turn++ {
 		content := fmt.Sprintf("assistant output %d", turn)
@@ -2124,6 +2459,10 @@ func TestRollbackDecisionHandlerIgnoresPoisonedCounterAnchorAndUsesDeletedSource
 	server.RegisterRoutes(mux)
 	payload, err := json.Marshal(rollbackDecisionRequest{
 		ChatSessionID:             sid,
+		StableCharacterID:         rollbackTestStableCharacterID,
+		StableCharacterIDState:    "observed",
+		HostChatID:                rollbackTestHostChatID,
+		HostChatIDState:           "observed",
 		RequestSource:             "auto",
 		CandidateFromTurn:         3,
 		FirstRemovedTurn:          3,
@@ -2151,8 +2490,9 @@ func TestRollbackDecisionHandlerIgnoresPoisonedCounterAnchorAndUsesDeletedSource
 func TestRollbackDecisionTreatsDisabledObservedAssistantAsPresent(t *testing.T) {
 	const sid = "char_1_cid_disabled_output_present"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
-		logs:  []store.ChatLog{{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "still stored"}},
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+		logs:                        []store.ChatLog{{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "still stored"}},
 		activeSources: []store.MemorySourceRevision{{
 			ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1",
 			AssistantContent: "still stored", LifecycleState: "active",
@@ -2163,6 +2503,10 @@ func TestRollbackDecisionTreatsDisabledObservedAssistantAsPresent(t *testing.T) 
 	server.RegisterRoutes(mux)
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":1,
 		"deletion_observed":true,
@@ -2185,7 +2529,8 @@ func TestRollbackDecisionTreatsDisabledObservedAssistantAsPresent(t *testing.T) 
 func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testing.T) {
 	const sid = "char_1_cid_middle_assistant_removed"
 	decisionStore := &rollbackDecisionChatLogStore{
-		Store: store.NewNoopStore(),
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
 		logs: []store.ChatLog{
 			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
 			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
@@ -2203,6 +2548,10 @@ func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testin
 
 	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
 		"request_source":"auto",
 		"candidate_from_turn":3,
 		"removed_assistant_count":0,
@@ -2423,11 +2772,19 @@ func TestRollbackDecisionRejectsUnverifiedIncompleteTailCandidate(t *testing.T) 
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			server := &Server{Store: &rollbackDecisionChatLogStore{Store: store.NewNoopStore(), logs: tc.logs}}
+			server := &Server{Store: &rollbackDecisionChatLogStore{
+				Store:                       store.NewNoopStore(),
+				rollbackRouteBindingFixture: newRollbackRouteBindingFixture("s"),
+				logs:                        tc.logs,
+			}}
 			mux := http.NewServeMux()
 			server.RegisterRoutes(mux)
 			req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
 				"chat_session_id":"s",
+				"stable_character_id":"`+rollbackTestStableCharacterID+`",
+				"stable_character_id_state":"observed",
+				"host_chat_id":"`+rollbackTestHostChatID+`",
+				"host_chat_id_state":"observed",
 				"request_source":"auto",
 				"candidate_from_turn":4,
 				"removed_user_count":1,
@@ -2503,7 +2860,7 @@ func TestRollbackDecisionDefersPocketRisuStyleTailRemovalDuringGeneration(t *tes
 		CandidateFromTurn: 4, PreviousTurnIndex: 4,
 		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
 		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
-		HostLifecycleObservation: "generation_watch_active",
+		PendingOutputGuard: true,
 	})
 	if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
 		t.Fatalf("active generation must not authorize rollback: %+v", resp)
@@ -2671,7 +3028,7 @@ func TestCopiedEightPlusOneRollbackDecisionExecutesOnlyTurnNine(t *testing.T) {
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	recordingStore := &rollbackRecordingStore{Store: store.NewNoopStore()}
 	server := &Server{Cfg: cfg, Store: recordingStore}
-	record := server.rollbackDecisionLedger().issue(sid, decision.FromTurn, "auto", store.LogicalTurnLifecycleDeleted)
+	record := server.rollbackDecisionLedger().issue(rollbackDecisionRecord{SessionID: sid, FromTurn: decision.FromTurn, RequestSource: "auto", LifecycleAction: store.LogicalTurnLifecycleDeleted})
 	mux := http.NewServeMux()
 	server.RegisterRoutes(mux)
 	req := httptest.NewRequest(http.MethodDelete, "/rollback/9?chat_session_id="+sid+"&req_source=auto&decision_token="+record.Token, nil)
@@ -2692,30 +3049,83 @@ func TestCopiedEightPlusOneRollbackDecisionExecutesOnlyTurnNine(t *testing.T) {
 
 func TestRollbackDecisionTokenIsOneUseAndBoundToRange(t *testing.T) {
 	ledger := newRollbackDecisionLedger()
-	record := ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
-	if _, ok := ledger.consume(record.Token, "s", 5); ok {
+	record := ledger.issue(rollbackDecisionRecord{SessionID: "s", FromTurn: 4, RequestSource: "auto", LifecycleAction: store.LogicalTurnLifecycleDeleted})
+	if _, ok := ledger.consume(record.Token, "s", 5, ""); ok {
 		t.Fatal("token accepted wrong turn")
 	}
-	record = ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
-	if _, ok := ledger.consume(record.Token, "s", 4); !ok {
+	record = ledger.issue(rollbackDecisionRecord{SessionID: "s", FromTurn: 4, RequestSource: "auto", LifecycleAction: store.LogicalTurnLifecycleDeleted})
+	if _, ok := ledger.consume(record.Token, "s", 4, ""); !ok {
 		t.Fatal("token rejected matching decision")
 	}
-	if _, ok := ledger.consume(record.Token, "s", 4); ok {
+	if _, ok := ledger.consume(record.Token, "s", 4, ""); ok {
 		t.Fatal("token reused")
+	}
+}
+
+func TestRollbackHandlerKeepsOneUseWrongSessionAndWrongTurnTokenRules(t *testing.T) {
+	const (
+		sid      = "token-session"
+		fromTurn = 4
+		digest   = "assistant-digest"
+	)
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	recorder := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	server := &Server{Cfg: cfg, Store: recorder}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	issue := func() rollbackDecisionRecord {
+		return server.rollbackDecisionLedger().issue(rollbackDecisionRecord{
+			SessionID: sid, FromTurn: fromTurn, RequestSource: "manual",
+			LifecycleAction:            store.LogicalTurnLifecycleDeleted,
+			AssistantObservationDigest: digest,
+		})
+	}
+	request := func(record rollbackDecisionRecord, requestSID string, requestTurn int) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(
+			http.MethodDelete,
+			fmt.Sprintf("/rollback/%d?chat_session_id=%s&req_source=manual&decision_token=%s&assistant_observation_digest=%s", requestTurn, requestSID, record.Token, digest),
+			nil,
+		)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := request(issue(), sid, fromTurn+1); rec.Code != http.StatusConflict {
+		t.Fatalf("wrong turn status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if rec := request(issue(), "other-session", fromTurn); rec.Code != http.StatusConflict {
+		t.Fatalf("wrong session status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	record := issue()
+	if rec := request(record, sid, fromTurn); rec.Code != http.StatusOK {
+		t.Fatalf("matching token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	deleteCount := len(recorder.deletes)
+	if deleteCount == 0 {
+		t.Fatal("matching token did not execute real rollback handler")
+	}
+	if rec := request(record, sid, fromTurn); rec.Code != http.StatusConflict {
+		t.Fatalf("reused token status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if len(recorder.deletes) != deleteCount {
+		t.Fatalf("reused token mutated store: before=%d after=%d", deleteCount, len(recorder.deletes))
 	}
 }
 
 func TestRollbackDecisionLedgerEvictsOldestTokenAtCapacity(t *testing.T) {
 	ledger := newRollbackDecisionLedger()
-	first := ledger.issue("s", 4, "auto", store.LogicalTurnLifecycleDeleted)
+	first := ledger.issue(rollbackDecisionRecord{SessionID: "s", FromTurn: 4, RequestSource: "auto", LifecycleAction: store.LogicalTurnLifecycleDeleted})
 	var latest rollbackDecisionRecord
 	for index := 1; index <= rollbackDecisionMax; index++ {
-		latest = ledger.issue("s", 4+index, "auto", store.LogicalTurnLifecycleDeleted)
+		latest = ledger.issue(rollbackDecisionRecord{SessionID: "s", FromTurn: 4 + index, RequestSource: "auto", LifecycleAction: store.LogicalTurnLifecycleDeleted})
 	}
-	if _, ok := ledger.consume(first.Token, "s", 4); ok {
+	if _, ok := ledger.consume(first.Token, "s", 4, ""); ok {
 		t.Fatal("oldest rollback token survived capacity eviction")
 	}
-	if _, ok := ledger.consume(latest.Token, latest.SessionID, latest.FromTurn); !ok {
+	if _, ok := ledger.consume(latest.Token, latest.SessionID, latest.FromTurn, ""); !ok {
 		t.Fatal("latest rollback token was not retained")
 	}
 }

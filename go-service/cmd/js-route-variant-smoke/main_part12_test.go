@@ -1083,9 +1083,18 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
 }
 function normalizeAssistantPersistenceCandidate(value){ return String(value || "").trim(); }
 function isSameAssistantComparableText(left,right){ return left===right; }
+function buildRollbackAssistantObservations(list){
+  return list.filter(item=>item.role==="assistant").map((item,index)=>({
+    message_id:"assistant-"+index,
+    message_index:index,
+    content_hash:String(item.content || ""),
+  }));
+}
 const result=buildPostOutputSecondaryRequestContext(messages);
 if (!result || result.contextMessages.length!==messages.length ||
-    result.contextMessages[0].content!==messages[0].content) {
+    result.contextMessages[0].content!==messages[0].content ||
+    result.assistantObservationScope!=="full_active_chat" ||
+    !Array.isArray(result.assistantObservations) || result.assistantObservations.length!==25) {
   throw new Error("post-output persistence truncated exact host context");
 }
 `
@@ -1740,6 +1749,8 @@ const source = fs.readFileSync(archivePath, "utf8");
 const callbacks = { input: null, beforeRequest: null, afterRequest: null, output: null, unload: null };
 const registrations = [];
 const backendCalls = [];
+const rollbackDecisionCalls = [];
+const rollbackDeleteCalls = [];
 const unexpected = [];
 const completed = [];
 const completeTurnAttempts = [];
@@ -1766,6 +1777,8 @@ let sequence = 0;
 let holdNextOutputBranchRouting = false;
 let releaseOutputBranchRouting = null;
 let rejectNextCompleteTurn = false;
+let holdNextRollbackPrepare = false;
+let releaseRollbackPrepare = null;
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -1943,11 +1956,48 @@ const Risuai = {
     }
 	if (url.pathname === "/prepare-turn" && method === "POST") {
       assert(body && typeof body.chat_session_id === "string" && body.chat_session_id, "prepare-turn missing session");
+	  if (holdNextRollbackPrepare) {
+		holdNextRollbackPrepare = false;
+		return await new Promise(resolve => {
+		  releaseRollbackPrepare = () => resolve(response({
+			status: "ok",
+			source: "fixture",
+			current_input_decision: {
+			  status: "eligible",
+			  reason_code: "fixture_eligible",
+			  effective_user_input: "B route fence input",
+			  selected_observation_ref: "fixture:b-route-fence",
+			  context_injection_eligible: false,
+			},
+		  }));
+		});
+	  }
       return response({
         status: "ok",
         source: "fixture",
         current_input_decision: { status: "deferred", reason_code: "fixture_owner_only" },
 		});
+	}
+	if (url.pathname === "/rollback/decision" && method === "POST") {
+	  rollbackDecisionCalls.push(clone(body));
+	  const routedChatIndex = chats.findIndex(chat => chat.id === body.host_chat_id);
+	  assert(routedChatIndex >= 0, "rollback decision used unknown host chat " + body.host_chat_id);
+	  assert(body.chat_session_id === sessionIDFor(routedChatIndex),
+		"rollback request crossed captured route: sid=" + body.chat_session_id + " host=" + body.host_chat_id);
+	  return response({
+		status: "ok",
+		contract_version: "rollback.decision.v2",
+		allowed: false,
+		decision: "blocked",
+		reason: "assistant_output_not_removed",
+		chat_session_id: body.chat_session_id,
+		assistant_observation_digest: "fixture-assistant-digest",
+		incomplete_assistant_observations: [],
+	  });
+	}
+	if (url.pathname.startsWith("/rollback/") && method === "DELETE") {
+	  rollbackDeleteCalls.push({ path: url.pathname, search: url.search });
+	  throw new Error("blocked rollback decision reached mutation route");
 	}
 	if (url.pathname.endsWith("/lorebook-reference/snapshots") && method === "POST") {
 		const snapshotSession = decodeURIComponent(url.pathname.split("/")[2] || "");
@@ -2268,6 +2318,43 @@ global.risuai = Risuai;
 	await new Promise(resolve => setTimeout(resolve, 30));
 	assert(completeTurnAttempts.length === attemptsBeforeRejectedOutput + 1,
 		"duplicate rejected output bypassed retry-after-new-observation state");
+
+	// Hold the source decision after beforeRequest has frozen B's host route,
+	// then switch the visible UI to A. The production rollback adapter must send
+	// B's captured stable character/chat identity and the full B assistant set;
+	// it must not reread the now-current A chat.
+	const userB3 = { role: "user", data: "B route fence input", chatId: "user-b-3", time: 1000 + (++sequence) };
+	chats[1].message.push(userB3);
+	currentChatIndex = 1;
+	await callbacks.input(userB3.data);
+	holdNextRollbackPrepare = true;
+	const bRollbackBeforeRequest = callbacks.beforeRequest(
+	  { messages: [{ role: "user", content: userB3.data }] },
+	  "model",
+	);
+	await waitFor(() => typeof releaseRollbackPrepare === "function", "held B rollback source decision");
+	currentChatIndex = 0;
+	releaseRollbackPrepare();
+	await bRollbackBeforeRequest;
+	assert(rollbackDecisionCalls.length === 1,
+	  "captured B beforeRequest did not issue exactly one rollback decision: " + JSON.stringify(rollbackDecisionCalls));
+	const rollbackObservation = rollbackDecisionCalls[0];
+	assert(rollbackObservation.chat_session_id === sessionIDFor(1), "rollback decision did not retain B session");
+	assert(rollbackObservation.stable_character_id === chars[0].chaId,
+	  "rollback decision did not retain captured stable character ID");
+	assert(rollbackObservation.host_chat_id === chats[1].id,
+	  "rollback decision reread current A host chat instead of captured B");
+	assert(rollbackObservation.stable_character_id_state === "observed"
+	  && rollbackObservation.host_chat_id_state === "observed",
+	  "rollback decision did not mark captured route observations");
+	assert(rollbackObservation.assistant_observation_scope === "full_active_chat",
+	  "rollback decision lost full assistant observation scope");
+	assert(Array.isArray(rollbackObservation.assistant_observations)
+	  && rollbackObservation.assistant_observations.some(item => item.message_id === "assistant-b"),
+	  "rollback decision did not carry B's complete assistant observation set");
+	assert(!rollbackObservation.assistant_observations.some(item => item.message_id === "assistant-a"),
+	  "rollback decision mixed A assistant observations into B");
+	assert(rollbackDeleteCalls.length === 0, "blocked B route decision mutated A or B");
 
 	assert(completed.every(item => fixtureChatIndexForSession(item.chat_session_id) >= 0),
 		"complete-turn escaped the captured fixture sessions");

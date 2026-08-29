@@ -6571,12 +6571,16 @@
     const cached = _sessionCache && typeof _sessionCache === "object" ? _sessionCache : null;
     if (!sid || !cached || String(cached.sessionId || "").trim() !== sid) return null;
     if (!Number.isInteger(cached.charIdx) || !Number.isInteger(cached.chatIdx)) return null;
+    const hostChatId = String(cached.observedChatUniqueId || "").trim();
+    const stableCharacterId = String(cached.stableCharacterId || "").trim();
     return {
       sessionId: sid,
       charIdx: cached.charIdx,
       chatIdx: cached.chatIdx,
-      hostChatId: String(cached.observedChatUniqueId || "").trim(),
-      stableCharacterId: String(cached.stableCharacterId || "").trim(),
+      hostChatId,
+      hostChatIdState: hostChatId ? "observed" : "unobserved",
+      stableCharacterId,
+      stableCharacterIdState: stableCharacterId ? "observed" : "unobserved",
     };
   }
 
@@ -20234,6 +20238,9 @@
 
   async function requestBackendRollbackDecision(sessionId, candidateFromTurn, reason, detail, requestSource) {
     const observed = detail && typeof detail === "object" ? detail : {};
+    const capturedHostContext = observed.hostContext && typeof observed.hostContext === "object"
+      ? observed.hostContext
+      : null;
     const tailVerification = observed.tailReconcileVerification && typeof observed.tailReconcileVerification === "object"
       ? observed.tailReconcileVerification
       : null;
@@ -20245,6 +20252,16 @@
       timeoutMs: getRequestTimeoutSettingMs(),
       body: {
         chat_session_id: String(sessionId || ""),
+        stable_character_id: String(capturedHostContext && capturedHostContext.stableCharacterId || ""),
+        stable_character_id_state: String(
+          capturedHostContext && capturedHostContext.stableCharacterIdState
+          || (capturedHostContext && capturedHostContext.stableCharacterId ? "observed" : "unobserved")
+        ),
+        host_chat_id: String(capturedHostContext && capturedHostContext.hostChatId || ""),
+        host_chat_id_state: String(
+          capturedHostContext && capturedHostContext.hostChatIdState
+          || (capturedHostContext && capturedHostContext.hostChatId ? "observed" : "unobserved")
+        ),
         request_source: String(requestSource || "auto"),
         reason: String(reason || "unknown"),
         candidate_from_turn: Math.max(0, Math.floor(Number(candidateFromTurn || 0))),
@@ -20261,6 +20278,7 @@
         incomplete_tail_candidate: !!(tailVerification && tailVerification.status === "incomplete_user_only_tail_candidate"),
         history_trim_guard: false,
         duplicate_blocked: false,
+        pending_output_guard: observed.pendingOutputGuard === true,
         host_lifecycle_observation: String(observed.hostLifecycleObservation || ""),
         lifecycle_action_observation: String(observed.lifecycleActionObservation || ""),
         allow_manual_candidate: String(requestSource || "auto") === "manual",
@@ -20281,7 +20299,7 @@
         baseline: serializeSessionRoutingBaselineForBackend(sessionId),
       },
     });
-    if (!result || result.status !== "ok" || result.contract_version !== "rollback.decision.v1") return null;
+    if (!result || result.status !== "ok" || result.contract_version !== "rollback.decision.v2") return null;
     return result;
   }
 
@@ -20325,6 +20343,7 @@
       rollbackParams.set("chat_session_id", String(sessionId || ""));
       rollbackParams.set("req_source", requestSource);
       rollbackParams.set("decision_token", String(decision.decision_token));
+      rollbackParams.set("assistant_observation_digest", String(decision.assistant_observation_digest || ""));
       rollbackParams.set("host_observed_at_ms", String(Date.now()));
       const routingProtection = decision.baseline_applied ? {
         protectedBeforeTurn: Number(decision.protected_before_turn || 0),
@@ -20491,11 +20510,11 @@
         reason: options.reason || "active_chat_assistant_observation",
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
+        hostContext: options.hostContext || null,
+        pendingOutputGuard: hasPendingFinalConfirmationForSession(sid),
         hostLifecycleObservation: String(
           options.hostLifecycleObservation
-          || (hasPendingFinalConfirmationForSession(sid)
-            ? "final_confirmation_pending"
-            : "")
+          || ""
         ),
         lifecycleActionObservation: "deleted",
       };
@@ -20536,16 +20555,18 @@
     }
     const fixedSessionId = String(sessionId || await getCurrentChatSessionId() || "").trim();
     if (!fixedSessionId) return false;
+    const fixedHostContext = hostContext || captureSessionHostContextFromCache(fixedSessionId);
     const existingPromise = _rollbackHostSignalReconcilePromiseBySession.get(fixedSessionId);
     if (existingPromise) return existingPromise;
     const reconcilePromise = (async function reconcileObservedHostRollback() {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, hostContext);
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, fixedHostContext);
       if (!resolvedActiveChat.chat) return false;
       const rawMessages = extractActiveChatMessageList(resolvedActiveChat.chat);
       if (!Array.isArray(rawMessages)) return false;
       const reconciled = await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {
         reason: String(options.reason || "worldline_refresh_assistant_observation"),
         hostLifecycleObservation: String(options.hostLifecycleObservation || "worldline_refresh_observed"),
+        hostContext: fixedHostContext,
       });
       return reconciled === true;
     })();
@@ -31780,6 +31801,8 @@
       return {
         userContent,
         assistantContent,
+        assistantObservationScope: "full_active_chat",
+        assistantObservations: buildRollbackAssistantObservations(list),
         contextMessages: list.map(function(item) {
           return {
             role: String((item && item.role) || ""),
@@ -31941,7 +31964,15 @@
       sid,
       turnIndex,
       "postprocessor_final_output_replace",
-      { postprocessorFinalReplace: true, lifecycleActionObservation: "superseded" },
+      {
+        postprocessorFinalReplace: true,
+        lifecycleActionObservation: "superseded",
+        hostContext: replacement && replacement.hostContext || null,
+        assistantObservationScope: String(replacement && replacement.assistantObservationScope || ""),
+        currentAssistantObservations: Array.isArray(replacement && replacement.assistantObservations)
+          ? replacement.assistantObservations
+          : [],
+      },
       { requestSource: "postprocessor_final_replace", updateAutoState: false }
     );
     if (!rolledBack) {
@@ -32493,6 +32524,7 @@
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
       if (postOutputReplacement && !rawInputObservation) {
+        postOutputReplacement.hostContext = orchHostContext;
         const payloadUserText = getLastPayloadUserText(messages);
         const payloadUser = normalizeMainTurnCompareText(payloadUserText);
         const previousUser = normalizeMainTurnCompareText(postOutputReplacement.userContent);

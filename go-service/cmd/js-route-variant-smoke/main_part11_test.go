@@ -2602,10 +2602,16 @@ function serializeSessionRoutingBaselineForBackend() {
 }
 async function bridgeFetch(path, options) {
   capturedBody = options.body;
-  return {status: "ok", contract_version: "rollback.decision.v1", allowed: true, from_turn: 9, decision_token: "fixture"};
+  return {status: "ok", contract_version: "rollback.decision.v2", allowed: true, from_turn: 9, decision_token: "fixture"};
 }
 (async function() {
   await requestBackendRollbackDecision("char_1_cid_target", 9, "assistant_deleted_output_removed", {
+    hostContext:{
+      stableCharacterId:"character-stable",
+      stableCharacterIdState:"observed",
+      hostChatId:"chat-target",
+      hostChatIdState:"observed"
+    },
     visibleCompletedTurnCount: 0,
     activeCompletedTurnCount: 8,
     backendLatestTurnIndex: 9,
@@ -2623,6 +2629,12 @@ async function bridgeFetch(path, options) {
       capturedBody.assistant_observations.length !== 1 ||
       capturedBody.assistant_observations[0].message_id !== "assistant-1") {
     throw new Error("assistant observations were not transported: " + JSON.stringify(capturedBody));
+  }
+  if (capturedBody.stable_character_id !== "character-stable" ||
+      capturedBody.stable_character_id_state !== "observed" ||
+      capturedBody.host_chat_id !== "chat-target" ||
+      capturedBody.host_chat_id_state !== "observed") {
+    throw new Error("captured rollback route identity was not transported: " + JSON.stringify(capturedBody));
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -4035,7 +4047,7 @@ function debugLog() {}
 	}
 }
 
-func TestRollbackDecisionForwardsObservedHostGenerationLifecycle(t *testing.T) {
+func TestRollbackDecisionForwardsPendingOutputGuardAndCapturedRoute(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -4053,16 +4065,24 @@ function serializeSessionRoutingBaselineForBackend() { return null; }
 async function bridgeFetch(path, options) {
   if (path !== "/rollback/decision") throw new Error("unexpected path");
   capturedBody = options.body;
-  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"pending_output_guard"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"pending_output_guard"};
 }
 
 (async function() {
   await requestBackendRollbackDecision("session-1", 4, "active_chat_tail_missing_from_runtime", {
     backendLatestTurnIndex:4,
-    hostLifecycleObservation:"before_request_observed",
+    pendingOutputGuard:true,
+    hostContext:{
+      stableCharacterId:"character-1",
+      stableCharacterIdState:"observed",
+      hostChatId:"chat-1",
+      hostChatIdState:"observed"
+    },
   }, "auto");
-  if (!capturedBody || capturedBody.host_lifecycle_observation !== "before_request_observed") {
-    throw new Error("observed host generation lifecycle was not forwarded");
+  if (!capturedBody || capturedBody.pending_output_guard !== true ||
+      capturedBody.stable_character_id !== "character-1" ||
+      capturedBody.host_chat_id !== "chat-1") {
+    throw new Error("pending output guard or captured route was not forwarded: " + JSON.stringify(capturedBody));
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -5748,11 +5768,17 @@ function getRequestTimeoutSettingMs() { return 1000; }
 async function bridgeFetch(path, options) {
   if (path !== "/rollback/decision") throw new Error("unexpected path " + path);
   sentBody = options.body;
-  return {status:"ok",contract_version:"rollback.decision.v1"};
+  return {status:"ok",contract_version:"rollback.decision.v2"};
 }
 function serializeSessionRoutingBaselineForBackend() { return null; }
 (async function() {
   await requestBackendRollbackDecision("s", 9, "delete", {
+    hostContext:{
+      stableCharacterId:"character",
+      stableCharacterIdState:"observed",
+      hostChatId:"chat",
+      hostChatIdState:"observed"
+    },
     tailReconcileVerification:{
       status:"incomplete_user_only_tail_candidate",
       removedAssistantCount:0,
@@ -5880,7 +5906,7 @@ func TestExecuteManualRollbackPreservesBackendBlockReason(t *testing.T) {
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "executeAutoRollback")
 	script := functionBody + `
 async function requestBackendRollbackDecision() {
-  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"manual_target_not_owned"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"manual_target_not_owned"};
 }
 function debugLog() {}
 function warnLog() {}
@@ -5971,7 +5997,7 @@ function summarizeRollbackErrors() { return ""; }
 function debugLog() {}
 function warnLog() {}
 const decision = {
-  status:"ok", contract_version:"rollback.decision.v1", allowed:true, from_turn:9,
+  status:"ok", contract_version:"rollback.decision.v2", allowed:true, from_turn:9,
   decision_token:"decision-once",
   turn_workflow_hud:{request_id:"rollback:s:9:auto",status:"running",display_mode:"notice"}
 };
@@ -6222,7 +6248,7 @@ async function requestBackendRollbackDecision(_sid, candidate, _reason, detail) 
   if (candidate !== 0 || detail.assistantObservationScope !== "full_active_chat" || detail.currentAssistantObservations.length !== 1) {
     throw new Error("adapter did not send the complete assistant observation to Go");
   }
-  return {status:"ok",contract_version:"rollback.decision.v1",allowed:true,from_turn:9,decision_token:"one-token"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:true,from_turn:9,decision_token:"one-token"};
 }
 async function executeAutoRollback(_sid, turn, _reason, _detail, options) {
   deleteCalls++;
@@ -6281,7 +6307,7 @@ async function requestBackendRollbackDecision(_sid, candidate, _reason, detail) 
   if (candidate !== 0 || detail.assistantObservationScope !== "full_active_chat" || detail.currentAssistantObservations.length !== 1) {
     throw new Error("full assistant observation was not forwarded");
   }
-  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"assistant_output_not_removed"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
 }
 async function executeAutoRollback() { rollbackCalls++; return true; }
 function updateSessionSnapshot() {}
@@ -6538,7 +6564,7 @@ async function requestBackendRollbackDecision(sessionId, candidateTurn, reason, 
     firstAFails = false;
     throw new Error("session A transport failed");
   }
-  return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"assistant_output_not_removed"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
 }
 async function executeAutoRollback() { throw new Error("retain decision attempted a deletion"); }
 function updateSessionSnapshot() {}
@@ -6653,10 +6679,10 @@ async function requestBackendRollbackDecision(sessionId, candidateTurn, _reason,
   const observed = new Set(detail.currentAssistantObservations.map(function(item) { return item.message_id; }));
   const missing = Array.from(backendActive.entries()).filter(function(entry) { return !observed.has(entry[0]); });
   if (missing.length === 0) {
-    return {status:"ok",contract_version:"rollback.decision.v1",allowed:false,reason:"assistant_output_not_removed"};
+    return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
   }
   return {
-    status:"ok", contract_version:"rollback.decision.v1", allowed:true,
+    status:"ok", contract_version:"rollback.decision.v2", allowed:true,
     from_turn:missing[0][1], decision_token:"decision-" + decisionCalls,
     observed_after:detail.currentAssistantObservations.map(function(item) { return item.message_id; })
   };
@@ -6770,6 +6796,17 @@ async function referenceLibraryLoadVectorStatus() {}
 async function safeCall(fn) { return await fn(); }
 function refreshExplorerUI() { explorerRefreshes++; }
 async function getCurrentChatSessionId() { return "session"; }
+function captureSessionHostContextFromCache(sessionId) {
+  return {
+    sessionId:String(sessionId || "session"),
+    charIdx:0,
+    chatIdx:0,
+    stableCharacterId:"character",
+    stableCharacterIdState:"observed",
+    hostChatId:"chat",
+    hostChatIdState:"observed",
+  };
+}
 async function resolveCurrentActiveChatObject() {
   return {chat:{message:activeChatMessages}};
 }

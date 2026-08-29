@@ -31,10 +31,11 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 	}
 	hostObservedAtMS, _ := strconv.ParseInt(strings.TrimSpace(r.URL.Query().Get("host_observed_at_ms")), 10, 64)
 	decisionToken := strings.TrimSpace(r.URL.Query().Get("decision_token"))
+	assistantObservationDigest := strings.TrimSpace(r.URL.Query().Get("assistant_observation_digest"))
 	decisionVerified := false
 	lifecycleAction := store.LogicalTurnLifecycleDeleted
 	if decisionToken != "" {
-		record, ok := s.rollbackDecisionLedger().consume(decisionToken, sid, turnIndex)
+		record, ok := s.rollbackDecisionLedger().consume(decisionToken, sid, turnIndex, assistantObservationDigest)
 		if !ok {
 			writeJSON(w, http.StatusConflict, map[string]any{
 				"status": "blocked", "code": "rollback_decision_token_invalid",
@@ -49,6 +50,21 @@ func (s *Server) handleRollback(w http.ResponseWriter, r *http.Request) {
 		// into unrelated HUD notices or audit sources.
 		if decisionSource := strings.TrimSpace(record.RequestSource); decisionSource != "" {
 			reqSource = decisionSource
+		}
+		if strings.TrimSpace(record.StableCharacterID) != "" || strings.TrimSpace(record.HostChatID) != "" {
+			binding, resolveErr := resolveExistingRollbackRoute(
+				r.Context(), s.Store, record.StableCharacterID, record.HostChatID,
+			)
+			if resolveErr != nil ||
+				strings.TrimSpace(binding.CanonicalSessionID) != strings.TrimSpace(record.CanonicalSessionID) ||
+				strings.TrimSpace(binding.CanonicalSessionID) != sid ||
+				binding.Revision != record.RouteBindingRevision {
+				writeJSON(w, http.StatusConflict, map[string]any{
+					"status": "blocked", "code": "rollback_session_route_changed",
+					"chat_session_id": sid, "turn_index": turnIndex,
+				})
+				return
+			}
 		}
 	}
 	requestedTurnIndex := turnIndex
