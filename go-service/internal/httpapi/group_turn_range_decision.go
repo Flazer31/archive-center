@@ -675,7 +675,18 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	req.Baseline = s.resolveDurableSessionRoutingBaseline(r.Context(), req.ChatSessionID, req.Baseline)
 	resp := calculateSessionRoutingTurnResolution(req)
 	resp = s.applyAssistantSourceRoutingResolution(r.Context(), req, resp)
-	resp = s.applyAutomaticWorldlineBackfillBoundary(r.Context(), req, resp)
+	var worldline *worldlineViewModel
+	if req.WorldlineObservation != nil {
+		resolved := s.resolveRisuWorldlineObservation(r.Context(), req, identity.sessionID)
+		worldline = &resolved
+	} else if req.Mode == "pair" || req.Mode == "batch" {
+		current := currentWorldlineViewModel(r.Context(), s.Store, req.ChatSessionID)
+		worldline = &current
+	}
+	resp = applyAutomaticWorldlineBackfillBoundary(req, resp, worldline)
+	if worldline != nil && req.Mode != "pair" && req.Mode != "batch" {
+		resp.Worldline = worldline
+	}
 	resp.ChatSessionID = strings.TrimSpace(req.ChatSessionID)
 	resp.IdentityResolution = identity.resolution
 	resp.BindingContractVersion = identity.bindingContractVersion
@@ -684,10 +695,6 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	resp.BindingCreated = identity.bindingCreated
 	resp.BindingUpdated = identity.bindingUpdated
 	resp.LockedSourceRedirect = identity.lockedSourceRedirect
-	if req.WorldlineObservation != nil {
-		worldline := s.resolveRisuWorldlineObservation(r.Context(), req, identity.sessionID)
-		resp.Worldline = &worldline
-	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1371,19 +1378,18 @@ func risuWorldlineHostSignalSupported(source string) bool {
 	}
 }
 
-func (s *Server) applyAutomaticWorldlineBackfillBoundary(
-	ctx context.Context,
+func applyAutomaticWorldlineBackfillBoundary(
 	req sessionRoutingTurnResolutionRequest,
 	resp sessionRoutingTurnResolutionResponse,
+	worldline *worldlineViewModel,
 ) sessionRoutingTurnResolutionResponse {
 	if req.Mode != "pair" && req.Mode != "batch" {
 		return resp
 	}
-	worldline := currentWorldlineViewModel(ctx, s.Store, req.ChatSessionID)
-	if worldline.State == "not_applicable" {
+	if worldline == nil || worldline.State == "not_applicable" {
 		return resp
 	}
-	resp.Worldline = &worldline
+	resp.Worldline = worldline
 	boundary, ok := worldlineInheritedThroughTurn(worldline.ForkTurn, worldline.ForkSourceRole)
 	if worldline.State != "confirmed" || !ok {
 		resp.Code = "worldline_ownership_unresolved"

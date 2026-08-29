@@ -184,6 +184,110 @@ func TestSessionRoutingNormalObservationOmitsWorldlineAndDoesNotReadLineage(t *t
 	}
 }
 
+func TestSessionRoutingAppliesWorldlineResolvedInSameRequest(t *testing.T) {
+	route := func(t *testing.T, st *durableSessionIdentityBindingStore) sessionRoutingTurnResolutionResponse {
+		t.Helper()
+		server := &Server{Store: st}
+		mux := http.NewServeMux()
+		server.RegisterRoutes(mux)
+		req := httptest.NewRequest(http.MethodPost, "/session-routing/turn-resolution", strings.NewReader(`{
+			"chat_session_id":"child-session",
+			"mode":"batch",
+			"stable_character_id":"stable",
+			"stable_character_id_state":"observed",
+			"host_chat_id":"child-chat",
+			"host_chat_id_state":"observed",
+			"observations":[
+				{"observation_index":0,"risu_user_message_index":0,"observed_pair_ordinal":1},
+				{"observation_index":1,"risu_user_message_index":14,"observed_pair_ordinal":8},
+				{"observation_index":2,"risu_user_message_index":16,"observed_pair_ordinal":9}
+			],
+			"worldline_observation":{
+				"contract_version":"risu_worldline_observation.v2",
+				"host_signal_source":"active_chat_pre_backfill",
+				"branch_shape_contract":"risu_branchedfrom.v1",
+				"observed_at_ms":1776000000100,
+				"marker_state":"observed",
+				"branch_marker":"{{specialcomment::branchedfrom::parent-chat::Parent::assistant-source::}}",
+				"marker_index":2,
+				"messages":[
+					{"message_index":0,"role":"user","message_chat_id":"user-anchor","disabled":false},
+					{"message_index":1,"role":"char","message_chat_id":"assistant-source","disabled":false},
+					{"message_index":2,"role":"comment","message_chat_id":"","disabled":true}
+				]
+			}
+		}`))
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var response sessionRoutingTurnResolutionResponse
+		if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+			t.Fatal(err)
+		}
+		return response
+	}
+	assertConfirmedBoundary := func(t *testing.T, response sessionRoutingTurnResolutionResponse) {
+		t.Helper()
+		if response.Worldline == nil || response.Worldline.State != "confirmed" ||
+			response.Worldline.ParentSessionID != "parent-session" || response.Worldline.ForkTurn != 8 {
+			t.Fatalf("worldline=%+v response=%+v", response.Worldline, response)
+		}
+		wantTurns := []int{1, 8, 9}
+		wantResolutions := []string{"skip_pre_route_visible_pair", "skip_pre_route_visible_pair", "normal"}
+		if len(response.ResolvedObservations) != len(wantTurns) {
+			t.Fatalf("resolved observations=%+v", response.ResolvedObservations)
+		}
+		for index, item := range response.ResolvedObservations {
+			if item.TurnIndex != wantTurns[index] || item.Resolution != wantResolutions[index] {
+				t.Fatalf("resolved[%d]=%+v", index, item)
+			}
+		}
+	}
+	newStore := func() *durableSessionIdentityBindingStore {
+		return &durableSessionIdentityBindingStore{
+			Store: store.NewNoopStore(),
+			bindings: map[string]string{
+				"stable\x00child-chat":  "child-session",
+				"stable\x00parent-chat": "parent-session",
+			},
+			sources: map[string][]store.MemorySourceRevision{},
+			history: map[string][]store.MemorySourceRevision{},
+		}
+	}
+
+	t.Run("first branch observation owns the boundary immediately", func(t *testing.T) {
+		st := newStore()
+		st.sources["parent-session"] = []store.MemorySourceRevision{
+			activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "user-anchor", "assistant-source", 8),
+		}
+		assertConfirmedBoundary(t, route(t, st))
+		if st.lineageListCalls != 1 {
+			t.Fatalf("resolved worldline was read again: lineage_reads=%d", st.lineageListCalls)
+		}
+	})
+
+	t.Run("historical recovery replaces unresolved ownership immediately", func(t *testing.T) {
+		st := newStore()
+		historical := activeSourceRevisionForUserAnchor("parent-session", "parent-chat", "old-user-anchor", "assistant-source", 8)
+		historical.LogicalTurnID = "canonical_turn_normalized"
+		historical.LifecycleState = "superseded"
+		st.history["parent-session"] = []store.MemorySourceRevision{historical}
+		st.lineage = []store.ForkLineageRecord{{
+			ContractVersion:  store.RisuWorldlineForkLineageContractVersion,
+			LineageState:     "unresolved",
+			ChatSessionID:    "child-session",
+			IdempotencyKey:   "prior-unresolved-observation",
+			DivergenceMarker: `{"reason":"parent_fork_source_history_unresolved"}`,
+		}}
+		assertConfirmedBoundary(t, route(t, st))
+		if st.lineageListCalls != 1 {
+			t.Fatalf("recovered worldline was read again: lineage_reads=%d", st.lineageListCalls)
+		}
+	})
+}
+
 func TestAutomaticActiveChatFullSweepUsesConfirmedWorldlineOwnership(t *testing.T) {
 	routeObservation := func(t *testing.T, st *durableSessionIdentityBindingStore, userMessageIndex, observedPairOrdinal int, routingContext, baseline string) sessionRoutingTurnResolutionResponse {
 		t.Helper()
@@ -446,7 +550,8 @@ func TestAutomaticActiveChatFullSweepUsesConfirmedWorldlineOwnership(t *testing.
 		if response.BaselineApplied {
 			t.Fatalf("fixture did not exercise canonical-tail early return: %+v", response)
 		}
-		response = (&Server{Store: st}).applyAutomaticWorldlineBackfillBoundary(context.Background(), req, response)
+		worldline := currentWorldlineViewModel(context.Background(), st, req.ChatSessionID)
+		response = applyAutomaticWorldlineBackfillBoundary(req, response, &worldline)
 		if response.Resolution != "skip_pre_route_visible_pair" || response.TurnIndex != 1 {
 			t.Fatalf("response=%+v", response)
 		}
