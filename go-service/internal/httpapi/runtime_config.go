@@ -309,7 +309,7 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 	if rt.SupervisorTemperature != nil {
 		temperature = *rt.SupervisorTemperature
 	}
-	maxTokens := int64(1200)
+	maxTokens := int64(30000)
 	if rt.SupervisorMaxTokens != nil && *rt.SupervisorMaxTokens > 0 {
 		maxTokens = *rt.SupervisorMaxTokens
 	}

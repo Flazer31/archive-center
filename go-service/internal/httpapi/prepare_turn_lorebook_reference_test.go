@@ -573,7 +573,7 @@ func TestPrepareTurnOriginalWorkUsageDoesNotReduceLorebookBudget(t *testing.T) {
 
 	referenceInjection := mapFromAny(response["reference_injection"])
 	policy := mapFromAny(referenceInjection["budget_policy"])
-	if policy["contract_version"] != "reference_injection_budget.v2" || intFromAny(policy["main_injection_cap_chars"], 0) != 9000 || intFromAny(policy["total_cap_chars"], 0) != 3000 || intFromAny(policy["used_chars"], 0) <= 0 {
+	if policy["contract_version"] != "reference_injection_budget.v2" || intFromAny(policy["main_injection_cap_chars"], 0) != 18000 || intFromAny(policy["total_cap_chars"], 0) != 3000 || intFromAny(policy["used_chars"], 0) <= 0 {
 		t.Fatalf("original-work budget was not independently applied: policy=%#v recall=%#v", policy, response["reference_recall"])
 	}
 	lorebook := mapFromAny(response["lorebook_reference"])
@@ -605,12 +605,12 @@ func TestPrepareTurnOriginalWorkUsageDoesNotReduceLorebookBudget(t *testing.T) {
 		effectiveTotal += intFromAny(lane["effective_cap_chars"], 0)
 		laneContentTotal += intFromAny(lane["final_delivery_chars"], 0)
 	}
-	if intFromAny(ledgerLanes["long_term_memory"]["configured_cap_chars"], 0) != 9000 ||
+	if intFromAny(ledgerLanes["long_term_memory"]["configured_cap_chars"], 0) != 18000 ||
 		intFromAny(ledgerLanes["original_work"]["configured_cap_chars"], 0) != 3000 ||
 		intFromAny(ledgerLanes["lorebook_reference"]["configured_cap_chars"], 0) != 3000 {
 		t.Fatalf("independent configured caps = %#v", ledgerLanes)
 	}
-	if intFromAny(ledgerLanes["long_term_memory"]["effective_cap_chars"], 0) != 9000 ||
+	if intFromAny(ledgerLanes["long_term_memory"]["effective_cap_chars"], 0) != 18000 ||
 		intFromAny(ledgerLanes["original_work"]["effective_cap_chars"], 0) != 3000 ||
 		intFromAny(ledgerLanes["lorebook_reference"]["effective_cap_chars"], 0) != 3000 ||
 		intFromAny(ledgerLanes["output_guidance"]["effective_cap_chars"], -1) != 0 {

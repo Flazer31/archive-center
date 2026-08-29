@@ -2193,11 +2193,13 @@ func TestLegacyAutomaticInjectionBudgetMigratesOnceToCurrentBase(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	fn := extractArchiveCenterJSFunction(t, src, "migrateLegacyInjectionBudgetSettings")
-	script := "const DEFAULT_SETTINGS = {injectionBudgetProfileVersion: \"p34_9000_base_v1\"};\n" + fn + `
+	script := "const DEFAULT_SETTINGS = {maxInjectionChars: 18000, injectionBudgetProfileVersion: \"p409_18000_base_v1\"};\n" + fn + `
 const legacy = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000});
-if (legacy.maxInjectionChars !== 9000) throw new Error("legacy default was not migrated: " + JSON.stringify(legacy));
+if (legacy.maxInjectionChars !== 18000) throw new Error("legacy default was not migrated: " + JSON.stringify(legacy));
 const custom = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 7500});
 if (custom.maxInjectionChars !== 7500) throw new Error("non-default user value was overwritten: " + JSON.stringify(custom));
+const oldProfileDefault = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 9000, injectionBudgetProfileVersion: "p34_9000_base_v1"});
+if (oldProfileDefault.maxInjectionChars !== 18000) throw new Error("old profile default was not migrated: " + JSON.stringify(oldProfileDefault));
 const versioned = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000, injectionBudgetProfileVersion: "p34_9000_base_v1"});
 if (versioned.maxInjectionChars !== 6000) throw new Error("versioned user value was migrated repeatedly: " + JSON.stringify(versioned));
 `

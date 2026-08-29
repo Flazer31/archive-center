@@ -278,7 +278,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	})
 	maxTokens := cfg.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 1200
+		maxTokens = 30000
 	}
 	maxCompletionTokens := cfg.MaxCompletionTokens
 	if maxCompletionTokens <= 0 {

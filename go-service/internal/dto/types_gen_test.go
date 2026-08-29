@@ -87,6 +87,14 @@ func TestChapterDryRunRequestDefaultInterval(t *testing.T) {
 	}
 }
 
+func TestPrepareTurnSettingsDefaultMemoryInjectionBudget(t *testing.T) {
+	settings := PrepareTurnSettings{}
+	settings.ApplyDefaults()
+	if settings.MaxInjectionChars == nil || *settings.MaxInjectionChars != 18000 {
+		t.Fatalf("expected default memory injection budget 18000, got %v", settings.MaxInjectionChars)
+	}
+}
+
 func TestActiveScopeRequestRequiredField(t *testing.T) {
 	payload := `{"active_scope":"global"}`
 	var req ActiveScopeRequest

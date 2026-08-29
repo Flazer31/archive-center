@@ -90,7 +90,6 @@
       effort: "medium",
       budgetTokens: 0,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 20000,
       hint: "OpenAI reasoning 문서 기준 effort(low/medium/high 등)를 주로 쓰며, output token 상한을 함께 관리합니다.",
     },
     gemini: {
@@ -99,7 +98,6 @@
       thinkingLevel: "high",
       budgetTokens: 1024,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 20000,
       hint: "Google Gemini thinking 문서 기준 2.5 계열은 thinkingBudget(토큰 예산), 3 계열은 thinkingLevel이 핵심입니다.",
     },
     claude: {
@@ -107,7 +105,6 @@
       effort: "high",
       budgetTokens: 2048,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 20000,
       hint: "Anthropic extended thinking 문서 기준 thinking budget_tokens(또는 adaptive thinking)가 핵심입니다.",
     },
     glm: {
@@ -115,7 +112,6 @@
       effort: "enable",
       budgetTokens: 0,
       glmThinkingType: "enabled",
-      maxCompletionTokens: 24000,
       hint: "GLM 5.2 이상은 추론 강도를 지원하고, 이전 GLM은 thinking.type enabled/disabled 토글을 사용합니다.",
     },
     deepseek_v4: {
@@ -123,7 +119,6 @@
       effort: "high",
       budgetTokens: 0,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 20000,
       hint: "DeepSeek V4는 provider가 지원하는 low/high/max 추론 강도를 사용하며 별도 추론 토큰 예산을 사용하지 않습니다.",
     },
     custom: {
@@ -131,7 +126,6 @@
       effort: "none",
       budgetTokens: 0,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 1024,
       hint: "모델 계약이 확인되지 않으면 추론 필드를 자동으로 보내지 않습니다. 고급 필드는 Extra Body JSON에서만 명시합니다.",
     },
     none: {
@@ -139,7 +133,6 @@
       effort: "none",
       budgetTokens: 0,
       glmThinkingType: "disabled",
-      maxCompletionTokens: 1024,
       hint: "입력된 모델에서 확인된 추론 제어 형식이 없으면 추론 필드를 보내지 않습니다.",
     },
   });
@@ -167,7 +160,7 @@
     maxInjectionChars: 18000,        // 일반 기억 자동 주입 기본 상한
     referenceInjectionMaxChars: 3000, // 원작 DB 참조 전용 상한
     lorebookReferenceMaxChars: 3000,  // 활성 로어북 참조 전용 상한
-    injectionBudgetProfileVersion: "p34_9000_base_v1",
+    injectionBudgetProfileVersion: "p409_18000_base_v1",
     injectionBudgetExtraChars: 0,    // 자동 산정 예산 위에 허용할 추가 상한
     memoryDeliveryBudgetMode: "auto",
     memoryDeliveryBudgets: Object.freeze({
@@ -10928,12 +10921,6 @@
     return prefix + ": " + parts.join(" · ");
   }
 
-  function resolveReasoningDefaultMaxCompletionTokens(presetInfo, fallback) {
-    const parsed = parseInt(presetInfo && presetInfo.maxCompletionTokens, 10);
-    if (isFinite(parsed) && parsed > 0) return parsed;
-    return Math.max(1, parseInt(fallback, 10) || 1024);
-  }
-
   function applyReasoningFieldsToPayload(payload, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens) {
     if (!payload || typeof payload !== "object") return payload;
     const controls = reasoningControls || {};
@@ -11021,15 +11008,12 @@
     const shouldApplyPresetDefaults = !isFirstSync && previousSyncKey !== "" && previousSyncKey !== syncKey && preset !== "custom";
     const currentEffort = String(source.currentEffort || "").trim();
     const currentBudget = String(source.currentBudget !== undefined && source.currentBudget !== null ? source.currentBudget : "").trim();
-    const currentMaxCompletion = String(source.currentMaxCompletion !== undefined && source.currentMaxCompletion !== null ? source.currentMaxCompletion : "").trim();
     const storedDeepSeekV4EffortCompatible = controls.mode === "deepseek_v4_reasoning_effort"
       && ["medium", "xhigh"].indexOf(currentEffort.toLowerCase()) >= 0;
     const currentEffortSupported = controls.effortOptions.indexOf(currentEffort) >= 0 || storedDeepSeekV4EffortCompatible;
     const currentBudgetIsNumeric = currentBudget !== "" && isFinite(Number(currentBudget));
-    const currentMaxCompletionIsNumeric = currentMaxCompletion !== "" && isFinite(Number(currentMaxCompletion));
     const defaultEffort = resolveReasoningDefaultEffortValue(presetInfo, controls);
     const defaultBudget = String(normalizeReasoningBudgetTokens(presetInfo.budgetTokens, 0));
-    const defaultMaxCompletion = String(resolveReasoningDefaultMaxCompletionTokens(presetInfo, 1024));
 
     return {
       family,
@@ -11047,9 +11031,6 @@
           ? defaultBudget
           : currentBudget)
         : "0",
-      nextMaxCompletion: (shouldApplyPresetDefaults || (isFirstSync && preset !== "custom" && !currentMaxCompletionIsNumeric))
-        ? defaultMaxCompletion
-        : currentMaxCompletion,
     };
   }
 
@@ -11184,8 +11165,14 @@
 
   function migrateLegacyInjectionBudgetSettings(raw) {
     const migrated = raw && typeof raw === "object" ? { ...raw } : {};
-    if (!migrated.injectionBudgetProfileVersion && Number(migrated.maxInjectionChars) === 6000) {
-      migrated.maxInjectionChars = 9000;
+    const profileVersion = String(migrated.injectionBudgetProfileVersion || "");
+    const configuredChars = Number(migrated.maxInjectionChars);
+    const usesLegacyDefault = (
+      (!profileVersion && (configuredChars === 6000 || configuredChars === 9000))
+      || (profileVersion === "p34_9000_base_v1" && configuredChars === 9000)
+    );
+    if (usesLegacyDefault) {
+      migrated.maxInjectionChars = DEFAULT_SETTINGS.maxInjectionChars;
     }
     migrated.injectionBudgetProfileVersion = DEFAULT_SETTINGS.injectionBudgetProfileVersion;
     return migrated;
@@ -51633,7 +51620,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       }
 
       const reasoningSyncRunners = [];
-      const syncReasoningPresetSelectForProvider = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
+      const syncReasoningPresetSelectForProvider = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId) => {
         const providerEl = $(providerSelectId);
         const endpointEl = endpointInputId ? $(endpointInputId) : null;
         const modelEl = modelInputId ? $(modelInputId) : null;
@@ -51648,7 +51635,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         const budgetInputEl = budgetInputId ? $(budgetInputId) : null;
         const budgetLabelEl = budgetLabelId ? $(budgetLabelId) : null;
         const budgetHintEl = budgetHintId ? $(budgetHintId) : null;
-        const maxCompletionEl = maxCompletionId ? $(maxCompletionId) : null;
         const provider = normalizeLlmProvider(providerEl.value, "openai");
         const allowed = getAllowedReasoningPresetsForProvider(provider);
         const current = normalizeReasoningPreset(presetEl.value, "auto");
@@ -51666,7 +51652,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           model: modelEl ? modelEl.value : "",
           currentEffort: effortEl ? effortEl.value : "",
           currentBudget: budgetInputEl ? budgetInputEl.value : "",
-          currentMaxCompletion: maxCompletionEl ? maxCompletionEl.value : "",
           previousSyncKey: presetEl.dataset.reasoningSyncKey || "",
           isFirstSync: presetEl.dataset.reasoningSyncInitialized !== "1",
         });
@@ -51702,18 +51687,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (budgetInputEl) {
           budgetInputEl.value = syncState.nextBudget;
         }
-        if (maxCompletionEl && syncState.nextMaxCompletion) {
-          maxCompletionEl.value = syncState.nextMaxCompletion;
-          if (maxCompletionId) {
-            const maxCompletionRangeEl = document.querySelector('.mo-range[data-sync-input="' + maxCompletionId + '"]');
-            if (maxCompletionRangeEl) maxCompletionRangeEl.value = syncState.nextMaxCompletion;
-          }
-        }
         presetEl.dataset.reasoningSyncKey = syncState.syncKey;
         presetEl.dataset.reasoningSyncInitialized = "1";
       };
 
-      const bindProviderReasoningPresetSync = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId, maxCompletionId) => {
+      const bindProviderReasoningPresetSync = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId) => {
         const providerEl = $(providerSelectId);
         const endpointEl = endpointInputId ? $(endpointInputId) : null;
         const modelEl = modelInputId ? $(modelInputId) : null;
@@ -51733,7 +51711,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           budgetInputId,
           budgetLabelId,
           budgetHintId,
-          maxCompletionId,
         );
         providerEl.addEventListener("change", runSync);
         if (endpointEl) {
@@ -51763,7 +51740,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         "mo-pluginMainReasoningBudgetTokens",
         "mo-pluginMainReasoningBudgetTokensLabel",
         "mo-pluginMainReasoningBudgetTokensHint",
-        "mo-pluginMainMaxCompletionTokens",
       );
       bindProviderReasoningPresetSync(
         "mo-subLlmProvider",
@@ -51779,7 +51755,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         "mo-subLlmReasoningBudgetTokens",
         "mo-subLlmReasoningBudgetTokensLabel",
         "mo-subLlmReasoningBudgetTokensHint",
-        "mo-subLlmMaxCompletionTokens",
       );
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';

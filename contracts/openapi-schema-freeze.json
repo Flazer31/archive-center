@@ -1972,7 +1972,7 @@
         "max_injection_chars": {
           "type": "integer",
           "title": "Max Injection Chars",
-          "default": 9000
+          "default": 18000
         },
         "core_objective_memory_max_items": {
           "type": "integer",
