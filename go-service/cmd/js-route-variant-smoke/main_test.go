@@ -623,19 +623,14 @@ func TestRunSmokeWithRealServer(t *testing.T) {
 func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"async function resolveRollbackComparableMessages",
-		"function detectRollbackNeed",
-		"async function checkAndAutoRollback",
 		"async function executeAutoRollback",
-		"await checkAndAutoRollback(orchSessionId, rollbackComparable.messages, {",
+		"async function reconcileRollbackFromHostSignal",
+		"await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {",
 		`rollbackParams.set("req_source", requestSource);`,
 		"method: \"DELETE\"",
 		"requestSource = options && options.requestSource ? String(options.requestSource) : \"auto\"",
 		"assistant_deleted_before_next_user_turn",
-		"user_message_removed_turn_retained",
-		"assistant_output_range_removed",
 		"assistant_output_not_removed",
-		"duplicate_rollback_blocked",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {

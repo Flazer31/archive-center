@@ -391,12 +391,12 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	resp := calculateRollbackDecision(req)
 	if resp.Allowed {
-		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, req.RequestSource, resp.LifecycleAction)
-		resp.DecisionToken = record.Token
 		requestSource := strings.TrimSpace(req.RequestSource)
 		if requestSource == "" {
 			requestSource = "auto"
 		}
+		record := s.rollbackDecisionLedger().issue(resp.ChatSessionID, resp.FromTurn, requestSource, resp.LifecycleAction)
+		resp.DecisionToken = record.Token
 		resp.TurnWorkflowHUD = s.turnWorkflowHUDOperationNotice(
 			fmt.Sprintf("rollback:%s:%d:%s", resp.ChatSessionID, resp.FromTurn, requestSource),
 			resp.ChatSessionID,

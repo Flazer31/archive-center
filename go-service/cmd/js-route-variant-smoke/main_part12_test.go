@@ -1640,13 +1640,13 @@ function debugLog() {}
 	}
 }
 
-func TestRisuOutputRoutesCommittedPersistenceToMatchingCapturedSession(t *testing.T) {
+func TestRisuOutputDoesNotOwnCommittedPersistence(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
 		nodePath, err = exec.LookPath("node")
 		if err != nil {
-			t.Skip("node is required for output-listener session ownership fixture")
+			t.Skip("node is required for output-listener finality fixture")
 		}
 	}
 	src := readArchiveCenterJS(t)
@@ -1657,9 +1657,9 @@ const _finalConfirmationRequestBySession = new Map([
   ["session-a",{sessionId:"session-a",state:"captured",characterIndex:1,chatIndex:2,hostChatId:"chat-a"}],
   ["session-b",{sessionId:"session-b",state:"captured",characterIndex:8,chatIndex:9,hostChatId:"chat-b"}],
 ]);
-const persistenceCalls = [];
+let persistenceCalls = 0;
 function observePendingFinalConfirmationAtHostSignal(sessionId,source,snapshot){
-  persistenceCalls.push({sessionId,source,chatId:snapshot && snapshot.chat && snapshot.chat.id});
+  persistenceCalls++;
   return Promise.resolve({accepted:true});
 }
 function buildRisuWorldlineObservationFromMessages(){ return null; }
@@ -1673,15 +1673,15 @@ function warnLog() {}
   });
   if(result!==undefined) throw new Error("output listener became blocking");
   await new Promise(resolve=>setTimeout(resolve,0));
-  if(JSON.stringify(persistenceCalls)!==JSON.stringify([{sessionId:"session-a",source:"output",chatId:"chat-a"}])) {
-    throw new Error("committed A output was routed to another session: "+JSON.stringify(persistenceCalls));
+  if(persistenceCalls!==0) {
+    throw new Error("output listener attempted committed persistence: "+String(persistenceCalls));
   }
 })().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("output-listener session ownership fixture failed: %v\n%s", err, out)
+		t.Fatalf("output-listener finality fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -1743,7 +1743,6 @@ func TestLongRunningHostOperationsCarryCapturedSessionContext(t *testing.T) {
 			"orchHostContext = captureSessionHostContextFromCache(orchSessionId)",
 			"hostContext: orchHostContext",
 			"captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext)",
-			"resolveRollbackComparableMessages(orchSessionId, messages, userInput, orchHostContext)",
 			"resolveActiveChatCompletedTurnsForRoutingBaseline(orchSessionId, orchHostContext)",
 			"sessionId: orchSessionId",
 			"chatSessionId: orchSessionId",

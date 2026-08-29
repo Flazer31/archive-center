@@ -61,12 +61,19 @@ func (s *Server) handleCharactersGet(w http.ResponseWriter, r *http.Request) {
 	if reader, ok := s.Store.(store.EntityIdentityCatalogReader); ok {
 		if links, readErr := reader.ListReviewedEntityIdentityLinks(r.Context(), sid); readErr == nil {
 			labels := map[string]string{}
+			characterIDs := map[string]bool{}
 			if identities, identityErr := reader.ListActiveEntityIdentities(r.Context(), sid); identityErr == nil {
 				for _, identity := range identities {
 					labels[identity.StableEntityID] = identity.CanonicalLabel
+					if identity.EntityKind == "character" {
+						characterIDs[identity.StableEntityID] = true
+					}
 				}
 			}
 			for _, link := range links {
+				if !characterIDs[link.SourceEntityID] || !characterIDs[link.TargetEntityID] {
+					continue
+				}
 				identityLinks = append(identityLinks, map[string]any{
 					"link_id": link.LinkID, "source_entity_id": link.SourceEntityID,
 					"source_label": labels[link.SourceEntityID], "target_entity_id": link.TargetEntityID,
@@ -264,7 +271,11 @@ func decodeCharacterIdentityMergeRequest(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string, req characterIdentityMergeRequest) (characterIdentityCatalog, map[string]bool, store.EntityIdentity, []characterIdentitySourceSelection, error) {
-	catalog, err := s.characterIdentityCatalogForSession(ctx, sid)
+	return s.entityIdentityMergeSelection(ctx, sid, req, "character")
+}
+
+func (s *Server) entityIdentityMergeSelection(ctx context.Context, sid string, req characterIdentityMergeRequest, entityKind string) (characterIdentityCatalog, map[string]bool, store.EntityIdentity, []characterIdentitySourceSelection, error) {
+	catalog, err := s.entityIdentityCatalogForSession(ctx, sid, entityKind)
 	if err != nil {
 		return characterIdentityCatalog{}, nil, store.EntityIdentity{}, nil, err
 	}
@@ -274,7 +285,7 @@ func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string
 	}
 	target, exists := catalog.Identities[targetID]
 	if !exists {
-		return catalog, nil, store.EntityIdentity{}, nil, fmt.Errorf("target entity %q is not an active character in this session", req.TargetEntityID)
+		return catalog, nil, store.EntityIdentity{}, nil, fmt.Errorf("target entity %q is not an active %s in this session", req.TargetEntityID, entityKind)
 	}
 	selected := map[string]bool{targetID: true, req.TargetEntityID: true}
 	selections := make([]characterIdentitySourceSelection, 0, len(req.SourceEntityIDs))
@@ -282,7 +293,7 @@ func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string
 		if _, exists := catalog.Identities[sourceID]; !exists {
 			selections = append(selections, characterIdentitySourceSelection{
 				RequestedID: sourceID, Status: "unavailable",
-				Detail: fmt.Sprintf("source entity %q is not an active character in this session", sourceID),
+				Detail: fmt.Sprintf("source entity %q is not an active %s in this session", sourceID, entityKind),
 			})
 			continue
 		}
@@ -292,6 +303,13 @@ func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string
 			selections = append(selections, characterIdentitySourceSelection{RequestedID: sourceID, Status: "unavailable", Detail: rootErr.Error()})
 			continue
 		}
+		if _, exists := catalog.Identities[rootID]; !exists {
+			selections = append(selections, characterIdentitySourceSelection{
+				RequestedID: sourceID, Status: "unavailable",
+				Detail: fmt.Sprintf("resolved source entity %q is not an active %s in this session", rootID, entityKind),
+			})
+			continue
+		}
 		selected[rootID] = true
 		selections = append(selections, characterIdentitySourceSelection{RequestedID: sourceID, RootID: rootID, Status: "ready"})
 	}
@@ -299,6 +317,10 @@ func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string
 }
 
 func (s *Server) characterIdentityCatalogForSession(ctx context.Context, sid string) (characterIdentityCatalog, error) {
+	return s.entityIdentityCatalogForSession(ctx, sid, "character")
+}
+
+func (s *Server) entityIdentityCatalogForSession(ctx context.Context, sid, entityKind string) (characterIdentityCatalog, error) {
 	reader, ok := s.Store.(store.EntityIdentityCatalogReader)
 	if !ok {
 		return characterIdentityCatalog{}, store.ErrNotEnabled
@@ -317,7 +339,7 @@ func (s *Server) characterIdentityCatalogForSession(ctx context.Context, sid str
 	}
 	catalog := characterIdentityCatalog{Identities: map[string]store.EntityIdentity{}, Surfaces: nonNilSlice(surfaces), Links: nonNilSlice(links)}
 	for _, identity := range identities {
-		if identity.ChatSessionID == sid && identity.EntityKind == "character" {
+		if identity.ChatSessionID == sid && identity.EntityKind == entityKind {
 			catalog.Identities[strings.TrimSpace(identity.StableEntityID)] = identity
 		}
 	}
@@ -640,13 +662,132 @@ func canonicalCharacterTypedProjectionForRead(raw, contractVersion, stableID, ca
 // Historical KG rows keep their original labels and provenance in storage.
 func (s *Server) canonicalizeCharacterKGTriplesForRead(ctx context.Context, sid string, items []store.KGTriple) []store.KGTriple {
 	out := append([]store.KGTriple(nil), items...)
+	canonicalBySession := map[string]map[string]string{}
 	for index := range out {
 		itemSID := strings.TrimSpace(out[index].ChatSessionID)
 		if itemSID == "" {
 			itemSID = sid
 		}
-		out[index].Subject = s.canonicalCharacterName(ctx, itemSID, out[index].Subject)
-		out[index].Object = s.canonicalCharacterName(ctx, itemSID, out[index].Object)
+		canonical, loaded := canonicalBySession[itemSID]
+		if !loaded {
+			canonical = s.characterCanonicalSurfaceMapForRead(ctx, itemSID)
+			canonicalBySession[itemSID] = canonical
+		}
+		if label := canonical[comparableEntityKey(out[index].Subject)]; label != "" {
+			out[index].Subject = label
+		}
+		if label := canonical[comparableEntityKey(out[index].Object)]; label != "" {
+			out[index].Object = label
+		}
+	}
+	return out
+}
+
+// characterCanonicalSurfaceMapForRead resolves the request-local character
+// catalog without issuing one database lookup per KG endpoint. Ambiguous or
+// broken reviewed links are omitted from the map, leaving the original KG
+// label intact for that surface.
+func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid string) map[string]string {
+	out := map[string]string{}
+	sid = strings.TrimSpace(sid)
+	if sid == "" || s.Store == nil {
+		return out
+	}
+	catalog, err := s.characterIdentityCatalogForSession(ctx, sid)
+	if err != nil || len(catalog.Identities) == 0 {
+		return out
+	}
+
+	targets := map[string]map[string]bool{}
+	for _, link := range catalog.Links {
+		if link.ChatSessionID != sid || link.LinkKind != store.EntityIdentityLinkKindCanonicalEquivalence ||
+			link.LinkState != store.EntityIdentityLinkStateReviewed {
+			continue
+		}
+		sourceID := strings.TrimSpace(link.SourceEntityID)
+		targetID := strings.TrimSpace(link.TargetEntityID)
+		if _, ok := catalog.Identities[sourceID]; !ok {
+			continue
+		}
+		if _, ok := catalog.Identities[targetID]; !ok {
+			continue
+		}
+		if targets[sourceID] == nil {
+			targets[sourceID] = map[string]bool{}
+		}
+		targets[sourceID][targetID] = true
+	}
+	rootCache := map[string]string{}
+	invalidRoot := map[string]bool{}
+	var rootFor func(string, map[string]bool) string
+	rootFor = func(entityID string, visiting map[string]bool) string {
+		if invalidRoot[entityID] {
+			return ""
+		}
+		if root, ok := rootCache[entityID]; ok {
+			return root
+		}
+		if visiting[entityID] || len(targets[entityID]) > 1 {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		visiting[entityID] = true
+		root := entityID
+		for targetID := range targets[entityID] {
+			root = rootFor(targetID, visiting)
+		}
+		delete(visiting, entityID)
+		if root == "" {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		rootCache[entityID] = root
+		return root
+	}
+
+	type surfaceCandidate struct {
+		roots   map[string]string
+		blocked bool
+	}
+	candidates := map[string]*surfaceCandidate{}
+	addSurface := func(surface, entityID string) {
+		key := comparableEntityKey(surface)
+		if key == "" {
+			return
+		}
+		candidate := candidates[key]
+		if candidate == nil {
+			candidate = &surfaceCandidate{roots: map[string]string{}}
+			candidates[key] = candidate
+		}
+		if _, ok := catalog.Identities[entityID]; !ok {
+			candidate.blocked = true
+			return
+		}
+		rootID := rootFor(entityID, map[string]bool{})
+		identity, ok := catalog.Identities[rootID]
+		label := strings.TrimSpace(identity.CanonicalLabel)
+		if !ok || rootID == "" || label == "" {
+			candidate.blocked = true
+			return
+		}
+		candidate.roots[rootID] = label
+	}
+	for id, identity := range catalog.Identities {
+		addSurface(identity.CanonicalLabel, id)
+	}
+	for _, surface := range catalog.Surfaces {
+		if surface.ChatSessionID == sid {
+			addSurface(surface.SurfaceText, strings.TrimSpace(surface.StableEntityID))
+		}
+	}
+	for key, candidate := range candidates {
+		if candidate.blocked || len(candidate.roots) != 1 {
+			continue
+		}
+		for _, label := range candidate.roots {
+			out[key] = label
+		}
 	}
 	return out
 }

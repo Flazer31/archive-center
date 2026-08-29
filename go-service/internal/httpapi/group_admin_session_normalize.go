@@ -186,6 +186,19 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		}
 	}
 
+	if progress != nil {
+		progress(map[string]any{
+			"status":           "running",
+			"stage":            "character_identity_repair",
+			"progress_percent": 71,
+			"destructive":      false,
+		})
+	}
+	identityRepairResult := s.repairMissingCharacterIdentities(ctx, sid, req.DryRun)
+	if intFromAny(identityRepairResult["failed"], 0) > 0 {
+		warnings = append(warnings, "character_identity_repair_partial")
+	}
+
 	var reindexResult map[string]any
 	reindexDeferredReasons := adminSessionNormalizeReindexDeferredReasons(rescanResult)
 	if !req.SkipReindex && len(reindexDeferredReasons) == 0 {
@@ -226,28 +239,30 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	status := adminSessionNormalizeStatus(
 		repairResult,
 		rescanResult,
+		identityRepairResult,
 		reindexResult,
 		warnings,
 	)
 	result := map[string]any{
-		"status":              status,
-		"contract_version":    "session-normalize.v1",
-		"source":              s.storeWriteSource(),
-		"chat_session_id":     sid,
-		"dry_run":             req.DryRun,
-		"destructive":         false,
-		"rollback_attempted":  false,
-		"delete_attempted":    false,
-		"plan":                plan,
-		"counts_before":       before,
-		"counts_after":        after,
-		"repair_replay":       repairResult,
-		"rescan":              rescanResult,
-		"reindex":             reindexResult,
-		"review_needed_turns": reviewNeededTurns,
-		"warnings":            uniqueStrings(warnings),
-		"generated_at":        time.Now().UTC(),
-		"note":                "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
+		"status":                    status,
+		"contract_version":          "session-normalize.v1",
+		"source":                    s.storeWriteSource(),
+		"chat_session_id":           sid,
+		"dry_run":                   req.DryRun,
+		"destructive":               false,
+		"rollback_attempted":        false,
+		"delete_attempted":          false,
+		"plan":                      plan,
+		"counts_before":             before,
+		"counts_after":              after,
+		"repair_replay":             repairResult,
+		"rescan":                    rescanResult,
+		"character_identity_repair": identityRepairResult,
+		"reindex":                   reindexResult,
+		"review_needed_turns":       reviewNeededTurns,
+		"warnings":                  uniqueStrings(warnings),
+		"generated_at":              time.Now().UTC(),
+		"note":                      "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
 	}
 	s.saveAuditLogBestEffort(ctx, &store.AuditLog{
 		ChatSessionID: sid,
@@ -261,8 +276,16 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"destructive":         false,
 			"repair_entry_count":  len(entries),
 			"review_needed_turns": reviewNeededTurns,
-			"plan":                plan,
-			"warnings":            uniqueStrings(warnings),
+			"character_identity_repair": map[string]any{
+				"status":             identityRepairResult["status"],
+				"candidates":         identityRepairResult["candidates"],
+				"created_identities": identityRepairResult["created_identities"],
+				"created_surfaces":   identityRepairResult["created_surfaces"],
+				"skipped":            identityRepairResult["skipped"],
+				"failed":             identityRepairResult["failed"],
+			},
+			"plan":     plan,
+			"warnings": uniqueStrings(warnings),
 		}),
 		Source:    s.storeWriteSource(),
 		CreatedAt: time.Now().UTC(),
@@ -283,6 +306,187 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		})
 	}
 	return result, nil
+}
+
+func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid string, dryRun bool) map[string]any {
+	result := map[string]any{
+		"status": "ok", "chat_session_id": sid, "dry_run": dryRun,
+		"candidates": 0, "created_identities": 0, "created_surfaces": 0,
+		"would_create": 0, "skipped": 0, "failed": 0, "skipped_items": []any{}, "errors": []any{},
+	}
+	writer, writerOK := s.Store.(store.EntityIdentityWriter)
+	catalogReader, catalogOK := s.Store.(store.EntityIdentityCatalogReader)
+	history, historyOK := s.Store.(store.SourceRevisionHistoryLister)
+	if !writerOK || !catalogOK || !historyOK {
+		result["status"] = "skipped"
+		result["reason"] = "entity_identity_repair_not_supported"
+		return result
+	}
+	if availability, ok := s.Store.(store.EntityIdentityWriteAvailability); ok && !availability.EntityIdentityWritesEnabled() {
+		result["status"] = "skipped"
+		result["reason"] = "entity_identity_writes_disabled"
+		return result
+	}
+	states, err := s.Store.ListCharacterStates(ctx, sid)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_character_states", "detail": err.Error()}}
+		return result
+	}
+	identities, err := catalogReader.ListActiveEntityIdentities(ctx, sid)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_entity_identities", "detail": err.Error()}}
+		return result
+	}
+	surfaces, err := catalogReader.ListActiveEntityIdentitySurfaces(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_entity_surfaces", "detail": err.Error()}}
+		return result
+	}
+	sources, err := history.ListSourceRevisions(ctx, sid, 0, 0)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_source_revisions", "detail": err.Error()}}
+		return result
+	}
+
+	activeCharacterIdentities := map[string]store.EntityIdentity{}
+	identityIDsByName := map[string][]string{}
+	for _, identity := range identities {
+		id := strings.TrimSpace(identity.StableEntityID)
+		if identity.ChatSessionID != sid || identity.EntityKind != "character" || id == "" {
+			continue
+		}
+		activeCharacterIdentities[id] = identity
+		key := comparableEntityKey(identity.CanonicalLabel)
+		if key != "" {
+			identityIDsByName[key] = appendUniqueString(identityIDsByName[key], id)
+		}
+	}
+	surfaceExistsByName := map[string]bool{}
+	for _, surface := range surfaces {
+		if surface.ChatSessionID != sid {
+			continue
+		}
+		if _, ok := activeCharacterIdentities[strings.TrimSpace(surface.StableEntityID)]; !ok {
+			continue
+		}
+		if key := comparableEntityKey(surface.SurfaceText); key != "" {
+			surfaceExistsByName[key] = true
+		}
+	}
+	activeSourcesByTurn := map[int][]store.MemorySourceRevision{}
+	for _, source := range sources {
+		if source.ChatSessionID == sid && strings.EqualFold(strings.TrimSpace(source.LifecycleState), "active") {
+			activeSourcesByTurn[source.TurnIndex] = append(activeSourcesByTurn[source.TurnIndex], source)
+		}
+	}
+	statesByName := map[string][]store.CharacterState{}
+	nameOrder := []string{}
+	for _, state := range states {
+		name := strings.TrimSpace(state.CharacterName)
+		key := comparableEntityKey(name)
+		if state.ChatSessionID != sid || name == "" || key == "" || surfaceExistsByName[key] {
+			continue
+		}
+		if _, seen := statesByName[key]; !seen {
+			nameOrder = append(nameOrder, key)
+		}
+		statesByName[key] = append(statesByName[key], state)
+	}
+	sort.Strings(nameOrder)
+	errorsOut := []any{}
+	skippedOut := []any{}
+	for _, key := range nameOrder {
+		candidates := statesByName[key]
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if candidates[i].TurnIndex != candidates[j].TurnIndex {
+				return candidates[i].TurnIndex < candidates[j].TurnIndex
+			}
+			return candidates[i].ID < candidates[j].ID
+		})
+		result["candidates"] = intFromAny(result["candidates"], 0) + 1
+		name := strings.TrimSpace(candidates[0].CharacterName)
+		ids := uniqueNonEmptyStrings(identityIDsByName[key])
+		if len(ids) > 1 {
+			result["skipped"] = intFromAny(result["skipped"], 0) + 1
+			skippedOut = append(skippedOut, map[string]any{"character_name": name, "reason": "multiple_existing_character_identities"})
+			continue
+		}
+		var state store.CharacterState
+		var source store.MemorySourceRevision
+		foundSource := false
+		for _, candidate := range candidates {
+			turnSources := activeSourcesByTurn[candidate.TurnIndex]
+			if len(turnSources) == 1 {
+				state = candidate
+				source = turnSources[0]
+				foundSource = true
+				break
+			}
+		}
+		if !foundSource {
+			result["skipped"] = intFromAny(result["skipped"], 0) + 1
+			skippedOut = append(skippedOut, map[string]any{"character_name": name, "reason": "unique_active_source_revision_not_found"})
+			continue
+		}
+		result["would_create"] = intFromAny(result["would_create"], 0) + 1
+		if dryRun {
+			continue
+		}
+		now := time.Now().UTC()
+		idempotencyKey := entityIdentityIdempotencyKey("session_normalize_character", source.SourceRevision, key)
+		stableID := ""
+		if len(ids) == 1 {
+			stableID = ids[0]
+		} else {
+			stableID = entityIdentityStableID("entity", sid, idempotencyKey)
+			identity := store.EntityIdentity{
+				StableEntityID: stableID, ChatSessionID: sid, IdentityNamespace: "session_npc", EntityKind: "character",
+				CanonicalLabel: name, LifecycleState: "active", ReviewState: store.EntityIdentityReviewStateSourceObserved,
+				PresenceAuthority: "observed", OccurrenceAuthority: "derived_character_state",
+				SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+				SourceLogicalTurnID: source.LogicalTurnID, SourceMessageID: source.SourceMessageID,
+				SourceGenerationID: source.SourceGenerationID, SourceContentHash: source.CombinedContentHash,
+				SourceTurn: state.TurnIndex, IdempotencyKey: idempotencyKey, MappingRevision: 1,
+				FirstSeenTurn: state.TurnIndex, LastSeenTurn: state.TurnIndex, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := writer.SaveEntityIdentity(ctx, &identity); err != nil {
+				result["failed"] = intFromAny(result["failed"], 0) + 1
+				errorsOut = append(errorsOut, map[string]any{"character_name": name, "stage": "save_identity", "detail": err.Error()})
+				continue
+			}
+			result["created_identities"] = intFromAny(result["created_identities"], 0) + 1
+		}
+		surfaceKey := entityIdentityIdempotencyKey("session_normalize_character_surface", stableID, key, source.SourceRevision)
+		surface := store.EntityIdentitySurface{
+			SurfaceID: entityIdentityStableID("surface", sid, surfaceKey), StableEntityID: stableID,
+			ChatSessionID: sid, IdentityNamespace: "session_npc", SurfaceKind: "display_name",
+			SurfaceText: name, NormalizedSurface: key, Scope: store.EntityIdentitySurfaceScopeCurrent,
+			ValidFromTurn: state.TurnIndex, SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+			SourceTurn: state.TurnIndex, SourceSpanStart: -1, SourceSpanEnd: -1,
+			ReviewState: store.EntityIdentityReviewStateSourceObserved, IdempotencyKey: surfaceKey,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := writer.SaveEntityIdentitySurface(ctx, &surface); err != nil {
+			result["failed"] = intFromAny(result["failed"], 0) + 1
+			errorsOut = append(errorsOut, map[string]any{"character_name": name, "stage": "save_surface", "detail": err.Error()})
+			continue
+		}
+		result["created_surfaces"] = intFromAny(result["created_surfaces"], 0) + 1
+	}
+	result["skipped_items"] = skippedOut
+	result["errors"] = errorsOut
+	if intFromAny(result["failed"], 0) > 0 {
+		result["status"] = "partial_error"
+	}
+	return result
 }
 
 func adminSessionNormalizeProgressAdapter(progress adminJobProgressFunc, stage string, base, span int) adminJobProgressFunc {
@@ -634,6 +838,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"raw_turns_before":               rawTurns,
 		"memory_rows_before":             memories,
 		"advanced_tools_consolidated":    []string{"active_chat_dry_run", "repair_replay", "admin_rescan", "hierarchy_backfill", "admin_reindex"},
+		"character_identity_repair":      "missing_exact_character_names_only",
 		"visible_trim_delete_protection": "enabled",
 	}
 }
@@ -669,9 +874,9 @@ func adminSessionNormalizeSkipReason(skipped bool, count int, fallback string) s
 	return "not_run"
 }
 
-func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[string]any, warnings []string) string {
+func adminSessionNormalizeStatus(repairResult, rescanResult, identityRepairResult, reindexResult map[string]any, warnings []string) string {
 	deferred := false
-	for _, result := range []map[string]any{repairResult, rescanResult, reindexResult} {
+	for _, result := range []map[string]any{repairResult, rescanResult, identityRepairResult, reindexResult} {
 		status := strings.ToLower(strings.TrimSpace(stringFromMap(result, "status")))
 		if status == "failed" || status == "error" {
 			return "failed"

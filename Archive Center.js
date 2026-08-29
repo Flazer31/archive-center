@@ -861,9 +861,18 @@
       "explorer.entities.identityMergeConfirm": "선택한 인물들을 대표 인물에 연결할까요? 기존 기억·상태·근거는 삭제하거나 다시 작성하지 않습니다.",
       "explorer.entities.identityMergeDone": "인물 동일성 연결을 저장했습니다.",
       "explorer.entities.identityMergeUnavailable": "확인 불가",
+      "explorer.entities.identityLinksSummary": "연결 목록 {count}개",
       "explorer.entities.identityUnmerge": "연결 해제",
       "explorer.entities.identityUnmergeConfirm": "이 동일성 연결만 해제할까요? 기존 기록은 삭제되지 않습니다.",
       "explorer.entities.identityUnmergeDone": "인물 동일성 연결을 해제했습니다.",
+      "explorer.entities.itemIdentityMergeTitle": "물품 동일성 연결",
+      "explorer.entities.itemIdentityMergeTarget": "대표 물품",
+      "explorer.entities.itemIdentityMergeChooseTarget": "대표 물품 선택",
+      "explorer.entities.itemIdentityMergeSelect": "다른 물품과 합치기",
+      "explorer.entities.itemIdentityMergeSelected": "연결할 물품 {count}개",
+      "explorer.entities.itemIdentityMergeConfirm": "선택한 물품들을 대표 물품에 연결할까요? 기존 기록은 삭제하거나 다시 작성하지 않습니다.",
+      "explorer.entities.itemIdentityMergeDone": "물품 동일성 연결을 저장했습니다.",
+      "explorer.entities.itemIdentityUnmergeDone": "물품 동일성 연결을 해제했습니다.",
       "explorer.entities.memoryBrowserTitle": "엔티티별 주관 기억",
       "explorer.entities.memoryBrowserDesc": "현재 세션에 저장된 각 인물의 주관 기억입니다. 같은 사건도 인물마다 다르게 기억될 수 있습니다.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -2252,9 +2261,18 @@
       "explorer.entities.identityMergeConfirm": "Link the selected characters to the representative? Existing memories, states, and evidence will not be deleted or rewritten.",
       "explorer.entities.identityMergeDone": "Character identity link saved.",
       "explorer.entities.identityMergeUnavailable": "unavailable",
+      "explorer.entities.identityLinksSummary": "{count} identity link(s)",
       "explorer.entities.identityUnmerge": "Unlink",
       "explorer.entities.identityUnmergeConfirm": "Remove only this identity link? Existing records will remain.",
       "explorer.entities.identityUnmergeDone": "Character identity link removed.",
+      "explorer.entities.itemIdentityMergeTitle": "Item identity links",
+      "explorer.entities.itemIdentityMergeTarget": "Representative item",
+      "explorer.entities.itemIdentityMergeChooseTarget": "Choose a representative item",
+      "explorer.entities.itemIdentityMergeSelect": "Merge with another item",
+      "explorer.entities.itemIdentityMergeSelected": "{count} item(s) selected",
+      "explorer.entities.itemIdentityMergeConfirm": "Link the selected items to the representative? Existing records will not be deleted or rewritten.",
+      "explorer.entities.itemIdentityMergeDone": "Item identity link saved.",
+      "explorer.entities.itemIdentityUnmergeDone": "Item identity link removed.",
       "explorer.entities.memoryBrowserTitle": "Entity Subjective Memories",
       "explorer.entities.memoryBrowserDesc": "Entity-owned subjective memories saved in this session. The same event can be remembered differently by each character.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -3408,9 +3426,18 @@
       "explorer.entities.identityMergeConfirm": "選択した人物を代表人物にリンクしますか？既存の記憶・状態・根拠は削除も再作成もされません。",
       "explorer.entities.identityMergeDone": "人物同一性リンクを保存しました。",
       "explorer.entities.identityMergeUnavailable": "確認不可",
+      "explorer.entities.identityLinksSummary": "同一性リンク {count}件",
       "explorer.entities.identityUnmerge": "リンク解除",
       "explorer.entities.identityUnmergeConfirm": "この同一性リンクだけを解除しますか？既存記録は残ります。",
       "explorer.entities.identityUnmergeDone": "人物同一性リンクを解除しました。",
+      "explorer.entities.itemIdentityMergeTitle": "アイテム同一性リンク",
+      "explorer.entities.itemIdentityMergeTarget": "代表アイテム",
+      "explorer.entities.itemIdentityMergeChooseTarget": "代表アイテムを選択",
+      "explorer.entities.itemIdentityMergeSelect": "別のアイテムと統合",
+      "explorer.entities.itemIdentityMergeSelected": "選択 {count}件",
+      "explorer.entities.itemIdentityMergeConfirm": "選択したアイテムを代表アイテムにリンクしますか？既存記録は削除も再作成もされません。",
+      "explorer.entities.itemIdentityMergeDone": "アイテム同一性リンクを保存しました。",
+      "explorer.entities.itemIdentityUnmergeDone": "アイテム同一性リンクを解除しました。",
       "explorer.entities.memoryBrowserTitle": "エンティティ別主観記憶",
       "explorer.entities.memoryBrowserDesc": "このセッションに保存された各人物の主観記憶です。同じ出来事でも人物ごとに異なる記憶として扱えます。",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -4559,11 +4586,8 @@
   const _sessionSnapshots = {};   // { [sessionId]: { msgCount, turnIndex, tailHash, checkedAt } }
   const _rollbackTurnLedgerBySession = new Map();
   const ROLLBACK_TURN_LEDGER_KEY = `${PLUGIN_ID}_rollbackTurnLedger`;
-  let _lastAutoRollbackSignature = null;  // 중복 rollback 방지용
-  let _lastAutoRollbackSkipSignature = null;
-  let _rollbackHostSignalReconcilePromise = null;
-  const _rollbackHostSignalLastSignatureBySession = new Map();
-  let _rollbackTailReconcileInFlight = false;
+  const _rollbackHostSignalReconcilePromiseBySession = new Map();
+  const _rollbackTailReconcileInFlightBySession = new Set();
   const _rollbackHistoryTrimGuardBySession = new Map();
   let _activeChatBackfillLedger = null;
   let _activeChatBackfillLedgerLoadPromise = null;
@@ -4578,7 +4602,6 @@
   const _pendingFinalConfirmationRecoveryEntries = new Map();
   let _pendingFinalConfirmationDrainInFlight = false;
   let _pendingFinalConfirmationDrainRequested = false;
-  let _risuCommittedOutputListenerRegistered = false;
   const _risuHookLifecycle = {
     input: "unrequested",
     beforeRequest: "unrequested",
@@ -4988,7 +5011,6 @@
       } else {
         _rollbackHistoryTrimGuardBySession.delete(String(sessionId || "").trim() || "default");
       }
-      await reconcileRollbackFromHostSignal();
       await observePendingFinalConfirmationAtHostSignal(sessionId, "input");
     } catch (err) {
       warnLog("onInputHook failed:", err.message);
@@ -5054,7 +5076,6 @@
       if (typeof R.removeRisuChatListener === "function") {
         await R.removeRisuChatListener("output", onRisuOutput);
       }
-      _risuCommittedOutputListenerRegistered = false;
     } catch (err) {
       debugLog("[unload] output listener cleanup failed:", err && err.message);
     }
@@ -5096,14 +5117,11 @@
       if (typeof R.addRisuChatListener === "function") {
         recordRisuHookLifecycle("output", "registration_requested_unconfirmed");
         await R.addRisuChatListener("output", onRisuOutput);
-        _risuCommittedOutputListenerRegistered = true;
         console.log(LOG_PREFIX, "addRisuChatListener output requested (host acceptance unconfirmed)");
       } else {
-        _risuCommittedOutputListenerRegistered = false;
         recordRisuHookLifecycle("output", "capability_unavailable");
       }
     } catch (regErr) {
-      _risuCommittedOutputListenerRegistered = false;
       recordRisuHookLifecycle("output", "registration_failed");
       warnLog("addRisuChatListener output failed:", regErr && regErr.message);
     }
@@ -8379,44 +8397,6 @@
     } finally {
       _activeChatBackfillInFlight.delete(sid);
     }
-  }
-
-  // payload.messages can be a truncated request window, so rollback detection must
-  // prefer live active-chat history and only fall back to payload when it cannot
-  // shrink the previously observed snapshot.
-  async function resolveRollbackComparableMessages(sessionId, payloadMessages, currentRawUserInput, hostContext = null) {
-    const activeChatMessages = await getCurrentActiveChatRollbackMessages(sessionId, hostContext);
-    const normalizedPayloadMessages = compactSnapshotMessages(payloadMessages);
-    const previousSnapshot = getSessionSnapshot(sessionId);
-    if (Array.isArray(activeChatMessages) && activeChatMessages.length > 0) {
-      const activeComparable = compactSnapshotMessages(activeChatMessages);
-      const expectedCurrentUser = String(currentRawUserInput || "").trim();
-      const activeTailUser = getLastPayloadUserText(activeComparable);
-      const activeContainsCurrentUser = !!(
-        expectedCurrentUser
-        && activeTailUser
-        && (
-          mainTurnTextMatchesOriginal(expectedCurrentUser, activeTailUser)
-          || mainTurnTextMatchesOriginal(activeTailUser, expectedCurrentUser)
-        )
-      );
-      if (activeContainsCurrentUser) {
-        return { messages: activeComparable, source: "active_chat_current_input_confirmed" };
-      }
-      const previousCount = Number(previousSnapshot && previousSnapshot.msgCount || 0);
-      if (normalizedPayloadMessages.length > activeComparable.length
-          && (!previousCount || activeComparable.length < previousCount)) {
-        return { messages: normalizedPayloadMessages, source: "payload_newer_than_stale_active_chat" };
-      }
-      return { messages: activeComparable, source: "active_chat" };
-    }
-    if (!previousSnapshot) {
-      return { messages: normalizedPayloadMessages, source: "payload_bootstrap" };
-    }
-    if (normalizedPayloadMessages.length >= Number(previousSnapshot.msgCount || 0)) {
-      return { messages: normalizedPayloadMessages, source: "payload_fallback" };
-    }
-    return { messages: null, source: "payload_shorter_than_snapshot" };
   }
 
   async function getActiveChatSessionIdentity(charIdx, chatIdx) {
@@ -18910,35 +18890,8 @@
       const hostChatId = String(chat && chat.id || "").trim();
       if (!messages) return;
 
-      // The official output listener supplies coordinates captured for the
-      // chat that actually received the committed output. Match that immutable
-      // owner directly instead of consulting whichever chat is visible now.
-      let committedRequestContext = null;
-      for (const requestContext of _finalConfirmationRequestBySession.values()) {
-        if (!requestContext || (requestContext.state !== "captured" && requestContext.state !== "candidate_observed")) continue;
-        if (
-          Number(requestContext.characterIndex) === characterIndex
-          && Number(requestContext.chatIndex) === chatIndex
-          && String(requestContext.hostChatId || "") === hostChatId
-        ) {
-          committedRequestContext = requestContext;
-          break;
-        }
-      }
-      if (committedRequestContext) {
-        Promise.resolve().then(function persistFrozenCommittedOutput() {
-          return observePendingFinalConfirmationAtHostSignal(
-            committedRequestContext.sessionId,
-            "output",
-            snapshot
-          );
-        }).catch(function reportCommittedOutputFailure(err) {
-          warnLog("onRisuOutput final persistence failed:", err && err.message);
-        });
-      }
-
       // Freeze the exact Host marker/source facts before dispatch. The output
-      // hook also transports branch marker facts, independently of turn save.
+      // hook transports branch marker facts independently of turn save.
       const worldlineObservation = buildRisuWorldlineObservationFromMessages(messages, Date.now(), "output");
       if (!worldlineObservation) return;
       _risuHookLifecycle.output = "callback_observed";
@@ -20053,181 +20006,6 @@
   }
 
   /**
-   * beforeRequest 시점에서 rollback 필요 여부를 판단한다.
-   * @returns {{ shouldRollback: boolean, reason: string, newTurnIndex: number|null, detail: object }}
-   */
-  function detectRollbackNeed(sessionId, messages) {
-    const result = { shouldRollback: false, reason: "none", newTurnIndex: null, detail: {} };
-    try {
-      const prev = getSessionSnapshot(sessionId);
-      if (!prev) {
-        const recentTrimIntent = getRecentRisuHistoryTrimGuard(sessionId);
-        if (recentTrimIntent) {
-          const ledgerState = loadRollbackTurnLedgerOr1f(sessionId);
-          const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
-          const currentList = compactSnapshotMessages(messages);
-          if (entries.length > 0 && currentList.length > 0 && currentList.length < entries.length) {
-            const detail = Object.assign({}, recentTrimIntent, {
-              guardReason: "recent_risu_slash_trim_command",
-              previousMsgCount: entries.length,
-              currentMsgCount: currentList.length,
-              removedVisibleMsgCount: entries.length - currentList.length,
-              note: "Recent /del or /cut command observed; visible chat shrink is treated as RisuAI history trim, not Archive DB deletion.",
-            });
-            result.reason = "risu_history_trim_or_cut_guard";
-            result.detail = recordRisuHistoryTrimGuard(sessionId, "recent_risu_slash_trim_command", detail) || detail;
-            return result;
-          }
-        }
-        const persistedTrimGuard = buildPersistedLedgerHistoryTrimGuardOr1f(sessionId, messages);
-        if (persistedTrimGuard) {
-          result.reason = "risu_history_trim_or_cut_guard";
-          result.detail = recordRisuHistoryTrimGuard(sessionId, "persisted_ledger_suffix_window_trim", persistedTrimGuard) || persistedTrimGuard;
-          return result;
-        }
-        result.reason = "no_previous_snapshot";
-        return result;
-      }
-
-      const currentMessages = compactSnapshotMessages(messages);
-      const currentCount = currentMessages.length;
-      const currentTailMessages = extractSnapshotTailMessages(currentMessages);
-      const currentTailHash = computeTailHash(currentMessages);
-      const currentLastRole = currentTailMessages.length > 0 ? (currentTailMessages[currentTailMessages.length - 1].role || "") : "";
-      const countDelta = prev.msgCount - currentCount;
-      const tailDeletePattern = analyzeTailDeletePattern(prev.messagesPreview, currentMessages);
-      const detectionState = buildRollbackDetectionStateOr1f(sessionId, prev, currentMessages);
-      const assistantDeletionState = buildAssistantOutputDeletionStateOr1f(prev, currentMessages);
-      const duplicateSignature = buildRollbackDuplicateSignatureOr1f(sessionId, currentCount, currentTailHash, detectionState);
-
-      result.detail = {
-        prevMsgCount: prev.msgCount,
-        currentMsgCount: currentCount,
-        prevAssistantMsgCount: assistantDeletionState.previousAssistantCount,
-        currentAssistantMsgCount: assistantDeletionState.currentAssistantCount,
-        countDelta,
-        prevTailHash: prev.tailHash,
-        currentTailHash,
-        prevAssistantTailHash: assistantDeletionState.previousAssistantTailHash,
-        currentAssistantTailHash: assistantDeletionState.currentAssistantTailHash,
-        prevTurnIndex: prev.turnIndex,
-        prevLastRole: prev.lastRole || "",
-        currentLastRole,
-        commonPrefixLen: tailDeletePattern.commonPrefixLen,
-        commonSuffixLen: detectionState.commonSuffixLen,
-        removedMsgCount: tailDeletePattern.removedMsgCount,
-        appendedMsgCount: tailDeletePattern.appendedMsgCount,
-        insertedMsgCount: detectionState.insertedMsgCount,
-        removedAssistantCount: assistantDeletionState.removedAssistantCount,
-        insertedAssistantCount: assistantDeletionState.insertedAssistantCount,
-        detectionPolicyVersion: detectionState.policyVersion,
-        detectionSourcesUsed: detectionState.detectionSourcesUsed.slice(),
-        ledgerAvailable: detectionState.ledgerAvailable,
-        ledgerAnchorTurnIndex: detectionState.ledgerAnchorTurnIndex,
-        duplicateSignature,
-      };
-
-      const recentTrimIntent = getRecentRisuHistoryTrimGuard(sessionId);
-      if (recentTrimIntent && countDelta > 0) {
-        const detail = Object.assign({}, result.detail, recentTrimIntent, {
-          guardReason: "recent_risu_slash_trim_command",
-          note: "Recent /del or /cut command observed; automatic Archive rollback is blocked to preserve DB rows.",
-        });
-        result.reason = "risu_history_trim_or_cut_guard";
-        result.detail = recordRisuHistoryTrimGuard(sessionId, "recent_risu_slash_trim_command", detail) || detail;
-        return result;
-      }
-
-      const trimGuard = buildSnapshotHistoryTrimGuardOr1f(sessionId, prev, currentMessages, detectionState, assistantDeletionState);
-      if (trimGuard) {
-        result.reason = "risu_history_trim_or_cut_guard";
-        result.detail = recordRisuHistoryTrimGuard(sessionId, "active_chat_suffix_window_trim", Object.assign({}, result.detail, trimGuard)) || Object.assign({}, result.detail, trimGuard);
-        return result;
-      }
-
-      if (detectionState.removedMsgCount > 0
-        && assistantDeletionState.removedAssistantCount === 0
-        && assistantDeletionState.insertedAssistantCount === 0) {
-        result.reason = "user_message_removed_turn_retained";
-        result.detail.retentionAuthority = "assistant_output_sequence_unchanged";
-        return result;
-      }
-
-      const ledgerFallbackForCollapsedSnapshot = buildRollbackFromPersistedLedgerFallbackOr1f(sessionId, currentMessages);
-      if (ledgerFallbackForCollapsedSnapshot
-        && Number(ledgerFallbackForCollapsedSnapshot.detail.prevMsgCount || 0) > Number(prev.msgCount || 0)
-        && Number(prev.msgCount || 0) === currentCount) {
-        const fallbackMiddleGuard = buildAmbiguousHistoryTrimGuardOr1f(
-          sessionId,
-          { messagesPreview: [], turnIndex: prev.turnIndex },
-          currentMessages,
-          {
-            commonPrefixLen: Number(ledgerFallbackForCollapsedSnapshot.detail.commonPrefixLen || 0),
-            commonSuffixLen: Number(ledgerFallbackForCollapsedSnapshot.detail.commonSuffixLen || 0),
-            removedMsgCount: Number(ledgerFallbackForCollapsedSnapshot.detail.removedMsgCount || ledgerFallbackForCollapsedSnapshot.detail.countDelta || 0),
-            insertedMsgCount: 0,
-            ledgerAnchorTurnIndex: Number(ledgerFallbackForCollapsedSnapshot.detail.ledgerAnchorTurnIndex || 0),
-          },
-          assistantDeletionState,
-          "persisted_ledger_ambiguous_history_trim"
-        );
-        if (fallbackMiddleGuard) {
-          result.reason = "risu_history_trim_or_cut_guard";
-          result.detail = recordRisuHistoryTrimGuard(sessionId, "persisted_ledger_ambiguous_history_trim", Object.assign({}, ledgerFallbackForCollapsedSnapshot.detail, fallbackMiddleGuard)) || Object.assign({}, ledgerFallbackForCollapsedSnapshot.detail, fallbackMiddleGuard);
-          return result;
-        }
-        if (_lastAutoRollbackSignature === ledgerFallbackForCollapsedSnapshot.detail.duplicateSignature) {
-          result.reason = "duplicate_rollback_blocked";
-          result.detail = ledgerFallbackForCollapsedSnapshot.detail;
-          return result;
-        }
-        result.shouldRollback = true;
-        result.reason = "persisted_ledger_deletion_detected_after_collapsed_snapshot";
-        result.newTurnIndex = ledgerFallbackForCollapsedSnapshot.rollbackToTurn;
-        result.detail = ledgerFallbackForCollapsedSnapshot.detail;
-        return result;
-      }
-
-      if (!(typeof prev.turnIndex === "number") || prev.turnIndex < 1) {
-        result.reason = "no_tracked_turn_index";
-        return result;
-      }
-
-      if (assistantDeletionState.deletionDetected) {
-        const assistantMiddleGuard = buildAmbiguousHistoryTrimGuardOr1f(sessionId, prev, currentMessages, detectionState, assistantDeletionState, "assistant_deletion_ambiguous_history_trim");
-        if (assistantMiddleGuard && detectionState.deletedFromMiddle) {
-          result.reason = "risu_history_trim_or_cut_guard";
-          result.detail = recordRisuHistoryTrimGuard(sessionId, "assistant_deletion_ambiguous_history_trim", Object.assign({}, result.detail, assistantMiddleGuard)) || Object.assign({}, result.detail, assistantMiddleGuard);
-          return result;
-        }
-        const rollbackToTurn = assistantDeletionState.firstRemovedTurnIndex
-          || detectionState.ledgerAnchorTurnIndex
-          || Math.max(1, prev.turnIndex - assistantDeletionState.removedAssistantCount + 1);
-        if (_lastAutoRollbackSignature === duplicateSignature) {
-          result.reason = "duplicate_rollback_blocked";
-          return result;
-        }
-        result.shouldRollback = true;
-        result.reason = assistantDeletionState.removedAssistantCount === 1
-          ? "assistant_deleted_output_removed"
-          : "assistant_output_range_removed";
-        result.newTurnIndex = rollbackToTurn;
-        result.detail.turnsRemoved = Math.max(1, assistantDeletionState.removedAssistantCount);
-        result.detail.rollbackToTurn = rollbackToTurn;
-        result.detail.targetResolution = "assistant_output_sequence_then_ledger_anchor";
-        result.detail.userInputPhase = "user_input_between_turns";
-        return result;
-      }
-
-      result.reason = "assistant_output_not_removed";
-      return result;
-    } catch (err) {
-      result.reason = "detect_error:" + (err.message || "unknown");
-      return result;
-    }
-  }
-
-  /**
    * 자동 rollback을 실행한다. 실패해도 채팅 흐름을 깨지 않는다.
    * @returns {boolean} 성공 여부
    */
@@ -20418,7 +20196,12 @@
     try {
       debugLog("executeAutoRollback: session=", sessionId, "turn=", turnIndex, "reason=", reason, "source=", requestSource);
 
-      const decision = await requestBackendRollbackDecision(sessionId, turnIndex, reason, detail, requestSource);
+	  // Reuse the exact Go decision produced from the full host observation when
+	  // automatic reconciliation already requested one. Asking twice can issue
+	  // two decision tokens and render duplicate delete notices for one change.
+      const decision = options && options.rollbackDecision
+		? options.rollbackDecision
+		: await requestBackendRollbackDecision(sessionId, turnIndex, reason, detail, requestSource);
 	  if (decision && decision.turn_workflow_hud) {
 		consumeTurnWorkflowHUDNotice(decision.turn_workflow_hud);
 	  }
@@ -20453,23 +20236,44 @@
         source: "backend_rollback_decision",
       } : null;
 
-      const result = await bridgeFetch(`/rollback/${decidedTurnIndex}?${rollbackParams.toString()}`, {
+      const rollbackPath = `/rollback/${decidedTurnIndex}?${rollbackParams.toString()}`;
+      const result = await bridgeFetch(rollbackPath, {
         method: "DELETE",
 		timeoutMs: getRequestTimeoutSettingMs(),
       });
 	  if (!result && rollbackHUDRequestId) {
-		renderTurnWorkflowHUDTransportError(rollbackHUDRequestId, `/rollback/${decidedTurnIndex}`, "rollback_transport_interrupted_retryable");
+		let backendFailureHUD = null;
+		try {
+		  const recordedFailure = _lastBridgeFailureByPath.get(rollbackPath) || {};
+		  const failurePayload = JSON.parse(String(recordedFailure.response_body || ""));
+		  const candidateHUD = failurePayload && failurePayload.turn_workflow_hud;
+		  if (candidateHUD && String(candidateHUD.request_id || "") === rollbackHUDRequestId) {
+			backendFailureHUD = candidateHUD;
+		  }
+		} catch { /* transport diagnostics remain available below */ }
+		if (backendFailureHUD) consumeTurnWorkflowHUDNotice(backendFailureHUD);
+		else renderTurnWorkflowHUDTransportError(rollbackHUDRequestId, rollbackPath, "rollback_transport_interrupted_retryable");
 	  }
 
       const rollbackStatus = result && result.status;
       const rollbackPartial = rollbackStatus === "partial_error";
+      const rollbackPlan = result && result.rollback_plan && typeof result.rollback_plan === "object"
+        ? result.rollback_plan
+        : null;
+      const mutationConfirmed = !!(
+        result
+        && String(result.source || "") !== "shadow"
+        && rollbackPlan
+        && rollbackPlan.status === "executed"
+        && rollbackPlan.mutation_enabled === true
+        && rollbackPlan.decision_verified === true
+        && result.deletions
+        && typeof result.deletions === "object"
+      );
       if (result && result.turn_workflow_hud) {
         consumeTurnWorkflowHUDNotice(result.turn_workflow_hud);
       }
-      if (result && (rollbackStatus === "ok" || rollbackPartial)) {
-        // 성공: 중복 방지 시그니처 기록
-        const sig = String((detail || {}).duplicateSignature || (sessionId + "|" + (((detail || {}).currentMsgCount) || 0) + "|" + (((detail || {}).currentTailHash) || "")));
-        _lastAutoRollbackSignature = requestSource === "auto" ? sig : null;
+      if (result && mutationConfirmed && (rollbackStatus === "ok" || rollbackPartial)) {
         delete _sessionSnapshots[sessionId];
         _rollbackTurnLedgerBySession.delete(sessionId || "default");
         safeStorageRemove(rollbackTurnLedgerStorageKey(sessionId));
@@ -20525,7 +20329,9 @@
       } else {
         if (updateAutoState) {
           updateRuntimeState("lastAutoRollback", "fail", {
-            detail: `rollback API failed (turn ${turnIndex})`,
+            detail: mutationConfirmed
+              ? `rollback API failed (turn ${turnIndex})`
+              : `rollback mutation was not confirmed (turn ${turnIndex})`,
             sessionId,
           });
         }
@@ -20548,76 +20354,6 @@
       warnLog("executeAutoRollback failed (non-fatal):", err.message);
       if (manualRequest) throw err;
       return false;
-    }
-  }
-
-  /**
-   * onBeforeRequest에서 호출되는 메인 진입점.
-   * 대화 상태를 관측하고, 명확한 롤백 상황에서만 자동 rollback을 실행한다.
-   */
-  async function checkAndAutoRollback(sessionId, messages, options = {}) {
-    try {
-      if (!settings.rollbackAutoEnabled) {
-        updateSessionSnapshot(sessionId, messages);
-        return;
-      }
-
-      const detection = detectRollbackNeed(sessionId, messages);
-
-      // trace에 기록 (debug 모드에서 상세, 기본에서는 최소)
-      if (detection.shouldRollback) {
-        _lastAutoRollbackSkipSignature = null;
-        debugLog("Auto-rollback detected:", detection.reason, detection.detail);
-        const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId, options.hostContext || null);
-        const success = resolvedActiveChat && resolvedActiveChat.chat
-          ? await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, {
-              reason: detection.reason,
-              force: true,
-              allowBlindTailRollback: false,
-              hostLifecycleObservation: String(options.hostLifecycleObservation || ""),
-            })
-          : false;
-        if (!success) {
-          updateRuntimeState("lastAutoRollback", "skipped", {
-            reason_code: "unverified_rollback_signal_blocked",
-            detail: "unverified rollback signal blocked; waiting active-chat/backend turn-count reconciliation (" + detection.reason + ")",
-            sessionId,
-            requestedTurnIndex: detection.newTurnIndex,
-            detection: detection.detail,
-          });
-          // 실행 실패해도 snapshot은 갱신하여 반복 시도 방지
-          _lastAutoRollbackSignature = String(detection.detail.duplicateSignature || (sessionId + "|" + (detection.detail.currentMsgCount || 0) + "|" + (detection.detail.currentTailHash || "")));
-        }
-      } else if (detection.reason !== "no_previous_snapshot" && detection.reason !== "msg_count_not_decreased") {
-        const skipSignature = [
-          sessionId || "default",
-          detection.reason || "unknown",
-          detection.detail && detection.detail.prevTurnIndex != null ? detection.detail.prevTurnIndex : "na",
-          detection.detail && detection.detail.currentMsgCount != null ? detection.detail.currentMsgCount : "na",
-          detection.detail && detection.detail.currentTailHash ? detection.detail.currentTailHash : "",
-          detection.detail && detection.detail.duplicateSignature ? detection.detail.duplicateSignature : "",
-        ].join("|");
-        if (_lastAutoRollbackSkipSignature !== skipSignature) {
-          // suspect 상태: rollback하지 않지만 동일 상태 반복 로그는 억제
-          debugLog("Auto-rollback suspected but skipped:", detection.reason, detection.detail);
-          updateRuntimeState("lastAutoRollback", "skipped", {
-            detail: `${detection.reason} (skipped)`,
-            sessionId,
-          });
-          _lastAutoRollbackSkipSignature = skipSignature;
-        }
-      } else {
-        _lastAutoRollbackSkipSignature = null;
-      }
-      // else: 정상 진행 → idle 유지 (매번 idle로 덮어쓰지 않음)
-
-      // snapshot 갱신 (현재 상태를 다음 비교 기준으로 저장)
-      if (!(detection.detail && detection.detail.skipSnapshotUpdate)) {
-        updateSessionSnapshot(sessionId, messages);
-      }
-    } catch (err) {
-      warnLog("checkAndAutoRollback failed (non-fatal):", err.message);
-      // 자동 감지 실패가 채팅 흐름을 깨면 안 됨
     }
   }
 
@@ -20646,159 +20382,19 @@
     return Math.max(maxTimelineTurnIndex(data.items), Number.isFinite(metaTurn) ? Math.floor(metaTurn) : 0);
   }
 
-  function buildLedgerVerifiedTailRollback(sessionId, currentMessages, activeCompletedTurnCount, latestBackendTurn) {
-    try {
-      const sid = String(sessionId || "").trim() || "default";
-      const ledgerState = loadRollbackTurnLedgerOr1f(sid);
-      const entries = ledgerState && Array.isArray(ledgerState.entries) ? ledgerState.entries : [];
-      const currentList = compactSnapshotMessages(currentMessages);
-      if (!ledgerState || entries.length === 0) return null;
-
-      const completedCount = Math.max(0, Number(activeCompletedTurnCount || 0));
-      const backendLatest = Math.max(0, Number(latestBackendTurn || 0));
-      if (!Number.isFinite(completedCount) || !Number.isFinite(backendLatest) || backendLatest <= completedCount) return null;
-
-      let verifiedCurrentList = currentList;
-      let commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, verifiedCurrentList);
-      let pendingCurrentUserExcluded = false;
-      if (commonPrefixLen !== verifiedCurrentList.length) {
-        const currentTail = verifiedCurrentList.length > 0
-          ? verifiedCurrentList[verifiedCurrentList.length - 1]
-          : null;
-        if (!currentTail || currentTail.role !== "user") return null;
-        verifiedCurrentList = verifiedCurrentList.slice(0, -1);
-        commonPrefixLen = computeLedgerCurrentPrefixLengthOr1f(ledgerState, verifiedCurrentList);
-        if (commonPrefixLen !== verifiedCurrentList.length) return null;
-        pendingCurrentUserExcluded = true;
-      }
-
-      const removedEntries = entries.slice(commonPrefixLen);
-      const removedAssistantCount = removedEntries.reduce(function(count, entry) {
-        return count + (entry && entry.role === "assistant" ? 1 : 0);
-      }, 0);
-      const rollbackFrom = Math.max(1, completedCount + 1);
-      const backendGap = backendLatest - completedCount;
-      const removedUserCount = removedEntries.reduce(function(count, entry) {
-        return count + (entry && entry.role === "user" ? 1 : 0);
-      }, 0);
-      const incompleteUserOnlyTail = removedAssistantCount === 0
-        && removedUserCount === 1
-        && removedEntries.length === 1
-        && backendGap === 1
-        && rollbackFrom === backendLatest;
-      if (removedAssistantCount <= 0 && !incompleteUserOnlyTail) return null;
-
-      return {
-        status: incompleteUserOnlyTail ? "incomplete_user_only_tail_candidate" : "verified_tail_delete",
-        rollbackFrom,
-        backendGap,
-        ledgerTrackedTurnIndex: Number(ledgerState.trackedTurnIndex || 0),
-        ledgerMessageCount: entries.length,
-        currentMessageCount: currentList.length,
-        verifiedCurrentMessageCount: verifiedCurrentList.length,
-        pendingCurrentUserExcluded,
-        commonPrefixLen,
-        removedMessageCount: removedEntries.length,
-        removedAssistantCount,
-        removedUserCount,
-        currentTailHash: computeTailHash(currentList),
-        policyVersion: incompleteUserOnlyTail
-          ? "or1f.backend_verified_incomplete_tail.v1"
-          : "or1f.ledger_verified_tail_delete.v2",
-      };
-    } catch (err) {
-      debugLog("buildLedgerVerifiedTailRollback failed:", err && err.message);
-      return null;
-    }
-  }
-
   async function reconcileActiveChatTailDeletionWithBackend(sessionId, activeChat, options = {}) {
     const sid = String(sessionId || "").trim();
     if (!settings.enabled || !settings.dbEnabled || !sid || sid === SESSION_FALLBACK || !activeChat) return false;
-    if (_rollbackTailReconcileInFlight) return false;
-    _rollbackTailReconcileInFlight = true;
+    if (_rollbackTailReconcileInFlightBySession.has(sid)) return false;
+    _rollbackTailReconcileInFlightBySession.add(sid);
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
       if (!Array.isArray(rawMessages)) return false;
-      const comparable = extractActiveChatComparableMessages(activeChat);
-      const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable);
-      const latestPair = pairs.length > 0 ? pairs[pairs.length - 1] : { observedPairOrdinal: 0 };
-      const completedTurnResolution = await requestBackendSessionRoutingTurnResolution(sid, "visible_completed", latestPair);
-      if (!completedTurnResolution || completedTurnResolution.status === "backend_unavailable") return false;
-      const visibleCompletedTurnCount = Number(completedTurnResolution.localTurnIndex || 0);
-      const activeCompletedTurnCount = Number(completedTurnResolution.completedTurnCount || 0);
-      const latestBackendTurn = await fetchBackendLatestTurnIndexForSession(sid);
-      if (!(latestBackendTurn > activeCompletedTurnCount)) return false;
-      const backendGap = latestBackendTurn - activeCompletedTurnCount;
-      const ledgerTailRollback = buildLedgerVerifiedTailRollback(sid, comparable, activeCompletedTurnCount, latestBackendTurn);
-      const baselineTailRollbackAllowed = !!(completedTurnResolution.baseline)
-        && backendGap > 0
-        && backendGap <= ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS;
       const currentAssistantObservations = buildRollbackAssistantObservations(rawMessages);
-      const recentTrimGuard = getRecentRisuHistoryTrimGuard(sid);
-      if (recentTrimGuard && (!ledgerTailRollback || ledgerTailRollback.status === "incomplete_user_only_tail_candidate")) {
-        updateRuntimeState("lastAutoRollback", "skipped", {
-          reason_code: "history_trim_protected",
-          detail: "active chat history trim/cut protected; DB rows preserved",
-          sessionId: sid,
-          activeCompletedTurnCount,
-          visibleCompletedTurnCount,
-          backendLatestTurnIndex: latestBackendTurn,
-          turnResolution: completedTurnResolution,
-          guard: recentTrimGuard,
-        });
-        return false;
-      }
-      if (!options.allowBlindTailRollback && !ledgerTailRollback && !baselineTailRollbackAllowed) {
-        updateRuntimeState("lastAutoRollback", "skipped", {
-          reason_code: "blind_tail_reconcile_blocked",
-          detail: "active chat tail is shorter than backend by " + backendGap + " turns; blind rollback blocked, use explicit Explorer delete to remove DB rows",
-          sessionId: sid,
-          activeCompletedTurnCount,
-          visibleCompletedTurnCount,
-          backendLatestTurnIndex: latestBackendTurn,
-          turnResolution: completedTurnResolution,
-          policyVersion: "or1f.risu_history_trim_guard.v2",
-          guardReason: "blind_tail_reconcile_blocked",
-        });
-        return false;
-      }
-      if (!ledgerTailRollback && backendGap > ROLLBACK_TAIL_RECONCILE_MAX_BLIND_GAP_TURNS) {
-        updateRuntimeState("lastAutoRollback", "skipped", {
-          reason_code: "blind_tail_reconcile_blocked",
-          detail: "active chat shorter than backend by " + backendGap + " turns; blind rollback blocked as possible /cut history trim",
-          sessionId: sid,
-          activeCompletedTurnCount,
-          visibleCompletedTurnCount,
-          backendLatestTurnIndex: latestBackendTurn,
-          turnResolution: completedTurnResolution,
-          policyVersion: "or1f.risu_history_trim_guard.v1",
-        });
-        return false;
-      }
-      const rollbackFrom = ledgerTailRollback
-        ? ledgerTailRollback.rollbackFrom
-        : Math.max(1, activeCompletedTurnCount + 1);
-      const duplicateSignature = [
-        sid,
-        ledgerTailRollback ? "ledger_verified_tail_reconcile" : "active_chat_tail_reconcile",
-        activeCompletedTurnCount,
-        latestBackendTurn,
-        ledgerTailRollback ? ledgerTailRollback.commonPrefixLen : "",
-      ].join("|");
-      if (_lastAutoRollbackSignature === duplicateSignature) return false;
-
-      const rolledBack = await executeAutoRollback(sid, rollbackFrom, "active_chat_tail_missing_from_runtime", {
-        activeCompletedTurnCount,
-        visibleCompletedTurnCount,
-        backendLatestTurnIndex: latestBackendTurn,
-        rollbackToTurn: rollbackFrom,
-        reason: options.reason || "runtime_tail_reconcile",
-        tailReconcileVerification: ledgerTailRollback || null,
+      const detail = {
+        reason: options.reason || "active_chat_assistant_observation",
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
-        turnResolution: completedTurnResolution,
-        duplicateSignature,
         hostLifecycleObservation: String(
           options.hostLifecycleObservation
           || (hasPendingFinalConfirmationForSession(sid)
@@ -20806,47 +20402,66 @@
             : "")
         ),
         lifecycleActionObservation: "deleted",
-      });
-	  if (rolledBack) updateSessionSnapshot(sid, comparable);
+      };
+      const decision = await requestBackendRollbackDecision(
+        sid,
+        0,
+        "active_chat_assistant_observation",
+        detail,
+        "auto"
+      );
+      if (!decision) return false;
+      if (decision.allowed !== true) {
+        // An unchanged assistant set is a successful retain decision. This is
+        // also how Go preserves a turn when only its user input disappeared.
+        return String(decision.reason || "") === "assistant_output_not_removed";
+      }
+      const rollbackFrom = Math.max(1, Number(decision.from_turn || 0));
+      const rolledBack = await executeAutoRollback(
+        sid,
+        rollbackFrom,
+        "active_chat_assistant_observation",
+        detail,
+        { requestSource: "auto", rollbackDecision: decision }
+      );
+	  if (rolledBack) updateSessionSnapshot(sid, extractActiveChatRollbackMessages(activeChat));
 	  return rolledBack === true;
     } catch (err) {
       debugLog("reconcileActiveChatTailDeletionWithBackend failed:", err && err.message);
       return false;
     } finally {
-      _rollbackTailReconcileInFlight = false;
+      _rollbackTailReconcileInFlightBySession.delete(sid);
     }
   }
 
-  async function reconcileRollbackFromHostSignal(sessionId = "", hostContext = null) {
-    if (_rollbackHostSignalReconcilePromise) return _rollbackHostSignalReconcilePromise;
+  async function reconcileRollbackFromHostSignal(sessionId = "", hostContext = null, options = {}) {
     if (!settings.enabled || !settings.rollbackAutoEnabled || !R || typeof R.getCharacter !== "function") {
       return false;
     }
+    const fixedSessionId = String(sessionId || await getCurrentChatSessionId() || "").trim();
+    if (!fixedSessionId) return false;
+    const existingPromise = _rollbackHostSignalReconcilePromiseBySession.get(fixedSessionId);
+    if (existingPromise) return existingPromise;
     const reconcilePromise = (async function reconcileObservedHostRollback() {
-      const fixedSessionId = String(sessionId || await getCurrentChatSessionId() || "").trim();
-      if (!fixedSessionId) return false;
       const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatRollbackMessages(resolvedActiveChat.chat) : [];
-      if (!resolvedActiveChat.chat || !Array.isArray(messages)) return false;
-      const watcherSignature = [
-        messages.length,
-        computeTailHash(messages),
-      ].join("|");
-      const previousWatcherSignature = _rollbackHostSignalLastSignatureBySession.get(fixedSessionId || "default");
-      if (previousWatcherSignature === watcherSignature) return false;
-      _rollbackHostSignalLastSignatureBySession.set(fixedSessionId || "default", watcherSignature);
-      await checkAndAutoRollback(fixedSessionId, messages, { hostContext });
-      return true;
+      if (!resolvedActiveChat.chat) return false;
+      const rawMessages = extractActiveChatMessageList(resolvedActiveChat.chat);
+      if (!Array.isArray(rawMessages)) return false;
+      const reconciled = await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {
+        reason: String(options.reason || "worldline_refresh_assistant_observation"),
+        hostLifecycleObservation: String(options.hostLifecycleObservation || "worldline_refresh_observed"),
+      });
+      return reconciled === true;
     })();
-    _rollbackHostSignalReconcilePromise = reconcilePromise;
+    _rollbackHostSignalReconcilePromiseBySession.set(fixedSessionId, reconcilePromise);
     try {
       return await reconcilePromise;
     } catch (err) {
       debugLog("reconcileRollbackFromHostSignal failed:", err && err.message);
       return false;
     } finally {
-      if (_rollbackHostSignalReconcilePromise === reconcilePromise) {
-        _rollbackHostSignalReconcilePromise = null;
+      if (_rollbackHostSignalReconcilePromiseBySession.get(fixedSessionId) === reconcilePromise) {
+        _rollbackHostSignalReconcilePromiseBySession.delete(fixedSessionId);
       }
     }
   }
@@ -32756,7 +32371,6 @@
       }
       const orchRequestId = makeOrchRequestId(orchSessionId);
       primeTurnWorkflowHUD(orchRequestId);
-      await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext);
       // Observe/capture at the supported host callback boundary even when the
       // backend prepare lane later fails open. Only this bounded snapshot work is
       // awaited; complete-turn/critic persistence remains fire-and-forget.
@@ -32868,6 +32482,10 @@
         });
         return payload;
       }
+      await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext, {
+        reason: "before_request_assistant_observation",
+        hostLifecycleObservation: "before_request_observed",
+      });
       let userInput = String(currentInputDecision.effective_user_input || "");
       let userInputInfo = {
         text: userInput,
@@ -32875,26 +32493,6 @@
         metaOnly: false,
         actualEmptyInput: false,
       };
-
-      // Sprint 3-E-2: compare visible RisuAI history after source validation and before full prepare/supervisor.
-      try {
-        const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages, userInput, orchHostContext);
-        if (rollbackComparable.messages) {
-          await checkAndAutoRollback(orchSessionId, rollbackComparable.messages, {
-            hostLifecycleObservation: "before_request_observed",
-            hostContext: orchHostContext,
-          });
-        } else if (settings.debug) {
-          debugLog(
-            "rollback auto-detect skipped: comparable history unavailable",
-            rollbackComparable.source,
-            "session:",
-            orchSessionId || "default"
-          );
-        }
-      } catch (detectErr) {
-        warnLog("rollback auto-detect check failed (non-fatal):", detectErr.message);
-      }
 
       const runtimeConfigBinding = await ensureBackendRuntimeConfigBinding(
         sourceDecisionResult && sourceDecisionResult.backendInstanceId
@@ -33836,16 +33434,6 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      if (isSaveType(type) && _risuCommittedOutputListenerRegistered) {
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: "awaiting committed output callback",
-          reason_code: "awaiting_risu_committed_output",
-          sessionId: selectedRequestContext ? selectedRequestContext.sessionId : "",
-          requestType,
-          promptMemoryAvailability: "pending_current_turn",
-        });
-        return responseReturnContent;
-      }
       if (isSaveType(type) && !selectedRequestContext) {
         updateRuntimeState("lastStreamingAfterRequest", "watching", {
           detail: "waiting for an exact session host observation",
@@ -35158,6 +34746,8 @@
       identityMerge: { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" },
       locations: [],    // world_rules에서 location scope만 추출
       items: [],        // KG triple에서 소유/장비 술어로 추출
+      itemIdentityLinks: [],
+      itemIdentityMerge: { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" },
       memoryBundles: [],
       selectedMemoryBundleKey: "",
       memoryItems: [],
@@ -35725,16 +35315,12 @@
     }
     ent.loading = true; ent.error = null;
     try {
-      const kgParams = new URLSearchParams();
-      kgParams.set("chat_session_id", sid);
-      kgParams.set("limit", "200");
-      kgParams.set("offset", "0");
       const bundleParams = new URLSearchParams();
       bundleParams.set("source_chat_session_id", sid);
-      const [charRes, wrRes, kgRes, bundleRes] = await Promise.all([
+      const [charRes, wrRes, itemRes, bundleRes] = await Promise.all([
         safeCall(() => bridgeFetch("/characters/" + encodeURIComponent(sid), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchChars"),
         safeCall(() => bridgeFetch("/world-rules/" + encodeURIComponent(sid), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchWorldRules"),
-        safeCall(() => bridgeFetch("/explorer/kg_triples?" + kgParams.toString(), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchKg"),
+        safeCall(() => bridgeFetch("/items/" + encodeURIComponent(sid), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchItems"),
         safeCall(() => bridgeFetch("/subjective-entity-memories/entities?" + bundleParams.toString(), { method: "GET", timeoutMs: getRequestTimeoutSettingMs() }), null, "entitiesFetchSubjectiveMemoryBundles"),
       ]);
       if (explorerSessionId() !== sid) return;
@@ -35754,20 +35340,15 @@
       const wrAll = (wrRes && Array.isArray(wrRes.items)) ? wrRes.items : [];
       ent.locations = wrAll.filter(r => r && isLocationWorldRuleScope(r.scope));
 
-      // 물품: KG triple에서 소유/장비 술어 힌트
-      const ITEM_PREDS = ["has","have","owns","own","carry","carries","held","holds","wield","equip","use","item","weapon","artifact","tool","inventory","소유","보유","장비","무기","아이템","획득"];
-      const kgItems = (kgRes && Array.isArray(kgRes.items)) ? kgRes.items
-                    : (kgRes && Array.isArray(kgRes.triples)) ? kgRes.triples : [];
-      const itemMap = {};
-      kgItems.forEach(tr => {
-        if (!tr || typeof tr !== "object") return;
-        const pred = (tr.predicate || "").toLowerCase();
-        if (!ITEM_PREDS.some(h => pred.includes(h))) return;
-        const obj = (tr.object || "").trim();
-        if (!obj || itemMap[obj]) return;
-        itemMap[obj] = { item: obj, owner: tr.subject || "", predicate: tr.predicate || "", source_turn: tr.source_turn, id: tr.id != null ? tr.id : null };
-      });
-      ent.items = Object.values(itemMap).slice(0, 40);
+      ent.items = itemRes && Array.isArray(itemRes.items) ? itemRes.items : [];
+      ent.itemIdentityLinks = itemRes && Array.isArray(itemRes.identity_links) ? itemRes.identity_links : [];
+      if (!ent.itemIdentityMerge || typeof ent.itemIdentityMerge !== "object") {
+        ent.itemIdentityMerge = { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
+      }
+      if (!(ent.itemIdentityMerge.sourceIds instanceof Set)) ent.itemIdentityMerge.sourceIds = new Set();
+      const visibleItemIdentityIds = new Set(ent.items.map(item => String(item && item.stable_entity_id || "")).filter(Boolean));
+      ent.itemIdentityMerge.sourceIds = new Set(Array.from(ent.itemIdentityMerge.sourceIds).filter(id => visibleItemIdentityIds.has(id)));
+      if (!visibleItemIdentityIds.has(String(ent.itemIdentityMerge.targetId || ""))) ent.itemIdentityMerge.targetId = "";
       ent.memoryBundles = bundleRes && Array.isArray(bundleRes.items) ? bundleRes.items : [];
       const availableMemoryBundleKeys = new Set(ent.memoryBundles.map((item) => explorerEntityMemoryBundleKey(item)).filter(Boolean));
       if (!(ent.forceMergeKeys instanceof Set)) ent.forceMergeKeys = new Set();
@@ -36180,6 +35761,8 @@
       _explorer.entities.identityMerge = { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
       _explorer.entities.locations = [];
       _explorer.entities.items = [];
+      _explorer.entities.itemIdentityLinks = [];
+      _explorer.entities.itemIdentityMerge = { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
       _explorer.entities.memoryBundles = [];
       _explorer.entities.selectedMemoryBundleKey = "";
       _explorer.entities.memoryItems = [];
@@ -42628,6 +42211,9 @@
       escapeAttr(formatDisplayEntityLabel(link.source_label || link.source_entity_id || "")) + ' → ' +
       escapeAttr(formatDisplayEntityLabel(link.target_label || link.target_entity_id || "")) +
       ' <button type="button" class="mo-btn-toggle" data-ent-identity-unmerge-source="' + escapeAttr(link.source_entity_id || "") + '" data-ent-identity-unmerge-target="' + escapeAttr(link.target_entity_id || "") + '">' + escapeAttr(t('explorer.entities.identityUnmerge')) + '</button></div>').join('');
+    const linkList = links.length > 0
+      ? '<details class="mo-ent-detail" style="margin-top:8px"><summary style="cursor:pointer">' + escapeAttr(explorerFormatTemplate(t('explorer.entities.identityLinksSummary'), { count: links.length })) + '</summary>' + unlinkRows + '</details>'
+      : '';
     const message = state.error
       ? '<div class="mo-note">❌ ' + escapeAttr(state.error) + '</div>'
       : (state.status ? '<div class="mo-note">' + escapeAttr(state.status) + '</div>' : '');
@@ -42641,22 +42227,63 @@
         '</div>' +
       '</div>' +
       '<div class="mo-note">' + escapeAttr(explorerFormatTemplate(t('explorer.entities.identityMergeSelected'), { count: state.sourceIds.size })) + '</div>' +
-      (impacts ? '<div class="mo-ent-detail">' + impacts + '</div>' : '') + message + unlinkRows +
+      (impacts ? '<div class="mo-ent-detail">' + impacts + '</div>' : '') + message + linkList +
     '</div>';
   }
 
-  async function explorerRunCharacterIdentityMerge(mode, sourceId, targetId) {
+  function renderExplorerItemIdentityMergePanel() {
+    const ent = _explorer.entities;
+    const state = ent.itemIdentityMerge || { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
+    if (!(state.sourceIds instanceof Set)) state.sourceIds = new Set();
+    const choices = ent.items.filter(item => String(item && item.stable_entity_id || "").trim());
+    const targetOptions = ['<option value="">' + escapeAttr(t('explorer.entities.itemIdentityMergeChooseTarget')) + '</option>'].concat(choices.map(item => {
+      const id = String(item.stable_entity_id || "");
+      return '<option value="' + escapeAttr(id) + '"' + (id === state.targetId ? ' selected' : '') + '>' + escapeAttr(item.item || id) + '</option>';
+    })).join('');
+    const impacts = state.preview && state.preview.impacts && typeof state.preview.impacts === "object"
+      ? Object.entries(state.preview.impacts).map(([key, lane]) => {
+          const ready = lane && lane.status === "ready";
+          return '<span class="mo-ent-kv"><b>' + escapeAttr(key) + '</b>: ' + (ready ? escapeAttr(String(lane.count || 0)) : escapeAttr(t('explorer.entities.identityMergeUnavailable'))) + '</span>';
+        }).join(' ')
+      : '';
+    const links = Array.isArray(ent.itemIdentityLinks) ? ent.itemIdentityLinks : [];
+    const unlinkRows = links.map(link => '<div class="mo-ent-detail">' +
+      escapeAttr(link.source_label || link.source_entity_id || "") + ' → ' +
+      escapeAttr(link.target_label || link.target_entity_id || "") +
+      ' <button type="button" class="mo-btn-toggle" data-ent-item-identity-unmerge-source="' + escapeAttr(link.source_entity_id || "") + '" data-ent-item-identity-unmerge-target="' + escapeAttr(link.target_entity_id || "") + '">' + escapeAttr(t('explorer.entities.identityUnmerge')) + '</button></div>').join('');
+    const linkList = links.length > 0
+      ? '<details class="mo-ent-detail" style="margin-top:8px"><summary style="cursor:pointer">' + escapeAttr(explorerFormatTemplate(t('explorer.entities.identityLinksSummary'), { count: links.length })) + '</summary>' + unlinkRows + '</details>'
+      : '';
+    const message = state.error
+      ? '<div class="mo-note">❌ ' + escapeAttr(state.error) + '</div>'
+      : (state.status ? '<div class="mo-note">' + escapeAttr(state.status) + '</div>' : '');
+    return '<div class="mo-settings-card" style="margin:0 0 12px;padding:12px">' +
+      '<div class="mo-section">' + escapeAttr(t('explorer.entities.itemIdentityMergeTitle')) + '</div>' +
+      '<div class="mo-ed-row">' +
+        '<div class="mo-ed-field mo-ed-field-sm"><label>' + escapeAttr(t('explorer.entities.itemIdentityMergeTarget')) + '</label><select class="mo-ed-input" data-ent-item-identity-target>' + targetOptions + '</select></div>' +
+        '<div class="mo-ed-actions">' +
+          '<button type="button" class="mo-btn mo-btn-ghost" data-ent-item-identity-preview' + (state.loading || !state.targetId || state.sourceIds.size === 0 ? ' disabled' : '') + '>' + escapeAttr(t('explorer.entities.identityMergePreview')) + '</button>' +
+          '<button type="button" class="mo-btn mo-btn-primary" data-ent-item-identity-apply' + (state.loading || !state.preview ? ' disabled' : '') + '>' + escapeAttr(t('explorer.entities.identityMergeApply')) + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="mo-note">' + escapeAttr(explorerFormatTemplate(t('explorer.entities.itemIdentityMergeSelected'), { count: state.sourceIds.size })) + '</div>' +
+      (impacts ? '<div class="mo-ent-detail">' + impacts + '</div>' : '') + message + linkList +
+    '</div>';
+  }
+
+  async function explorerRunEntityIdentityMerge(entityKind, mode, sourceId, targetId) {
     const sid = explorerSessionId();
-    const state = _explorer.entities.identityMerge;
+    const itemMode = entityKind === "item";
+    const state = itemMode ? _explorer.entities.itemIdentityMerge : _explorer.entities.identityMerge;
     if (!sid || !state) return;
     const sources = sourceId ? [String(sourceId)] : Array.from(state.sourceIds || []);
     const target = targetId ? String(targetId) : String(state.targetId || "");
     if (!target || sources.length === 0) return;
     state.loading = true; state.error = ""; state.status = "";
-    refreshExplorerUI();
+    refreshExplorerUI({ reloadPresentation: false });
     try {
       const suffix = mode === "preview" ? "/preview" : (mode === "unmerge" ? "/unmerge" : "");
-      const result = await bridgeFetch("/characters/" + encodeURIComponent(sid) + "/identity-merge" + suffix, {
+      const result = await bridgeFetch("/" + (itemMode ? "items" : "characters") + "/" + encodeURIComponent(sid) + "/identity-merge" + suffix, {
         method: "POST",
         body: { target_entity_id: target, source_entity_ids: sources },
         timeoutMs: getRequestTimeoutSettingMs(),
@@ -42675,7 +42302,10 @@
         const results = Array.isArray(result.results) ? result.results : [];
         const failed = results.filter(item => item && item.status === "failed");
         const changed = mode === "unmerge" ? Number(result.unlinked_count || 0) : Number(result.linked_count || 0);
-        state.status = (mode === "unmerge" ? t('explorer.entities.identityUnmergeDone') : t('explorer.entities.identityMergeDone')) + ' (' + changed + '/' + sources.length + ')';
+        const doneKey = itemMode
+          ? (mode === "unmerge" ? 'explorer.entities.itemIdentityUnmergeDone' : 'explorer.entities.itemIdentityMergeDone')
+          : (mode === "unmerge" ? 'explorer.entities.identityUnmergeDone' : 'explorer.entities.identityMergeDone');
+        state.status = t(doneKey) + ' (' + changed + '/' + sources.length + ')';
         if (failed.length > 0) state.error = failed.map(item => String(item.source_entity_id || '') + ': ' + String(item.detail || 'failed')).join(' | ');
         await explorerFetchEntities();
       }
@@ -42683,7 +42313,15 @@
       state.error = err && err.message ? err.message : String(err);
     }
     state.loading = false;
-    refreshExplorerUI();
+    refreshExplorerUI({ reloadPresentation: false });
+  }
+
+  async function explorerRunCharacterIdentityMerge(mode, sourceId, targetId) {
+    return explorerRunEntityIdentityMerge("character", mode, sourceId, targetId);
+  }
+
+  async function explorerRunItemIdentityMerge(mode, sourceId, targetId) {
+    return explorerRunEntityIdentityMerge("item", mode, sourceId, targetId);
   }
 
   // ── Entities tab: render ────────────────────────────────────────────────────
@@ -42923,7 +42561,7 @@
       if (ent.items.length === 0) {
         sectionHtml = '<div class="mo-note">' + t('explorer.entities.empty') + '</div>';
       } else {
-        sectionHtml = ent.items.map(it => {
+        sectionHtml = renderExplorerItemIdentityMergePanel() + ent.items.map(it => {
           const name = escapeAttr(it.item || '');
           const isEditing = explorerIsEditing("kg", it.id);
           const meta = (it.owner ? escapeAttr(it.owner) + ' · ' : '') + escapeAttr(it.predicate || '');
@@ -42936,6 +42574,15 @@
             : '';
           const batchCheck = it.id != null
             ? renderExplorerBatchDeleteCheckbox('entities', explorerBuildBatchDeleteKey('item', it.id), 'item #' + it.id + ' 선택')
+            : '';
+          const stableID = String(it.stable_entity_id || "");
+          const itemMergeState = ent.itemIdentityMerge || {};
+          const mergeSelected = itemMergeState.sourceIds instanceof Set && itemMergeState.sourceIds.has(stableID);
+          const mergeBtn = stableID
+            ? '<button class="mo-ent-speech-btn" data-ent-item-identity-source="' + escapeAttr(stableID) + '">' + escapeAttr(mergeSelected ? t('explorer.entities.identityMergeSelectedButton') : t('explorer.entities.itemIdentityMergeSelect')) + '</button>'
+            : '';
+          const aliasHtml = Array.isArray(it.aliases) && it.aliases.length > 0
+            ? '<div class="mo-ent-alias">' + escapeAttr(t('explorer.entities.identityAliasesLabel')) + ': ' + it.aliases.map(alias => escapeAttr(alias)).join(', ') + '</div>'
             : '';
           const ef = isEditing ? (_explorer.editFields || {}) : {};
           const editForm = isEditing
@@ -42953,7 +42600,7 @@
             : '';
           return '<div class="mo-ent-card">' +
             '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + name + '</span>' + turn + editBtn + delBtn + '</div>' +
-            '<div class="mo-ent-detail">' + meta + '</div>' +
+            '<div class="mo-ent-detail">' + meta + '</div>' + aliasHtml + mergeBtn +
             editForm +
             '</div>';
         }).join('');
@@ -44682,7 +44329,7 @@
           state.targetId = String(e.target && e.target.value || "");
           state.sourceIds.delete(state.targetId);
           state.preview = null; state.error = ""; state.status = "";
-          refreshExplorerUI();
+          refreshExplorerUI({ reloadPresentation: false });
         });
       });
 
@@ -44694,7 +44341,7 @@
           if (!id || id === state.targetId) return;
           if (state.sourceIds.has(id)) state.sourceIds.delete(id); else state.sourceIds.add(id);
           state.preview = null; state.error = ""; state.status = "";
-          refreshExplorerUI();
+          refreshExplorerUI({ reloadPresentation: false });
         });
       });
 
@@ -44707,7 +44354,7 @@
           state.targetId = id;
           state.sourceIds.delete(id);
           state.preview = null; state.error = ""; state.status = "";
-          refreshExplorerUI();
+          refreshExplorerUI({ reloadPresentation: false });
         });
       });
 
@@ -44728,6 +44375,48 @@
           e.stopPropagation();
           if (!confirm(t('explorer.entities.identityUnmergeConfirm'))) return;
           await explorerRunCharacterIdentityMerge("unmerge", btn.getAttribute("data-ent-identity-unmerge-source"), btn.getAttribute("data-ent-identity-unmerge-target"));
+        });
+      });
+
+      document.querySelectorAll("[data-ent-item-identity-target]").forEach(select => {
+        select.addEventListener("change", (e) => {
+          const state = _explorer.entities.itemIdentityMerge;
+          state.targetId = String(e.target && e.target.value || "");
+          state.sourceIds.delete(state.targetId);
+          state.preview = null; state.error = ""; state.status = "";
+          refreshExplorerUI({ reloadPresentation: false });
+        });
+      });
+
+      document.querySelectorAll("[data-ent-item-identity-source]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = String(btn.getAttribute("data-ent-item-identity-source") || "");
+          const state = _explorer.entities.itemIdentityMerge;
+          if (!id || id === state.targetId) return;
+          if (state.sourceIds.has(id)) state.sourceIds.delete(id); else state.sourceIds.add(id);
+          state.preview = null; state.error = ""; state.status = "";
+          refreshExplorerUI({ reloadPresentation: false });
+        });
+      });
+
+      document.querySelectorAll("[data-ent-item-identity-preview]").forEach(btn => {
+        btn.addEventListener("click", async (e) => { e.stopPropagation(); await explorerRunItemIdentityMerge("preview"); });
+      });
+
+      document.querySelectorAll("[data-ent-item-identity-apply]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!confirm(t('explorer.entities.itemIdentityMergeConfirm'))) return;
+          await explorerRunItemIdentityMerge("apply");
+        });
+      });
+
+      document.querySelectorAll("[data-ent-item-identity-unmerge-source]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!confirm(t('explorer.entities.identityUnmergeConfirm'))) return;
+          await explorerRunItemIdentityMerge("unmerge", btn.getAttribute("data-ent-item-identity-unmerge-source"), btn.getAttribute("data-ent-item-identity-unmerge-target"));
         });
       });
 

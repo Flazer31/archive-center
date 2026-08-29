@@ -53,6 +53,54 @@ type rollbackDecisionChatLogStore struct {
 	listChatLogsTo   int
 }
 
+// rollbackDecisionExecutionStore exercises the real decision and rollback
+// handlers against one store object. It keeps the exact active source evidence
+// used by the decision owner and the actual RollbackStore calls recorded by the
+// existing rollbackRecordingStore.
+type rollbackDecisionExecutionStore struct {
+	*rollbackRecordingStore
+	logs          []store.ChatLog
+	activeSources []store.MemorySourceRevision
+}
+
+func (s *rollbackDecisionExecutionStore) LatestSessionTurnIndex(context.Context, string) (int, error) {
+	latest := 0
+	for _, item := range s.logs {
+		if item.TurnIndex > latest {
+			latest = item.TurnIndex
+		}
+	}
+	return latest, nil
+}
+
+func (s *rollbackDecisionExecutionStore) ListChatLogs(_ context.Context, sid string, fromTurn, toTurn int) ([]store.ChatLog, error) {
+	result := make([]store.ChatLog, 0, len(s.logs))
+	for _, item := range s.logs {
+		if item.ChatSessionID != sid || (fromTurn > 0 && item.TurnIndex < fromTurn) || (toTurn > 0 && item.TurnIndex > toTurn) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
+func (s *rollbackDecisionExecutionStore) ListActiveSourceRevisions(
+	_ context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]store.MemorySourceRevision, error) {
+	result := make([]store.MemorySourceRevision, 0, len(s.activeSources))
+	for _, item := range s.activeSources {
+		if item.ChatSessionID != chatSessionID || item.LifecycleState != "active" ||
+			(fromTurn > 0 && item.TurnIndex < fromTurn) || (toTurn > 0 && item.TurnIndex > toTurn) {
+			continue
+		}
+		result = append(result, item)
+	}
+	return result, nil
+}
+
 type sessionIdentityRoutingStore struct {
 	store.Store
 	sessions []store.SessionSummary
@@ -1708,6 +1756,71 @@ func TestVerifiedTailDeleteWithoutClientBaselineExecutesOnlyBackendTail(t *testi
 	}
 }
 
+func TestRollbackDecisionTokenKeepsOperationSourceThroughTerminalHUD(t *testing.T) {
+	const sid = "char_1_cid_postprocessor_replace"
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	recordingStore := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	server := &Server{Cfg: cfg, Store: recordingStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"postprocessor_final_replace",
+		"candidate_from_turn":9,
+		"backend_latest_turn":9,
+		"deletion_observed":true,
+		"lifecycle_action_observation":"superseded"
+	}`))
+	decisionRec := httptest.NewRecorder()
+	mux.ServeHTTP(decisionRec, decisionReq)
+	if decisionRec.Code != http.StatusOK {
+		t.Fatalf("decision status=%d body=%s", decisionRec.Code, decisionRec.Body.String())
+	}
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(decisionRec.Body.Bytes(), &decision); err != nil {
+		t.Fatalf("decode decision: %v", err)
+	}
+	if !decision.Allowed || decision.DecisionToken == "" || decision.FromTurn != 9 {
+		t.Fatalf("decision=%+v", decision)
+	}
+	detectedHUD := mapFromAny(decision.TurnWorkflowHUD)
+	wantRequestID := "rollback:" + sid + ":9:postprocessor_final_replace"
+	if detectedHUD["request_id"] != wantRequestID || detectedHUD["status"] != "running" {
+		t.Fatalf("detection HUD=%+v want request_id=%q", detectedHUD, wantRequestID)
+	}
+
+	// The query value is intentionally different. The consumed one-use token is
+	// the canonical owner of this operation and must keep the original source.
+	rollbackReq := httptest.NewRequest(
+		http.MethodDelete,
+		"/rollback/9?chat_session_id="+sid+"&req_source=manual&decision_token="+decision.DecisionToken,
+		nil,
+	)
+	rollbackRec := httptest.NewRecorder()
+	mux.ServeHTTP(rollbackRec, rollbackReq)
+	if rollbackRec.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rollbackRec.Code, rollbackRec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rollbackRec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode rollback: %v", err)
+	}
+	plan := mapFromAny(response["rollback_plan"])
+	if plan["req_source"] != "postprocessor_final_replace" || plan["decision_verified"] != true {
+		t.Fatalf("rollback plan lost decision source: %+v", plan)
+	}
+	terminalHUD := mapFromAny(response["turn_workflow_hud"])
+	if terminalHUD["request_id"] != wantRequestID || terminalHUD["status"] != "completed" ||
+		terminalHUD["notice_code"] != "ASSISTANT_OUTPUT_DELETE_CONFIRMED" {
+		t.Fatalf("terminal HUD did not complete the detected operation: %+v", terminalHUD)
+	}
+	if len(recordingStore.audits) == 0 || recordingStore.audits[len(recordingStore.audits)-1].Source != "postprocessor_final_replace" {
+		t.Fatalf("rollback audit source=%+v", recordingStore.audits)
+	}
+}
+
 func TestRollbackDecisionCarriesTypedSupersession(t *testing.T) {
 	request := rollbackDecisionRequest{
 		ChatSessionID: "char_1_cid_replace", CandidateFromTurn: 4,
@@ -1891,6 +2004,90 @@ func TestRollbackDecisionHandlerDerivesEarliestDeletedAssistantFromActiveSources
 	}
 	if !response.Allowed || response.FromTurn != 2 || response.Reason != "verified_delete_range" || response.DecisionToken == "" {
 		t.Fatalf("assistant deletion was not derived from active sources: %+v", response)
+	}
+}
+
+func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testing.T) {
+	const sid = "char_1_cid_real_observed_delete"
+	recorder := &rollbackRecordingStore{Store: store.NewNoopStore()}
+	executionStore := &rollbackDecisionExecutionStore{
+		rollbackRecordingStore: recorder,
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "a1"},
+			{ChatSessionID: sid, TurnIndex: 2, Role: "assistant", Content: "a2"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 1, SourceMessageID: "assistant-1", AssistantContent: "a1", AssistantObservedContentHash: prepareOR1CHash("a1"), LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 2, SourceMessageID: "assistant-2", AssistantContent: "a2", AssistantObservedContentHash: prepareOR1CHash("a2"), LifecycleState: "active"},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	server := &Server{Cfg: cfg, Store: executionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	decisionReq := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"request_source":"auto",
+		"candidate_from_turn":0,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-1","content_hash":"`+prepareOR1CHash("a1")+`","message_index":0,"disabled_state":"active","streaming_state":"not_streaming","final_state":"active_final"}
+		]
+	}`))
+	decisionRec := httptest.NewRecorder()
+	mux.ServeHTTP(decisionRec, decisionReq)
+	if decisionRec.Code != http.StatusOK {
+		t.Fatalf("decision status=%d body=%s", decisionRec.Code, decisionRec.Body.String())
+	}
+	var decision rollbackDecisionResponse
+	if err := json.Unmarshal(decisionRec.Body.Bytes(), &decision); err != nil {
+		t.Fatalf("decode decision: %v", err)
+	}
+	if !decision.Allowed || decision.FromTurn != 2 || decision.DecisionToken == "" {
+		t.Fatalf("real decision did not identify deleted turn 2: %+v", decision)
+	}
+	detectedHUD := mapFromAny(decision.TurnWorkflowHUD)
+	wantRequestID := "rollback:" + sid + ":2:auto"
+	if detectedHUD["request_id"] != wantRequestID || detectedHUD["status"] != "running" {
+		t.Fatalf("decision HUD=%+v", detectedHUD)
+	}
+
+	rollbackReq := httptest.NewRequest(
+		http.MethodDelete,
+		"/rollback/2?chat_session_id="+sid+"&req_source=auto&decision_token="+decision.DecisionToken,
+		nil,
+	)
+	rollbackRec := httptest.NewRecorder()
+	mux.ServeHTTP(rollbackRec, rollbackReq)
+	if rollbackRec.Code != http.StatusOK {
+		t.Fatalf("rollback status=%d body=%s", rollbackRec.Code, rollbackRec.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rollbackRec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode rollback: %v", err)
+	}
+	plan := mapFromAny(result["rollback_plan"])
+	if plan["status"] != "executed" || plan["mutation_enabled"] != true || plan["decision_verified"] != true || plan["req_source"] != "auto" {
+		t.Fatalf("canonical rollback mutation was not confirmed: %+v", plan)
+	}
+	if len(recorder.deletes) == 0 {
+		t.Fatal("real rollback handler performed no canonical delete calls")
+	}
+	wantSuffix := ":" + sid + ":2"
+	for _, deletion := range recorder.deletes {
+		if !strings.HasSuffix(deletion, wantSuffix) {
+			t.Fatalf("rollback widened beyond exact turn 2: %q (all=%+v)", deletion, recorder.deletes)
+		}
+	}
+	terminalHUD := mapFromAny(result["turn_workflow_hud"])
+	if terminalHUD["request_id"] != wantRequestID || terminalHUD["status"] != "completed" {
+		t.Fatalf("terminal HUD did not complete the same operation: %+v", terminalHUD)
+	}
+	if len(recorder.audits) != 1 || recorder.audits[0].Source != "auto" || recorder.audits[0].TargetID != 2 {
+		t.Fatalf("rollback audit=%+v", recorder.audits)
 	}
 }
 

@@ -22,6 +22,49 @@ type characterIdentityMergeFakeStore struct {
 	linkErrors map[string]error
 }
 
+type kgIdentityCountingStore struct {
+	*memoryFakeStore
+	identities    []store.EntityIdentity
+	surfaces      []store.EntityIdentitySurface
+	links         []store.EntityIdentityLink
+	identityReads int
+	surfaceReads  int
+	linkReads     int
+}
+
+func (f *kgIdentityCountingStore) ListActiveEntityIdentities(_ context.Context, sid string) ([]store.EntityIdentity, error) {
+	f.identityReads++
+	out := []store.EntityIdentity{}
+	for _, item := range f.identities {
+		if item.ChatSessionID == sid {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (f *kgIdentityCountingStore) ListActiveEntityIdentitySurfaces(_ context.Context, sid string) ([]store.EntityIdentitySurface, error) {
+	f.surfaceReads++
+	out := []store.EntityIdentitySurface{}
+	for _, item := range f.surfaces {
+		if item.ChatSessionID == sid {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (f *kgIdentityCountingStore) ListReviewedEntityIdentityLinks(_ context.Context, sid string) ([]store.EntityIdentityLink, error) {
+	f.linkReads++
+	out := []store.EntityIdentityLink{}
+	for _, item := range f.links {
+		if item.ChatSessionID == sid {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
 func (f *characterIdentityMergeFakeStore) ListActiveEntityIdentities(_ context.Context, sid string) ([]store.EntityIdentity, error) {
 	out := []store.EntityIdentity{}
 	for _, item := range f.identities {
@@ -248,6 +291,93 @@ func TestCharacterIdentityMergePreviewKeepsAvailableLanesWhenOneReadFails(t *tes
 	}
 }
 
+func TestExplorerKGCanonicalizesOnlySelectedPageWithBulkIdentityReads(t *testing.T) {
+	const sid = "sess-kg-page"
+	triples := make([]store.KGTriple, 1000)
+	for index := range triples {
+		triples[index] = store.KGTriple{
+			ID: int64(index + 1), ChatSessionID: sid, Subject: "아벨", Predicate: "uses", Object: "새 무기", SourceTurn: index + 1,
+		}
+	}
+	fake := &kgIdentityCountingStore{
+		memoryFakeStore: &memoryFakeStore{kgTriples: triples},
+		identities: []store.EntityIdentity{
+			{StableEntityID: "abelstein-id", ChatSessionID: sid, EntityKind: "character", CanonicalLabel: "아벨슈타인"},
+			{StableEntityID: "abel-id", ChatSessionID: sid, EntityKind: "character", CanonicalLabel: "아벨"},
+		},
+		surfaces: []store.EntityIdentitySurface{
+			{StableEntityID: "abelstein-id", ChatSessionID: sid, SurfaceText: "아벨슈타인", NormalizedSurface: comparableEntityKey("아벨슈타인")},
+			{StableEntityID: "abel-id", ChatSessionID: sid, SurfaceText: "아벨", NormalizedSurface: comparableEntityKey("아벨")},
+		},
+		links: []store.EntityIdentityLink{
+			{ChatSessionID: sid, SourceEntityID: "abel-id", TargetEntityID: "abelstein-id", LinkKind: store.EntityIdentityLinkKindCanonicalEquivalence, LinkState: store.EntityIdentityLinkStateReviewed},
+		},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := func() map[string]any {
+		req := httptest.NewRequest(http.MethodGet, "/explorer/kg_triples?chat_session_id="+sid+"&limit=20&offset=0", nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		body := map[string]any{}
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("decode KG page: %v", err)
+		}
+		return body
+	}
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		body := request()
+		items := sliceFromAny(body["items"])
+		if intFromAny(body["total"], 0) != 1000 || len(items) != 20 {
+			t.Fatalf("attempt %d page total/items=%v/%d", attempt, body["total"], len(items))
+		}
+		for _, raw := range items {
+			item := mapFromAny(raw)
+			if item["subject"] != "아벨슈타인" {
+				t.Fatalf("attempt %d subject=%v want representative name", attempt, item["subject"])
+			}
+		}
+		if fake.identityReads != attempt || fake.surfaceReads != attempt || fake.linkReads != attempt {
+			t.Fatalf("attempt %d catalog reads identities/surfaces/links=%d/%d/%d", attempt, fake.identityReads, fake.surfaceReads, fake.linkReads)
+		}
+	}
+	if fake.memoryFakeStore.deletedKGID != 0 || len(fake.memoryFakeStore.updatedKG) != 0 {
+		t.Fatal("KG read projection mutated source rows")
+	}
+}
+
+func TestKGReadProjectionKeepsAmbiguousSurfaceUnchanged(t *testing.T) {
+	const sid = "sess-kg-ambiguous"
+	fake := &kgIdentityCountingStore{
+		memoryFakeStore: &memoryFakeStore{},
+		identities: []store.EntityIdentity{
+			{StableEntityID: "raven-a", ChatSessionID: sid, EntityKind: "character", CanonicalLabel: "레이븐 A"},
+			{StableEntityID: "raven-b", ChatSessionID: sid, EntityKind: "character", CanonicalLabel: "레이븐 B"},
+		},
+		surfaces: []store.EntityIdentitySurface{
+			{StableEntityID: "raven-a", ChatSessionID: sid, SurfaceText: "레이븐", NormalizedSurface: comparableEntityKey("레이븐")},
+			{StableEntityID: "raven-b", ChatSessionID: sid, SurfaceText: "레이븐", NormalizedSurface: comparableEntityKey("레이븐")},
+		},
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	input := []store.KGTriple{{ID: 1, ChatSessionID: sid, Subject: "레이븐", Predicate: "greets", Object: "방문자"}}
+	output := srv.canonicalizeCharacterKGTriplesForRead(context.Background(), sid, input)
+	if output[0].Subject != "레이븐" {
+		t.Fatalf("ambiguous surface was guessed as %q", output[0].Subject)
+	}
+	if input[0].Subject != "레이븐" {
+		t.Fatal("request-local projection mutated the source KG slice")
+	}
+}
+
 func TestCharacterIdentityMergeKeepsSuccessfulLinksWhenAnotherLinkFails(t *testing.T) {
 	fake := abelIdentityMergeFixture()
 	fake.identities = append(fake.identities, store.EntityIdentity{StableEntityID: "bell-id", ChatSessionID: "sess-abel", IdentityNamespace: "session_npc", EntityKind: "character", CanonicalLabel: "벨", LifecycleState: "active", ReviewState: "source_observed"})
@@ -314,6 +444,139 @@ func TestCharacterIdentityMergeRejectsCrossSessionWithoutMutation(t *testing.T) 
 	if len(results) != 1 || stringFromMap(mapFromAny(results[0]), "status") != "failed" {
 		t.Fatalf("cross-session source was not reported separately: %#v", results)
 	}
+}
+
+func TestCharactersGetShowsOnlyCharacterIdentityLinks(t *testing.T) {
+	fake := abelIdentityMergeFixture()
+	fake.identities = append(fake.identities,
+		store.EntityIdentity{StableEntityID: "drink-id", ChatSessionID: "sess-abel", IdentityNamespace: "session_item", EntityKind: "item", CanonicalLabel: "맑은 이슬", LifecycleState: "active", ReviewState: "source_observed"},
+		store.EntityIdentity{StableEntityID: "soju-id", ChatSessionID: "sess-abel", IdentityNamespace: "session_item", EntityKind: "item", CanonicalLabel: "중급 소주", LifecycleState: "active", ReviewState: "source_observed"},
+	)
+	fake.links = []store.EntityIdentityLink{
+		characterIdentityManualLink("sess-abel", "abel-id", "abelstein-id", store.EntityIdentityLinkStateReviewed),
+		characterIdentityManualLink("sess-abel", "drink-id", "soju-id", store.EntityIdentityLinkStateReviewed),
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodGet, "/characters/sess-abel", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("characters status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	links := sliceFromAny(response["identity_links"])
+	if len(links) != 1 || stringFromMap(mapFromAny(links[0]), "source_entity_id") != "abel-id" {
+		t.Fatalf("non-character links leaked into character UI: %#v", links)
+	}
+}
+
+func itemIdentityMergeFixture() *characterIdentityMergeFakeStore {
+	fake := abelIdentityMergeFixture()
+	fake.identities = append(fake.identities,
+		store.EntityIdentity{StableEntityID: "clear-dew-id", ChatSessionID: "sess-abel", IdentityNamespace: "session_item", EntityKind: "item", CanonicalLabel: "맑은 이슬", LifecycleState: "active", ReviewState: "source_observed"},
+		store.EntityIdentity{StableEntityID: "soju-id", ChatSessionID: "sess-abel", IdentityNamespace: "session_item", EntityKind: "item", CanonicalLabel: "중급 소주", LifecycleState: "active", ReviewState: "source_observed"},
+	)
+	fake.surfaces = append(fake.surfaces,
+		store.EntityIdentitySurface{StableEntityID: "clear-dew-id", ChatSessionID: "sess-abel", SurfaceKind: "display_name", SurfaceText: "맑은 이슬", NormalizedSurface: comparableEntityKey("맑은 이슬"), Scope: store.EntityIdentitySurfaceScopeCurrent, ReviewState: "source_observed"},
+		store.EntityIdentitySurface{StableEntityID: "soju-id", ChatSessionID: "sess-abel", SurfaceKind: "display_name", SurfaceText: "중급 소주", NormalizedSurface: comparableEntityKey("중급 소주"), Scope: store.EntityIdentitySurfaceScopeCurrent, ReviewState: "source_observed"},
+	)
+	fake.kgTriples = append(fake.kgTriples,
+		store.KGTriple{ID: 27, ChatSessionID: "sess-abel", Subject: "아벨", Predicate: "소유", Object: "맑은 이슬", SourceTurn: 27},
+	)
+	return fake
+}
+
+func TestItemIdentityMergeStaysItemOnlyAndConvergesReadProjection(t *testing.T) {
+	fake := itemIdentityMergeFixture()
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	kgRows := len(fake.kgTriples)
+
+	preview := identityMergeHTTP(t, mux, "/items/sess-abel/identity-merge/preview", `{"target_entity_id":"soju-id","source_entity_ids":["clear-dew-id"]}`)
+	if preview["writes_performed"] != false {
+		t.Fatalf("item preview performed writes: %#v", preview)
+	}
+	if intFromAny(mapFromAny(mapFromAny(preview["impacts"])["knowledge_relations"])["count"], 0) != 1 {
+		t.Fatalf("item preview did not count related KG: %#v", preview)
+	}
+
+	apply := identityMergeHTTP(t, mux, "/items/sess-abel/identity-merge", `{"target_entity_id":"soju-id","source_entity_ids":["clear-dew-id","abel-id"]}`)
+	if intFromAny(apply["linked_count"], 0) != 1 || len(fake.links) != 1 {
+		t.Fatalf("valid item link was not saved independently: result=%#v links=%#v", apply, fake.links)
+	}
+	results := sliceFromAny(apply["results"])
+	if len(results) != 2 || stringFromMap(mapFromAny(results[1]), "status") != "failed" {
+		t.Fatalf("cross-kind source was not rejected per source: %#v", results)
+	}
+	if len(fake.kgTriples) != kgRows {
+		t.Fatalf("item merge rewrote KG rows")
+	}
+
+	response := itemIdentityGetHTTP(t, mux, "/items/sess-abel")
+	items := sliceFromAny(response["items"])
+	matching := []map[string]any{}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if stringFromMap(item, "stable_entity_id") == "soju-id" {
+			matching = append(matching, item)
+		}
+	}
+	if len(matching) != 1 || stringFromMap(matching[0], "item") != "중급 소주" {
+		t.Fatalf("merged items did not converge to representative: %#v", items)
+	}
+	aliases := sliceFromAny(matching[0]["aliases"])
+	if len(aliases) == 0 || aliases[0] != "맑은 이슬" {
+		t.Fatalf("item aliases=%#v want 맑은 이슬", aliases)
+	}
+	links := sliceFromAny(response["identity_links"])
+	if len(links) != 1 || stringFromMap(mapFromAny(links[0]), "source_entity_id") != "clear-dew-id" {
+		t.Fatalf("item link list=%#v", links)
+	}
+
+	unmerge := identityMergeHTTP(t, mux, "/items/sess-abel/identity-merge/unmerge", `{"target_entity_id":"soju-id","source_entity_ids":["clear-dew-id"]}`)
+	if intFromAny(unmerge["unlinked_count"], 0) != 1 {
+		t.Fatalf("item unmerge response=%#v", unmerge)
+	}
+}
+
+func TestItemsGetDoesNotExposeCharacterIdentityLinks(t *testing.T) {
+	fake := itemIdentityMergeFixture()
+	fake.links = []store.EntityIdentityLink{
+		characterIdentityManualLink("sess-abel", "abel-id", "abelstein-id", store.EntityIdentityLinkStateReviewed),
+		itemIdentityManualLink("sess-abel", "clear-dew-id", "soju-id", store.EntityIdentityLinkStateReviewed),
+	}
+	srv := setupTestServer()
+	srv.Store = fake
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	response := itemIdentityGetHTTP(t, mux, "/items/sess-abel")
+	links := sliceFromAny(response["identity_links"])
+	if len(links) != 1 || stringFromMap(mapFromAny(links[0]), "source_entity_id") != "clear-dew-id" {
+		t.Fatalf("character link leaked into item UI: %#v", links)
+	}
+}
+
+func itemIdentityGetHTTP(t *testing.T, mux *http.ServeMux, path string) map[string]any {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("%s status=%d body=%s", path, rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	return response
 }
 
 func identityMergeHTTP(t *testing.T, mux *http.ServeMux, path, body string) map[string]any {

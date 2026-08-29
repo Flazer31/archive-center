@@ -1017,7 +1017,6 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 		`await R.removeRisuReplacer("beforeRequest", onBeforeRequest);`,
 		`await R.removeRisuReplacer("afterRequest", onAfterRequest);`,
 		"await R.onUnload(removeRegisteredRisuHooksOnUnload);",
-		`hostLifecycleObservation: "before_request_observed"`,
 		`host_lifecycle_observation: String(observed.hostLifecycleObservation || "")`,
 		"Streaming Hook",
 	}
@@ -1062,25 +1061,42 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 	if onBeforeRequestAt < 0 {
 		t.Fatal("Archive Center.js missing onBeforeRequest")
 	}
-	onBeforeRequest := src[onBeforeRequestAt:]
+	onBeforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
 	captureAt := strings.Index(onBeforeRequest, "await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);")
-	rollbackAt := strings.Index(onBeforeRequest, "await checkAndAutoRollback(orchSessionId, rollbackComparable.messages")
-	if captureAt < 0 || rollbackAt < 0 || captureAt > rollbackAt {
-		t.Fatal("RisuAI request coordinates must be captured before removed-tail evaluation")
+	if captureAt < 0 {
+		t.Fatal("RisuAI request coordinates are not captured at beforeRequest")
+	}
+	if strings.Contains(onBeforeRequest, "await checkAndAutoRollback(") {
+		t.Fatal("beforeRequest must not restore the removed counter/snapshot rollback heuristic")
 	}
 }
 
-func TestArchiveCenterJSReconcilesRollbackBeforePendingFinalPersistence(t *testing.T) {
+func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	for name, block := range map[string]string{
-		"input":         extractArchiveCenterJSAsyncFunction(t, src, "onInputHook"),
-		"beforeRequest": extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
-	} {
-		reconcileAt := strings.Index(block, "await reconcileRollbackFromHostSignal(")
-		persistAt := strings.Index(block, "observePendingFinalConfirmationAtHostSignal(")
-		if reconcileAt < 0 || persistAt < 0 || reconcileAt > persistAt {
-			t.Fatalf("%s schedules pending-final persistence before rollback reconciliation", name)
-		}
+	inputHook := extractArchiveCenterJSAsyncFunction(t, src, "onInputHook")
+	if strings.Contains(inputHook, "await reconcileRollbackFromHostSignal(") {
+		t.Fatal("input hook must not reconcile rollback before the request source is eligible")
+	}
+	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	rollbackCall := `await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext, {
+        reason: "before_request_assistant_observation",
+        hostLifecycleObservation: "before_request_observed",
+      });`
+	if count := strings.Count(beforeRequest, rollbackCall); count != 1 {
+		t.Fatalf("beforeRequest rollback reconciliation calls=%d, want exactly 1", count)
+	}
+	decisionAt := strings.Index(beforeRequest, "let currentInputDecision = sourceDecisionResult && sourceDecisionResult.currentInputDecision;")
+	reconcileAt := strings.Index(beforeRequest, rollbackCall)
+	runtimeConfigAt := strings.Index(beforeRequest, "const runtimeConfigBinding = await ensureBackendRuntimeConfigBinding(")
+	fullPrepareAt := strings.Index(beforeRequest, "const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {")
+	if decisionAt < 0 || reconcileAt < 0 || runtimeConfigAt < 0 || fullPrepareAt < 0 {
+		t.Fatal("beforeRequest is missing source decision, rollback reconciliation, runtime binding, or full prepare")
+	}
+	if !(decisionAt < reconcileAt && reconcileAt < runtimeConfigAt && reconcileAt < fullPrepareAt) {
+		t.Fatalf("beforeRequest ordering invalid: decision=%d reconcile=%d runtime=%d full=%d", decisionAt, reconcileAt, runtimeConfigAt, fullPrepareAt)
+	}
+	if strings.Contains(beforeRequest, "await checkAndAutoRollback(") {
+		t.Fatal("beforeRequest restored the removed counter/snapshot rollback heuristic")
 	}
 }
 
@@ -1117,6 +1133,9 @@ func TestArchiveCenterJSAfterRequestStartsPersistenceWithoutBlockingVisibleOutpu
 			t.Fatalf("output listener must not own complete-turn finality: %q", forbidden)
 		}
 	}
+	if strings.Contains(afterRequest, "awaiting_risu_committed_output") {
+		t.Fatal("afterRequest still waits for the optional output callback before persistence")
+	}
 }
 
 func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testing.T) {
@@ -1145,6 +1164,7 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 		"sourceAcceptanceFinality",
 		"_committedOutputPersistenceBySession",
 		"continueAcceptedFinalPersistence(",
+		"observePendingFinalConfirmationAtHostSignal(",
 		"ensureActiveChatCompletedTurnsBackfilled(",
 		"recordRisuHookLifecycle(",
 		"updateRuntimeState(",
@@ -1160,10 +1180,10 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 let routed = [];
 let sharedFinalityStatus = "preserved";
+let finalPersistenceCalls = 0;
 let rejectRouting = false;
 const _risuHookLifecycle = {output: "registration_requested_unconfirmed"};
-const _finalConfirmationRequestBySession = new Map();
-function observePendingFinalConfirmationAtHostSignal(){ return Promise.resolve({accepted:false}); }
+function observePendingFinalConfirmationAtHostSignal(){ finalPersistenceCalls++; return Promise.resolve({accepted:false}); }
 function debugLog() {}
 function warnLog() {}
 function requestBackendSessionRoutingTurnResolution(sessionId, mode, facts) {
@@ -1179,6 +1199,7 @@ const ordinary = onRisuOutput({
 });
 assert(ordinary === undefined, "output callback must return immediately, not a Promise");
 assert(sharedFinalityStatus === "preserved", "ordinary output changed shared finality status");
+assert(finalPersistenceCalls === 0, "ordinary output callback attempted final persistence");
 assert(_risuHookLifecycle.output === "registration_requested_unconfirmed", "ordinary output claimed branch callback evidence");
 const incompleteBranch = onRisuOutput({
   characterIndex: -1, chatIndex: -1, messageIndex: -1,
@@ -1215,6 +1236,7 @@ Promise.resolve().then(() => Promise.resolve()).then(() => {
   assert(worldline.messages[0].role === "user" && worldline.messages[0].message_chat_id === "middle", "nearest exact user anchor was not frozen");
   assert(worldline.messages[1].message_chat_id === "direct-source", "immediate branch source was not frozen");
   assert(sharedFinalityStatus === "preserved", "successful branch observation changed shared finality status");
+  assert(finalPersistenceCalls === 0, "branch output callback attempted final persistence");
   rejectRouting = true;
   const failed = onRisuOutput({
     char: {chaId: "stable"}, characterIndex: 3, chatIndex: 4, messageIndex: 2,
