@@ -171,16 +171,19 @@
 기존 4.0.9 테스트 패키지와 같은 위치에서 정식 빌더로 갱신했다. 새 이름의
 병렬 패키지를 만들거나 패키지 내부 파일을 손으로 고치지 않았다.
 
-- source commit: `31fe12ac60a457ed92e7f859af7c53f73368844f`
+- source commit: `435e4e5ab58cf5bfa25421dfcbdec20e5344baf3`
 - package source dirty: `false`
 - package status: `green`, `release_ready=true`
 - `automatic_update_apply=true`, `direct_update_supported=true`
 - source/package `Archive Center.js` SHA-256:
-  `aca07cdce8f95cd6421f0269ee8d60ed21ea632877fb01722187add45a73d86f`
-- ZIP size: `12,159,556 bytes`
+  `4ab240dac0a0aed89cffaff080109db441545bc13186372498597feb0c3c1d47`
+- ZIP size: `11,990,050 bytes`
 - ZIP SHA-256:
-  `f7bab74439269f6288065232a54be9805c422a12844cf53f5089ee7f98860cab`
+  `c42fa27e6de9f179bc95cbc58c25f86c42dcd7f09954206376fe841d89c08054`
 - 외부 checksum과 실제 ZIP hash 일치
+- 기존 테스트 패키지의 `.env.full.local`은 빌드 전후 SHA-256
+  `ec1e29c260549b2ff7475d23c32af9406deb22ccb370ccb40d671b32bb920cc2`로
+  동일하게 복원했다.
 
 패키지·소스 동일성과 자동 업데이트 manifest는 확인됐다. 갱신된 패키지를
 실제 RisuAI에 로드한 HUD, Provider, MariaDB/Chroma 동작은 별도 실환경 검증이다.
