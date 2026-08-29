@@ -893,7 +893,6 @@ func TestBackendOwnedLongOperationsDoNotUsePluginRequestTimeout(t *testing.T) {
 		functionName string
 		pathFragment string
 	}{
-		{`notifyBackendSessionDeletedFromRisu`, `req_source=risu_plugin_chat_delete`},
 		{`applyReadySessionMigration`, `/admin/session-migrate`},
 		{`referenceLibraryDeleteWork`, `bridgeFetch(path`},
 		{`referenceLibraryImportFile`, `/documents`},
@@ -984,9 +983,9 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 	required := []string{
 		"const _pendingFinalConfirmations = new Map();",
 		"const _risuHookLifecycle = {",
-		"async function captureFinalConfirmationRequestContext(sessionId, type, requestId)",
+		"async function captureFinalConfirmationRequestContext(sessionId, type, requestId, hostContext = null)",
 		"function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent)",
-		"function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource)",
+		"function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource, hostSnapshot = null)",
 		"async function drainPendingFinalConfirmations(signalSource)",
 		`contract_version: "source_acceptance_observation.v3"`,
 		`finality_source: "risu_afterRequest"`,
@@ -1011,7 +1010,7 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 		"return responseReturnContent;",
 		"_pendingFinalConfirmationDrainRequested = true",
 		"pending.requestContext !== observation.requestContext",
-		"await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);",
+		"await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);",
 		"ensureActiveChatCompletedTurnsBackfilled(orchSessionId",
 		"async function removeRegisteredRisuHooksOnUnload()",
 		`await R.removeRisuScriptHandler("input", onInputHook);`,
@@ -1064,7 +1063,7 @@ func TestArchiveCenterJSFinalConfirmationUsesAfterRequestWithoutOutputListener(t
 		t.Fatal("Archive Center.js missing onBeforeRequest")
 	}
 	onBeforeRequest := src[onBeforeRequestAt:]
-	captureAt := strings.Index(onBeforeRequest, "await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);")
+	captureAt := strings.Index(onBeforeRequest, "await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);")
 	rollbackAt := strings.Index(onBeforeRequest, "await checkAndAutoRollback(orchSessionId, rollbackComparable.messages")
 	if captureAt < 0 || rollbackAt < 0 || captureAt > rollbackAt {
 		t.Fatal("RisuAI request coordinates must be captured before removed-tail evaluation")
@@ -1077,7 +1076,7 @@ func TestArchiveCenterJSReconcilesRollbackBeforePendingFinalPersistence(t *testi
 		"input":         extractArchiveCenterJSAsyncFunction(t, src, "onInputHook"),
 		"beforeRequest": extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
 	} {
-		reconcileAt := strings.Index(block, "await reconcileRollbackFromHostSignal()")
+		reconcileAt := strings.Index(block, "await reconcileRollbackFromHostSignal(")
 		persistAt := strings.Index(block, "observePendingFinalConfirmationAtHostSignal(")
 		if reconcileAt < 0 || persistAt < 0 || reconcileAt > persistAt {
 			t.Fatalf("%s schedules pending-final persistence before rollback reconciliation", name)
@@ -1163,6 +1162,8 @@ let routed = [];
 let sharedFinalityStatus = "preserved";
 let rejectRouting = false;
 const _risuHookLifecycle = {output: "registration_requested_unconfirmed"};
+const _finalConfirmationRequestBySession = new Map();
+function observePendingFinalConfirmationAtHostSignal(){ return Promise.resolve({accepted:false}); }
 function debugLog() {}
 function warnLog() {}
 function requestBackendSessionRoutingTurnResolution(sessionId, mode, facts) {

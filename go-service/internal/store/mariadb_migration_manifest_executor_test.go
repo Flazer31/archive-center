@@ -121,6 +121,61 @@ func TestSessionMigrationSchemaMismatchFailsBeforeMutation(t *testing.T) {
 	}
 }
 
+func TestSessionMigrationSchemaAcceptsUpgradedColumnOrder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := SessionMigrationExecutionPlanFor("memory_source_revisions")
+	if !ok {
+		t.Fatal("memory_source_revisions execution plan missing")
+	}
+	upgradedOrder := make([]string, 0, len(plan.Columns))
+	for _, column := range plan.Columns {
+		if column != "critic_input_snapshot_json" && column != "critic_input_snapshot_hash" {
+			upgradedOrder = append(upgradedOrder, column)
+		}
+	}
+	upgradedOrder = append(upgradedOrder, "critic_input_snapshot_json", "critic_input_snapshot_hash")
+	columnRows := sqlmock.NewRows([]string{"COLUMN_NAME", "EXTRA", "GENERATION_EXPRESSION"})
+	for _, column := range upgradedOrder {
+		if column == "active_logical_turn_slot" {
+			columnRows.AddRow(column, "VIRTUAL GENERATED", "case when lifecycle_state = 'active' then logical_turn_id end")
+		} else {
+			columnRows.AddRow(column, "", nil)
+		}
+	}
+	mock.ExpectQuery("SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION.*INFORMATION_SCHEMA.COLUMNS").
+		WithArgs("memory_source_revisions").
+		WillReturnRows(columnRows)
+	primaryRows := sqlmock.NewRows([]string{"COLUMN_NAME"})
+	for _, column := range plan.PrimaryKey {
+		primaryRows.AddRow(column)
+	}
+	mock.ExpectQuery("SELECT COLUMN_NAME.*INFORMATION_SCHEMA.KEY_COLUMN_USAGE").
+		WithArgs("memory_source_revisions").
+		WillReturnRows(primaryRows)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*INFORMATION_SCHEMA.STATISTICS").
+		WithArgs("memory_source_revisions", "chat_session_id").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	if err := sessionMigrationValidateSchemaTx(context.Background(), tx, plan); err != nil {
+		t.Fatalf("upgraded physical column order was rejected: %v", err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestSessionMigrationPolicyEvaluationUsesProductionParityOwner(t *testing.T) {
 	chatPlan, _ := SessionMigrationExecutionPlanFor("chat_logs")
 	source := sessionMigrationTestRow(map[string]string{

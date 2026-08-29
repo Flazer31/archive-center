@@ -690,7 +690,7 @@ func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *t
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-outbox", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-outbox?req_source=timeline_manual_delete", nil)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {

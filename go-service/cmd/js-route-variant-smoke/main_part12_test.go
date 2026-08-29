@@ -45,7 +45,9 @@ func TestPluginStartupDoesNotRequireOpeningArchiveCenterAndHUDIsPrimed(t *testin
 		t.Fatal("beforeRequest does not render a host-observed HUD state immediately")
 	}
 	afterRequestSource := extractJSFunctionBlockForTest(t, src, "function onAfterRequest(content, type)")
-	if !strings.Contains(afterRequestSource, `ensureActiveChatCompletedTurnsBackfilled(chatSessionId, { reason: "after_request_user_input_missing" })`) {
+	if !strings.Contains(afterRequestSource, `ensureActiveChatCompletedTurnsBackfilled(chatSessionId, {`) ||
+		!strings.Contains(afterRequestSource, `reason: "after_request_user_input_missing"`) ||
+		!strings.Contains(afterRequestSource, `hostContext: persistenceHostContext`) {
 		t.Fatal("missing startup input capture is not handed to the existing active-chat recovery owner")
 	}
 	primeSource := extractJSFunctionBlockForTest(t, src, "function primeTurnWorkflowHUD(requestId)")
@@ -857,8 +859,8 @@ const rejected = acceptRisuAfterRequestFinal(
   mismatchContext,
   "another response"
 );
-if (rejected.reason !== "after_request_correlation_mismatch" || mismatchContext.state !== "terminal") {
-  throw new Error("present mismatched pending state was not rejected: " + JSON.stringify(rejected));
+if (rejected.reason !== "after_request_correlation_mismatch" || mismatchContext.state !== "captured") {
+  throw new Error("mismatched pending state was discarded instead of retained for exact host observation: " + JSON.stringify(rejected));
 }
 `
 	cmd := exec.Command(nodePath, "-")
@@ -940,9 +942,11 @@ func TestAcceptedFinalQueueAdmissionFailureKeepsHostContextRecoverable(t *testin
 	build := extractJSFunctionBlockForTest(t, src, "function buildAcceptedFinalRecoveryPayload(sessionId, pair, sourceAcceptanceFinality, reason, turnIndex)")
 	admit := extractJSFunctionBlockForTest(t, src, "async function admitAcceptedFinalTransportRecovery(sessionId, pair, sourceAcceptanceFinality, reason, turnIndex)")
 	backfill := extractArchiveCenterJSAsyncFunction(t, src, "backfillOneActiveChatCompletedTurn")
-	observe := extractJSFunctionBlockForTest(t, src, "function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource)")
+	observe := extractJSFunctionBlockForTest(t, src, "function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource, hostSnapshot = null)")
 	script := `
 const _finalConfirmationRequestBySession = new Map();
+const _pendingOrchBySession = new Map();
+let lastOrchResult = null;
 let admissionType = "";
 let admissionPayload = null;
 function computeOrchestrationDirtyHashOr1c(value){ return "h"+String(value||"").length; }
@@ -1023,7 +1027,8 @@ function buildCompleteTurnQueuePayload(){ return null; }
   }
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
-	cmd := exec.Command(nodePath, "-e", script)
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("accepted-final recovery fixture failed: %v\n%s", err, out)
 	}
@@ -1576,6 +1581,198 @@ async function verifyAndRepairCompleteTurnChatLogs(){}
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("reconciliation retry fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestCapturedSessionHostContextDoesNotFollowVisibleChat(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for immutable session host-context fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "parseSessionDisplayIdentity"),
+		extractArchiveCenterJSFunction(t, src, "resolveIdentityVerifiedCurrentCharacterChat"),
+		extractArchiveCenterJSFunction(t, src, "captureSessionHostContextFromCache"),
+		extractArchiveCenterJSFunction(t, src, "activeChatMatchesCapturedSession"),
+		extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject"),
+	}, "\n")
+	script := functions + `
+let currentCoordinateReads = 0;
+let indexedChat = {id:"chat-a",message:[{role:"char",data:"A output"}]};
+let indexedCoordinates = [];
+let _sessionCache = {
+  sessionId:"char_1_cid_chat-a",charIdx:1,chatIdx:2,
+  observedChatUniqueId:"chat-a",stableCharacterId:"character-a",
+};
+const R = {
+  async getCurrentCharacterIndex(){ currentCoordinateReads++; return 9; },
+  async getCurrentChatIndex(){ currentCoordinateReads++; return 9; },
+  async getChatFromIndex(charIdx,chatIdx){ indexedCoordinates.push([charIdx,chatIdx]); return indexedChat; },
+  async getCharacter(){ throw new Error("current character fallback must not run for captured A"); },
+};
+function debugLog() {}
+(async()=>{
+  const resolved = await resolveCurrentActiveChatObject("char_1_cid_chat-a");
+  if(!resolved.chat || resolved.chat.id!=="chat-a" || resolved.source!=="R.getChatFromIndex.captured") {
+    throw new Error("captured A chat was not resolved: "+JSON.stringify(resolved));
+  }
+  if(currentCoordinateReads!==0 || JSON.stringify(indexedCoordinates)!==JSON.stringify([[1,2]])) {
+    throw new Error("resolver followed visible B coordinates: "+JSON.stringify({currentCoordinateReads,indexedCoordinates}));
+  }
+  indexedChat = {id:"chat-b",message:[{role:"char",data:"B output"}]};
+  const mismatch = await resolveCurrentActiveChatObject("char_1_cid_chat-a", {
+    sessionId:"char_1_cid_chat-a",charIdx:1,chatIdx:2,hostChatId:"chat-a",
+  });
+  if(mismatch.chat!==null || mismatch.reason!=="captured_chat_identity_mismatch") {
+    throw new Error("B chat was accepted under A owner: "+JSON.stringify(mismatch));
+  }
+})().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("immutable session host-context fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestRisuOutputRoutesCommittedPersistenceToMatchingCapturedSession(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for output-listener session ownership fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	onOutput := extractJSFunctionBlockForTest(t, src, "function onRisuOutput(snapshot)")
+	script := onOutput + `
+const _risuHookLifecycle = {output:"registered"};
+const _finalConfirmationRequestBySession = new Map([
+  ["session-a",{sessionId:"session-a",state:"captured",characterIndex:1,chatIndex:2,hostChatId:"chat-a"}],
+  ["session-b",{sessionId:"session-b",state:"captured",characterIndex:8,chatIndex:9,hostChatId:"chat-b"}],
+]);
+const persistenceCalls = [];
+function observePendingFinalConfirmationAtHostSignal(sessionId,source,snapshot){
+  persistenceCalls.push({sessionId,source,chatId:snapshot && snapshot.chat && snapshot.chat.id});
+  return Promise.resolve({accepted:true});
+}
+function buildRisuWorldlineObservationFromMessages(){ return null; }
+function requestBackendSessionRoutingTurnResolution(){ throw new Error("ordinary output must not route a worldline"); }
+function debugLog() {}
+function warnLog() {}
+(async()=>{
+  const result = onRisuOutput({
+    characterIndex:1,chatIndex:2,messageIndex:1,
+    chat:{id:"chat-a",message:[{role:"user",data:"A input"},{role:"char",data:"A output"}]},
+  });
+  if(result!==undefined) throw new Error("output listener became blocking");
+  await new Promise(resolve=>setTimeout(resolve,0));
+  if(JSON.stringify(persistenceCalls)!==JSON.stringify([{sessionId:"session-a",source:"output",chatId:"chat-a"}])) {
+    throw new Error("committed A output was routed to another session: "+JSON.stringify(persistenceCalls));
+  }
+})().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("output-listener session ownership fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestLorebookSessionSwitchDefersWithoutPostingOrDroppingRetry(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for lorebook session switch fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	syncLorebook := extractArchiveCenterJSAsyncFunction(t, src, "syncCurrentLorebookReference")
+	script := syncLorebook + `
+const SESSION_FALLBACK="default";
+const hostContext={sessionId:"session-a",charIdx:1,chatIdx:2,hostChatId:"chat-a"};
+const _lorebookReferenceSync={attemptedScopeKey:"",syncedScopeKey:"",inFlight:null,lastScope:null};
+let activityChecks=0;
+let lorebookReads=0;
+let snapshotPosts=0;
+const R={async getCurrentLorebookEntries(){ lorebookReads++; return [{id:"a-lore",content:"A lore"}]; }};
+async function getCurrentChatSessionId(){ throw new Error("current B must not choose the owner"); }
+function captureSessionHostContextFromCache(){ return hostContext; }
+async function observeLorebookReferenceScope(sessionId,observed){
+  if(sessionId!=="session-a" || observed!==hostContext) throw new Error("lost captured A scope");
+  return {chat_session_id:"session-a",character_index:1,chat_index:2,enabled_module_ids:[],enabled_modules_observed:true};
+}
+function lorebookReferenceScopeKey(){ return "scope-a"; }
+async function capturedSessionIsCurrentlyActive(){ activityChecks++; return activityChecks===1; }
+async function postLorebookReferenceSnapshot(){ snapshotPosts++; return {status:"ok"}; }
+function updateRuntimeState() {}
+function lorebookReferenceSnapshotFailureState(){ return {}; }
+function lorebookReferenceSnapshotPath(){ return "/unused"; }
+(async()=>{
+  const result=await syncCurrentLorebookReference({sessionId:"session-a",hostContext,force:true});
+  if(!result || result.status!=="deferred" || result.reason!=="session_changed_during_lorebook_read") {
+    throw new Error("session switch was not deferred: "+JSON.stringify(result));
+  }
+  if(lorebookReads!==1 || snapshotPosts!==0) {
+    throw new Error("B lorebook was posted under A: "+JSON.stringify({lorebookReads,snapshotPosts}));
+  }
+  if(_lorebookReferenceSync.attemptedScopeKey!=="") {
+    throw new Error("deferred A scope was permanently suppressed instead of remaining retryable");
+  }
+})().catch(err=>{ console.error(err && err.stack || err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("lorebook session switch fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestLongRunningHostOperationsCarryCapturedSessionContext(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	checks := map[string][]string{
+		"beforeRequest": {
+			"orchHostContext = captureSessionHostContextFromCache(orchSessionId)",
+			"hostContext: orchHostContext",
+			"captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext)",
+			"resolveRollbackComparableMessages(orchSessionId, messages, userInput, orchHostContext)",
+			"resolveActiveChatCompletedTurnsForRoutingBaseline(orchSessionId, orchHostContext)",
+			"sessionId: orchSessionId",
+			"chatSessionId: orchSessionId",
+		},
+		"committedPersistence": {
+			"const persistenceHostContext = selectedRequestContext",
+			"findLatestActiveChatUnsavedCompletedTurnPair(chatSessionId, persistenceHostContext)",
+			"findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput, persistenceHostContext)",
+			"hostContext: persistenceHostContext",
+		},
+		"coldStart": {
+			"async function computeActiveChatRescanDryRunPlan(sessionId, hostContext = null)",
+			"resolveCurrentActiveChatObject(sid, fixedHostContext)",
+			"? captureSessionHostContextFromCache(sid)",
+			"computeActiveChatRescanDryRunPlan(sid, normalizeHostContext)",
+		},
+		"migration": {
+			"finalizeTimelineSessionMigrationRoute(migrationID, sourceSid, targetSid, migrationRouteContext)",
+			"persistAcknowledgedCurrentSessionRoute(targetSid, \"migration_commit\", observedContext)",
+			"establishSessionRoutingTurnBaseline(targetSid, \"timeline_copy\", targetHostContext)",
+			"establishSessionRoutingTurnBaseline(routedTargetSid, \"timeline_migrate\", {",
+		},
+	}
+	for area, markers := range checks {
+		for _, marker := range markers {
+			if !strings.Contains(src, marker) {
+				t.Fatalf("%s lost captured-session wiring %q", area, marker)
+			}
+		}
 	}
 }
 

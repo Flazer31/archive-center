@@ -457,6 +457,16 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "chat_session_id is required")
 		return
 	}
+	if requestSource := strings.TrimSpace(r.URL.Query().Get("req_source")); requestSource != "timeline_manual_delete" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"status":          "error",
+			"code":            "session_delete_requires_manual_action",
+			"detail":          "session deletion is only allowed from the explicit Archive Center delete action",
+			"chat_session_id": sid,
+			"deleted":         false,
+		})
+		return
+	}
 
 	rollbackStore, hasRollback := s.Store.(store.RollbackStore)
 	if !hasRollback || !s.usesShadowWriteStore() {

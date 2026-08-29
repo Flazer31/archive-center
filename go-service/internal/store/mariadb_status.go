@@ -1187,18 +1187,30 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
 	// Session deletion removes only the reusable-work link. The referenced
 	// work, documents, claims, and vectors are library-owned and must survive.
-	if _, err := m.db.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}
-	if _, err := m.db.ExecContext(ctx, "DELETE FROM persona_capsule_attachments WHERE target_chat_session_id = ?", chatSessionID); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM persona_capsule_attachments WHERE target_chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}
-	if _, err := m.db.ExecContext(ctx, "DELETE FROM protagonist_entity_memories WHERE source_chat_session_id = ?", chatSessionID); err != nil {
+	if _, err := tx.ExecContext(ctx, "DELETE FROM protagonist_entity_memories WHERE source_chat_session_id = ?", chatSessionID); err != nil {
 		return err
 	}
-	if err := m.InvalidateSourceRevisions(ctx, chatSessionID, 1, "deleted", "session_deleted", time.Now().UTC()); err != nil {
+	if err := invalidateMemorySourcesTx(ctx, tx, chatSessionID, 1, false, "", "deleted", "session_deleted", time.Now().UTC()); err != nil {
 		return err
 	}
 	tables := []string{
@@ -1240,9 +1252,13 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 		"critic_feedback",
 	}
 	for _, tbl := range tables {
-		if _, err := m.db.ExecContext(ctx, "DELETE FROM "+tbl+" WHERE chat_session_id = ?", chatSessionID); err != nil {
+		if _, err := tx.ExecContext(ctx, "DELETE FROM "+tbl+" WHERE chat_session_id = ?", chatSessionID); err != nil {
 			return err
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	committed = true
 	return nil
 }

@@ -812,14 +812,16 @@ func sessionMigrationValidateSchemaTx(ctx context.Context, tx *sql.Tx, plan Sess
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if strings.Join(actual, ",") != strings.Join(plan.Columns, ",") {
-		return fmt.Errorf("session migration schema mismatch for %s: actual=%q manifest=%q",
-			plan.Table, strings.Join(actual, ","), strings.Join(plan.Columns, ","))
+	if missing, extra, duplicates := sessionMigrationColumnSetDiff(actual, plan.Columns); len(missing) > 0 || len(extra) > 0 || len(duplicates) > 0 {
+		return fmt.Errorf("session migration schema mismatch for %s: actual=%q manifest=%q missing=%q extra=%q duplicates=%q",
+			plan.Table, strings.Join(actual, ","), strings.Join(plan.Columns, ","),
+			strings.Join(missing, ","), strings.Join(extra, ","), strings.Join(duplicates, ","))
 	}
-	if strings.Join(generated, ",") != strings.Join(plan.DatabaseGenerated, ",") {
+	if missing, extra, duplicates := sessionMigrationColumnSetDiff(generated, plan.DatabaseGenerated); len(missing) > 0 || len(extra) > 0 || len(duplicates) > 0 {
 		return fmt.Errorf(
-			"session migration generated-column mismatch for %s: actual=%q manifest=%q",
+			"session migration generated-column mismatch for %s: actual=%q manifest=%q missing=%q extra=%q duplicates=%q",
 			plan.Table, strings.Join(generated, ","), strings.Join(plan.DatabaseGenerated, ","),
+			strings.Join(missing, ","), strings.Join(extra, ","), strings.Join(duplicates, ","),
 		)
 	}
 	primaryRows, err := tx.QueryContext(ctx, `
@@ -871,6 +873,38 @@ func sessionMigrationValidateSchemaTx(ctx context.Context, tx *sql.Tx, plan Sess
 		}
 	}
 	return nil
+}
+
+func sessionMigrationColumnSetDiff(actual, expected []string) (missing, extra, duplicates []string) {
+	actualCounts := make(map[string]int, len(actual))
+	expectedCounts := make(map[string]int, len(expected))
+	for _, column := range actual {
+		column = strings.TrimSpace(column)
+		actualCounts[column]++
+		if actualCounts[column] == 2 {
+			duplicates = append(duplicates, column)
+		}
+	}
+	for _, column := range expected {
+		column = strings.TrimSpace(column)
+		expectedCounts[column]++
+		if expectedCounts[column] == 2 {
+			duplicates = append(duplicates, column)
+		}
+	}
+	for _, column := range expected {
+		column = strings.TrimSpace(column)
+		if actualCounts[column] == 0 {
+			missing = append(missing, column)
+		}
+	}
+	for _, column := range actual {
+		column = strings.TrimSpace(column)
+		if expectedCounts[column] == 0 {
+			extra = append(extra, column)
+		}
+	}
+	return missing, extra, duplicates
 }
 
 func sessionMigrationReadManifestRows(

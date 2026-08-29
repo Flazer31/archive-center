@@ -325,22 +325,55 @@ func TestArchiveCenterJSAssistantOutputDeletionAndInputTimelineMarkers(t *testin
 	}
 }
 
-func TestArchiveCenterJSCIDSessionDeleteLifecycleMarkers(t *testing.T) {
+func TestArchiveCenterJSMissingCIDRemainsInactiveAndCannotAutoDelete(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"function runtimeInventoryCanJudgeTrackedSession",
-		"currentCharIdx",
-		`"timeline.session.deleted"`,
-		"ledgerEntry.deletedNotifiedAt",
-		"cachedCidLostRuntimeId",
-		"pinnedCidLostRuntimeId",
-		"risu_chat_missing_from_runtime_inventory",
-		"backend_session_cid_missing_from_risu_full_inventory",
-		"if (currentSid && sid === currentSid) continue",
+		"function resolveRuntimeSessionLifecycle",
+		`return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };`,
+		"function deleteTimelineSessionFromBackend",
+		"timeline_manual_delete",
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing CID session delete lifecycle marker %q", needle)
+			t.Fatalf("Archive Center.js missing explicit session lifecycle marker %q", needle)
+		}
+	}
+	for _, forbidden := range []string{
+		"function notifyBackendSessionDeletedFromRisu",
+		"function reconcileDeletedActiveSessionsWithBackend",
+		"function reconcileDeletedBackendSessionsFromList",
+		"req_source=risu_plugin_chat_delete",
+		"risu_chat_missing_from_runtime_inventory",
+		"backend_session_cid_missing_from_risu_full_inventory",
+	} {
+		if strings.Contains(src, forbidden) {
+			t.Fatalf("Archive Center.js retains automatic session deletion path %q", forbidden)
+		}
+	}
+}
+
+func TestArchiveCenterJSMigrationRouteFailureRetriesOnlyTheConnection(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	for _, needle := range []string{
+		"async function finalizeTimelineSessionMigrationRoute",
+		"async function retryTimelineSessionMigrationRoute",
+		`setSessionMigrationUiStatus("route_pending"`,
+		`data-timeline-session-route-retry-id=`,
+		`runMemorySessionAction(() => retryTimelineSessionMigrationRoute())`,
+		`throw new Error("session_route_identity_unobserved")`,
+	} {
+		if !strings.Contains(src, needle) {
+			t.Fatalf("Archive Center.js missing migration route recovery marker %q", needle)
+		}
+	}
+	runMigration := extractJSFunctionBlockForTest(t, src, "async function runTimelineSessionMigration(sourceSessionId)")
+	if !strings.Contains(runMigration, "sourceLocked = true") || !strings.Contains(runMigration, "finalizeTimelineSessionMigrationRoute(migrationID, sourceSid, targetSid, migrationRouteContext)") {
+		t.Fatal("session migration must separate completed data movement from current-chat routing")
+	}
+	retryRoute := extractJSFunctionBlockForTest(t, src, "async function retryTimelineSessionMigrationRoute()")
+	for _, forbidden := range []string{"/sessions/migrate-preview", "/sessions/migrate-complete", "/sessions/migrate-reindex", "/sessions/migrate-lock-source"} {
+		if strings.Contains(retryRoute, forbidden) {
+			t.Fatalf("route retry must not repeat migration phase %q", forbidden)
 		}
 	}
 }
@@ -473,7 +506,7 @@ func TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations(t *tes
 			t.Fatalf("Timeline canvas/compact operation missing %q", marker)
 		}
 	}
-	for _, marker := range []string{`data-timeline-session-attach-id=`, `data-timeline-session-copy-id=`, `data-timeline-session-migrate-id=`, `data-timeline-session-delete-id=`, `data-timeline-session-rollback-id=`, `data-timeline-session-cleanup-id=`} {
+	for _, marker := range []string{`data-timeline-session-attach-id=`, `data-timeline-session-copy-id=`, `data-timeline-session-migrate-id=`, `data-timeline-session-delete-id=`, `data-timeline-session-route-retry-id=`, `data-timeline-session-rollback-id=`, `data-timeline-session-cleanup-id=`} {
 		if strings.Contains(panel, marker) {
 			t.Fatalf("Worldlines must not retain DB management action %q", marker)
 		}
@@ -492,7 +525,7 @@ func TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations(t *tes
 	if !strings.Contains(explorerEvents, `querySelectorAll("[data-memory-admin-session-id]")`) || !strings.Contains(explorerEvents, `selectWorkspaceSession(String(sessionButton.getAttribute("data-memory-admin-session-id") || ""), "memory_admin")`) {
 		t.Fatal("Memory management session rail must drive the shared workspace selection owner")
 	}
-	for _, marker := range []string{`deleteTimelineSessionFromBackend(sid)`, `attachTimelineSessionToCurrentChat(sid)`, `runTimelineSessionCopy(sid)`, `runTimelineSessionMigration(sid)`, `runTimelineSessionMigrationRollback()`, `runTimelineSessionMigrationCleanup()`} {
+	for _, marker := range []string{`deleteTimelineSessionFromBackend(sid)`, `attachTimelineSessionToCurrentChat(sid)`, `runTimelineSessionCopy(sid)`, `runTimelineSessionMigration(sid)`, `retryTimelineSessionMigrationRoute()`, `runTimelineSessionMigrationRollback()`, `runTimelineSessionMigrationCleanup()`} {
 		if strings.Contains(events, marker) {
 			t.Fatalf("Worldlines event binder must not retain DB management dispatch %q", marker)
 		}
@@ -1757,7 +1790,6 @@ func TestArchiveCenterJSTimelineSessionDeleteMarkers(t *testing.T) {
 		"timeline_session_delete_button",
 		`bridgeFetch("/sessions/" + encodeURIComponent(sid)`,
 		"method: \"DELETE\"",
-		"manualDbDeletedAt",
 		"cleanupLocalSessionAfterBackendDelete(sid)",
 		"deleteTimelineSessionFromBackend(sid)",
 	}
@@ -1795,7 +1827,7 @@ func TestArchiveCenterJSEntityMemoryBrowserMarkers(t *testing.T) {
 func TestArchiveCenterJSBootstrapIsObservationOnly(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
-		"async function observePrepareTurnBootstrap(sessionId, requestId, activeChatMessages, chatId)",
+		"async function observePrepareTurnBootstrap(sessionId, requestId, activeChatMessages, chatId, hostContext = null)",
 		`contract_version: "session_bootstrap_observation.v1"`,
 		`leading_messages: leadingMessages`,
 		`selected_greeting_index: selectedGreetingIndex`,
@@ -1843,7 +1875,8 @@ func TestArchiveCenterJSActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
 		`await verifyAndRepairCompleteTurnChatLogs(sid, persistedTurn, pair.userContent, pair.assistantContent)`,
 		"rawRepairStatus",
 		"setTurnCounterAtLeast",
-		`ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request"`,
+		`ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {`,
+		`hostContext: orchHostContext`,
 		`source: "risu_next_host_signal_active_chat"`,
 		"persistAcceptedHostFinalWithoutBlockingRequest",
 		`ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh"`,

@@ -1833,6 +1833,9 @@ const R = {
   getCurrentChatIndex: async () => 0,
   getChatFromIndex: async () => ({bindedPersona: "persona-a"})
 };
+async function resolveCurrentActiveChatObject() {
+  return {chat: await R.getChatFromIndex(0, 0)};
+}
 const settings = {
   narrativeGuideMode: "off", narrativeGuideStrength: "weak",
   pluginMainApplyMode: "shadow", inputContextEnabled: true, maxInjectionChars: 1000, injectionBudgetExtraChars: 0,
@@ -2085,6 +2088,10 @@ const R = {
     return [{id:"entry-1", key:"Han-eol", content:"Exam notice"}];
   }
 };
+function captureSessionHostContextFromCache() {
+  return {sessionId:"session-a",charIdx:characterIndex,chatIdx:chatIndex,hostChatId:"host-a"};
+}
+async function capturedSessionIsCurrentlyActive(){ return true; }
 function getRequestTimeoutSettingMs(){ return 1000; }
 function truncPreview(value, max){ return String(value || "").slice(0, max); }
 function updateRuntimeState(key, status, extra){ runtimeUpdates.push({key,status,extra}); }
@@ -2276,6 +2283,7 @@ function normalizeMessagesForOrchestration(messages) { return messages; }
 function extractRuntimeCurrentChatTokenInfo() { return {}; }
 async function getCurrentChatSessionId() { return "session-runtime"; }
 async function resolveCanonicalWriteSessionId(value) { return value; }
+function captureSessionHostContextFromCache() { return {sessionId:"session-runtime",charIdx:1,chatIdx:2,hostChatId:"host-runtime"}; }
 async function getCurrentActiveChatSourceObservationMessages() { return [{role: "user", content: "actual input", risuMessageIndex: 1}]; }
 function bindRawInputObservationToRequest(_sessionId, requestId) {
   return {text: "actual input", actualEmptyInput: false, observationId: 1, boundRequestId: requestId};
@@ -2444,6 +2452,7 @@ const R = {
     alternateGreetings: ["alternate zero", "alternate one"],
   }),
 };
+function getRisuCharacterListSnapshot() { return []; }
 async function resolveCurrentActiveChatObject() { return { chat: { fmIndex: 1, data: {} } }; }
 ` + hashFn + "\n" + contentFn + "\n" + payloadMessageFn + "\n" + messageFn + "\n" + hostFn + "\n" + bootstrapFn + `
 (async function() {
@@ -3678,6 +3687,7 @@ func TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan(t *testing.T) {
 	script := functionBody + `
 let allInherited = false;
 async function getCurrentChatSessionId() { return "child"; }
+function captureSessionHostContextFromCache() { return {sessionId:"child",charIdx:1,chatIdx:2,hostChatId:"child-chat"}; }
 async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
 function extractActiveChatComparableMessages() { return allInherited ? [{}] : []; }
 function extractActiveChatMessageList() { return extractActiveChatComparableMessages(); }
@@ -3743,6 +3753,7 @@ func TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources(t *
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
 	script := functionBody + `
 async function getCurrentChatSessionId() { return "session"; }
+function captureSessionHostContextFromCache() { return {sessionId:"session",charIdx:1,chatIdx:2,hostChatId:"session-chat"}; }
 async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
 let allUsersRemoved = false;
 function extractActiveChatComparableMessages() {
@@ -3993,11 +4004,12 @@ const orch = {_chatSessionId:"session-1"};
 let lastOrchResult = orch;
 const _sessionCache = {sessionId:"session-1"};
 const pending = {requestId:"request-reroll",orchResult:orch};
-const requestContext = {requestId:"request-reroll"};
+const requestContext = {requestId:"request-reroll",state:"captured",sessionId:"session-1",requestType:"model"};
 const _pendingOrchBySession = new Map([["session-1",pending]]);
 const _pendingPersistenceSkipBySession = new Map();
 const _finalConfirmationRequestBySession = new Map([["session-1",requestContext]]);
 const _failedQueue = [];
+const _risuCommittedOutputListenerRegistered = false;
 let scheduled = 0;
 let accepted = false;
 let resolverCalls = 0;
@@ -4233,6 +4245,8 @@ const R = {
   async getChatFromIndex() { return activeChat; },
 };
 const _finalConfirmationRequestBySession = new Map();
+const _pendingOrchBySession = new Map();
+let lastOrchResult = null;
 let persisted = [];
 function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
 function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || "").trim(); }
@@ -4738,6 +4752,9 @@ const R={
   async getCurrentChatIndex(){return 2;},
   async getChatFromIndex(){return {id:"host-chat",message:[]};}
 };
+async function resolveCurrentActiveChatObject() {
+  return {chat:await R.getChatFromIndex(1,2),charIdx:1,chatIdx:2,source:"fixture"};
+}
 (async function() {
   const payload={chat_session_id:"session-1",turn_index:4,user_input:"user",assistant_content:"assistant",
     context_messages:[],client_meta:{idempotency_key:"key-4"}};
@@ -6299,8 +6316,11 @@ func TestRollbackReadsCanonicalRisuChatAfterDeletion(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	script := extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject") + "\n" +
+	script := extractArchiveCenterJSFunction(t, src, "captureSessionHostContextFromCache") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "activeChatMatchesCapturedSession") + "\n" +
+		extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "getCurrentActiveChatRollbackMessages") + `
+let _sessionCache = null;
 const R = {
   getCurrentCharacterIndex: async () => 4,
   getCurrentChatIndex: async () => 2,
@@ -6341,7 +6361,10 @@ func TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter(t
 	src := readArchiveCenterJS(t)
 	script := extractArchiveCenterJSFunction(t, src, "resolveIdentityVerifiedCurrentCharacterChat") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "parseSessionDisplayIdentity") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "captureSessionHostContextFromCache") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "activeChatMatchesCapturedSession") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject") + `
+let _sessionCache = null;
 let getCharacterCalls = 0;
 let activeChatId = "target";
 const R = {
@@ -6396,8 +6419,11 @@ func TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure(t *
 	src := readArchiveCenterJS(t)
 	script := extractArchiveCenterJSFunction(t, src, "resolveIdentityVerifiedCurrentCharacterChat") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "parseSessionDisplayIdentity") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "captureSessionHostContextFromCache") + "\n" +
+		extractArchiveCenterJSFunction(t, src, "activeChatMatchesCapturedSession") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "recoverAssistantContentFromActiveChat") + `
+let _sessionCache = null;
 const R = {
   getCurrentCharacterIndex: async () => 4,
   getCurrentChatIndex: async () => 2,

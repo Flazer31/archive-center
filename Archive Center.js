@@ -1172,6 +1172,7 @@
       "timeline.button.migrate": "이동",
       "timeline.button.reload": "새로고침",
       "timeline.button.rollback": "이동 취소",
+      "timeline.button.retryRoute": "연결 다시 시도",
       "timeline.button.viewDetail": "상세 보기",
       "timeline.count.summary": "{turns}턴 / {items}항목 / 총 {total}개",
       "timeline.detail.created": "생성",
@@ -1231,6 +1232,8 @@
       "timeline.copy.success": "세션 복사 완료: target={target}",
       "timeline.migration.confirm": "이 Archive Center 세션을 현재 활성 채팅으로 이동합니다.\n\n원본: {source}\n대상: {target}\n\n단계:\n1. dry-run 미리보기\n2. MariaDB 행 복사\n3. ChromaDB 벡터 재색인\n4. 원본 잠금\n\n원본 DB 행은 삭제하지 않고 읽기/쓰기를 잠급니다.\n대상 세션은 비어 있어야 합니다.\n\n계속하시겠습니까?",
       "timeline.migration.failed": "세션 이전 실패: {reason}",
+      "timeline.migration.routePending": "데이터 이동은 완료됐지만 현재 채팅 연결이 끝나지 않았습니다: {reason}",
+      "timeline.migration.routeRetrying": "이동된 세션에 다시 연결하는 중...",
       "timeline.migration.noActiveTarget": "현재 활성 채팅 세션이 없습니다.",
       "timeline.migration.noMigration": "최근 완료된 세션 이전 ID가 없습니다.",
       "timeline.migration.reason.preview_blocked": "미리보기가 차단되었습니다. 대상 세션이 비어 있는지 확인하세요.",
@@ -1610,6 +1613,7 @@
       "timeline.button.copy": "Copy",
       "timeline.button.migrate": "Move",
       "timeline.button.rollback": "Undo Move",
+      "timeline.button.retryRoute": "Retry Connection",
       "timeline.button.cleanup": "Cleanup Source",
       "timeline.session.attachTitle": "Attach this Archive session to the current chat",
       "timeline.session.copyTitle": "Copy this DB session to the current active chat",
@@ -1619,6 +1623,8 @@
       "timeline.migration.running": "Session migration running...",
       "timeline.migration.success": "Session migration complete: target={target}",
       "timeline.migration.failed": "Session migration failed: {reason}",
+      "timeline.migration.routePending": "Data migration completed, but the current chat connection is incomplete: {reason}",
+      "timeline.migration.routeRetrying": "Reconnecting the migrated session...",
       "timeline.migration.rollbackRunning": "Session migration rollback running...",
       "timeline.migration.rollbackSuccess": "Session migration rollback complete: migration={id}",
       "timeline.migration.cleanupRunning": "Source session cleanup running...",
@@ -3564,6 +3570,7 @@
       "timeline.button.copy": "コピー",
       "timeline.button.migrate": "移動",
       "timeline.button.rollback": "移動を取り消す",
+      "timeline.button.retryRoute": "接続を再試行",
       "timeline.label.migrationOps": "移行後の操作",
       "timeline.migration.cleanupConfirm": "ロックされた元セッションを完全に整理します。\n\n移行: {id}\n元: {source}\n対象: {target}\n\n元のMariaDB行とChromaDBベクトルを削除します。\n対象セッションが正常であることを確認してから実行してください。\n\n本当に整理しますか？",
       "timeline.migration.cleanupRunning": "元セッションを整理中...",
@@ -3574,6 +3581,8 @@
       "timeline.copy.success": "セッションコピー完了: target={target}",
       "timeline.migration.confirm": "このArchive Centerセッションを現在のアクティブチャットへ移動します。\n\n元: {source}\n対象: {target}\n\n手順:\n1. dry-runプレビュー\n2. MariaDB行コピー\n3. ChromaDBベクトル再インデックス\n4. 元セッションをロック\n\n元DB行は削除されず、読み書きがロックされます。\n対象セッションは空である必要があります。\n\n続行しますか？",
       "timeline.migration.failed": "セッション移行に失敗しました: {reason}",
+      "timeline.migration.routePending": "データ移行は完了しましたが、現在のチャット接続が完了していません: {reason}",
+      "timeline.migration.routeRetrying": "移行先セッションへ再接続しています...",
       "timeline.migration.noActiveTarget": "現在のアクティブチャットセッションがありません。",
       "timeline.migration.noMigration": "最近完了したセッション移行IDがありません。",
       "timeline.migration.reason.preview_blocked": "プレビューがブロックされました。対象セッションが空か確認してください。",
@@ -4343,6 +4352,7 @@
     status: "idle",
     message: "",
     error: "",
+    routeContext: null,
   };
   const _referenceLibraryState = {
     works: [],
@@ -4488,6 +4498,7 @@
   const _pendingFinalConfirmationRecoveryEntries = new Map();
   let _pendingFinalConfirmationDrainInFlight = false;
   let _pendingFinalConfirmationDrainRequested = false;
+  let _risuCommittedOutputListenerRegistered = false;
   const _risuHookLifecycle = {
     input: "unrequested",
     beforeRequest: "unrequested",
@@ -4963,6 +4974,7 @@
       if (typeof R.removeRisuChatListener === "function") {
         await R.removeRisuChatListener("output", onRisuOutput);
       }
+      _risuCommittedOutputListenerRegistered = false;
     } catch (err) {
       debugLog("[unload] output listener cleanup failed:", err && err.message);
     }
@@ -5004,11 +5016,14 @@
       if (typeof R.addRisuChatListener === "function") {
         recordRisuHookLifecycle("output", "registration_requested_unconfirmed");
         await R.addRisuChatListener("output", onRisuOutput);
+        _risuCommittedOutputListenerRegistered = true;
         console.log(LOG_PREFIX, "addRisuChatListener output requested (host acceptance unconfirmed)");
       } else {
+        _risuCommittedOutputListenerRegistered = false;
         recordRisuHookLifecycle("output", "capability_unavailable");
       }
     } catch (regErr) {
+      _risuCommittedOutputListenerRegistered = false;
       recordRisuHookLifecycle("output", "registration_failed");
       warnLog("addRisuChatListener output failed:", regErr && regErr.message);
     }
@@ -6294,14 +6309,9 @@
   const SESSION_DURABLE_PIN_PREFIX = `${PLUGIN_ID}_session_id_pin_v3`;
   const SESSION_PIN_RECORD_VERSION = "v3";
   const SESSION_NEW_CHAT_HISTORY_MAX = 2;
-  const SESSION_DELETE_LEDGER_KEY = `${PLUGIN_ID}_session_delete_ledger_v1`;
   const SESSION_DISPLAY_LOOKUP_KEY = `${PLUGIN_ID}_session_display_lookup_v1`;
   const SESSION_ROUTING_BASELINE_PREFIX = `${PLUGIN_ID}_session_routing_baseline_v1`;
   const SESSION_DISPLAY_LOOKUP_MAX = 600;
-  const SESSION_DELETE_LEDGER_VERSION = "risu_chat_delete_sync.v1";
-  const SESSION_DELETE_LEDGER_MAX = 80;
-  let _sessionDeleteLedger = { loaded: false, bySession: {}, lastSavedAt: 0, lastReconcileAt: 0 };
-  const _sessionDeleteNotifyInFlight = new Set();
 
   function makeSessionPinKey(charIdx, chatIdx, stableCharacterId = "", hostChatId = "") {
     const stableId = String(stableCharacterId || "").trim();
@@ -6458,11 +6468,44 @@
     }
   }
 
+  function captureSessionHostContextFromCache(sessionId) {
+    const sid = String(sessionId || "").trim();
+    const cached = _sessionCache && typeof _sessionCache === "object" ? _sessionCache : null;
+    if (!sid || !cached || String(cached.sessionId || "").trim() !== sid) return null;
+    if (!Number.isInteger(cached.charIdx) || !Number.isInteger(cached.chatIdx)) return null;
+    return {
+      sessionId: sid,
+      charIdx: cached.charIdx,
+      chatIdx: cached.chatIdx,
+      hostChatId: String(cached.observedChatUniqueId || "").trim(),
+      stableCharacterId: String(cached.stableCharacterId || "").trim(),
+    };
+  }
+
+  function activeChatMatchesCapturedSession(sessionId, coordinates, chat, charIdx) {
+    if (!chat || typeof chat !== "object") return false;
+    const parsed = parseSessionDisplayIdentity(sessionId);
+    const expectedCharIdx = coordinates && Number.isInteger(coordinates.charIdx)
+      ? coordinates.charIdx
+      : (parsed && Number.isInteger(parsed.charIdx) ? parsed.charIdx : null);
+    if (Number.isInteger(expectedCharIdx) && Number.isInteger(charIdx) && expectedCharIdx !== charIdx) return false;
+    const expectedHostChatId = String(
+      coordinates && coordinates.hostChatId
+      || parsed && parsed.chatUniqueId
+      || ""
+    ).trim();
+    const observedHostChatId = String(chat.id || "").trim();
+    return !expectedHostChatId || (!!observedHostChatId && observedHostChatId === expectedHostChatId);
+  }
+
   async function resolveCurrentActiveChatObject(sessionId, coordinates) {
-    const out = { chat: null, source: "none", charIdx: null, chatIdx: null };
+    const out = { chat: null, source: "none", charIdx: null, chatIdx: null, reason: "unobserved" };
     try {
-      let chatIdx = coordinates && Number.isInteger(coordinates.chatIdx) ? coordinates.chatIdx : null;
-      let charIdx = coordinates && Number.isInteger(coordinates.charIdx) ? coordinates.charIdx : null;
+      const captured = coordinates && typeof coordinates === "object"
+        ? coordinates
+        : captureSessionHostContextFromCache(sessionId);
+      let chatIdx = captured && Number.isInteger(captured.chatIdx) ? captured.chatIdx : null;
+      let charIdx = captured && Number.isInteger(captured.charIdx) ? captured.charIdx : null;
       if (chatIdx == null && R && typeof R.getCurrentChatIndex === "function") {
         try { chatIdx = await R.getCurrentChatIndex(); } catch { chatIdx = null; }
       }
@@ -6477,8 +6520,13 @@
         try {
           const chat = await R.getChatFromIndex(charIdx, chatIdx);
           if (chat && typeof chat === "object" && Array.isArray(chat.message)) {
+            if (!activeChatMatchesCapturedSession(sessionId, captured, chat, charIdx)) {
+              out.reason = "captured_chat_identity_mismatch";
+              return out;
+            }
             out.chat = chat;
-            out.source = "R.getChatFromIndex";
+            out.source = captured ? "R.getChatFromIndex.captured" : "R.getChatFromIndex.current";
+            out.reason = "observed";
             return out;
           }
         } catch (err) {
@@ -6489,6 +6537,13 @@
       const expectedCharIdx = parsed && Number.isInteger(parsed.charIdx) ? parsed.charIdx : null;
       if (expectedCharIdx != null && Number.isInteger(charIdx) && expectedCharIdx !== charIdx) {
         debugLog("resolveCurrentActiveChatObject fallback blocked: character index mismatch");
+        out.reason = "character_index_mismatch";
+        return out;
+      }
+      // getCharacter() exposes only the current character. It cannot safely
+      // recover a previously captured A chat after the user has moved to B.
+      if (captured) {
+        out.reason = "captured_chat_unavailable";
         return out;
       }
       if (R && typeof R.getCharacter === "function" && Number.isInteger(chatIdx)) {
@@ -6502,6 +6557,7 @@
           if (chat && typeof chat === "object" && Array.isArray(chat.message)) {
             out.chat = chat;
             out.source = "R.getCharacter.identity_verified";
+            out.reason = "observed";
             return out;
           }
         } catch (err) {
@@ -6512,6 +6568,22 @@
       debugLog("resolveCurrentActiveChatObject failed:", err && err.message);
     }
     return out;
+  }
+
+  async function capturedSessionIsCurrentlyActive(sessionId, hostContext) {
+    if (!hostContext || !R
+      || typeof R.getCurrentCharacterIndex !== "function"
+      || typeof R.getCurrentChatIndex !== "function") return false;
+    try {
+      const characterIndex = await R.getCurrentCharacterIndex();
+      const chatIndex = await R.getCurrentChatIndex();
+      if (Number(characterIndex) !== Number(hostContext.charIdx)
+        || Number(chatIndex) !== Number(hostContext.chatIdx)) return false;
+      const resolved = await resolveCurrentActiveChatObject(sessionId, hostContext);
+      return !!resolved.chat;
+    } catch {
+      return false;
+    }
   }
 
   function buildSessionNormalizeCompletedTurnPairs(activeChat) {
@@ -6956,9 +7028,9 @@
     };
   }
 
-  async function getCurrentActiveChatRollbackMessages() {
+  async function getCurrentActiveChatRollbackMessages(sessionId, hostContext = null) {
     try {
-      const resolved = await resolveCurrentActiveChatObject("");
+      const resolved = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
       return resolved.chat ? extractActiveChatRollbackMessages(resolved.chat) : [];
     } catch (err) {
       debugLog("getCurrentActiveChatRollbackMessages failed:", err && err.message);
@@ -6966,9 +7038,9 @@
     }
   }
 
-  async function getCurrentActiveChatComparableMessages(sessionId) {
+  async function getCurrentActiveChatComparableMessages(sessionId, hostContext = null) {
     try {
-      const resolved = await resolveCurrentActiveChatObject(sessionId || "");
+      const resolved = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
       return resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
     } catch (err) {
       debugLog("getCurrentActiveChatComparableMessages failed:", err && err.message);
@@ -7397,9 +7469,9 @@
     }
   }
 
-  async function resolveActiveChatCompletedTurnsForRoutingBaseline(sessionId) {
+  async function resolveActiveChatCompletedTurnsForRoutingBaseline(sessionId, hostContext = null) {
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId || "");
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       const latestPair = pairs.length > 0 ? pairs[pairs.length - 1] : { observedPairOrdinal: 0 };
@@ -7411,7 +7483,7 @@
     }
   }
 
-  async function establishSessionRoutingTurnBaseline(sessionId, reason) {
+  async function establishSessionRoutingTurnBaseline(sessionId, reason, hostContext = null) {
     const sid = normalizeSessionId(sessionId);
     if (!sid || sid === SESSION_FALLBACK) return null;
     const backendTurnAtRoute = await safeCall(
@@ -7419,7 +7491,7 @@
       0,
       "establishSessionRoutingTurnBaseline.latestTurn"
     );
-    const localPairCountAtRoute = await resolveActiveChatCompletedTurnsForRoutingBaseline(sid);
+    const localPairCountAtRoute = await resolveActiveChatCompletedTurnsForRoutingBaseline(sid, hostContext);
     return rememberSessionRoutingTurnBaseline(sid, {
       backendTurnAtRoute,
       localPairCountAtRoute,
@@ -7513,14 +7585,14 @@
     }
   }
 
-  async function findActiveChatCompletedTurnPairForContent(sessionId, userContent, assistantContent) {
+  async function findActiveChatCompletedTurnPairForContent(sessionId, userContent, assistantContent, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return null;
       const wantedAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(assistantContent));
       if (!wantedAssistant) return null;
       const wantedUser = normalizeTurnPairCompareText(userContent);
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
@@ -7547,12 +7619,12 @@
     }
   }
 
-  async function findActiveChatCompletedTurnPairForUserContent(sessionId, userContent) {
+  async function findActiveChatCompletedTurnPairForUserContent(sessionId, userContent, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
       const wantedUser = normalizeTurnPairCompareText(userContent);
       if (!sid || !wantedUser) return null;
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
@@ -7577,11 +7649,11 @@
     }
   }
 
-  async function findLatestActiveChatCompletedTurnPair(sessionId) {
+  async function findLatestActiveChatCompletedTurnPair(sessionId, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return null;
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
@@ -7600,11 +7672,11 @@
     }
   }
 
-  async function findLatestActiveChatUnsavedCompletedTurnPair(sessionId) {
+  async function findLatestActiveChatUnsavedCompletedTurnPair(sessionId, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return null;
-      const pair = await findLatestActiveChatCompletedTurnPair(sid);
+      const pair = await findLatestActiveChatCompletedTurnPair(sid, hostContext);
       if (!pair || !pair.userContent || !pair.assistantContent) return null;
       const latestBackendTurn = await safeCall(
         () => fetchBackendLatestTurnIndexForSession(sid),
@@ -7628,7 +7700,7 @@
       return null;
     }
   }
-  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent, hostTurnObservation = null) {
+  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent, hostTurnObservation = null, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return nextTurnIndex(sessionId);
@@ -7641,14 +7713,14 @@
         setTurnCounterAtLeast(sid, latestBackendTurn);
       }
       const previousNextTurnIndex = Math.max(peekNextTurnIndex(sid), Number(latestBackendTurn || 0) + 1);
-      let activePair = await findActiveChatCompletedTurnPairForContent(sid, userContent, assistantContent);
+      let activePair = await findActiveChatCompletedTurnPairForContent(sid, userContent, assistantContent, hostContext);
       let activePairMatchMode = activePair ? "user_assistant_content" : "";
       if (!activePair && normalizeTurnPairCompareText(userContent)) {
-        activePair = await findActiveChatCompletedTurnPairForUserContent(sid, userContent);
+        activePair = await findActiveChatCompletedTurnPairForUserContent(sid, userContent, hostContext);
         if (activePair) activePairMatchMode = "user_content";
       }
       if (!activePair) {
-        const latestPair = await findLatestActiveChatCompletedTurnPair(sid);
+        const latestPair = await findLatestActiveChatCompletedTurnPair(sid, hostContext);
         const wantedUser = normalizeTurnPairCompareText(userContent);
         const wantedAssistant = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(assistantContent));
         const latestUser = normalizeTurnPairCompareText(latestPair && latestPair.userContent);
@@ -8002,10 +8074,18 @@
         pair.assistantContent,
         pair.contextMessages || [],
         sid,
-        null,
+        opts.improvementTrace || null,
         sourceAcceptanceFinality
-          ? { sourceAcceptanceFinality }
-          : { allowExistingActiveMessage: true }
+          ? {
+              sourceAcceptanceFinality,
+              orchestrationResult: opts.orchestrationResult || null,
+              hostContext: opts.hostContext || null,
+            }
+          : {
+              allowExistingActiveMessage: true,
+              orchestrationResult: opts.orchestrationResult || null,
+              hostContext: opts.hostContext || null,
+            }
       );
     } catch (err) {
       body = null;
@@ -8129,7 +8209,7 @@
     }
     _activeChatBackfillInFlight.add(sid);
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, options && options.hostContext || null);
       const rawMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
       const worldlineObservation = buildRisuWorldlineObservationFromMessages(
         rawMessages,
@@ -8224,8 +8304,8 @@
   // payload.messages can be a truncated request window, so rollback detection must
   // prefer live active-chat history and only fall back to payload when it cannot
   // shrink the previously observed snapshot.
-  async function resolveRollbackComparableMessages(sessionId, payloadMessages, currentRawUserInput) {
-    const activeChatMessages = await getCurrentActiveChatRollbackMessages();
+  async function resolveRollbackComparableMessages(sessionId, payloadMessages, currentRawUserInput, hostContext = null) {
+    const activeChatMessages = await getCurrentActiveChatRollbackMessages(sessionId, hostContext);
     const normalizedPayloadMessages = compactSnapshotMessages(payloadMessages);
     const previousSnapshot = getSessionSnapshot(sessionId);
     if (Array.isArray(activeChatMessages) && activeChatMessages.length > 0) {
@@ -8666,29 +8746,6 @@
     return updated;
   }
 
-  function runtimeInventoryHasFullCoverage() {
-    return !!(_runtimeChatSessionInventory.loaded && _runtimeChatSessionInventory.scope === "full");
-  }
-
-  function runtimeInventoryCanJudgeTrackedSession(sessionId, entry) {
-    try {
-      if (!_runtimeChatSessionInventory.loaded) return false;
-      if (_runtimeChatSessionInventory.scope === "full") return true;
-      const parsed = parseSessionDisplayIdentity(sessionId) || {};
-      const sessionCharIdx = Number.isInteger(entry && entry.charIdx)
-        ? entry.charIdx
-        : (Number.isInteger(parsed.charIdx) ? parsed.charIdx : null);
-      if (_runtimeChatSessionInventory.scope === "current_character") {
-        return Number.isInteger(sessionCharIdx)
-          && Number.isInteger(_runtimeChatSessionInventory.currentCharIdx)
-          && sessionCharIdx === _runtimeChatSessionInventory.currentCharIdx;
-      }
-      return false;
-    } catch {
-      return false;
-    }
-  }
-
   function getCachedSessionDisplayEntry(parsed) {
     loadSessionDisplayLookupCache();
     if (!parsed || !parsed.rawSessionId) return null;
@@ -8877,117 +8934,6 @@
       : meta.rawSessionId;
   }
 
-  function loadSessionDeleteLedger() {
-    if (_sessionDeleteLedger.loaded) return;
-    _sessionDeleteLedger.loaded = true;
-    const raw = safeStorageGet(SESSION_DELETE_LEDGER_KEY);
-    if (!raw) return;
-    try {
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object" && parsed.bySession && typeof parsed.bySession === "object") {
-        _sessionDeleteLedger.bySession = parsed.bySession;
-      }
-    } catch (err) {
-      warnLog("loadSessionDeleteLedger failed:", err && err.message);
-    }
-  }
-
-  function pruneSessionDeleteLedger() {
-    try {
-      const entries = Object.keys(_sessionDeleteLedger.bySession || {}).map(function(sessionId) {
-        const entry = _sessionDeleteLedger.bySession[sessionId] || {};
-        return { sessionId, lastSeenAt: Number(entry.lastSeenAt || 0), deletedNotifiedAt: Number(entry.deletedNotifiedAt || 0) };
-      });
-      if (entries.length <= SESSION_DELETE_LEDGER_MAX) return;
-      entries.sort(function(a, b) {
-        const aliveDelta = (a.deletedNotifiedAt ? 1 : 0) - (b.deletedNotifiedAt ? 1 : 0);
-        if (aliveDelta !== 0) return aliveDelta;
-        return b.lastSeenAt - a.lastSeenAt;
-      });
-      const keep = new Set(entries.slice(0, SESSION_DELETE_LEDGER_MAX).map(function(entry) { return entry.sessionId; }));
-      Object.keys(_sessionDeleteLedger.bySession || {}).forEach(function(sessionId) {
-        if (!keep.has(sessionId)) delete _sessionDeleteLedger.bySession[sessionId];
-      });
-    } catch {
-      // best-effort pruning only
-    }
-  }
-
-  function saveSessionDeleteLedger(force) {
-    try {
-      const now = Date.now();
-      _sessionDeleteLedger.lastSavedAt = now;
-      pruneSessionDeleteLedger();
-      safeStorageSet(SESSION_DELETE_LEDGER_KEY, JSON.stringify({
-        version: SESSION_DELETE_LEDGER_VERSION,
-        bySession: _sessionDeleteLedger.bySession || {},
-        savedAt: now,
-      }));
-      persistentSet(SESSION_DELETE_LEDGER_KEY, JSON.stringify({
-        version: SESSION_DELETE_LEDGER_VERSION,
-        bySession: _sessionDeleteLedger.bySession || {},
-        savedAt: now,
-      })).catch(function() {});
-    } catch (err) {
-      warnLog("saveSessionDeleteLedger failed:", err && err.message);
-    }
-  }
-
-  function recordActiveSessionForDeleteSync(sessionId, meta = {}) {
-    try {
-      const sid = String(sessionId || "").trim();
-      if (!sid || sid === SESSION_FALLBACK) return;
-      loadSessionDeleteLedger();
-      const parsed = parseSessionDisplayIdentity(sid) || {};
-      const now = Date.now();
-      const prev = _sessionDeleteLedger.bySession[sid] || {};
-      const nextCharIdx = Number.isInteger(meta.charIdx) ? meta.charIdx : (Number.isInteger(parsed.charIdx) ? parsed.charIdx : null);
-      const nextChatIdx = Number.isInteger(meta.chatIdx) ? meta.chatIdx : (Number.isInteger(parsed.chatIdx) ? parsed.chatIdx : null);
-      const nextChatUniqueId = String(meta.chatUniqueId || parsed.chatUniqueId || prev.chatUniqueId || "").trim();
-      const nextMessageCount = Number(meta.messageCount || prev.messageCount || 0);
-      const meaningfulChange = !prev.sessionId
-        || prev.charIdx !== nextCharIdx
-        || prev.chatIdx !== nextChatIdx
-        || String(prev.chatUniqueId || "") !== nextChatUniqueId
-        || Number(prev.messageCount || 0) !== nextMessageCount;
-      if (!meaningfulChange) return;
-      _sessionDeleteLedger.bySession[sid] = Object.assign({}, prev, {
-        sessionId: sid,
-        charIdx: nextCharIdx,
-        chatIdx: nextChatIdx,
-        chatUniqueId: nextChatUniqueId,
-        messageCount: nextMessageCount,
-        lastSeenAt: now,
-        source: "active_risu_chat",
-      });
-      saveSessionDeleteLedger(false);
-    } catch (err) {
-      debugLog("recordActiveSessionForDeleteSync failed:", err && err.message);
-    }
-  }
-
-  function sessionDeleteEntryHasStableChatIdentity(entry, parsed) {
-    const chatUniqueId = String((entry && entry.chatUniqueId) || (parsed && parsed.chatUniqueId) || "").trim();
-    return !!chatUniqueId;
-  }
-
-  function runtimeInventoryContainsTrackedSession(sessionId, entry) {
-    const sid = String(sessionId || "").trim();
-    if (!sid || !_runtimeChatSessionInventory.loaded) return true;
-    if (!runtimeInventoryCanJudgeTrackedSession(sid, entry)) return true;
-    const parsed = parseSessionDisplayIdentity(sid) || {};
-    if (_runtimeChatSessionInventory.byRawSessionId.has(sid)) return true;
-    const chatUniqueId = String((entry && entry.chatUniqueId) || parsed.chatUniqueId || "").trim();
-    if (chatUniqueId && _runtimeChatSessionInventory.byChatUniqueId.has(chatUniqueId)) return true;
-    if (Number.isInteger(parsed.charIdx) && Number.isInteger(parsed.chatIdx)) {
-      if (_runtimeChatSessionInventory.byRawSessionId.has("char_" + parsed.charIdx + "_chat_" + parsed.chatIdx)) return true;
-    }
-    if (entry && Number.isInteger(entry.charIdx) && Number.isInteger(entry.chatIdx)) {
-      if (_runtimeChatSessionInventory.byRawSessionId.has("char_" + entry.charIdx + "_chat_" + entry.chatIdx)) return true;
-    }
-    return false;
-  }
-
   function cleanupLocalSessionAfterBackendDelete(sessionId) {
     try {
       const sid = String(sessionId || "").trim();
@@ -9006,158 +8952,10 @@
     }
   }
 
-  async function notifyBackendSessionDeletedFromRisu(sessionId, entry, reason) {
-    const sid = String(sessionId || "").trim();
-    if (!sid || sid === SESSION_FALLBACK || _sessionDeleteNotifyInFlight.has(sid)) return false;
-    _sessionDeleteNotifyInFlight.add(sid);
-    try {
-      const result = await bridgeFetch("/sessions/" + encodeURIComponent(sid) + "?req_source=risu_plugin_chat_delete&reason=" + encodeURIComponent(reason || "risu_chat_missing"), {
-        method: "DELETE",
-        timeoutMs: 0,
-      });
-      const ok = !!(result && result.status === "ok");
-      if (ok) {
-        loadSessionDeleteLedger();
-        const stored = _sessionDeleteLedger.bySession[sid] || entry || {};
-        stored.deletedNotifiedAt = Date.now();
-        stored.deleteReason = reason || "risu_chat_missing";
-        stored.backendDeleted = result.deleted === true;
-        stored.backendSource = String(result.source || "");
-        _sessionDeleteLedger.bySession[sid] = stored;
-        saveSessionDeleteLedger(true);
-        cleanupLocalSessionAfterBackendDelete(sid);
-        updateRuntimeState("lastSessionDeleteSync", result.deleted === true ? "ok" : "skipped", {
-          detail: (result.deleted === true ? "backend session deleted: " : "backend delete shadow/skipped: ") + shortenSessionIdForDisplay(sid),
-          sessionId: sid,
-          source: result.source || "",
-        });
-        return true;
-      }
-      updateRuntimeState("lastSessionDeleteSync", "fail", {
-        detail: "backend session delete returned non-ok",
-        sessionId: sid,
-      });
-      return false;
-    } catch (err) {
-      updateRuntimeState("lastSessionDeleteSync", "error", {
-        detail: "session delete sync error: " + (err && err.message ? err.message : "unknown"),
-        sessionId: sid,
-      });
-      return false;
-    } finally {
-      _sessionDeleteNotifyInFlight.delete(sid);
-    }
-  }
-
-  async function reconcileDeletedActiveSessionsWithBackend(currentSessionId, options = {}) {
-    try {
-      _sessionDeleteLedger.lastReconcileAt = Date.now();
-      loadSessionDeleteLedger();
-      const entries = _sessionDeleteLedger.bySession || {};
-      if (Object.keys(entries).length === 0) return false;
-      await refreshSessionDisplayLookupFromRuntime();
-      if (!_runtimeChatSessionInventory.loaded) return false;
-      const currentSid = String(currentSessionId || "").trim();
-      let notified = false;
-      for (const sid of Object.keys(entries)) {
-        const entry = entries[sid] || {};
-        if (!sid || sid === SESSION_FALLBACK || entry.deletedNotifiedAt) continue;
-        if (currentSid && sid === currentSid) continue;
-        const parsed = parseSessionDisplayIdentity(sid) || {};
-        if (!sessionDeleteEntryHasStableChatIdentity(entry, parsed)) continue;
-        if (!runtimeInventoryContainsTrackedSession(sid, entry)) {
-          const ok = await notifyBackendSessionDeletedFromRisu(sid, entry, options.reason || "risu_chat_missing_from_runtime_inventory");
-          notified = notified || ok;
-        }
-      }
-      return notified;
-    } catch (err) {
-      debugLog("reconcileDeletedActiveSessionsWithBackend failed:", err && err.message);
-      return false;
-    }
-  }
-
-  async function reconcileDeletedBackendSessionsFromList(sessions, currentSessionId, options = {}) {
-    try {
-      if (!Array.isArray(sessions) || sessions.length === 0) return false;
-      _sessionDeleteLedger.lastReconcileAt = Date.now();
-      loadSessionDeleteLedger();
-      await refreshSessionDisplayLookupFromRuntime();
-      if (!runtimeInventoryHasFullCoverage()) {
-        return false;
-      }
-      const currentSid = String(currentSessionId || "").trim();
-      let notified = false;
-      for (const session of sessions) {
-        const sid = timelineSessionId(session);
-        if (!sid || sid === SESSION_FALLBACK) continue;
-        if (currentSid && sid === currentSid) continue;
-        const parsed = parseSessionDisplayIdentity(sid);
-        if (!parsed || !parsed.chatUniqueId) continue;
-        const existingLedger = _sessionDeleteLedger.bySession[sid] || {};
-        if (existingLedger.deletedNotifiedAt && existingLedger.backendDeleted === true) {
-          delete _sessionDeleteLedger.bySession[sid];
-          continue;
-        }
-        if (existingLedger.deletedNotifiedAt) continue;
-        const entry = Object.assign({}, existingLedger, {
-          sessionId: sid,
-          charIdx: parsed.charIdx,
-          chatIdx: parsed.chatIdx,
-          chatUniqueId: parsed.chatUniqueId,
-          source: "backend_session_inventory",
-          lastSeenAt: Number(existingLedger.lastSeenAt || 0) || now,
-        });
-        _sessionDeleteLedger.bySession[sid] = entry;
-        if (!runtimeInventoryContainsTrackedSession(sid, entry)) {
-          const ok = await notifyBackendSessionDeletedFromRisu(sid, entry, options.reason || "backend_session_cid_missing_from_risu_full_inventory");
-          notified = notified || ok;
-        }
-      }
-      saveSessionDeleteLedger(false);
-      return notified;
-    } catch (err) {
-      debugLog("reconcileDeletedBackendSessionsFromList failed:", err && err.message);
-      return false;
-    }
-  }
-
   function resolveRuntimeSessionLifecycle(sessionId) {
     const sid = String(sessionId || "").trim();
     if (!sid) return { status: "unknown", label: t("timeline.session.unknown"), deleted: false };
-    loadSessionDeleteLedger();
-    const ledgerEntry = _sessionDeleteLedger.bySession && _sessionDeleteLedger.bySession[sid] || null;
-    if (ledgerEntry && ledgerEntry.deletedNotifiedAt) {
-      if (ledgerEntry.backendDeleted === true || ledgerEntry.manualDbDeletedAt) {
-        delete _sessionDeleteLedger.bySession[sid];
-        saveSessionDeleteLedger(true);
-      } else {
-        return { status: "deleted", label: t("timeline.session.deleted"), deleted: true };
-      }
-    }
     const isCurrent = !!(_timelineState && _timelineState.currentSessionId && sid === _timelineState.currentSessionId);
-    const parsed = parseSessionDisplayIdentity(sid);
-    if (!_runtimeChatSessionInventory.loaded) {
-      if (isCurrent) return { status: "current", label: t("timeline.session.current"), deleted: false };
-      return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
-    }
-    if (parsed && (parsed.chatUniqueId || Number.isInteger(parsed.chatIdx))) {
-      const canJudge = runtimeInventoryCanJudgeTrackedSession(sid, ledgerEntry || parsed);
-      if (!canJudge) {
-        return isCurrent
-          ? { status: "current", label: t("timeline.session.current"), deleted: false }
-          : { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
-      }
-      if (_runtimeChatSessionInventory.byRawSessionId.has(sid)) {
-        if (isCurrent) return { status: "current", label: t("timeline.session.current"), deleted: false };
-        return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
-      }
-      if (parsed.chatUniqueId && _runtimeChatSessionInventory.byChatUniqueId.has(parsed.chatUniqueId)) {
-        if (isCurrent) return { status: "current", label: t("timeline.session.current"), deleted: false };
-        return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
-      }
-      return { status: "deleted", label: t("timeline.session.deleted"), deleted: true };
-    }
     if (isCurrent) return { status: "current", label: t("timeline.session.current"), deleted: false };
     return { status: "inactive", label: t("timeline.session.inactive"), deleted: false };
   }
@@ -9221,27 +9019,25 @@
       : await getActiveChatSessionIdentity(coords.charIdx, coords.chatIdx);
     const stableCharacterId = String(identity && identity.stableCharacterId || "").trim();
     const hostChatId = String(identity && identity.chatUniqueId || "").trim();
-    let canonicalSessionId = requestedSessionId;
-    let bindingAcknowledged = false;
-
-    if (stableCharacterId && hostChatId) {
-      const resolution = await requestBackendSessionRoutingTurnResolution(requestedSessionId, "identity", {
-        stableCharacterId,
-        stableCharacterIdState: "observed",
-        hostChatId,
-        hostChatIdState: "observed",
-        bindRequestedSession: true,
-        bindingMode: String(bindingMode || "manual_attach"),
-        latestUserHash: String(identity.latestUserHash || ""),
-        latestAssistantHash: String(identity.latestAssistantHash || ""),
-        visibleCompletedTurns: Number(identity.completedTurnCount || 0),
-      });
-      if (!resolution || resolution.bindingAcknowledged !== true || !resolution.canonicalSessionId) {
-        throw new Error("session_route_binding_readback_unverified");
-      }
-      canonicalSessionId = String(resolution.canonicalSessionId);
-      bindingAcknowledged = true;
+    if (!stableCharacterId || !hostChatId) {
+      throw new Error("session_route_identity_unobserved");
     }
+    const resolution = await requestBackendSessionRoutingTurnResolution(requestedSessionId, "identity", {
+      stableCharacterId,
+      stableCharacterIdState: "observed",
+      hostChatId,
+      hostChatIdState: "observed",
+      bindRequestedSession: true,
+      bindingMode: String(bindingMode || "manual_attach"),
+      latestUserHash: String(identity.latestUserHash || ""),
+      latestAssistantHash: String(identity.latestAssistantHash || ""),
+      visibleCompletedTurns: Number(identity.completedTurnCount || 0),
+    });
+    if (!resolution || resolution.bindingAcknowledged !== true || !resolution.canonicalSessionId) {
+      throw new Error("session_route_binding_readback_unverified");
+    }
+    const canonicalSessionId = String(resolution.canonicalSessionId);
+    const bindingAcknowledged = true;
     const pinSaved = await savePinnedSessionId(
       coords.charIdx,
       coords.chatIdx,
@@ -9393,15 +9189,6 @@
         latestAssistantHash: activeChatIdentity.latestAssistantHash,
         completedTurnCount: activeChatIdentity.completedTurnCount,
       };
-      recordActiveSessionForDeleteSync(sessionId, {
-        charIdx,
-        chatIdx,
-        chatUniqueId,
-        messageCount: activeChatIdentity.messageCount,
-      });
-      reconcileDeletedActiveSessionsWithBackend(sessionId, { reason: "active_session_resolution" }).catch(function(err) {
-        debugLog("session delete reconcile after session resolution failed:", err && err.message);
-      });
       return sessionId;
     } catch (err) {
       warnLog("getCurrentChatSessionId failed:", err.message);
@@ -9452,12 +9239,6 @@
         const pinSaved = await savePinnedSessionId(charIdx, chatIdx, sid, chatUniqueId, stableCharacterId);
         if (!pinSaved) throw new Error("session_pin_readback_unverified");
         _sessionCache = { charIdx, chatIdx, sessionId: sid, stableCharacterId, observedChatUniqueId: chatUniqueId };
-        recordActiveSessionForDeleteSync(sid, {
-          charIdx,
-          chatIdx,
-          chatUniqueId,
-          messageCount: activeChatIdentity.messageCount,
-        });
         return sid;
       }
 
@@ -10688,9 +10469,9 @@
     return sanitizeEnumValue(value, fallback, EMBEDDING_PROVIDER_OPTIONS);
   }
 
-  async function getCurrentActiveChatSourceObservationMessages(sessionId) {
+  async function getCurrentActiveChatSourceObservationMessages(sessionId, hostContext = null) {
     try {
-      const resolved = await resolveCurrentActiveChatObject(sessionId || "");
+      const resolved = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
       const rawMessages = resolved && resolved.chat ? extractActiveChatMessageList(resolved.chat) : [];
       return rawMessages.map(function(raw, messageIndex) {
         if (!raw || typeof raw !== "object") return null;
@@ -15543,7 +15324,7 @@
     };
   }
 
-  async function observePrepareTurnBootstrap(sessionId, requestId, activeChatMessages, chatId) {
+  async function observePrepareTurnBootstrap(sessionId, requestId, activeChatMessages, chatId, hostContext = null) {
     const leadingMessages = [];
     const active = Array.isArray(activeChatMessages) ? activeChatMessages : [];
     for (let index = 0; index < active.length; index++) {
@@ -15559,7 +15340,7 @@
     let firstGreeting = null;
     let alternateGreetings = [];
     try {
-      const activeChatResult = await resolveCurrentActiveChatObject(sessionId || "");
+      const activeChatResult = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
       const activeChat = activeChatResult && activeChatResult.chat;
       const nested = activeChat && activeChat.data && typeof activeChat.data === "object" ? activeChat.data : null;
       const rawIndex = activeChat ? Number(activeChat.fmIndex != null ? activeChat.fmIndex : (nested && nested.fmIndex)) : NaN;
@@ -15567,18 +15348,25 @@
         selectedGreetingIndex = rawIndex;
         selectionExposed = true;
       }
-      if (R && typeof R.getCharacter === "function") {
-        const character = await R.getCharacter();
-        if (character && typeof character === "object") {
-          const rawFirst = character.firstMessage != null ? character.firstMessage
-            : (character.first_message != null ? character.first_message
-              : (character.firstMes != null ? character.firstMes : character.first_mes));
-          if (rawFirst != null) firstGreeting = String(rawFirst);
-          const rawAlternates = Array.isArray(character.alternateGreetings)
-            ? character.alternateGreetings
-            : (Array.isArray(character.alternate_greetings) ? character.alternate_greetings : []);
-          alternateGreetings = rawAlternates.map(function(value) { return String(value == null ? "" : value); });
-        }
+      let character = null;
+      const capturedCharIdx = hostContext && Number.isInteger(hostContext.charIdx)
+        ? hostContext.charIdx
+        : null;
+      const characters = getRisuCharacterListSnapshot();
+      if (Number.isInteger(capturedCharIdx) && Array.isArray(characters)) {
+        character = characters[capturedCharIdx] || null;
+      } else if (R && typeof R.getCharacter === "function") {
+        character = await R.getCharacter();
+      }
+      if (character && typeof character === "object") {
+        const rawFirst = character.firstMessage != null ? character.firstMessage
+          : (character.first_message != null ? character.first_message
+            : (character.firstMes != null ? character.firstMes : character.first_mes));
+        if (rawFirst != null) firstGreeting = String(rawFirst);
+        const rawAlternates = Array.isArray(character.alternateGreetings)
+          ? character.alternateGreetings
+          : (Array.isArray(character.alternate_greetings) ? character.alternate_greetings : []);
+        alternateGreetings = rawAlternates.map(function(value) { return String(value == null ? "" : value); });
       }
     } catch {
       // Host capability remains honestly unexposed; Go owns the decision.
@@ -15610,12 +15398,12 @@
     return result;
   }
 
-  async function observeLorebookReferenceScope(sessionId) {
-    let characterIndex = null;
-    let chatIndex = null;
+  async function observeLorebookReferenceScope(sessionId, hostContext = null) {
+    let characterIndex = hostContext && Number.isInteger(hostContext.charIdx) ? hostContext.charIdx : null;
+    let chatIndex = hostContext && Number.isInteger(hostContext.chatIdx) ? hostContext.chatIdx : null;
     let enabledModuleIds = [];
     let enabledModulesObserved = false;
-    if (R && typeof R.getCurrentCharacterIndex === "function") {
+    if (characterIndex == null && R && typeof R.getCurrentCharacterIndex === "function") {
       try {
         const value = await R.getCurrentCharacterIndex();
         if (value !== null && value !== undefined && String(value).trim() !== "" && Number.isInteger(Number(value)) && Number(value) >= 0) {
@@ -15623,7 +15411,7 @@
         }
       } catch { characterIndex = null; }
     }
-    if (R && typeof R.getCurrentChatIndex === "function") {
+    if (chatIndex == null && R && typeof R.getCurrentChatIndex === "function") {
       try {
         const value = await R.getCurrentChatIndex();
         if (value !== null && value !== undefined && String(value).trim() !== "" && Number.isInteger(Number(value)) && Number(value) >= 0) {
@@ -15744,7 +15532,8 @@
 
   async function syncCurrentLorebookReference(options = {}) {
     const sessionId = String(options.sessionId || await getCurrentChatSessionId() || SESSION_FALLBACK).trim() || SESSION_FALLBACK;
-    const scope = await observeLorebookReferenceScope(sessionId);
+    const hostContext = options.hostContext || captureSessionHostContextFromCache(sessionId);
+    const scope = await observeLorebookReferenceScope(sessionId, hostContext);
     const scopeKey = lorebookReferenceScopeKey(scope);
     _lorebookReferenceSync.lastScope = scope;
     const force = options.force === true;
@@ -15760,6 +15549,16 @@
         updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "official_lorebook_api_not_exposed", itemCount: 0 });
         return { status: "unavailable", scope };
       }
+      if (!await capturedSessionIsCurrentlyActive(sessionId, hostContext)) {
+        if (_lorebookReferenceSync.attemptedScopeKey === scopeKey) {
+          _lorebookReferenceSync.attemptedScopeKey = "";
+        }
+        updateRuntimeState("lastLorebookReferenceSync", "warn", {
+          detail: "lorebook_observation_deferred_session_changed",
+          itemCount: 0,
+        });
+        return { status: "deferred", reason: "session_changed_before_lorebook_read", scope };
+      }
       let entries;
       try {
         entries = await R.getCurrentLorebookEntries();
@@ -15767,6 +15566,16 @@
         await postLorebookReferenceSnapshot(scope, { observation_state: "unavailable" });
         updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_read_failed: " + String(err && err.message || err), itemCount: 0 });
         return { status: "unavailable", scope };
+      }
+      if (!await capturedSessionIsCurrentlyActive(sessionId, hostContext)) {
+        if (_lorebookReferenceSync.attemptedScopeKey === scopeKey) {
+          _lorebookReferenceSync.attemptedScopeKey = "";
+        }
+        updateRuntimeState("lastLorebookReferenceSync", "warn", {
+          detail: "lorebook_observation_deferred_session_changed",
+          itemCount: 0,
+        });
+        return { status: "deferred", reason: "session_changed_during_lorebook_read", scope };
       }
       if (!Array.isArray(entries)) {
         await postLorebookReferenceSnapshot(scope, { observation_state: "unavailable" });
@@ -15802,7 +15611,7 @@
       const freshFirstTurnLightMode = !!prepareOptions.freshFirstTurnLightMode;
       const prepareInjectionBudget = estimateAdaptiveInjectionBudgetParts(settings, prepareOptions.runtimeTokenInfo || null);
       const guideDisabled = normalizeNarrativeGuideStrength(settings.narrativeGuideStrength) === "none";
-      await syncCurrentLorebookReference({ sessionId });
+      await syncCurrentLorebookReference({ sessionId, hostContext: prepareOptions.hostContext || null });
       const requestedGuideMode = guideDisabled
         ? "off"
         : String(settings.narrativeGuideMode || "auto");
@@ -15891,7 +15700,7 @@
           body.output_language_override = normalizedLanguageContext.output_language_override;
         }
       }
-      body.client_meta.risu_persona_observation = await observeRisuPersona();
+      body.client_meta.risu_persona_observation = await observeRisuPersona(sessionId, prepareOptions.hostContext || null);
       body.client_meta.risu_request_observation = buildRisuRequestObservation(
         type,
         "beforeRequest",
@@ -18763,20 +18572,28 @@
     return recoveryTransition;
   }
 
-  async function captureFinalConfirmationRequestContext(sessionId, type, requestId) {
+  async function captureFinalConfirmationRequestContext(sessionId, type, requestId, hostContext = null) {
     const sid = String(sessionId || "").trim();
     if (!sid || !settings.enabled || !isSaveType(type) || !R) return null;
+    const hasCapturedCoordinates = !!(
+      hostContext
+      && Number.isInteger(hostContext.charIdx)
+      && Number.isInteger(hostContext.chatIdx)
+    );
     if (
-      typeof R.getCurrentCharacterIndex !== "function"
-      || typeof R.getCurrentChatIndex !== "function"
-      || typeof R.getChatFromIndex !== "function"
+      typeof R.getChatFromIndex !== "function"
+      || (!hasCapturedCoordinates && (
+        typeof R.getCurrentCharacterIndex !== "function"
+        || typeof R.getCurrentChatIndex !== "function"
+      ))
     ) {
       return null;
     }
     try {
-      const characterIndex = await R.getCurrentCharacterIndex();
-      const chatIndex = await R.getCurrentChatIndex();
-      const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+      const resolved = await resolveCurrentActiveChatObject(sid, hostContext);
+      const characterIndex = resolved.charIdx;
+      const chatIndex = resolved.chatIdx;
+      const chat = resolved.chat;
       if (!chat || !Array.isArray(chat.message)) return null;
       const previousContext = _finalConfirmationRequestBySession.get(sid) || null;
       if (
@@ -19019,9 +18836,35 @@
       const hostChatId = String(chat && chat.id || "").trim();
       if (!messages) return;
 
+      // The official output listener supplies coordinates captured for the
+      // chat that actually received the committed output. Match that immutable
+      // owner directly instead of consulting whichever chat is visible now.
+      let committedRequestContext = null;
+      for (const requestContext of _finalConfirmationRequestBySession.values()) {
+        if (!requestContext || (requestContext.state !== "captured" && requestContext.state !== "candidate_observed")) continue;
+        if (
+          Number(requestContext.characterIndex) === characterIndex
+          && Number(requestContext.chatIndex) === chatIndex
+          && String(requestContext.hostChatId || "") === hostChatId
+        ) {
+          committedRequestContext = requestContext;
+          break;
+        }
+      }
+      if (committedRequestContext) {
+        Promise.resolve().then(function persistFrozenCommittedOutput() {
+          return observePendingFinalConfirmationAtHostSignal(
+            committedRequestContext.sessionId,
+            "output",
+            snapshot
+          );
+        }).catch(function reportCommittedOutputFailure(err) {
+          warnLog("onRisuOutput final persistence failed:", err && err.message);
+        });
+      }
+
       // Freeze the exact Host marker/source facts before dispatch. The output
-      // hook observes worldline shape only; it does not prove displayed
-      // finality and never schedules complete-turn persistence.
+      // hook also transports branch marker facts, independently of turn save.
       const worldlineObservation = buildRisuWorldlineObservationFromMessages(messages, Date.now(), "output");
       if (!worldlineObservation) return;
       _risuHookLifecycle.output = "callback_observed";
@@ -19081,9 +18924,7 @@
       || requestContext.requestType !== requestType
       || !correlationId
       || pendingCorrelationMismatch
-      || (pendingContext && pendingContext.orchResult && pendingContext.orchResult !== lastOrchResult)
     ) {
-      requestContext.state = "terminal";
       return { observed: false, reason: "after_request_correlation_mismatch" };
     }
     const finalContent = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
@@ -19174,7 +19015,7 @@
 
   // The adapter validates only host facts. Go owns source acceptance, logical-turn
   // binding, revision replacement, deletion fences, and all persistence.
-  function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource) {
+  function observePendingFinalConfirmationAtHostSignal(sessionId, signalSource, hostSnapshot = null) {
     const sid = String(sessionId || "").trim();
     const requestContext = _finalConfirmationRequestBySession.get(sid) || null;
     if (!requestContext) return Promise.resolve({ accepted: false, reason: "request_context_missing" });
@@ -19189,17 +19030,21 @@
     requestContext.state = "observing_host_signal";
     const observationPromise = (async function observeCommittedAssistant() {
       try {
-        if (
-          !R
-          || typeof R.getCurrentCharacterIndex !== "function"
-          || typeof R.getCurrentChatIndex !== "function"
-          || typeof R.getChatFromIndex !== "function"
-        ) {
+        const snapshotChat = hostSnapshot && hostSnapshot.chat && typeof hostSnapshot.chat === "object"
+          ? hostSnapshot.chat
+          : null;
+        const snapshotCharacterIndex = Number.isInteger(hostSnapshot && hostSnapshot.characterIndex)
+          ? hostSnapshot.characterIndex
+          : null;
+        const snapshotChatIndex = Number.isInteger(hostSnapshot && hostSnapshot.chatIndex)
+          ? hostSnapshot.chatIndex
+          : null;
+        if (!snapshotChat && (!R || typeof R.getChatFromIndex !== "function")) {
           requestContext.state = priorState;
           return { accepted: false, reason: "active_chat_api_not_exposed" };
         }
-        const characterIndex = await R.getCurrentCharacterIndex();
-        const chatIndex = await R.getCurrentChatIndex();
+        const characterIndex = snapshotChat ? snapshotCharacterIndex : Number(requestContext.characterIndex);
+        const chatIndex = snapshotChat ? snapshotChatIndex : Number(requestContext.chatIndex);
         if (
           Number(characterIndex) !== Number(requestContext.characterIndex)
           || Number(chatIndex) !== Number(requestContext.chatIndex)
@@ -19207,7 +19052,7 @@
           requestContext.state = priorState;
           return { accepted: false, reason: "host_signal_for_different_chat" };
         }
-        const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+        const chat = snapshotChat || await R.getChatFromIndex(characterIndex, chatIndex);
         const messages = chat && Array.isArray(chat.message) ? chat.message : null;
         if (!messages) {
           requestContext.state = priorState;
@@ -19387,10 +19232,20 @@
           hash: computeOrchestrationDirtyHashOr1c(userContent + "\n---assistant---\n" + assistantContent),
           source: "risu_next_host_signal_active_chat",
         };
+        const pendingOrchContext = _pendingOrchBySession.get(sid) || null;
+        const pendingOrchResult = pendingOrchContext && pendingOrchContext.orchResult || null;
         Promise.resolve().then(function persistAcceptedHostFinalWithoutBlockingRequest() {
           return backfillOneActiveChatCompletedTurn(sid, pair, {
             source: "risu_next_host_signal_active_chat",
             sourceAcceptanceFinality: observation,
+            orchestrationResult: pendingOrchResult,
+            improvementTrace: pendingOrchResult && pendingOrchResult._improvementTrace || null,
+            hostContext: {
+              sessionId: sid,
+              charIdx: Number(requestContext.characterIndex),
+              chatIdx: Number(requestContext.chatIndex),
+              hostChatId: String(requestContext.hostChatId || ""),
+            },
           });
         }).then(function(result) {
           const durable = !!(result && (
@@ -19403,6 +19258,12 @@
             && requestContext.acceptedObservationKey === observationKey) {
             requestContext.state = "candidate_observed";
             requestContext.acceptedObservationKey = "";
+          }
+          if (durable && _pendingOrchBySession.get(sid) === pendingOrchContext) {
+            _pendingOrchBySession.delete(sid);
+          }
+          if (durable && lastOrchResult === pendingOrchResult) {
+            lastOrchResult = null;
           }
           updateRuntimeState("lastStreamingAfterRequest", durable ? "ok" : "warn", {
             detail: "host final persistence " + String(result && result.status || "unknown"),
@@ -20633,7 +20494,7 @@
       if (detection.shouldRollback) {
         _lastAutoRollbackSkipSignature = null;
         debugLog("Auto-rollback detected:", detection.reason, detection.detail);
-        const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId);
+        const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId, options.hostContext || null);
         const success = resolvedActiveChat && resolvedActiveChat.chat
           ? await reconcileActiveChatTailDeletionWithBackend(sessionId, resolvedActiveChat.chat, {
               reason: detection.reason,
@@ -20882,25 +20743,25 @@
     }
   }
 
-  async function reconcileRollbackFromHostSignal() {
+  async function reconcileRollbackFromHostSignal(sessionId = "", hostContext = null) {
     if (_rollbackHostSignalReconcilePromise) return _rollbackHostSignalReconcilePromise;
     if (!settings.enabled || !settings.rollbackAutoEnabled || !R || typeof R.getCharacter !== "function") {
       return false;
     }
     const reconcilePromise = (async function reconcileObservedHostRollback() {
-      const sessionId = await getCurrentChatSessionId();
-      if (!sessionId) return false;
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId);
+      const fixedSessionId = String(sessionId || await getCurrentChatSessionId() || "").trim();
+      if (!fixedSessionId) return false;
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatRollbackMessages(resolvedActiveChat.chat) : [];
       if (!resolvedActiveChat.chat || !Array.isArray(messages)) return false;
       const watcherSignature = [
         messages.length,
         computeTailHash(messages),
       ].join("|");
-      const previousWatcherSignature = _rollbackHostSignalLastSignatureBySession.get(sessionId || "default");
+      const previousWatcherSignature = _rollbackHostSignalLastSignatureBySession.get(fixedSessionId || "default");
       if (previousWatcherSignature === watcherSignature) return false;
-      _rollbackHostSignalLastSignatureBySession.set(sessionId || "default", watcherSignature);
-      await checkAndAutoRollback(sessionId, messages);
+      _rollbackHostSignalLastSignatureBySession.set(fixedSessionId || "default", watcherSignature);
+      await checkAndAutoRollback(fixedSessionId, messages, { hostContext });
       return true;
     })();
     _rollbackHostSignalReconcilePromise = reconcilePromise;
@@ -27855,11 +27716,11 @@
     }
   }
 
-  async function captureAssistantPrefillSeedForSession(sessionId, requestMessages) {
+  async function captureAssistantPrefillSeedForSession(sessionId, requestMessages, hostContext = null) {
     try {
       const key = String(sessionId || "").trim();
       if (!key) return null;
-      const activeChatMessages = await getCurrentActiveChatComparableMessages();
+      const activeChatMessages = await getCurrentActiveChatComparableMessages(key, hostContext);
       const seedRecord = buildAssistantPrefillSeedRecord(requestMessages, activeChatMessages);
       return rememberAssistantPrefillSeedForSession(key, seedRecord);
     } catch {
@@ -27948,9 +27809,9 @@
     }
   }
 
-  async function recoverAssistantContentFromActiveChat(chatSessionId, seedRecord, expectedUserContent) {
+  async function recoverAssistantContentFromActiveChat(chatSessionId, seedRecord, expectedUserContent, hostContext = null) {
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "");
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       if (!Array.isArray(messages) || messages.length === 0) return "";
 
@@ -27996,9 +27857,9 @@
     }
   }
 
-  async function recoverUserInputFromActiveChatPair(chatSessionId, assistantContent) {
+  async function recoverUserInputFromActiveChatPair(chatSessionId, assistantContent, hostContext = null) {
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "");
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       if (!Array.isArray(pairs) || pairs.length === 0) return "";
@@ -28021,9 +27882,9 @@
     }
   }
 
-  async function recoverCurrentUserInputFromActiveChatTail(chatSessionId) {
+  async function recoverCurrentUserInputFromActiveChatTail(chatSessionId, hostContext = null) {
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "");
+      const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       if (!Array.isArray(messages) || messages.length === 0) return "";
       for (let i = messages.length - 1; i >= 0; i--) {
@@ -28149,7 +28010,7 @@
     }
   }
 
-  async function resolveRuntimeOutputLanguageOverride() {
+  async function resolveRuntimeOutputLanguageOverride(sessionId = "", hostContext = null) {
     try {
       var globalObj = typeof globalThis !== "undefined"
         ? globalThis
@@ -28159,7 +28020,7 @@
       var valueSource = "";
 
       try {
-        var activeChatResult = await resolveCurrentActiveChatObject("");
+        var activeChatResult = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
         var activeChat = activeChatResult && activeChatResult.chat;
         var savedToggleValues = activeChat && typeof activeChat.savedToggleValues === "object"
           ? activeChat.savedToggleValues
@@ -28295,7 +28156,9 @@
   async function buildLanguageContextTrace(options) {
     try {
       var opts = options && typeof options === "object" ? options : {};
-      var explicitOverride = Object.prototype.hasOwnProperty.call(opts, "outputLanguageOverride") ? opts.outputLanguageOverride : await resolveRuntimeOutputLanguageOverride();
+      var explicitOverride = Object.prototype.hasOwnProperty.call(opts, "outputLanguageOverride")
+        ? opts.outputLanguageOverride
+        : await resolveRuntimeOutputLanguageOverride(opts.sessionId || "", opts.hostContext || null);
       var explicitCode = normalizeLanguageCodeForTrace(explicitOverride, "");
       if (explicitCode === "auto" || explicitCode === "unknown") explicitCode = "";
       var assistantOutputLanguage = detectTextLanguageForTrace(opts.assistantContent || "");
@@ -28423,11 +28286,11 @@
     }
   }
 
-  async function notifyTurnComplete(turnIndex, turnContent, contextMessages, chatSessionId) {
+  async function notifyTurnComplete(turnIndex, turnContent, contextMessages, chatSessionId, hostContext = null) {
     if (!settings.enabled || !settings.dbEnabled) return;
     const rawSessionId = chatSessionId || await getCurrentChatSessionId();
     const sessionId = await resolveCanonicalWriteSessionId(rawSessionId, { stage: "turn_complete" });
-    const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
+    const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride(sessionId, hostContext);
     const body = {
       turn_index: typeof turnIndex === "number" ? turnIndex : 0,
       turn_content: String(turnContent || ""),
@@ -28453,11 +28316,11 @@
   }
 
   /** notifyTurnComplete 와 동일하지만 result 를 호출자에 반환 */
-  async function notifyTurnCompleteWithResult(turnIndex, turnContent, contextMessages, chatSessionId) {
+  async function notifyTurnCompleteWithResult(turnIndex, turnContent, contextMessages, chatSessionId, hostContext = null) {
     if (!settings.enabled || !settings.dbEnabled) return null;
     const rawSessionId = chatSessionId || await getCurrentChatSessionId();
     const sessionId = await resolveCanonicalWriteSessionId(rawSessionId, { stage: "turn_complete_result" });
-    const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
+    const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride(sessionId, hostContext);
     const body = {
       turn_index: typeof turnIndex === "number" ? turnIndex : 0,
       turn_content: String(turnContent || ""),
@@ -28566,7 +28429,10 @@
       revision_state: "not_exposed_by_risuai",
     };
     try {
-      const resolved = await resolveCurrentActiveChatObject(chatSessionId || "");
+      const resolved = await resolveCurrentActiveChatObject(
+        chatSessionId || "",
+        options && options.hostContext || null
+      );
       const chat = resolved && resolved.chat && typeof resolved.chat === "object" ? resolved.chat : null;
       if (!chat || !Array.isArray(chat.message)) return observation;
       const messages = chat.message;
@@ -28671,7 +28537,7 @@
     return observation;
   }
 
-  async function observeRisuPersona() {
+  async function observeRisuPersona(sessionId = "", hostContext = null) {
     const unobserved = function(reason) {
       return {
         contract_version: "risu_persona_observation.v1",
@@ -28692,16 +28558,9 @@
       }
       const personas = Array.isArray(db.personas) ? db.personas : [];
       let boundPersonaID = "";
-      if (
-        typeof R.getCurrentCharacterIndex === "function" &&
-        typeof R.getCurrentChatIndex === "function" &&
-        typeof R.getChatFromIndex === "function"
-      ) {
-        const [characterIndex, chatIndex] = await Promise.all([
-          R.getCurrentCharacterIndex(),
-          R.getCurrentChatIndex(),
-        ]);
-        const chat = await R.getChatFromIndex(characterIndex, chatIndex);
+      if (typeof R.getChatFromIndex === "function") {
+        const resolved = await resolveCurrentActiveChatObject(sessionId, hostContext);
+        const chat = resolved.chat;
         boundPersonaID = String((chat && chat.bindedPersona) || "").trim();
       }
       const selectedIndex = Number(db.selectedPersona);
@@ -28784,12 +28643,15 @@
 
   async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions) {
     try {
-      const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride();
+      const requestHostContext = sourceObservationOptions && sourceObservationOptions.hostContext || null;
+      const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride(chatSessionId, requestHostContext);
       const languageContext = await buildLanguageContextTrace({
         userInput,
         assistantContent,
         messages: contextMessages,
         outputLanguageOverride,
+        sessionId: chatSessionId,
+        hostContext: requestHostContext,
         stage: "complete_turn",
       });
       const actualEmptyUserInput = String(userInput || "") === AUTO_CONTINUE_USER_INPUT_MARKER;
@@ -28798,7 +28660,10 @@
         assistantContent,
         Object.assign({}, sourceObservationOptions || {}, { userInput: String(userInput || "") })
       );
-      const risuPersonaObservation = await observeRisuPersona();
+      const risuPersonaObservation = await observeRisuPersona(
+        chatSessionId,
+        sourceObservationOptions && sourceObservationOptions.hostContext || null
+      );
       const lineageOrchestrationResult = sourceObservationOptions
         && Object.prototype.hasOwnProperty.call(sourceObservationOptions, "orchestrationResult")
         ? sourceObservationOptions.orchestrationResult
@@ -29033,10 +28898,15 @@
       let activePair = await findActiveChatCompletedTurnPairForContent(
         payload.chat_session_id,
         payload.user_input,
-        observedAssistantContent
+        observedAssistantContent,
+        options.hostContext || null
       );
       if (!activePair) {
-        const userPair = await findActiveChatCompletedTurnPairForUserContent(payload.chat_session_id, payload.user_input);
+        const userPair = await findActiveChatCompletedTurnPairForUserContent(
+          payload.chat_session_id,
+          payload.user_input,
+          options.hostContext || null
+        );
         if (userPair && userPair.assistantContent) {
           activePair = userPair;
         }
@@ -29474,8 +29344,10 @@
       const _actStages = {};
       let _stageStart = _actStarted;
 
-      // Resolve session ID once for this turn
-      const chatSessionId = await getCurrentChatSessionId();
+      // The caller captures the request owner at beforeRequest entry. Never
+      // re-resolve it from the chat that happens to be visible later.
+      const chatSessionId = String(orchestrationOptions.chatSessionId || "").trim()
+        || await getCurrentChatSessionId();
       const predictedTurnIndex = peekNextTurnIndex(chatSessionId);
       trace.chatSessionId = chatSessionId;
       debugLog("session:", chatSessionId, continuityInfo ? "(continuity trigger: " + (continuityInfo.triggerMode || "unknown") + ")" : "");
@@ -32532,14 +32404,14 @@
     }
   }
 
-  async function recoverBeforeRequestMessagesForRead(sessionId) {
+  async function recoverBeforeRequestMessagesForRead(sessionId, hostContext = null) {
     const empty = { messages: [], source: "none" };
     try {
       const sid = String(sessionId || "").trim();
       let activeMessages = [];
       let activeSource = "";
       try {
-        const resolved = await resolveCurrentActiveChatObject(sid);
+        const resolved = await resolveCurrentActiveChatObject(sid, hostContext);
         if (resolved && resolved.chat) {
           activeMessages = normalizeMessagesForOrchestration(extractActiveChatComparableMessages(resolved.chat), 30);
           activeSource = resolved.source || "active_chat";
@@ -32575,7 +32447,7 @@
       }
 
       try {
-        const tail = await recoverCurrentUserInputFromActiveChatTail(sid);
+        const tail = await recoverCurrentUserInputFromActiveChatTail(sid, hostContext);
         if (tail && !shouldSkipUserInputPersistence(tail) && !isMetaPromptLikeMessage(tail)) {
           return {
             messages: [{ role: "user", content: String(tail || "").trim() }],
@@ -32749,6 +32621,7 @@
 
   async function onBeforeRequest(payload, type) {
     let orchSessionId = null;
+    let orchHostContext = null;
     let orchestrationDirtySignals = null;
     let orchestrationCacheDescriptor = null;
     try {
@@ -32767,7 +32640,8 @@
       if (payloadComparableMessageCount === 0) {
         if (isSaveType(type)) {
           orchSessionId = await resolveCanonicalWriteSessionId(await getCurrentChatSessionId(), { stage: "before_request" });
-          const recoveredMessages = await recoverBeforeRequestMessagesForRead(orchSessionId);
+          orchHostContext = captureSessionHostContextFromCache(orchSessionId);
+          const recoveredMessages = await recoverBeforeRequestMessagesForRead(orchSessionId, orchHostContext);
           if (recoveredMessages && Array.isArray(recoveredMessages.messages) && recoveredMessages.messages.length > 0) {
             messages = recoveredMessages.messages;
             payloadComparableMessageCount = normalizeMessagesForOrchestration(messages, 30).length;
@@ -32797,15 +32671,18 @@
       if (!orchSessionId) {
         orchSessionId = await resolveCanonicalWriteSessionId(await getCurrentChatSessionId(), { stage: "before_request" });
       }
+      if (!orchHostContext) {
+        orchHostContext = captureSessionHostContextFromCache(orchSessionId);
+      }
       let mainRequestActiveMessages = [];
       try {
-        mainRequestActiveMessages = await getCurrentActiveChatSourceObservationMessages(orchSessionId);
+        mainRequestActiveMessages = await getCurrentActiveChatSourceObservationMessages(orchSessionId, orchHostContext);
       } catch {
         mainRequestActiveMessages = [];
       }
       const orchRequestId = makeOrchRequestId(orchSessionId);
       primeTurnWorkflowHUD(orchRequestId);
-      await reconcileRollbackFromHostSignal();
+      await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext);
       // Observe/capture at the supported host callback boundary even when the
       // backend prepare lane later fails open. Only this bounded snapshot work is
       // awaited; complete-turn/critic persistence remains fire-and-forget.
@@ -32814,13 +32691,16 @@
         "beforeRequest"
       );
       if (!priorHostFinal || priorHostFinal.accepted !== true) {
-        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, { reason: "before_request" }).catch(function(err) {
+        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
+          reason: "before_request",
+          hostContext: orchHostContext,
+        }).catch(function(err) {
           debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
       }
 
-     await captureAssistantPrefillSeedForSession(orchSessionId, messages);
-      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId);
+     await captureAssistantPrefillSeedForSession(orchSessionId, messages, orchHostContext);
+      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
       if (postOutputReplacement && !rawInputObservation) {
@@ -32865,6 +32745,7 @@
         orchRequestId,
         mainRequestActiveMessages,
         observedChatId,
+        orchHostContext,
       );
       const observedActiveChat = Array.isArray(hostObservations.active_chat) ? hostObservations.active_chat : [];
       const activeTailObservation = observedActiveChat.length
@@ -32889,6 +32770,7 @@
         activeTailIsUser,
       );
       const sourceDecisionResult = await tryPrepareTurn(orchSessionId, "", messages, null, type, null, {
+        hostContext: orchHostContext,
         sourceDecisionOnly: true,
         sourceObservation: prepareSourceObservations.sourceObservation,
         capabilityObservation: prepareSourceObservations.capabilityObservation,
@@ -32922,10 +32804,11 @@
 
       // Sprint 3-E-2: compare visible RisuAI history after source validation and before full prepare/supervisor.
       try {
-        const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages, userInput);
+        const rollbackComparable = await resolveRollbackComparableMessages(orchSessionId, messages, userInput, orchHostContext);
         if (rollbackComparable.messages) {
           await checkAndAutoRollback(orchSessionId, rollbackComparable.messages, {
             hostLifecycleObservation: "before_request_observed",
+            hostContext: orchHostContext,
           });
         } else if (settings.debug) {
           debugLog(
@@ -33004,6 +32887,8 @@
       const turnLanguageContext = await buildLanguageContextTrace({
         userInput,
         messages: mainRequestActiveMessages,
+        sessionId: orchSessionId,
+        hostContext: orchHostContext,
         stage: "beforeRequest",
       });
 
@@ -33022,7 +32907,7 @@
       const routingBaseline = getSessionRoutingTurnBaseline(orchSessionId);
       const routingBaselineBackendTurn = Number(routingBaseline && routingBaseline.backendTurnAtRoute || 0);
       const activeCompletedPairs = await safeCall(
-        () => resolveActiveChatCompletedTurnsForRoutingBaseline(orchSessionId),
+        () => resolveActiveChatCompletedTurnsForRoutingBaseline(orchSessionId, orchHostContext),
         0,
         "freshFirstTurnLightMode.activePairs"
       );
@@ -33046,6 +32931,7 @@
       }
 
       const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {
+        hostContext: orchHostContext,
         freshFirstTurnLightMode,
         freshFirstTurnLightModeMeta,
         runtimeTokenInfo,
@@ -33189,6 +33075,8 @@
         lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext, {
           freshFirstTurnLightMode,
           freshFirstTurnLightModeMeta,
+          chatSessionId: orchSessionId,
+          hostContext: orchHostContext,
         });
       } catch (orchErr) {
         const failedPending = _pendingOrchBySession.get(orchSessionId);
@@ -33490,6 +33378,7 @@
         rawInputObservation,
         recentContext,
         orchResult: lastOrchResult,
+        hostContext: orchHostContext,
         cacheDescriptor: orchestrationCacheDescriptor,
         sourceLineageAmbiguous: !!sourceLineageOverlapAmbiguous,
       });
@@ -33761,18 +33650,41 @@
       recordRisuHookLifecycle("afterRequest", "callback_observed");
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
-      const latestOrchResult = lastOrchResult;
+      const requestType = String(type || "model");
+      const matchingRequestContexts = Array.from(_finalConfirmationRequestBySession.values()).filter(function(requestContext) {
+        return !!requestContext
+          && (requestContext.state === "captured" || requestContext.state === "candidate_observed")
+          && String(requestContext.requestType || "model") === requestType;
+      });
+      const selectedRequestContext = matchingRequestContexts.length === 1
+        ? matchingRequestContexts[0]
+        : null;
+      const selectedPendingContext = selectedRequestContext
+        ? (_pendingOrchBySession.get(String(selectedRequestContext.sessionId || "")) || null)
+        : null;
+      const latestOrchResult = selectedPendingContext && selectedPendingContext.orchResult
+        ? selectedPendingContext.orchResult
+        : null;
       // RisuAI applies this replacer's return value as the new response. Reuse
       // the coordinates captured in beforeRequest; never perform host reads or
       // backend session routing on the visible-output path.
       const capturedWriteSessionId = normalizeSessionId(
-        latestOrchResult && latestOrchResult._chatSessionId
+        selectedRequestContext && selectedRequestContext.sessionId
+        || latestOrchResult && latestOrchResult._chatSessionId
       );
       const cachedWriteSessionId = normalizeSessionId(
         _sessionCache && _sessionCache.sessionId
       );
       const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;
-      const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
+      const persistencePendingCtx = selectedPendingContext || _pendingOrchBySession.get(chatSessionId) || null;
+      const persistenceHostContext = selectedRequestContext
+        ? {
+            sessionId: chatSessionId,
+            charIdx: Number(selectedRequestContext.characterIndex),
+            chatIdx: Number(selectedRequestContext.chatIndex),
+            hostChatId: String(selectedRequestContext.hostChatId || ""),
+          }
+        : (persistencePendingCtx && persistencePendingCtx.hostContext || captureSessionHostContextFromCache(chatSessionId));
       const persistenceOrchResult = persistencePendingCtx
         && persistencePendingCtx.orchResult === latestOrchResult
           ? latestOrchResult
@@ -33802,9 +33714,8 @@
       const rawAfterRequestText = typeof content === "string" ? content : "";
       let responseReturnContent = content;
       const rememberedNonMainSkip = takeNonMainRequestSkip(chatSessionId, type);
-      const requestType = String(type || "model");
       const auxiliaryTypedWithoutMainContext = (requestType === "submodel" || requestType === "otherAx")
-        && !lastOrchResult
+        && !latestOrchResult
         && !_pendingOrchBySession.get(chatSessionId);
       if (rememberedNonMainSkip && rememberedNonMainSkip.reason === "post_output_secondary_request") {
         schedulePostOutputFinalReplacement(
@@ -33837,7 +33748,9 @@
           requestType: String(type || "model"),
         });
       }
-      const assistantPrefillSeed = takeAssistantPrefillSeedForSession(chatSessionId);
+      const assistantPrefillSeed = selectedRequestContext
+        ? takeAssistantPrefillSeedForSession(chatSessionId)
+        : "";
       const normalizedContent = typeof content === "string" ? sanitizeNarrativeOutputForDisplay(content) : content;
       const displaySanitizeTrace = typeof content === "string" && typeof normalizedContent === "string"
         ? buildSanitizeTrace("display_output", content, normalizedContent)
@@ -33849,8 +33762,30 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
+      if (isSaveType(type) && _risuCommittedOutputListenerRegistered) {
+        updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          detail: "awaiting committed output callback",
+          reason_code: "awaiting_risu_committed_output",
+          sessionId: selectedRequestContext ? selectedRequestContext.sessionId : "",
+          requestType,
+          promptMemoryAvailability: "pending_current_turn",
+        });
+        return responseReturnContent;
+      }
+      if (isSaveType(type) && !selectedRequestContext) {
+        updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          detail: "waiting for an exact session host observation",
+          reason_code: matchingRequestContexts.length > 1
+            ? "after_request_session_owner_ambiguous"
+            : "after_request_session_owner_unobserved",
+          sessionId: "",
+          requestType,
+          promptMemoryAvailability: "pending_current_turn",
+        });
+        return responseReturnContent;
+      }
       if (isSaveType(type)) {
-        const requestContext = _finalConfirmationRequestBySession.get(chatSessionId) || null;
+        const requestContext = selectedRequestContext || _finalConfirmationRequestBySession.get(chatSessionId) || null;
         persistenceRequestContext = requestContext;
         const finalContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
         const finalObservation = acceptRisuAfterRequestFinal(
@@ -34008,7 +33943,16 @@
         userInputRecoverySource = "before_request_host_user_anchor";
       }
       if (!hostFinalityAccepted && !actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
-        const activeChatUserInput = await recoverUserInputFromActiveChatPair(chatSessionId, recoveredAssistantContent || displayContent);
+        const activeChatUserInput = await recoverUserInputFromActiveChatPair(
+          chatSessionId,
+          recoveredAssistantContent || displayContent,
+          selectedRequestContext ? {
+            sessionId: chatSessionId,
+            charIdx: Number(selectedRequestContext.characterIndex),
+            chatIdx: Number(selectedRequestContext.chatIndex),
+            hostChatId: String(selectedRequestContext.hostChatId || ""),
+          } : null
+        );
         if (isCanonicalHostUserInputText(activeChatUserInput)) {
           userInput = String(activeChatUserInput || "");
           userInputRecoverySource = "active_chat_pair";
@@ -34023,7 +33967,7 @@
         }
       }
       if (!hostFinalityAccepted && !actualEmptyUserInput && shouldSkipUserInputPersistence(userInput)) {
-        activeChatLatestSavePair = await findLatestActiveChatUnsavedCompletedTurnPair(chatSessionId);
+        activeChatLatestSavePair = await findLatestActiveChatUnsavedCompletedTurnPair(chatSessionId, persistenceHostContext);
         if (activeChatLatestSavePair && isCanonicalHostUserInputText(activeChatLatestSavePair.userContent)) {
           userInput = String(activeChatLatestSavePair.userContent || "");
           userInputRecoverySource = "active_chat_latest_unsaved_pair";
@@ -34088,7 +34032,10 @@
         clearPersistencePendingContext();
         clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
-        ensureActiveChatCompletedTurnsBackfilled(chatSessionId, { reason: "after_request_user_input_missing" }).catch(function(err) {
+        ensureActiveChatCompletedTurnsBackfilled(chatSessionId, {
+          reason: "after_request_user_input_missing",
+          hostContext: persistenceHostContext,
+        }).catch(function(err) {
           debugLog("active chat backfill after missing input failed:", err && err.message);
         });
         if (panelOpen) {
@@ -34135,7 +34082,8 @@
         const activePairByAssistant = await findActiveChatCompletedTurnPairForContent(
           chatSessionId,
           shouldRequireCurrentUserForAssistantLookup ? safeSavedUserInput : "",
-          persistedAssistantContent
+          persistedAssistantContent,
+          persistenceHostContext
         );
         if (activePairByAssistant && activePairByAssistant.userContent && !shouldSkipUserInputPersistence(activePairByAssistant.userContent)) {
           const activeUserContent = String(activePairByAssistant.userContent || "");
@@ -34195,7 +34143,7 @@
       if (!hostFinalityAccepted && String(safeSavedUserInput || "").trim()) {
         const allowUserOnlyAssistantRecovery = !normalizeTurnPairCompareText(persistedAssistantContent);
         activeChatPairAlignment = activeChatPairAlignment || (allowUserOnlyAssistantRecovery
-          ? await findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput)
+          ? await findActiveChatCompletedTurnPairForUserContent(chatSessionId, safeSavedUserInput, persistenceHostContext)
           : null);
         if (activeChatPairAlignment && activeChatPairAlignment.assistantContent) {
           const activeAssistantComparable = normalizeTurnPairCompareText(normalizeAssistantPersistenceCandidate(activeChatPairAlignment.assistantContent));
@@ -34379,6 +34327,7 @@
         safeSavedUserInput,
         persistedAssistantContent,
         sourceAcceptanceFinality,
+        persistenceHostContext,
       );
       if (!Number.isFinite(Number(turnIdx)) || Number(turnIdx) < 1) {
         const routingSkipReason = "session_routing_turn_ownership_not_admitted";
@@ -34491,7 +34440,8 @@
               {
                 orchestrationResult: lastOrchResult,
                 sourceAcceptanceFinality,
-              risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
+                hostContext: persistenceHostContext,
+                risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
               }
             ),
             null, "buildCompleteTurnRequestBody"
@@ -37657,15 +37607,22 @@
     }
   }
 
-  async function computeActiveChatRescanDryRunPlan(sessionId) {
+  async function computeActiveChatRescanDryRunPlan(sessionId, hostContext = null) {
     const sid = String(sessionId || "").trim();
     if (!sid) throw new Error("missing session id");
-    const activeSid = String(await getCurrentChatSessionId() || "").trim();
-    if (!activeSid || activeSid !== sid) {
-      return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
+    let fixedHostContext = hostContext;
+    if (!fixedHostContext) {
+      const activeSid = String(await getCurrentChatSessionId() || "").trim();
+      if (!activeSid || activeSid !== sid) {
+        return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
+      }
+      fixedHostContext = captureSessionHostContextFromCache(sid);
     }
 
-    const resolvedActiveChat = await resolveCurrentActiveChatObject(sid);
+    const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, fixedHostContext);
+    if (!resolvedActiveChat.chat) {
+      return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
+    }
     const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
     const rawShape = summarizeActiveChatRawMessageShape(resolvedActiveChat.chat, messages);
     const dbResult = await explorerFetchAllChatLogsForSession(sid);
@@ -38073,6 +38030,10 @@
     const requestedLimit = parseInt(maxItems, 10);
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 0;
     const shortId = sid.length > 30 ? sid.slice(0, 15) + "…" + sid.slice(-10) : sid;
+    const startingActiveSid = String(await getCurrentChatSessionId() || "").trim();
+    const normalizeHostContext = startingActiveSid === sid
+      ? captureSessionHostContextFromCache(sid)
+      : null;
     const confirmed = await showConfirmModal(
       "Session Normalize",
       "[Session Normalize]\n\n" +
@@ -38096,9 +38057,8 @@
     let turnIndices = [];
     let planMeta = {};
     try {
-      const activeSid = String(await getCurrentChatSessionId() || "").trim();
-      if (activeSid && activeSid === sid) {
-        const plan = await computeActiveChatRescanDryRunPlan(sid);
+      if (normalizeHostContext) {
+        const plan = await computeActiveChatRescanDryRunPlan(sid, normalizeHostContext);
         if (plan && plan.ok) {
           repairEntries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
           turnIndices = buildSessionNormalizeTargetTurnsFromDryRunPlan(plan);
@@ -38116,7 +38076,7 @@
           };
         }
       } else {
-        planMeta = { active_chat_plan_status: "skipped_not_active_session", active_session_id: activeSid || "" };
+        planMeta = { active_chat_plan_status: "skipped_not_active_session", active_session_id: startingActiveSid || "" };
       }
     } catch (err) {
       _sessionNormalizeState.planWarning = err && err.message ? err.message : String(err || "active chat plan failed");
@@ -38857,6 +38817,13 @@
       return;
     }
     if (_hypaImportState.loading) return;
+    const activeSessionId = String(await getCurrentChatSessionId() || "").trim();
+    if (activeSessionId !== String(sessionId || "").trim()) {
+      _hypaImportState.error = t('hypaImport.noChatFound');
+      refreshExplorerUI();
+      return;
+    }
+    const hypaHostContext = captureSessionHostContextFromCache(activeSessionId);
 
     // 1. RisuAI에서 현재 챗의 hypaV3Data 읽기
     let hypaData = null;
@@ -38867,7 +38834,7 @@
         return;
       }
 
-      const activeChatResult = await resolveCurrentActiveChatObject(sessionId);
+      const activeChatResult = await resolveCurrentActiveChatObject(sessionId, hypaHostContext);
       const activeChat = activeChatResult && activeChatResult.chat;
       if (!activeChat) {
         _hypaImportState.error = t('hypaImport.noChatFound');
@@ -43304,10 +43271,14 @@
       ? '<button type="button" class="mo-tl-session-delete" data-timeline-session-delete-id="' + escapeAttr(selectedActionSessionId) + '" title="' + escapeAttr(t("timeline.session.deleteTitle")) + '">' + escapeAttr(t("timeline.button.delete")) + '</button>'
       : '';
     const migrationStatusHtml = _sessionMigrationUi.status && _sessionMigrationUi.status !== "idle" && _sessionMigrationUi.message
-      ? '<div class="mo-status mo-status-' + escapeAttr(_sessionMigrationUi.status === "ok" ? "ok" : _sessionMigrationUi.status === "running" ? "wait" : "fail") + '">' + escapeAttr(_sessionMigrationUi.message) + '</div>'
+      ? '<div class="mo-status mo-status-' + escapeAttr(_sessionMigrationUi.status === "ok" ? "ok" : (_sessionMigrationUi.status === "running" || _sessionMigrationUi.status === "route_pending") ? "wait" : "fail") + '">' + escapeAttr(_sessionMigrationUi.message) + '</div>'
       : '';
     const migrationOpsSourceId = String(_sessionMigrationUi.sourceSessionId || "").trim();
+    const migrationOpsTargetId = String(_sessionMigrationUi.targetSessionId || "").trim();
     const migrationOpsMode = String(_sessionMigrationUi.migrationMode || "");
+    const migrationRouteRetryHtml = _sessionMigrationUi.status === "route_pending" && migrationOpsTargetId
+      ? '<button type="button" class="mo-tl-session-route-retry" data-timeline-session-route-retry-id="' + escapeAttr(migrationOpsTargetId) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.retryRoute")) + '</button>'
+      : '';
     const migrationOpsCleanupHtml = migrationOpsMode === "copy_keep_source" ? "" :
       '<button type="button" class="mo-tl-session-cleanup" data-timeline-session-cleanup-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.cleanupTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.cleanup")) + '</button>';
     const migrationOpsHtml = _sessionMigrationUi.migrationId && migrationOpsSourceId
@@ -43315,6 +43286,7 @@
           '<div><div class="mo-tl-migration-ops-title">' + escapeAttr(t("timeline.label.migrationOps")) + '</div>' +
           '<div class="mo-tl-migration-ops-note">' + escapeAttr(getSessionDisplayLabel(migrationOpsSourceId, false)) + '</div></div>' +
           '<div class="mo-tl-migration-ops-actions">' +
+            migrationRouteRetryHtml +
             '<button type="button" class="mo-tl-session-rollback" data-timeline-session-rollback-id="' + escapeAttr(migrationOpsSourceId) + '" title="' + escapeAttr(t("timeline.session.rollbackTitle")) + '"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>' + escapeAttr(t("timeline.button.rollback")) + '</button>' +
             migrationOpsCleanupHtml +
           '</div></div>'
@@ -43987,6 +43959,12 @@
           event.preventDefault();
           const sid = button.getAttribute("data-timeline-session-migrate-id") || "";
           runMemorySessionAction(() => runTimelineSessionMigration(sid));
+        });
+      });
+      document.querySelectorAll("[data-timeline-session-route-retry-id]").forEach((button) => {
+        button.addEventListener("click", (event) => {
+          event.preventDefault();
+          runMemorySessionAction(() => retryTimelineSessionMigrationRoute());
         });
       });
       document.querySelectorAll("[data-timeline-session-rollback-id]").forEach((button) => {
@@ -46160,9 +46138,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       }
       _timelineState.sessions = normalized;
       _timelineState.sessionsError = "";
-      reconcileDeletedBackendSessionsFromList(normalized, currentSid, { reason: "timeline_session_list", force }).catch(function(err) {
-        debugLog("timeline session delete reconcile failed:", err && err.message);
-      });
     } catch (err) {
       if (!requestIsCurrent()) return;
       _timelineState.sessions = currentSid ? [{
@@ -46403,9 +46378,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       if (!result || (result.status !== "ok" && result.status !== "partial_error")) {
         throw new Error(result && result.detail ? String(result.detail) : "session delete returned non-ok");
       }
-      loadSessionDeleteLedger();
-      if (_sessionDeleteLedger.bySession) delete _sessionDeleteLedger.bySession[sid];
-      saveSessionDeleteLedger(true);
       cleanupLocalSessionAfterBackendDelete(sid);
       const nextSessionId = removeTimelineSessionFromLocalState(sid);
       updateRuntimeState("lastSessionDeleteSync", result.status === "partial_error" ? "warn" : "ok", {
@@ -46531,7 +46503,12 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
       _timelineState.detailLoading = false;
-      const routingBaseline = await establishSessionRoutingTurnBaseline(attachedSid, "timeline_attach");
+      const routingBaseline = await establishSessionRoutingTurnBaseline(attachedSid, "timeline_attach", {
+        sessionId: attachedSid,
+        charIdx: coords.charIdx,
+        chatIdx: coords.chatIdx,
+        hostChatId: String(route.hostChatId || activeIdentity && activeIdentity.chatUniqueId || ""),
+      });
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "manual attach current chat -> " + shortenSessionIdForDisplay(attachedSid),
         sourceSessionId: attachedSid,
@@ -46579,8 +46556,10 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     const sourceSid = String(sourceSessionId || "").trim();
     if (!sourceSid || timelineIsPlaceholderSessionId(sourceSid) || _sessionMigrationUi.running) return false;
     let targetSid = "";
+    let targetHostContext = null;
     try {
       targetSid = String(await getCurrentMigrationTargetSessionId() || "").trim();
+      targetHostContext = captureSessionHostContextFromCache(targetSid);
     } catch {
       targetSid = "";
     }
@@ -46658,7 +46637,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       _timelineSelectedDetail = null;
       _timelineState.detailItem = null;
       _timelineState.detailLoading = false;
-      const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_copy");
+      const routingBaseline = await establishSessionRoutingTurnBaseline(targetSid, "timeline_copy", targetHostContext);
       updateRuntimeState("sessionWriteRouting", "ok", {
         detail: "timeline copy target -> " + shortenSessionIdForDisplay(targetSid),
         sourceSessionId: sourceSid,
@@ -46692,12 +46671,109 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     }
   }
 
+  async function finalizeTimelineSessionMigrationRoute(migrationID, sourceSessionId, targetSessionId, observedContext = null) {
+    const sourceSid = String(sourceSessionId || "").trim();
+    const targetSid = String(targetSessionId || "").trim();
+    if (!Number(migrationID || 0) || !sourceSid || !targetSid) {
+      throw new Error("session_migration_route_context_missing");
+    }
+    if (!observedContext || !observedContext.coords || !observedContext.identity) {
+      throw new Error("session_migration_route_observation_missing");
+    }
+    const route = await persistAcknowledgedCurrentSessionRoute(targetSid, "migration_commit", observedContext);
+    const routedTargetSid = route.canonicalSessionId;
+    resetSessionRoutingRuntimeCaches();
+    _sessionCache = {
+      charIdx: route.coords.charIdx,
+      chatIdx: route.coords.chatIdx,
+      sessionId: routedTargetSid,
+      stableCharacterId: route.stableCharacterId,
+      observedChatUniqueId: route.hostChatId,
+    };
+    _timelineState.currentSessionId = routedTargetSid;
+    _timelineState.selectedSessionId = routedTargetSid;
+    _timelineState.sessionId = routedTargetSid;
+    _timelineSelectedDetail = null;
+    _timelineState.detailItem = null;
+    _timelineState.detailLoading = false;
+    const routingBaseline = await establishSessionRoutingTurnBaseline(routedTargetSid, "timeline_migrate", {
+      sessionId: routedTargetSid,
+      charIdx: route.coords.charIdx,
+      chatIdx: route.coords.chatIdx,
+      hostChatId: String(route.hostChatId || observedContext.identity.chatUniqueId || ""),
+    });
+    updateRuntimeState("sessionWriteRouting", "ok", {
+      detail: "timeline migration target -> " + shortenSessionIdForDisplay(routedTargetSid),
+      sourceSessionId: sourceSid,
+      targetSessionId: routedTargetSid,
+      reason: "timeline_migrate",
+      routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+      routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
+    });
+    setSessionMigrationUiStatus("ok", tf("timeline.migration.success", { target: getSessionDisplayLabel(routedTargetSid, false) }), {
+      sourceSessionId: sourceSid,
+      targetSessionId: routedTargetSid,
+      migrationId: Number(migrationID),
+      migrationMode: "copy_then_lock_source",
+      routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
+      routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
+    });
+    await loadTimelineData(true, { sessionId: routedTargetSid, skipRuntimeSessionResolve: true });
+    return true;
+  }
+
+  async function retryTimelineSessionMigrationRoute() {
+    const migrationID = Number(_sessionMigrationUi.migrationId || 0);
+    const sourceSid = String(_sessionMigrationUi.sourceSessionId || "").trim();
+    const targetSid = String(_sessionMigrationUi.targetSessionId || "").trim();
+    if (!migrationID || !sourceSid || !targetSid || _sessionMigrationUi.running) return false;
+    _sessionMigrationUi.running = true;
+    setSessionMigrationUiStatus("running", t("timeline.migration.routeRetrying"), {
+      sourceSessionId: sourceSid,
+      targetSessionId: targetSid,
+      migrationId: migrationID,
+      migrationMode: "copy_then_lock_source",
+    });
+    try {
+      let routeContext = _sessionMigrationUi.routeContext;
+      if (!routeContext) {
+        const currentTargetSid = String(await getCurrentMigrationTargetSessionId() || "").trim();
+        if (currentTargetSid === targetSid) {
+          const coords = await getCurrentSessionRoutingCoordinates();
+          routeContext = {
+            coords,
+            identity: await getActiveChatSessionIdentity(coords.charIdx, coords.chatIdx),
+          };
+        }
+      }
+      return await finalizeTimelineSessionMigrationRoute(migrationID, sourceSid, targetSid, routeContext);
+    } catch (err) {
+      const reason = err && err.message ? err.message : "unknown";
+      setSessionMigrationUiStatus("route_pending", tf("timeline.migration.routePending", { reason }), {
+        sourceSessionId: sourceSid,
+        targetSessionId: targetSid,
+        migrationId: migrationID,
+        migrationMode: "copy_then_lock_source",
+      });
+      return false;
+    } finally {
+      _sessionMigrationUi.running = false;
+      refreshTimelineUI();
+    }
+  }
+
   async function runTimelineSessionMigration(sourceSessionId) {
     const sourceSid = String(sourceSessionId || "").trim();
     if (!sourceSid || timelineIsPlaceholderSessionId(sourceSid) || _sessionMigrationUi.running) return false;
     let targetSid = "";
+    let migrationRouteContext = null;
     try {
       targetSid = String(await getCurrentMigrationTargetSessionId() || "").trim();
+      const coords = await getCurrentSessionRoutingCoordinates();
+      migrationRouteContext = {
+        coords,
+        identity: await getActiveChatSessionIdentity(coords.charIdx, coords.chatIdx),
+      };
     } catch {
       targetSid = "";
     }
@@ -46722,12 +46798,15 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     if (typeof confirm === "function" && !confirm(confirmMessage)) return false;
 
     _sessionMigrationUi.running = true;
+    _sessionMigrationUi.routeContext = migrationRouteContext;
     setSessionMigrationUiStatus("running", t("timeline.migration.running"), {
       sourceSessionId: sourceSid,
       targetSessionId: targetSid,
       migrationId: 0,
       migrationMode: "copy_then_lock_source",
     });
+    let migrationID = 0;
+    let sourceLocked = false;
     try {
       const preview = await bridgeFetch("/sessions/migrate-preview", {
         method: "POST",
@@ -46755,7 +46834,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       if (!complete || complete.blocked || !Number(complete.migration_id || 0)) {
         throw new Error(sessionMigrationBlockedReason(complete, "complete_blocked", "/sessions/migrate-complete"));
       }
-      const migrationID = Number(complete.migration_id || 0);
+      migrationID = Number(complete.migration_id || 0);
       _sessionMigrationUi.migrationId = migrationID;
 
       const reindex = await bridgeFetch("/sessions/migrate-reindex", {
@@ -46778,45 +46857,20 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       if (!lock || lock.blocked || lock.source_locked !== true) {
         throw new Error(sessionMigrationBlockedReason(lock, "source_lock_blocked", "/sessions/migrate-lock-source"));
       }
-
-      const route = await persistAcknowledgedCurrentSessionRoute(targetSid, "migration_commit");
-      const routedTargetSid = route.canonicalSessionId;
-      resetSessionRoutingRuntimeCaches();
-      _sessionCache = {
-        charIdx: route.coords.charIdx,
-        chatIdx: route.coords.chatIdx,
-        sessionId: routedTargetSid,
-        stableCharacterId: route.stableCharacterId,
-        observedChatUniqueId: route.hostChatId,
-      };
-      _timelineState.currentSessionId = routedTargetSid;
-      _timelineState.selectedSessionId = routedTargetSid;
-      _timelineState.sessionId = routedTargetSid;
-      _timelineSelectedDetail = null;
-      _timelineState.detailItem = null;
-      _timelineState.detailLoading = false;
-      const routingBaseline = await establishSessionRoutingTurnBaseline(routedTargetSid, "timeline_migrate");
-      updateRuntimeState("sessionWriteRouting", "ok", {
-        detail: "timeline migration target -> " + shortenSessionIdForDisplay(routedTargetSid),
-        sourceSessionId: sourceSid,
-        targetSessionId: routedTargetSid,
-        reason: "timeline_migrate",
-        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
-        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
-      });
-      setSessionMigrationUiStatus("ok", tf("timeline.migration.success", { target: getSessionDisplayLabel(routedTargetSid, false) }), {
-        sourceSessionId: sourceSid,
-        targetSessionId: routedTargetSid,
-        migrationId: migrationID,
-        migrationMode: "copy_then_lock_source",
-        routingBaselineBackendTurn: routingBaseline ? Number(routingBaseline.backendTurnAtRoute || 0) : 0,
-        routingBaselineLocalPairs: routingBaseline ? Number(routingBaseline.localPairCountAtRoute || 0) : 0,
-      });
-      await loadTimelineData(true, { sessionId: routedTargetSid, skipRuntimeSessionResolve: true });
-      return true;
+      sourceLocked = true;
+      return await finalizeTimelineSessionMigrationRoute(migrationID, sourceSid, targetSid, migrationRouteContext);
     } catch (err) {
       const reason = err && err.message ? err.message : "unknown";
       const detail = reason + " / source=" + shortenSessionIdForDisplay(sourceSid) + " / target=" + shortenSessionIdForDisplay(targetSid || "unresolved");
+      if (sourceLocked && migrationID) {
+        setSessionMigrationUiStatus("route_pending", tf("timeline.migration.routePending", { reason: detail }), {
+          sourceSessionId: sourceSid,
+          targetSessionId: targetSid,
+          migrationId: migrationID,
+          migrationMode: "copy_then_lock_source",
+        });
+        return false;
+      }
       setSessionMigrationUiStatus("fail", tf("timeline.migration.failed", { reason: detail }), {
         sourceSessionId: sourceSid,
         targetSessionId: targetSid,
@@ -50938,6 +50992,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-attach-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-copy-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-migrate-id]")) return;
+        if (e.target && e.target.closest && e.target.closest("[data-timeline-session-route-retry-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
         selectWorkspaceSession(btn.getAttribute("data-timeline-session-id") || "", "timeline");
@@ -50948,6 +51003,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-attach-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-copy-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-migrate-id]")) return;
+        if (e.target && e.target.closest && e.target.closest("[data-timeline-session-route-retry-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-rollback-id]")) return;
         if (e.target && e.target.closest && e.target.closest("[data-timeline-session-cleanup-id]")) return;
         e.preventDefault();
