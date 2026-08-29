@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"strings"
 )
 
@@ -145,6 +146,30 @@ func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, cha
 	if chatSessionID == "" || sourceEntityID == "" {
 		return "", ErrNotFound
 	}
+	current := sourceEntityID
+	visited := map[string]bool{}
+	resolvedAny := false
+	for {
+		if visited[current] {
+			return "", ErrReviewedEntityIdentityCycle
+		}
+		visited[current] = true
+		next, err := m.resolveReviewedCanonicalEntityIDOneHop(ctx, chatSessionID, current)
+		if errors.Is(err, ErrNotFound) {
+			if resolvedAny {
+				return current, nil
+			}
+			return "", ErrNotFound
+		}
+		if err != nil {
+			return "", err
+		}
+		resolvedAny = true
+		current = next
+	}
+}
+
+func (m *mariadbStore) resolveReviewedCanonicalEntityIDOneHop(ctx context.Context, chatSessionID, sourceEntityID string) (string, error) {
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT DISTINCT identity_link.target_entity_id
 		FROM entity_identity_links identity_link
@@ -193,6 +218,184 @@ func (m *mariadbStore) ResolveReviewedCanonicalEntityID(ctx context.Context, cha
 		return targetEntityID, nil
 	}
 	return "", ErrNotFound
+}
+
+func (m *mariadbStore) ListActiveEntityIdentities(ctx context.Context, chatSessionID string) ([]EntityIdentity, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT identity.stable_entity_id, identity.chat_session_id,
+		       identity.identity_namespace, identity.entity_kind, identity.canonical_label,
+		       identity.lifecycle_state, identity.review_state, identity.presence_authority,
+		       identity.occurrence_authority, identity.source_contract, identity.source_revision,
+		       COALESCE(identity.source_logical_turn_id, ''), COALESCE(identity.source_message_id, ''),
+		       COALESCE(identity.source_generation_id, ''), identity.source_content_hash,
+		       identity.source_turn, identity.source_index, identity.idempotency_key,
+		       identity.mapping_revision, identity.first_seen_turn, identity.last_seen_turn,
+		       identity.created_at, identity.updated_at
+		FROM entity_identities identity
+		JOIN memory_source_revisions revision
+		  ON revision.chat_session_id = identity.chat_session_id
+		 AND revision.source_revision = identity.source_revision
+		 AND revision.lifecycle_state = 'active'
+		WHERE identity.chat_session_id = ?
+		  AND identity.lifecycle_state = 'active'
+		  AND identity.review_state IN (?, ?)
+		ORDER BY identity.first_seen_turn ASC, identity.stable_entity_id ASC
+	`, chatSessionID, EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EntityIdentity{}
+	for rows.Next() {
+		item, err := scanEntityIdentity(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListActiveEntityIdentitySurfaces(ctx context.Context, chatSessionID string) ([]EntityIdentitySurface, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT surface.surface_id, surface.stable_entity_id, surface.chat_session_id,
+		       surface.identity_namespace, surface.surface_kind, surface.surface_text,
+		       surface.normalized_surface, surface.surface_scope, surface.valid_from_turn,
+		       COALESCE(surface.valid_to_turn, 0), surface.source_contract, surface.source_revision,
+		       surface.source_turn, COALESCE(surface.source_span_start, -1),
+		       COALESCE(surface.source_span_end, -1), COALESCE(surface.evidence_excerpt, ''),
+		       surface.review_state, surface.idempotency_key, surface.created_at, surface.updated_at
+		FROM entity_identity_surfaces surface
+		JOIN entity_identities identity
+		  ON identity.chat_session_id = surface.chat_session_id
+		 AND identity.stable_entity_id = surface.stable_entity_id
+		 AND identity.lifecycle_state = 'active'
+		JOIN memory_source_revisions revision
+		  ON revision.chat_session_id = surface.chat_session_id
+		 AND revision.source_revision = surface.source_revision
+		 AND revision.lifecycle_state = 'active'
+		WHERE surface.chat_session_id = ?
+		  AND surface.review_state = ?
+		ORDER BY surface.source_turn ASC, surface.surface_id ASC
+	`, chatSessionID, EntityIdentityReviewStateSourceObserved)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EntityIdentitySurface{}
+	for rows.Next() {
+		var item EntityIdentitySurface
+		if err := rows.Scan(
+			&item.SurfaceID, &item.StableEntityID, &item.ChatSessionID,
+			&item.IdentityNamespace, &item.SurfaceKind, &item.SurfaceText,
+			&item.NormalizedSurface, &item.Scope, &item.ValidFromTurn,
+			&item.ValidToTurn, &item.SourceContract, &item.SourceRevision,
+			&item.SourceTurn, &item.SourceSpanStart, &item.SourceSpanEnd,
+			&item.EvidenceExcerpt, &item.ReviewState, &item.IdempotencyKey,
+			&item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+func (m *mariadbStore) ListReviewedEntityIdentityLinks(ctx context.Context, chatSessionID string) ([]EntityIdentityLink, error) {
+	if err := m.ensureDB(); err != nil {
+		return nil, err
+	}
+	chatSessionID = strings.TrimSpace(chatSessionID)
+	if chatSessionID == "" {
+		return nil, ErrNotFound
+	}
+	rows, err := m.db.QueryContext(ctx, `
+		SELECT link_id, chat_session_id, source_entity_id, target_entity_id,
+		       link_kind, link_state, evidence_json, mapping_revision, created_at, updated_at
+		FROM entity_identity_links
+		WHERE chat_session_id = ?
+		  AND link_kind = ?
+		  AND link_state = ?
+		ORDER BY created_at ASC, link_id ASC
+	`, chatSessionID, EntityIdentityLinkKindCanonicalEquivalence, EntityIdentityLinkStateReviewed)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []EntityIdentityLink{}
+	for rows.Next() {
+		var item EntityIdentityLink
+		if err := rows.Scan(
+			&item.LinkID, &item.ChatSessionID, &item.SourceEntityID, &item.TargetEntityID,
+			&item.LinkKind, &item.LinkState, &item.EvidenceJSON, &item.MappingRevision,
+			&item.CreatedAt, &item.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		out = append(out, item)
+	}
+	return out, rows.Err()
+}
+
+type entityIdentityScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanEntityIdentity(scanner entityIdentityScanner) (EntityIdentity, error) {
+	var item EntityIdentity
+	err := scanner.Scan(
+		&item.StableEntityID, &item.ChatSessionID, &item.IdentityNamespace,
+		&item.EntityKind, &item.CanonicalLabel, &item.LifecycleState,
+		&item.ReviewState, &item.PresenceAuthority, &item.OccurrenceAuthority,
+		&item.SourceContract, &item.SourceRevision, &item.SourceLogicalTurnID,
+		&item.SourceMessageID, &item.SourceGenerationID, &item.SourceContentHash,
+		&item.SourceTurn, &item.SourceIndex, &item.IdempotencyKey,
+		&item.MappingRevision, &item.FirstSeenTurn, &item.LastSeenTurn,
+		&item.CreatedAt, &item.UpdatedAt,
+	)
+	return item, err
+}
+
+func (m *mariadbStore) getActiveEntityIdentity(ctx context.Context, chatSessionID, stableEntityID string) (EntityIdentity, error) {
+	row := m.db.QueryRowContext(ctx, `
+		SELECT identity.stable_entity_id, identity.chat_session_id,
+		       identity.identity_namespace, identity.entity_kind, identity.canonical_label,
+		       identity.lifecycle_state, identity.review_state, identity.presence_authority,
+		       identity.occurrence_authority, identity.source_contract, identity.source_revision,
+		       COALESCE(identity.source_logical_turn_id, ''), COALESCE(identity.source_message_id, ''),
+		       COALESCE(identity.source_generation_id, ''), identity.source_content_hash,
+		       identity.source_turn, identity.source_index, identity.idempotency_key,
+		       identity.mapping_revision, identity.first_seen_turn, identity.last_seen_turn,
+		       identity.created_at, identity.updated_at
+		FROM entity_identities identity
+		JOIN memory_source_revisions revision
+		  ON revision.chat_session_id = identity.chat_session_id
+		 AND revision.source_revision = identity.source_revision
+		 AND revision.lifecycle_state = 'active'
+		WHERE identity.chat_session_id = ?
+		  AND identity.stable_entity_id = ?
+		  AND identity.lifecycle_state = 'active'
+		  AND identity.review_state IN (?, ?)
+	`, chatSessionID, stableEntityID, EntityIdentityReviewStateSourceObserved, EntityIdentityReviewStateReviewed)
+	item, err := scanEntityIdentity(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return EntityIdentity{}, ErrNotFound
+	}
+	return item, err
 }
 
 func (m *mariadbStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
@@ -263,6 +466,7 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 	type candidate struct {
 		identity   ResolvedEntityIdentity
 		sourceTurn int
+		needsChain bool
 	}
 	resolved := map[string]candidate{}
 	exactDisplayTuple := ""
@@ -297,7 +501,13 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 			key := entityID + "\x1f" + namespace
 			current, exists := resolved[key]
 			if !exists || identityTurn < current.sourceTurn || (identityTurn == current.sourceTurn && entityID < current.identity.StableEntityID) {
-				resolved[key] = candidate{identity: identity, sourceTurn: identityTurn}
+				resolved[key] = candidate{
+					identity: identity, sourceTurn: identityTurn,
+					needsChain: strings.TrimSpace(targetEntityID) != "",
+				}
+			} else if strings.TrimSpace(targetEntityID) != "" {
+				current.needsChain = true
+				resolved[key] = current
 			}
 			tuple := namespace + "\x1f" + entityKind + "\x1f" + label
 			if strings.TrimSpace(surfaceKind) != "display_name" {
@@ -312,6 +522,45 @@ func (m *mariadbStore) ResolveUniqueActiveEntityIdentityBySurface(ctx context.Co
 	if err := rows.Err(); err != nil {
 		return ResolvedEntityIdentity{}, err
 	}
+	if err := rows.Close(); err != nil {
+		return ResolvedEntityIdentity{}, err
+	}
+	collapsed := map[string]candidate{}
+	for _, item := range resolved {
+		if !item.needsChain {
+			key := item.identity.StableEntityID + "\x1f" + item.identity.IdentityNamespace
+			collpasedCurrent, exists := collapsed[key]
+			if !exists || item.sourceTurn < collpasedCurrent.sourceTurn ||
+				(item.sourceTurn == collpasedCurrent.sourceTurn && item.identity.StableEntityID < collpasedCurrent.identity.StableEntityID) {
+				collapsed[key] = item
+			}
+			continue
+		}
+		rootID, err := m.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, item.identity.StableEntityID)
+		switch {
+		case err == nil && strings.TrimSpace(rootID) != "":
+			root, getErr := m.getActiveEntityIdentity(ctx, chatSessionID, rootID)
+			if getErr != nil {
+				return ResolvedEntityIdentity{}, getErr
+			}
+			item.identity = ResolvedEntityIdentity{
+				StableEntityID: root.StableEntityID, IdentityNamespace: root.IdentityNamespace,
+				EntityKind: root.EntityKind, CanonicalLabel: root.CanonicalLabel,
+			}
+			item.sourceTurn = root.SourceTurn
+		case errors.Is(err, ErrNotFound):
+			// This identity is already a canonical root.
+		case err != nil:
+			return ResolvedEntityIdentity{}, err
+		}
+		key := item.identity.StableEntityID + "\x1f" + item.identity.IdentityNamespace
+		current, exists := collapsed[key]
+		if !exists || item.sourceTurn < current.sourceTurn ||
+			(item.sourceTurn == current.sourceTurn && item.identity.StableEntityID < current.identity.StableEntityID) {
+			collapsed[key] = item
+		}
+	}
+	resolved = collapsed
 	if len(resolved) == 0 {
 		return ResolvedEntityIdentity{}, ErrNotFound
 	}

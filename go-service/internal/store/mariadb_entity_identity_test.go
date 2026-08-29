@@ -140,6 +140,16 @@ func TestMariaDBResolveReviewedCanonicalEntityIDUnique(t *testing.T) {
 			EntityIdentityReviewStateReviewed,
 		).
 		WillReturnRows(sqlmock.NewRows([]string{"target_entity_id"}).AddRow("canonical-1"))
+	mock.ExpectQuery("SELECT DISTINCT identity_link.target_entity_id").
+		WithArgs(
+			"session-1",
+			"canonical-1",
+			EntityIdentityLinkKindCanonicalEquivalence,
+			EntityIdentityLinkStateReviewed,
+			EntityIdentityReviewStateSourceObserved,
+			EntityIdentityReviewStateReviewed,
+		).
+		WillReturnRows(sqlmock.NewRows([]string{"target_entity_id"}))
 
 	target, err := m.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "occurrence-1")
 	if err != nil {
@@ -203,6 +213,79 @@ func TestMariaDBResolveReviewedCanonicalEntityIDAmbiguousFailsClosed(t *testing.
 
 	if _, err := m.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "occurrence-ambiguous"); !errors.Is(err, ErrReviewedEntityIdentityAmbiguous) {
 		t.Fatalf("ambiguous target error = %v, want ErrReviewedEntityIdentityAmbiguous", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBResolveReviewedCanonicalEntityIDFollowsReviewedChain(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	expectReviewedIdentityTarget := func(source string, targets ...string) {
+		rows := sqlmock.NewRows([]string{"target_entity_id"})
+		for _, target := range targets {
+			rows.AddRow(target)
+		}
+		mock.ExpectQuery("SELECT DISTINCT identity_link.target_entity_id").
+			WithArgs("session-1", source, EntityIdentityLinkKindCanonicalEquivalence,
+				EntityIdentityLinkStateReviewed, EntityIdentityReviewStateSourceObserved,
+				EntityIdentityReviewStateReviewed).
+			WillReturnRows(rows)
+	}
+	expectReviewedIdentityTarget("abel", "abelstein")
+	expectReviewedIdentityTarget("abelstein", "canonical-abel")
+	expectReviewedIdentityTarget("canonical-abel")
+
+	target, err := m.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "abel")
+	if err != nil || target != "canonical-abel" {
+		t.Fatalf("resolved target=%q err=%v, want canonical-abel", target, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBResolveReviewedCanonicalEntityIDCycleIsExplicit(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	for _, edge := range [][2]string{{"abel", "abelstein"}, {"abelstein", "abel"}} {
+		mock.ExpectQuery("SELECT DISTINCT identity_link.target_entity_id").
+			WithArgs("session-1", edge[0], EntityIdentityLinkKindCanonicalEquivalence,
+				EntityIdentityLinkStateReviewed, EntityIdentityReviewStateSourceObserved,
+				EntityIdentityReviewStateReviewed).
+			WillReturnRows(sqlmock.NewRows([]string{"target_entity_id"}).AddRow(edge[1]))
+	}
+	if _, err := m.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "abel"); !errors.Is(err, ErrReviewedEntityIdentityCycle) {
+		t.Fatalf("cycle error=%v, want ErrReviewedEntityIdentityCycle", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBResolveReviewedCanonicalEntityIDIgnoresRevokedLink(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	mock.ExpectQuery("SELECT DISTINCT identity_link.target_entity_id").
+		WithArgs("session-1", "abel", EntityIdentityLinkKindCanonicalEquivalence,
+			EntityIdentityLinkStateReviewed, EntityIdentityReviewStateSourceObserved,
+			EntityIdentityReviewStateReviewed).
+		WillReturnRows(sqlmock.NewRows([]string{"target_entity_id"}))
+	if _, err := m.ResolveReviewedCanonicalEntityID(context.Background(), "session-1", "abel"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("revoked-only resolution error=%v, want ErrNotFound", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -289,6 +372,18 @@ func TestMariaDBResolveUniqueActiveEntityIdentityBySurfaceReturnsDatabaseNamespa
 					"session-1", "alex", EntityIdentitySurfaceScope39, EntityIdentitySurfaceScopeCurrent,
 				).
 				WillReturnRows(tc.rows)
+			if tc.name == "unique" {
+				mock.ExpectQuery("SELECT DISTINCT identity_link.target_entity_id").
+					WithArgs(
+						"session-1",
+						"canonical-1",
+						EntityIdentityLinkKindCanonicalEquivalence,
+						EntityIdentityLinkStateReviewed,
+						EntityIdentityReviewStateSourceObserved,
+						EntityIdentityReviewStateReviewed,
+					).
+					WillReturnRows(sqlmock.NewRows([]string{"target_entity_id"}))
+			}
 			got, err := m.ResolveUniqueActiveEntityIdentityBySurface(context.Background(), "session-1", "alex")
 			if !errors.Is(err, tc.wantErr) || got != tc.want {
 				t.Fatalf("resolved=%#v err=%v want=%#v err=%v", got, err, tc.want, tc.wantErr)

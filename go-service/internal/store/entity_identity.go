@@ -9,6 +9,7 @@ import (
 const (
 	EntityIdentityLinkKindCanonicalEquivalence = "canonical_equivalence"
 	EntityIdentityLinkStateReviewed            = "reviewed"
+	EntityIdentityLinkStateRevoked             = "revoked"
 	EntityIdentityReviewStateReviewed          = "reviewed"
 	EntityIdentityReviewStateSourceObserved    = "source_observed"
 	EntityIdentitySurfaceScope39               = "source_turn"
@@ -16,6 +17,7 @@ const (
 )
 
 var ErrReviewedEntityIdentityAmbiguous = errors.New("reviewed entity identity has multiple canonical targets")
+var ErrReviewedEntityIdentityCycle = errors.New("reviewed entity identity link cycle")
 
 // EntityIdentity is a namespace-scoped canonical identity. An exact repeated
 // canonical label with the same namespace and entity kind may reuse its stable
@@ -157,6 +159,14 @@ type EntityIdentityWriteAvailability interface {
 // projection do not gain a new required method.
 type EntityIdentityLinkWriter interface {
 	SaveEntityIdentityLink(context.Context, *EntityIdentityLink) error
+}
+
+// EntityIdentityCatalogReader exposes the active, source-backed identity
+// catalog for explicit user review. It never infers equivalence from labels.
+type EntityIdentityCatalogReader interface {
+	ListActiveEntityIdentities(ctx context.Context, chatSessionID string) ([]EntityIdentity, error)
+	ListActiveEntityIdentitySurfaces(ctx context.Context, chatSessionID string) ([]EntityIdentitySurface, error)
+	ListReviewedEntityIdentityLinks(ctx context.Context, chatSessionID string) ([]EntityIdentityLink, error)
 }
 
 // ReviewedEntityIdentityResolver resolves only an explicit, reviewed,

@@ -1027,6 +1027,7 @@ func (s *Server) handleExplorerKGTriples(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		if err == nil {
+			triples = s.canonicalizeCharacterKGTriplesForRead(r.Context(), sid, triples)
 			sortKGTriplesForPython(triples)
 			total = len(triples)
 			start := offset

@@ -584,6 +584,30 @@ func (r *readOnlyStore) ResolveReviewedCanonicalEntityID(ctx context.Context, ch
 	return resolver.ResolveReviewedCanonicalEntityID(ctx, chatSessionID, sourceEntityID)
 }
 
+func (r *readOnlyStore) ListActiveEntityIdentities(ctx context.Context, chatSessionID string) ([]EntityIdentity, error) {
+	reader, ok := r.delegate.(EntityIdentityCatalogReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListActiveEntityIdentities(ctx, chatSessionID)
+}
+
+func (r *readOnlyStore) ListActiveEntityIdentitySurfaces(ctx context.Context, chatSessionID string) ([]EntityIdentitySurface, error) {
+	reader, ok := r.delegate.(EntityIdentityCatalogReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListActiveEntityIdentitySurfaces(ctx, chatSessionID)
+}
+
+func (r *readOnlyStore) ListReviewedEntityIdentityLinks(ctx context.Context, chatSessionID string) ([]EntityIdentityLink, error) {
+	reader, ok := r.delegate.(EntityIdentityCatalogReader)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListReviewedEntityIdentityLinks(ctx, chatSessionID)
+}
+
 func (r *readOnlyStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
 	resolver, ok := r.delegate.(UniqueActiveEntitySurfaceResolver)
 	if !ok {

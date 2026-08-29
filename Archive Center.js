@@ -847,6 +847,23 @@
       "explorer.entities.locations": "장소",
       "explorer.entities.items": "물품",
       "explorer.entities.subjectiveMemories": "주관 기억",
+      "explorer.entities.identityMergeTitle": "인물 동일성 연결",
+      "explorer.entities.identityMergeTarget": "대표 인물",
+      "explorer.entities.identityMergeChooseTarget": "대표 인물 선택",
+      "explorer.entities.identityMergeSelect": "다른 인물과 합치기",
+      "explorer.entities.identityAliasManage": "별명 관리",
+      "explorer.entities.identityAliasesLabel": "별명·애칭",
+      "explorer.entities.identityMergeSelectedButton": "합치기 선택됨",
+      "explorer.entities.identityMergeSelected": "연결할 인물 {count}명",
+      "explorer.entities.identityMergePreview": "영향 미리보기",
+      "explorer.entities.identityMergePreviewReady": "영향 범위를 확인했습니다. 기존 기록은 삭제되지 않습니다.",
+      "explorer.entities.identityMergeApply": "연결 저장",
+      "explorer.entities.identityMergeConfirm": "선택한 인물들을 대표 인물에 연결할까요? 기존 기억·상태·근거는 삭제하거나 다시 작성하지 않습니다.",
+      "explorer.entities.identityMergeDone": "인물 동일성 연결을 저장했습니다.",
+      "explorer.entities.identityMergeUnavailable": "확인 불가",
+      "explorer.entities.identityUnmerge": "연결 해제",
+      "explorer.entities.identityUnmergeConfirm": "이 동일성 연결만 해제할까요? 기존 기록은 삭제되지 않습니다.",
+      "explorer.entities.identityUnmergeDone": "인물 동일성 연결을 해제했습니다.",
       "explorer.entities.memoryBrowserTitle": "엔티티별 주관 기억",
       "explorer.entities.memoryBrowserDesc": "현재 세션에 저장된 각 인물의 주관 기억입니다. 같은 사건도 인물마다 다르게 기억될 수 있습니다.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -2221,6 +2238,23 @@
       "explorer.entities.locations": "Locations",
       "explorer.entities.items": "Items",
       "explorer.entities.subjectiveMemories": "Subjective Memories",
+      "explorer.entities.identityMergeTitle": "Character identity links",
+      "explorer.entities.identityMergeTarget": "Representative character",
+      "explorer.entities.identityMergeChooseTarget": "Choose a representative",
+      "explorer.entities.identityMergeSelect": "Merge with another character",
+      "explorer.entities.identityAliasManage": "Manage aliases",
+      "explorer.entities.identityAliasesLabel": "Aliases and nicknames",
+      "explorer.entities.identityMergeSelectedButton": "Selected for merge",
+      "explorer.entities.identityMergeSelected": "{count} character(s) selected",
+      "explorer.entities.identityMergePreview": "Preview impact",
+      "explorer.entities.identityMergePreviewReady": "Impact checked. Existing records will not be deleted.",
+      "explorer.entities.identityMergeApply": "Save link",
+      "explorer.entities.identityMergeConfirm": "Link the selected characters to the representative? Existing memories, states, and evidence will not be deleted or rewritten.",
+      "explorer.entities.identityMergeDone": "Character identity link saved.",
+      "explorer.entities.identityMergeUnavailable": "unavailable",
+      "explorer.entities.identityUnmerge": "Unlink",
+      "explorer.entities.identityUnmergeConfirm": "Remove only this identity link? Existing records will remain.",
+      "explorer.entities.identityUnmergeDone": "Character identity link removed.",
       "explorer.entities.memoryBrowserTitle": "Entity Subjective Memories",
       "explorer.entities.memoryBrowserDesc": "Entity-owned subjective memories saved in this session. The same event can be remembered differently by each character.",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -3360,6 +3394,23 @@
       "explorer.entities.locations": "場所",
       "explorer.entities.items": "アイテム",
       "explorer.entities.subjectiveMemories": "主観記憶",
+      "explorer.entities.identityMergeTitle": "人物同一性リンク",
+      "explorer.entities.identityMergeTarget": "代表人物",
+      "explorer.entities.identityMergeChooseTarget": "代表人物を選択",
+      "explorer.entities.identityMergeSelect": "別の人物と統合",
+      "explorer.entities.identityAliasManage": "別名を管理",
+      "explorer.entities.identityAliasesLabel": "別名・愛称",
+      "explorer.entities.identityMergeSelectedButton": "統合対象に選択済み",
+      "explorer.entities.identityMergeSelected": "選択 {count}人",
+      "explorer.entities.identityMergePreview": "影響を確認",
+      "explorer.entities.identityMergePreviewReady": "影響範囲を確認しました。既存記録は削除されません。",
+      "explorer.entities.identityMergeApply": "リンクを保存",
+      "explorer.entities.identityMergeConfirm": "選択した人物を代表人物にリンクしますか？既存の記憶・状態・根拠は削除も再作成もされません。",
+      "explorer.entities.identityMergeDone": "人物同一性リンクを保存しました。",
+      "explorer.entities.identityMergeUnavailable": "確認不可",
+      "explorer.entities.identityUnmerge": "リンク解除",
+      "explorer.entities.identityUnmergeConfirm": "この同一性リンクだけを解除しますか？既存記録は残ります。",
+      "explorer.entities.identityUnmergeDone": "人物同一性リンクを解除しました。",
       "explorer.entities.memoryBrowserTitle": "エンティティ別主観記憶",
       "explorer.entities.memoryBrowserDesc": "このセッションに保存された各人物の主観記憶です。同じ出来事でも人物ごとに異なる記憶として扱えます。",
       "explorer.entities.aliasRepairTitle": "Alias Repair",
@@ -35103,6 +35154,8 @@
     // Entities tab state (인물/장소/물품)
     entities: {
       characters: [],   // /characters/{sid} 결과
+      identityLinks: [],
+      identityMerge: { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" },
       locations: [],    // world_rules에서 location scope만 추출
       items: [],        // KG triple에서 소유/장비 술어로 추출
       memoryBundles: [],
@@ -35688,6 +35741,14 @@
 
       const rawChars = (charRes && Array.isArray(charRes.characters)) ? charRes.characters : [];
       ent.characters = _deduplicateCharacters(rawChars);
+      ent.identityLinks = (charRes && Array.isArray(charRes.identity_links)) ? charRes.identity_links : [];
+      if (!ent.identityMerge || typeof ent.identityMerge !== "object") {
+        ent.identityMerge = { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
+      }
+      if (!(ent.identityMerge.sourceIds instanceof Set)) ent.identityMerge.sourceIds = new Set();
+      const visibleIdentityIds = new Set(ent.characters.map(c => String(c && c.stable_entity_id || "")).filter(Boolean));
+      ent.identityMerge.sourceIds = new Set(Array.from(ent.identityMerge.sourceIds).filter(id => visibleIdentityIds.has(id)));
+      if (!visibleIdentityIds.has(String(ent.identityMerge.targetId || ""))) ent.identityMerge.targetId = "";
 
       // 장소: world_rules에서 scope가 location/region/area/place인 것
       const wrAll = (wrRes && Array.isArray(wrRes.items)) ? wrRes.items : [];
@@ -36115,6 +36176,8 @@
       _explorer.worldGraph.allRules = [];
       _explorer.worldGraph.loading = false;
       _explorer.entities.characters = [];
+      _explorer.entities.identityLinks = [];
+      _explorer.entities.identityMerge = { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
       _explorer.entities.locations = [];
       _explorer.entities.items = [];
       _explorer.entities.memoryBundles = [];
@@ -42545,6 +42608,84 @@
       '</div>';
   }
 
+  function renderExplorerCharacterIdentityMergePanel() {
+    const ent = _explorer.entities;
+    const state = ent.identityMerge || { targetId: "", sourceIds: new Set(), preview: null, loading: false, error: "", status: "" };
+    if (!(state.sourceIds instanceof Set)) state.sourceIds = new Set();
+    const choices = ent.characters.filter(c => String(c && c.stable_entity_id || "").trim());
+    const targetOptions = ['<option value="">' + escapeAttr(t('explorer.entities.identityMergeChooseTarget')) + '</option>'].concat(choices.map(c => {
+      const id = String(c.stable_entity_id || "");
+      return '<option value="' + escapeAttr(id) + '"' + (id === state.targetId ? ' selected' : '') + '>' + escapeAttr(formatDisplayEntityLabel(c.character_name || id)) + '</option>';
+    })).join('');
+    const impacts = state.preview && state.preview.impacts && typeof state.preview.impacts === "object"
+      ? Object.entries(state.preview.impacts).map(([key, lane]) => {
+          const ready = lane && lane.status === "ready";
+          return '<span class="mo-ent-kv"><b>' + escapeAttr(key) + '</b>: ' + (ready ? escapeAttr(String(lane.count || 0)) : escapeAttr(t('explorer.entities.identityMergeUnavailable'))) + '</span>';
+        }).join(' ')
+      : '';
+    const links = Array.isArray(ent.identityLinks) ? ent.identityLinks : [];
+    const unlinkRows = links.map(link => '<div class="mo-ent-detail">' +
+      escapeAttr(formatDisplayEntityLabel(link.source_label || link.source_entity_id || "")) + ' → ' +
+      escapeAttr(formatDisplayEntityLabel(link.target_label || link.target_entity_id || "")) +
+      ' <button type="button" class="mo-btn-toggle" data-ent-identity-unmerge-source="' + escapeAttr(link.source_entity_id || "") + '" data-ent-identity-unmerge-target="' + escapeAttr(link.target_entity_id || "") + '">' + escapeAttr(t('explorer.entities.identityUnmerge')) + '</button></div>').join('');
+    const message = state.error
+      ? '<div class="mo-note">❌ ' + escapeAttr(state.error) + '</div>'
+      : (state.status ? '<div class="mo-note">' + escapeAttr(state.status) + '</div>' : '');
+    return '<div class="mo-settings-card" style="margin:0 0 12px;padding:12px">' +
+      '<div class="mo-section">' + escapeAttr(t('explorer.entities.identityMergeTitle')) + '</div>' +
+      '<div class="mo-ed-row">' +
+        '<div class="mo-ed-field mo-ed-field-sm"><label>' + escapeAttr(t('explorer.entities.identityMergeTarget')) + '</label><select class="mo-ed-input" data-ent-identity-target>' + targetOptions + '</select></div>' +
+        '<div class="mo-ed-actions">' +
+          '<button type="button" class="mo-btn mo-btn-ghost" data-ent-identity-preview' + (state.loading || !state.targetId || state.sourceIds.size === 0 ? ' disabled' : '') + '>' + escapeAttr(t('explorer.entities.identityMergePreview')) + '</button>' +
+          '<button type="button" class="mo-btn mo-btn-primary" data-ent-identity-apply' + (state.loading || !state.preview ? ' disabled' : '') + '>' + escapeAttr(t('explorer.entities.identityMergeApply')) + '</button>' +
+        '</div>' +
+      '</div>' +
+      '<div class="mo-note">' + escapeAttr(explorerFormatTemplate(t('explorer.entities.identityMergeSelected'), { count: state.sourceIds.size })) + '</div>' +
+      (impacts ? '<div class="mo-ent-detail">' + impacts + '</div>' : '') + message + unlinkRows +
+    '</div>';
+  }
+
+  async function explorerRunCharacterIdentityMerge(mode, sourceId, targetId) {
+    const sid = explorerSessionId();
+    const state = _explorer.entities.identityMerge;
+    if (!sid || !state) return;
+    const sources = sourceId ? [String(sourceId)] : Array.from(state.sourceIds || []);
+    const target = targetId ? String(targetId) : String(state.targetId || "");
+    if (!target || sources.length === 0) return;
+    state.loading = true; state.error = ""; state.status = "";
+    refreshExplorerUI();
+    try {
+      const suffix = mode === "preview" ? "/preview" : (mode === "unmerge" ? "/unmerge" : "");
+      const result = await bridgeFetch("/characters/" + encodeURIComponent(sid) + "/identity-merge" + suffix, {
+        method: "POST",
+        body: { target_entity_id: target, source_entity_ids: sources },
+        timeoutMs: getRequestTimeoutSettingMs(),
+      });
+      if (!result || result.status !== "ok") throw new Error(result && (result.detail || result.error) ? String(result.detail || result.error) : "identity merge failed");
+      if (mode === "preview") {
+        state.preview = result;
+        state.status = t('explorer.entities.identityMergePreviewReady');
+        const unavailable = Array.isArray(result.source_results)
+          ? result.source_results.filter(item => item && item.status !== "ready")
+          : [];
+        if (unavailable.length > 0) state.error = unavailable.map(item => String(item.source_entity_id || '') + ': ' + String(item.detail || item.status || 'unavailable')).join(' | ');
+      } else {
+        state.preview = null;
+        state.sourceIds.clear();
+        const results = Array.isArray(result.results) ? result.results : [];
+        const failed = results.filter(item => item && item.status === "failed");
+        const changed = mode === "unmerge" ? Number(result.unlinked_count || 0) : Number(result.linked_count || 0);
+        state.status = (mode === "unmerge" ? t('explorer.entities.identityUnmergeDone') : t('explorer.entities.identityMergeDone')) + ' (' + changed + '/' + sources.length + ')';
+        if (failed.length > 0) state.error = failed.map(item => String(item.source_entity_id || '') + ': ' + String(item.detail || 'failed')).join(' | ');
+        await explorerFetchEntities();
+      }
+    } catch (err) {
+      state.error = err && err.message ? err.message : String(err);
+    }
+    state.loading = false;
+    refreshExplorerUI();
+  }
+
   // ── Entities tab: render ────────────────────────────────────────────────────
   function renderExplorerEntities() {
     const ent = _explorer.entities;
@@ -42576,7 +42717,7 @@
       if (ent.characters.length === 0) {
         sectionHtml = '<div class="mo-note">' + t('explorer.entities.empty') + '</div>';
       } else {
-        sectionHtml = ent.characters.map(c => {
+        sectionHtml = renderExplorerCharacterIdentityMergePanel() + ent.characters.map(c => {
           const rawName = String(c.character_name || '');
           const displayName = escapeAttr(formatDisplayEntityLabel(rawName));
           const turn = c.turn_index != null ? '<span class="mo-ent-turn">' + t('explorer.entities.turnLabel') + ' ' + c.turn_index + '</span>' : '';
@@ -42585,7 +42726,7 @@
 
           let aliasHtml = '';
           if (Array.isArray(c.aliases) && c.aliases.length > 0) {
-            aliasHtml = '<div class="mo-ent-alias">= ' + c.aliases.map(a => escapeAttr(sanitizePlayerTokenForDisplayText(a))).join(', ') + '</div>';
+            aliasHtml = '<div class="mo-ent-alias">' + escapeAttr(t('explorer.entities.identityAliasesLabel')) + ': ' + c.aliases.map(a => escapeAttr(sanitizePlayerTokenForDisplayText(a))).join(', ') + '</div>';
           }
 
           let statusHtml = '';
@@ -42661,6 +42802,15 @@
           const editCharacterBtn = editingAnyCharacterField ? '' : '<button class="mo-ent-speech-btn" data-ent-char-edit="' + escapeAttr(rawName) + '" title="' + escapeAttr(t('explorer.btn.editTooltip')) + '">' + escapeAttr(t('explorer.btn.editTooltip')) + '</button>';
           const editSpeechBtn = editingAnyCharacterField ? '' : '<button class="mo-ent-speech-btn" data-ent-speech-edit="' + escapeAttr(rawName) + '" title="말투 편집">✎ 말투</button>';
           const delBtn = editingAnyCharacterField ? '' : '<button class="mo-ent-del-btn" data-ent-del-char="' + escapeAttr(rawName) + '" title="삭제">🗑️</button>';
+          const stableID = String(c.stable_entity_id || "");
+          const mergeState = ent.identityMerge || {};
+          const mergeSelected = mergeState.sourceIds instanceof Set && mergeState.sourceIds.has(stableID);
+          const mergeBtn = !editingAnyCharacterField && stableID
+            ? '<button class="mo-ent-speech-btn" data-ent-identity-source="' + escapeAttr(stableID) + '">' + escapeAttr(mergeSelected ? t('explorer.entities.identityMergeSelectedButton') : t('explorer.entities.identityMergeSelect')) + '</button>'
+            : '';
+          const aliasManageBtn = !editingAnyCharacterField && stableID
+            ? '<button class="mo-ent-speech-btn" data-ent-identity-manage="' + escapeAttr(stableID) + '">' + escapeAttr(t('explorer.entities.identityAliasManage')) + '</button>'
+            : '';
           const batchCheck = renderExplorerBatchDeleteCheckbox('entities', explorerBuildBatchDeleteKey('character', rawName), 'character ' + rawName + ' 선택');
           let bodyHtml = aliasHtml +
             (statusHtml || '<div class="mo-ent-detail mo-ent-empty">' + t('explorer.entities.noStatus') + '</div>') +
@@ -42715,7 +42865,7 @@
           }
 
           return '<div class="mo-ent-card">' +
-            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + displayName + '</span>' + turn + editCharacterBtn + editSpeechBtn + delBtn + '</div>' +
+            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + displayName + '</span>' + turn + mergeBtn + aliasManageBtn + editCharacterBtn + editSpeechBtn + delBtn + '</div>' +
             bodyHtml +
             '</div>';
         }).join('');
@@ -44523,6 +44673,61 @@
             }
             refreshExplorerUI();
           }
+        });
+      });
+
+      document.querySelectorAll("[data-ent-identity-target]").forEach(select => {
+        select.addEventListener("change", (e) => {
+          const state = _explorer.entities.identityMerge;
+          state.targetId = String(e.target && e.target.value || "");
+          state.sourceIds.delete(state.targetId);
+          state.preview = null; state.error = ""; state.status = "";
+          refreshExplorerUI();
+        });
+      });
+
+      document.querySelectorAll("[data-ent-identity-source]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = String(btn.getAttribute("data-ent-identity-source") || "");
+          const state = _explorer.entities.identityMerge;
+          if (!id || id === state.targetId) return;
+          if (state.sourceIds.has(id)) state.sourceIds.delete(id); else state.sourceIds.add(id);
+          state.preview = null; state.error = ""; state.status = "";
+          refreshExplorerUI();
+        });
+      });
+
+      document.querySelectorAll("[data-ent-identity-manage]").forEach(btn => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const id = String(btn.getAttribute("data-ent-identity-manage") || "");
+          const state = _explorer.entities.identityMerge;
+          if (!id || !state) return;
+          state.targetId = id;
+          state.sourceIds.delete(id);
+          state.preview = null; state.error = ""; state.status = "";
+          refreshExplorerUI();
+        });
+      });
+
+      document.querySelectorAll("[data-ent-identity-preview]").forEach(btn => {
+        btn.addEventListener("click", async (e) => { e.stopPropagation(); await explorerRunCharacterIdentityMerge("preview"); });
+      });
+
+      document.querySelectorAll("[data-ent-identity-apply]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!confirm(t('explorer.entities.identityMergeConfirm'))) return;
+          await explorerRunCharacterIdentityMerge("apply");
+        });
+      });
+
+      document.querySelectorAll("[data-ent-identity-unmerge-source]").forEach(btn => {
+        btn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (!confirm(t('explorer.entities.identityUnmergeConfirm'))) return;
+          await explorerRunCharacterIdentityMerge("unmerge", btn.getAttribute("data-ent-identity-unmerge-source"), btn.getAttribute("data-ent-identity-unmerge-target"));
         });
       });
 

@@ -504,6 +504,36 @@ func (d *dualWriteStore) ResolveReviewedCanonicalEntityID(ctx context.Context, c
 	return "", ErrNotEnabled
 }
 
+func (d *dualWriteStore) ListActiveEntityIdentities(ctx context.Context, chatSessionID string) ([]EntityIdentity, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListActiveEntityIdentities(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListActiveEntityIdentities(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListActiveEntityIdentitySurfaces(ctx context.Context, chatSessionID string) ([]EntityIdentitySurface, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListActiveEntityIdentitySurfaces(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListActiveEntityIdentitySurfaces(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListReviewedEntityIdentityLinks(ctx context.Context, chatSessionID string) ([]EntityIdentityLink, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListReviewedEntityIdentityLinks(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListReviewedEntityIdentityLinks(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
 	if primary, ok := d.primary.(UniqueActiveEntitySurfaceResolver); ok {
 		return primary.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
