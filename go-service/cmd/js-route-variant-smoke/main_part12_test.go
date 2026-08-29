@@ -1279,6 +1279,23 @@ async function safeCall(fn){ return await fn(); }
   if(state.loading !== false || state.job.status !== "cancelled" || state.error !== null) {
     throw new Error("cancel snapshot did not leave the job restartable");
   }
+
+  const deferredState={loading:true,error:"old",result:null,job:{job_id:"job-deferred",status:"running",terminal:false}};
+  if (!applyAdminBackgroundJobSnapshot("session_normalize",deferredState,"job-deferred",{
+    job_id:"job-deferred",status:"deferred",terminal:true,result:{status:"partial_deferred",pending_count:2},
+  })) throw new Error("deferred terminal snapshot stayed open");
+  if (deferredState.loading !== false || deferredState.error !== null || deferredState.result.pending_count !== 2) {
+    throw new Error("deferred terminal snapshot was not preserved: "+JSON.stringify(deferredState));
+  }
+
+  const partialState={loading:true,error:null,result:null,job:{job_id:"job-partial",status:"running",terminal:false}};
+  if (!applyAdminBackgroundJobSnapshot("session_normalize",partialState,"job-partial",{
+    job_id:"job-partial",status:"partial_error",terminal:true,
+    result:{status:"partial_error",failed_count:1},progress:{error:"one turn failed"},
+  })) throw new Error("partial_error terminal snapshot stayed open");
+  if (partialState.loading !== false || partialState.result.failed_count !== 1 || partialState.error !== "one turn failed") {
+    throw new Error("partial_error terminal snapshot was not preserved: "+JSON.stringify(partialState));
+  }
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
 	cmd := exec.Command(nodePath, "-e", script)

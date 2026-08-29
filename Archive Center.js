@@ -36713,6 +36713,17 @@
     if (status === "completed") {
       state.error = null;
       state.result = job.result || job;
+    } else if (status === "deferred") {
+      state.error = null;
+      state.result = job.result || job;
+    } else if (status === "partial_error") {
+      state.result = job.result || job;
+      state.error = String(
+        job.error
+        || (job.progress && job.progress.error)
+        || (job.result && job.result.error)
+        || ""
+      );
     } else if (status === "cancelled" || status === "canceled") {
       state.result = job.result || null;
       state.error = null;

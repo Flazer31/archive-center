@@ -243,6 +243,26 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		reindexResult,
 		warnings,
 	)
+	pendingCount := maxInt(
+		intFromAny(rescanResult["deferred"], 0),
+		intFromAny(rescanResult["queued"], 0),
+	)
+	pendingTurns := []int{}
+	for _, item := range adminSessionNormalizeMapItems(rescanResult["deferred_turns"]) {
+		if turn := intFromAny(item["turn_index"], 0); turn > 0 {
+			pendingTurns = append(pendingTurns, turn)
+		}
+	}
+	pendingTurns = uniqueSortedNonNegativeInts(pendingTurns)
+	pendingTurnsAvailable := pendingCount == 0 || len(pendingTurns) == pendingCount
+	failedCount := intFromAny(rescanResult["failed"], 0)
+	failedTurns := adminSessionNormalizeMapItems(rescanResult["failed_turns"])
+	completionReason := ""
+	if pendingCount > 0 {
+		completionReason = "derived_reprocessing_pending"
+	} else if failedCount > 0 {
+		completionReason = "derived_reprocessing_failed"
+	}
 	result := map[string]any{
 		"status":                    status,
 		"contract_version":          "session-normalize.v1",
@@ -260,9 +280,24 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 		"character_identity_repair": identityRepairResult,
 		"reindex":                   reindexResult,
 		"review_needed_turns":       reviewNeededTurns,
+		"pending_count":             pendingCount,
+		"pending_turns_available":   pendingTurnsAvailable,
+		"failed_count":              failedCount,
+		"failed_turns":              failedTurns,
+		"completion_reason":         completionReason,
 		"warnings":                  uniqueStrings(warnings),
 		"generated_at":              time.Now().UTC(),
 		"note":                      "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
+	}
+	if pendingTurnsAvailable {
+		result["pending_turns"] = pendingTurns
+	} else {
+		result["pending_turns_unavailable_reason"] = "durable_reprocessing_result_has_aggregate_count_only"
+	}
+	for _, key := range []string{"retry_attempt", "retry_max_attempts", "next_retry_at", "retry_after_seconds"} {
+		if value, ok := rescanResult[key]; ok {
+			result[key] = value
+		}
 	}
 	s.saveAuditLogBestEffort(ctx, &store.AuditLog{
 		ChatSessionID: sid,
@@ -276,6 +311,8 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"destructive":         false,
 			"repair_entry_count":  len(entries),
 			"review_needed_turns": reviewNeededTurns,
+			"pending_count":       pendingCount,
+			"failed_count":        failedCount,
 			"character_identity_repair": map[string]any{
 				"status":             identityRepairResult["status"],
 				"candidates":         identityRepairResult["candidates"],
@@ -292,18 +329,45 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	})
 	if progress != nil {
 		finalStage := "completed"
+		finalProgressStatus := "completed"
+		finalProgressPercent := 100
 		if status != "ok" {
 			finalStage = status
 		}
-		progress(map[string]any{
-			"status":              "completed",
-			"stage":               finalStage,
-			"outcome_status":      status,
-			"progress_percent":    100,
-			"review_needed_turns": reviewNeededTurns,
-			"counts_after":        after,
-			"warnings":            uniqueStrings(warnings),
-		})
+		switch status {
+		case "partial_deferred":
+			finalProgressStatus = "deferred"
+			finalProgressPercent = 99
+		case "partial_error":
+			finalProgressStatus = "partial_error"
+		case "failed", "blocked":
+			finalProgressStatus = status
+		}
+		finalProgress := map[string]any{
+			"status":                  finalProgressStatus,
+			"stage":                   finalStage,
+			"outcome_status":          status,
+			"progress_percent":        finalProgressPercent,
+			"review_needed_turns":     reviewNeededTurns,
+			"pending_count":           pendingCount,
+			"pending_turns_available": pendingTurnsAvailable,
+			"failed_count":            failedCount,
+			"failed_turns":            failedTurns,
+			"reason":                  completionReason,
+			"counts_after":            after,
+			"warnings":                uniqueStrings(warnings),
+		}
+		if pendingTurnsAvailable {
+			finalProgress["pending_turns"] = pendingTurns
+		} else {
+			finalProgress["pending_turns_unavailable_reason"] = "durable_reprocessing_result_has_aggregate_count_only"
+		}
+		for _, key := range []string{"retry_attempt", "retry_max_attempts", "next_retry_at", "retry_after_seconds"} {
+			if value, ok := rescanResult[key]; ok {
+				finalProgress[key] = value
+			}
+		}
+		progress(finalProgress)
 	}
 	return result, nil
 }
@@ -1008,8 +1072,30 @@ func adminSessionNormalizeSkipReason(skipped bool, count int, fallback string) s
 
 func adminSessionNormalizeStatus(repairResult, rescanResult, identityRepairResult, reindexResult map[string]any, warnings []string) string {
 	deferred := false
-	for _, result := range []map[string]any{repairResult, rescanResult, identityRepairResult, reindexResult} {
+	rescanPendingRetryOnly := false
+	rescanFailedCount := intFromAny(rescanResult["failed"], 0)
+	if rescanFailedCount > 0 && intFromAny(rescanResult["queued"], 0) > 0 {
+		failedTurns := adminSessionNormalizeMapItems(rescanResult["failed_turns"])
+		rescanPendingRetryOnly = len(failedTurns) == rescanFailedCount
+		for _, item := range failedTurns {
+			if !strings.EqualFold(strings.TrimSpace(stringFromAny(item["state"])), "retryable") {
+				rescanPendingRetryOnly = false
+				break
+			}
+		}
+		for _, warning := range stringsFromAny(rescanResult["warnings"]) {
+			if strings.Contains(strings.ToLower(warning), "reprocessing_enqueue_failed") {
+				rescanPendingRetryOnly = false
+				break
+			}
+		}
+	}
+	for index, result := range []map[string]any{repairResult, rescanResult, identityRepairResult, reindexResult} {
 		status := strings.ToLower(strings.TrimSpace(stringFromMap(result, "status")))
+		if index == 1 && rescanPendingRetryOnly {
+			deferred = true
+			continue
+		}
 		if status == "failed" || status == "error" {
 			return "failed"
 		}
@@ -1030,6 +1116,23 @@ func adminSessionNormalizeStatus(repairResult, rescanResult, identityRepairResul
 		return "partial_warning"
 	}
 	return "ok"
+}
+
+func adminSessionNormalizeMapItems(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return append([]map[string]any{}, items...)
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if mapped, ok := item.(map[string]any); ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
+		return []map[string]any{}
+	}
 }
 
 func adminSessionNormalizeReindexDeferredReasons(rescanResult map[string]any) []string {
