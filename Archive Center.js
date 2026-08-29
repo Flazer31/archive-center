@@ -38591,9 +38591,13 @@
 
       _chatLogRepairState.result = replayResult;
       const repairedTurns = normalizeTurnIndexList(replayResult.repaired_turns || []);
-      if (repairedTurns.length > 0) {
-        await removeFailedQueueItemsByTurn(sessionId, repairedTurns, "save");
-        clearChatLogRestoreSnapshotEntries(sessionId, repairedTurns);
+      const conflictTurns = new Set(normalizeTurnIndexList(replayResult.conflict_turns || []));
+      const fullyRepairedTurns = repairedTurns.filter(function(turnIndex) {
+        return !conflictTurns.has(turnIndex);
+      });
+      if (fullyRepairedTurns.length > 0) {
+        await removeFailedQueueItemsByTurn(sessionId, fullyRepairedTurns, "save");
+        clearChatLogRestoreSnapshotEntries(sessionId, fullyRepairedTurns);
       }
 
       const replayDoneDetail = "Repair Replay 완료: 복구 role " + Number(replayResult.total_repaired_role_count || 0) + " / conflict " + Number(replayResult.total_conflict_role_count || 0) + " / 실패 턴 " + Number((replayResult.failed_turns || []).length || 0);
@@ -38603,8 +38607,8 @@
       await explorerFetchChatLogs(true);
       await refreshExplorerUI();
 
-      if (repairedTurns.length > 0) {
-        const rescanOutcome = await maybeRescanDerivedArtifactsForTurns(sessionId, repairedTurns);
+      if (fullyRepairedTurns.length > 0) {
+        const rescanOutcome = await maybeRescanDerivedArtifactsForTurns(sessionId, fullyRepairedTurns);
         if (rescanOutcome.ran && rescanOutcome.ok) {
           const rescanResult = rescanOutcome.result || {};
           setChatLogRepairProgress(

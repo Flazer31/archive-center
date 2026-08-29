@@ -1287,6 +1287,60 @@ async function safeCall(fn){ return await fn(); }
 	}
 }
 
+func TestRepairReplayKeepsConflictEvidenceAndRescansOnlyFullyRepairedTurns(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for Repair Replay fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	normalizeTurns := extractArchiveCenterJSSyncFunction(t, src, "normalizeTurnIndexList")
+	repair := extractArchiveCenterJSAsyncFunction(t, src, "explorerRepairChatLogs")
+	script := `
+const _chatLogRepairState={loading:false,error:null,result:null};
+const removed=[];
+const cleared=[];
+const rescanned=[];
+let requestCount=0;
+function explorerSessionId(){ return "session-a"; }
+function buildChatLogRepairReplayCandidateBundle(){
+  return {entries:[{turn_index:2},{turn_index:3}],candidateTurnIndices:[2,3],journalCount:2,deletedSnapshotCount:0,sourceType:"journal"};
+}
+async function buildChatLogRepairReplayFallbackBundleFromActiveChat(){ throw new Error("unexpected fallback"); }
+function setChatLogRepairProgress(){}
+function refreshExplorerUI(){}
+function t(key){ return key; }
+function formatTurnIndexPreview(turns){ return turns.join(","); }
+async function bridgeFetch(path,options){
+  if (path !== "/turns/repair-replay") throw new Error("wrong route: "+path);
+  requestCount++;
+  if (options.body.dry_run) return {status:"ok",total_missing_role_count:2,total_conflict_role_count:1};
+  return {status:"ok",repaired_turns:[2,3],conflict_turns:[2],failed_turns:[],total_repaired_role_count:2,total_conflict_role_count:1};
+}
+async function showConfirmModal(){ return true; }
+async function removeFailedQueueItemsByTurn(sid,turns,kind){ removed.push({sid,turns:[...turns],kind}); }
+function clearChatLogRestoreSnapshotEntries(sid,turns){ cleared.push({sid,turns:[...turns]}); }
+async function explorerFetchChatLogs(){}
+async function maybeRescanDerivedArtifactsForTurns(sid,turns){ rescanned.push({sid,turns:[...turns]}); return {ran:true,ok:true,result:{succeeded:1,failed:0}}; }
+` + normalizeTurns + "\n" + repair + `
+(async()=>{
+  const ok=await explorerRepairChatLogs();
+  if (!ok || requestCount !== 2) throw new Error("Repair Replay production path did not complete");
+  const expected=JSON.stringify([3]);
+  if (JSON.stringify(removed[0]&&removed[0].turns)!==expected) throw new Error("conflict turn was cleared from failed queue: "+JSON.stringify(removed));
+  if (JSON.stringify(cleared[0]&&cleared[0].turns)!==expected) throw new Error("conflict turn lost local evidence: "+JSON.stringify(cleared));
+  if (JSON.stringify(rescanned[0]&&rescanned[0].turns)!==expected) throw new Error("conflict turn reached derived rescan: "+JSON.stringify(rescanned));
+})().catch(err=>{ console.error(err); process.exitCode=1; });
+`
+	cmd := exec.Command(nodePath, "-e", script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Repair Replay conflict fixture failed: %v\n%s", err, out)
+	}
+}
+
 func TestExistingLLMRetryZeroReachesRuntimeConfigAndAdminCritic(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {

@@ -259,6 +259,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 			{role: "assistant", content: entry.AssistantContent},
 		}
 		turnHasConflict := false
+		conflictedRoles := map[string]bool{}
 		for _, candidate := range candidates {
 			content := ""
 			if candidate.content != nil {
@@ -271,6 +272,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 				if strings.TrimSpace(current) != strings.TrimSpace(content) {
 					totalConflictRoles++
 					turnHasConflict = true
+					conflictedRoles[candidate.role] = true
 					conflicts = append(conflicts, map[string]any{
 						"turn_index": turnIndex,
 						"role":       candidate.role,
@@ -283,10 +285,6 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 		}
 		if turnHasConflict {
 			conflictTurns = append(conflictTurns, turnIndex)
-			processedEntries++
-			skippedEntries++
-			reportProgress(turnIndex, "entry_complete")
-			continue
 		}
 
 		createdAt := parseRepairReplayCreatedAt(entry.CreatedAt, now)
@@ -294,6 +292,9 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 		missingBefore := totalMissingRoles
 		failedThisTurn := false
 		for _, candidate := range candidates {
+			if conflictedRoles[candidate.role] {
+				continue
+			}
 			content := ""
 			if candidate.content != nil {
 				content = sanitizeCriticStorageText(*candidate.content)

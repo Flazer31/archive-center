@@ -1505,12 +1505,11 @@ func TestAdminSessionNormalizeRawRepairReportsRealCandidateCountAndCompletes(t *
 
 func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *testing.T) {
 	dbUser := "database user"
-	dbAssistant := "database assistant"
 	activeUser := "active chat user"
-	fake := &memoryFakeStore{chatLogs: []store.ChatLog{
+	missingAssistant := "verified missing assistant"
+	fake := newRepairReplayMutableStore([]store.ChatLog{
 		{ChatSessionID: "sess-normalize-conflict", TurnIndex: 2, Role: "user", Content: dbUser},
-		{ChatSessionID: "sess-normalize-conflict", TurnIndex: 2, Role: "assistant", Content: dbAssistant},
-	}}
+	})
 	srv := NewServer(config.Default())
 	srv.Store = fake
 	srv.StoreOpenError = nil
@@ -1519,7 +1518,7 @@ func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *t
 		RepairEntries: []dto.ChatLogRepairEntryRequest{{
 			TurnIndex:        2,
 			UserContent:      &activeUser,
-			AssistantContent: &dbAssistant,
+			AssistantContent: &missingAssistant,
 		}},
 		TurnIndices: []int{2},
 		SkipReindex: true,
@@ -1537,8 +1536,12 @@ func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *t
 	}
 	repair := mapFromAny(result["repair_replay"])
 	if intFromAny(repair["total_conflict_role_count"], 0) != 1 ||
+		intFromAny(repair["total_repaired_role_count"], 0) != 1 ||
 		!reflect.DeepEqual(intSliceFromAny(repair["conflict_turns"]), []int{2}) {
 		t.Fatalf("repair conflict result=%#v", repair)
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].Role != "assistant" || fake.savedChatLogs[0].Content != missingAssistant {
+		t.Fatalf("independently verified assistant was not preserved: %#v", fake.savedChatLogs)
 	}
 }
 
