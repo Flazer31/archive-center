@@ -2258,7 +2258,8 @@ func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) 
 	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
 	classifyFn := extractArchiveCenterJSFunction(t, src, "classifyLlmFailureReason")
 	gateFn := extractArchiveCenterJSFunction(t, src, "buildLlmGateBlock")
-	script := classifyFn + "\n" + gateFn + "\n" + fn + `
+	traceFn := extractArchiveCenterJSFunction(t, src, "newTurnTrace")
+	script := classifyFn + "\n" + gateFn + "\n" + traceFn + "\n" + fn + `
 const settings = {enabled: true, debug: false};
 let _sessionCache = null;
 let _effectiveInputAwaitingNewTurn = false;
@@ -2316,6 +2317,7 @@ async function ensureBackendRuntimeConfigBinding(instanceId) {
   return {ok:true,bound:true,skipped:true,code:"config_sync_ok",backendInstanceId:instanceId,missingRoles:[]};
 }
 function ensureActiveChatCompletedTurnsBackfilled() { preFullSideEffects++; return Promise.resolve(); }
+async function preflightActiveChatBackfillIdentity() { return {status:"ok"}; }
 async function observePendingFinalConfirmationAtHostSignal() { boundedHostLifecycleCalls++; return {accepted:true}; }
 async function captureAssistantPrefillSeedForSession() { boundedHostLifecycleCalls++; }
 async function captureFinalConfirmationRequestContext() { boundedHostLifecycleCalls++; }
@@ -4047,7 +4049,7 @@ function debugLog() {}
 	}
 }
 
-func TestRollbackDecisionForwardsPendingOutputGuardAndCapturedRoute(t *testing.T) {
+func TestRollbackDecisionForwardsCapturedRouteWithoutPendingOutputGuard(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -4065,7 +4067,7 @@ function serializeSessionRoutingBaselineForBackend() { return null; }
 async function bridgeFetch(path, options) {
   if (path !== "/rollback/decision") throw new Error("unexpected path");
   capturedBody = options.body;
-  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"pending_output_guard"};
+  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
 }
 
 (async function() {
@@ -4079,10 +4081,10 @@ async function bridgeFetch(path, options) {
       hostChatIdState:"observed"
     },
   }, "auto");
-  if (!capturedBody || capturedBody.pending_output_guard !== true ||
+  if (!capturedBody || Object.prototype.hasOwnProperty.call(capturedBody,"pending_output_guard") ||
       capturedBody.stable_character_id !== "character-1" ||
       capturedBody.host_chat_id !== "chat-1") {
-    throw new Error("pending output guard or captured route was not forwarded: " + JSON.stringify(capturedBody));
+    throw new Error("captured route was lost or stale pending guard was forwarded: " + JSON.stringify(capturedBody));
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -6234,7 +6236,6 @@ let rollbackFrom = 0;
 let decisionCalls = 0;
 let deleteCalls = 0;
 let suppliedDecision = null;
-function hasPendingFinalConfirmationForSession() { return false; }
 function extractActiveChatMessageList(chat) { return chat.message; }
 function extractActiveChatRollbackMessages(chat) { return chat.message; }
 function buildRollbackAssistantObservations(messages) {
@@ -6293,7 +6294,6 @@ const SESSION_FALLBACK = "default";
 const _rollbackTailReconcileInFlightBySession = new Set();
 let rollbackCalls = 0;
 let decisionCalls = 0;
-function hasPendingFinalConfirmationForSession() { return false; }
 function extractActiveChatMessageList(chat) { return chat.message; }
 function extractActiveChatRollbackMessages(chat) { return chat.message; }
 function buildRollbackAssistantObservations(messages) {
@@ -6528,7 +6528,6 @@ const firstAGate = new Promise(function(resolve) { releaseFirstA = resolve; });
 let firstAFails = true;
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function debugLog() {}
-function hasPendingFinalConfirmationForSession() { return false; }
 async function getCurrentChatSessionId() { throw new Error("explicit session id was discarded"); }
 async function resolveCurrentActiveChatObject(sessionId, hostContext) {
   const expectedHost = "host-" + sessionId.slice(-1);
@@ -6649,7 +6648,6 @@ let decisionCalls = 0;
 const rollbackTurns = [];
 function assert(condition, message) { if (!condition) throw new Error(message); }
 function debugLog() {}
-function hasPendingFinalConfirmationForSession() { return false; }
 async function getCurrentChatSessionId() { throw new Error("explicit session id was discarded"); }
 async function resolveCurrentActiveChatObject(sessionId, hostContext) {
   if (sessionId !== "session-reroll" || !hostContext || hostContext.hostChatId !== "host-reroll") {

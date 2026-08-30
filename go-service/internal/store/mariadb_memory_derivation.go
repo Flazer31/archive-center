@@ -6,7 +6,6 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -1068,15 +1067,15 @@ func (m *mariadbStore) finishMemoryReprocessingJob(ctx context.Context, jobID in
 		}
 	}()
 	now = nonZeroTime(now)
-	var currentOwner, sourceState, chatSessionID string
+	var currentOwner, sourceState string
 	var leaseUntil time.Time
 	if err := tx.QueryRowContext(ctx, `
-		SELECT j.lease_owner, j.lease_until, s.lifecycle_state, j.chat_session_id
+		SELECT j.lease_owner, j.lease_until, s.lifecycle_state
 		FROM memory_reprocessing_jobs j
 		JOIN memory_source_revisions s ON s.source_revision = j.source_revision
 		WHERE j.id = ? AND j.status = 'leased'
 		FOR UPDATE
-	`, jobID).Scan(&currentOwner, &leaseUntil, &sourceState, &chatSessionID); err != nil {
+	`, jobID).Scan(&currentOwner, &leaseUntil, &sourceState); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrLeaseExpired
 		}
@@ -1084,11 +1083,6 @@ func (m *mariadbStore) finishMemoryReprocessingJob(ctx context.Context, jobID in
 	}
 	if currentOwner != leaseOwner || leaseUntil.Before(now) {
 		return ErrLeaseExpired
-	}
-	if !failed {
-		if err := memoryDerivationRejectActiveSessionMigrationLock(ctx, tx, chatSessionID, "memory_reprocessing_finish"); err != nil {
-			return err
-		}
 	}
 	if sourceState != "active" {
 		if _, err := tx.ExecContext(ctx, `
@@ -1668,9 +1662,6 @@ func (m *mariadbStore) CompleteMemoryVectorMaterializedOperation(
 		currentDocumentID != strings.TrimSpace(materialization.DocumentID) {
 		return fmt.Errorf("memory vector materialization identity mismatch")
 	}
-	if err := memoryDerivationRejectActiveSessionMigrationLock(ctx, tx, currentSID, "memory_vector_materialized_finish"); err != nil {
-		return err
-	}
 	if requiredState != "active" || sourceState != "active" {
 		if _, err := tx.ExecContext(ctx, `
 			UPDATE memory_vector_outbox
@@ -1745,17 +1736,17 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 		}
 	}()
 	now = nonZeroTime(now)
-	var currentStatus, requiredState, sourceState, chatSessionID string
+	var currentStatus, requiredState, sourceState string
 	var currentOwner sql.NullString
 	var leaseUntil sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
 		SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,
-		       s.lifecycle_state, o.chat_session_id
+		       s.lifecycle_state
 		FROM memory_vector_outbox o
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
 		WHERE o.id = ?
 		FOR UPDATE
-	`, outboxID).Scan(&currentStatus, &currentOwner, &leaseUntil, &requiredState, &sourceState, &chatSessionID); err != nil {
+	`, outboxID).Scan(&currentStatus, &currentOwner, &leaseUntil, &requiredState, &sourceState); err != nil {
 		if err == sql.ErrNoRows {
 			return ErrLeaseExpired
 		}
@@ -1766,11 +1757,6 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 	}
 	if currentStatus != "leased" || !leaseUntil.Valid || currentOwner.String != leaseOwner || leaseUntil.Time.Before(now) {
 		return ErrLeaseExpired
-	}
-	if !failed {
-		if err := memoryDerivationRejectActiveSessionMigrationLock(ctx, tx, chatSessionID, "memory_vector_finish"); err != nil {
-			return err
-		}
 	}
 	sourceFenceSatisfied := (requiredState == "active" && sourceState == "active") ||
 		(requiredState == "inactive" && sourceState != "active")
@@ -1808,24 +1794,5 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 		return err
 	}
 	committed = true
-	return nil
-}
-
-func memoryDerivationRejectActiveSessionMigrationLock(
-	ctx context.Context,
-	tx *sql.Tx,
-	chatSessionID string,
-	phase string,
-) error {
-	lock, err := sessionMigrationSelectActiveLockTx(ctx, tx, strings.TrimSpace(chatSessionID))
-	if errors.Is(err, ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if lock != nil {
-		return sessionMigrationBlocker("source_session_locked_for_migration", phase, "")
-	}
 	return nil
 }

@@ -15,22 +15,6 @@ import (
 	"github.com/go-sql-driver/mysql"
 )
 
-func expectNoActiveMemoryDerivationSessionMigrationLock(mock sqlmock.Sqlmock, chatSessionID string) {
-	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*locked = TRUE.*unlocked_at IS NULL.*FOR UPDATE`).
-		WithArgs(chatSessionID).
-		WillReturnRows(sqlmock.NewRows([]string{
-			"migration_id", "source_session_id", "target_session_id", "locked",
-			"lock_status", "reason", "locked_at",
-		}))
-}
-
-func activeMemoryDerivationSessionMigrationLockRows(now time.Time, sourceSessionID string) *sqlmock.Rows {
-	return sqlmock.NewRows([]string{
-		"migration_id", "source_session_id", "target_session_id", "locked",
-		"lock_status", "reason", "locked_at",
-	}).AddRow(91, sourceSessionID, "migration-target", true, "migrated_away", "migration active", now)
-}
-
 func TestMariaDBNextMemoryReprocessingWakeAtUsesDurableQueueTime(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -390,9 +374,8 @@ func TestMariaDBReprocessingJobReplayLeaseRecoveryAndStaleCompletion(t *testing.
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT j.lease_owner, j.lease_until, s.lifecycle_state").
 		WithArgs(int64(5)).
-		WillReturnRows(sqlmock.NewRows([]string{"lease_owner", "lease_until", "lifecycle_state", "chat_session_id"}).
-			AddRow("worker-2", now.Add(time.Minute), "superseded", job.ChatSessionID))
-	expectNoActiveMemoryDerivationSessionMigrationLock(mock, job.ChatSessionID)
+		WillReturnRows(sqlmock.NewRows([]string{"lease_owner", "lease_until", "lifecycle_state"}).
+			AddRow("worker-2", now.Add(time.Minute), "superseded"))
 	mock.ExpectExec("UPDATE memory_reprocessing_jobs").
 		WithArgs(now, int64(5)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -448,7 +431,7 @@ func TestMariaDBMemoryReprocessingClaimSkipsMigrationLockedSourceAndLeasesNextEl
 	}
 }
 
-func TestMariaDBMemoryReprocessingCompletionRefusesNewSessionMigrationLock(t *testing.T) {
+func TestMariaDBMemoryReprocessingCompletionUsesClaimedLeaseAndSourceFence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -461,17 +444,15 @@ func TestMariaDBMemoryReprocessingCompletionRefusesNewSessionMigrationLock(t *te
 	mock.ExpectQuery("SELECT j.lease_owner, j.lease_until, s.lifecycle_state").
 		WithArgs(int64(23)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"lease_owner", "lease_until", "lifecycle_state", "chat_session_id",
-		}).AddRow("worker", now.Add(time.Minute), "active", "locked-session"))
-	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*FOR UPDATE`).
-		WithArgs("locked-session").
-		WillReturnRows(activeMemoryDerivationSessionMigrationLockRows(now, "locked-session"))
-	mock.ExpectRollback()
+			"lease_owner", "lease_until", "lifecycle_state",
+		}).AddRow("worker", now.Add(time.Minute), "active"))
+	mock.ExpectExec("UPDATE memory_reprocessing_jobs").
+		WithArgs("completed", nil, nil, now, int64(23)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	err = m.CompleteMemoryReprocessingJob(context.Background(), 23, "worker", now)
-	var blocker *SessionMigrationBlockerError
-	if !errors.As(err, &blocker) || blocker.Code != "source_session_locked_for_migration" || blocker.Phase != "memory_reprocessing_finish" {
-		t.Fatalf("completion error=%v blocker=%#v", err, blocker)
+	if err := m.CompleteMemoryReprocessingJob(context.Background(), 23, "worker", now); err != nil {
+		t.Fatalf("completion error=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -492,8 +473,8 @@ func TestMariaDBMemoryReprocessingFailureCanReleaseLeaseDuringSessionMigration(t
 	mock.ExpectQuery("SELECT j.lease_owner, j.lease_until, s.lifecycle_state").
 		WithArgs(int64(24)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"lease_owner", "lease_until", "lifecycle_state", "chat_session_id",
-		}).AddRow("worker", now.Add(time.Minute), "active", "locked-session"))
+			"lease_owner", "lease_until", "lifecycle_state",
+		}).AddRow("worker", now.Add(time.Minute), "active"))
 	mock.ExpectExec("UPDATE memory_reprocessing_jobs").
 		WithArgs("retryable", retryAt, "source_session_migration_locked", now, int64(24)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -654,11 +635,10 @@ func TestMariaDBVectorOutboxReplayLeaseRecoveryAndSourceFence(t *testing.T) {
 	}
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state, o.chat_session_id`).
+	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state`).
 		WithArgs(int64(9)).
-		WillReturnRows(sqlmock.NewRows([]string{"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state", "chat_session_id"}).
-			AddRow("leased", "worker", now.Add(time.Minute), "active", "superseded", item.ChatSessionID))
-	expectNoActiveMemoryDerivationSessionMigrationLock(mock, item.ChatSessionID)
+		WillReturnRows(sqlmock.NewRows([]string{"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state"}).
+			AddRow("leased", "worker", now.Add(time.Minute), "active", "superseded"))
 	mock.ExpectExec("UPDATE memory_vector_outbox").
 		WithArgs(now, int64(9)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -681,11 +661,11 @@ func TestMariaDBVectorOutboxFinishReportsInvalidationRaceAsSourceStale(t *testin
 	now := time.Date(2026, 7, 28, 3, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state, o.chat_session_id`).
+	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state`).
 		WithArgs(int64(44)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state", "chat_session_id",
-		}).AddRow("stale_rejected", nil, nil, "active", "superseded", "session"))
+			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state",
+		}).AddRow("stale_rejected", nil, nil, "active", "superseded"))
 	mock.ExpectRollback()
 
 	if err := m.CompleteMemoryVectorOperation(context.Background(), 44, "worker", now); !errors.Is(err, ErrSourceRevisionStale) {
@@ -738,7 +718,7 @@ func TestMariaDBVectorOutboxClaimSkipsMigrationLockedSourceAndLeasesNextEligible
 	}
 }
 
-func TestMariaDBVectorOutboxCompletionRefusesNewSessionMigrationLock(t *testing.T) {
+func TestMariaDBVectorOutboxCompletionUsesClaimedLeaseAndSourceFence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -748,20 +728,18 @@ func TestMariaDBVectorOutboxCompletionRefusesNewSessionMigrationLock(t *testing.
 	now := time.Date(2026, 8, 30, 1, 15, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state, o.chat_session_id`).
+	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state`).
 		WithArgs(int64(94)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state", "chat_session_id",
-		}).AddRow("leased", "worker", now.Add(time.Minute), "active", "active", "locked-session"))
-	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*FOR UPDATE`).
-		WithArgs("locked-session").
-		WillReturnRows(activeMemoryDerivationSessionMigrationLockRows(now, "locked-session"))
-	mock.ExpectRollback()
+			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state",
+		}).AddRow("leased", "worker", now.Add(time.Minute), "active", "active"))
+	mock.ExpectExec("UPDATE memory_vector_outbox").
+		WithArgs("completed", nil, nil, now, int64(94)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	err = m.CompleteMemoryVectorOperation(context.Background(), 94, "worker", now)
-	var blocker *SessionMigrationBlockerError
-	if !errors.As(err, &blocker) || blocker.Code != "source_session_locked_for_migration" || blocker.Phase != "memory_vector_finish" {
-		t.Fatalf("completion error=%v blocker=%#v", err, blocker)
+	if err := m.CompleteMemoryVectorOperation(context.Background(), 94, "worker", now); err != nil {
+		t.Fatalf("completion error=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)
@@ -779,11 +757,11 @@ func TestMariaDBVectorOutboxFailureCanReleaseLeaseDuringSessionMigration(t *test
 	retryAt := now.Add(time.Minute)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state, o.chat_session_id`).
+	mock.ExpectQuery(`(?s)SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,.*s.lifecycle_state`).
 		WithArgs(int64(95)).
 		WillReturnRows(sqlmock.NewRows([]string{
-			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state", "chat_session_id",
-		}).AddRow("leased", "worker", now.Add(time.Minute), "active", "active", "locked-session"))
+			"status", "lease_owner", "lease_until", "required_source_state", "lifecycle_state",
+		}).AddRow("leased", "worker", now.Add(time.Minute), "active", "active"))
 	mock.ExpectExec("UPDATE memory_vector_outbox").
 		WithArgs("retryable", retryAt, "source_session_migration_locked", now, int64(95)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
@@ -864,7 +842,6 @@ func TestMariaDBCompletesVerifiedMemoryMaterializationAndOutboxAtomically(t *tes
 			"lease_owner", "lease_until", "required_source_state", "lifecycle_state", "turn_index",
 		}).AddRow("leased", "upsert", "session", "sar_active", "memory:session:17",
 			"worker", leaseUntil, "active", "active", 5))
-	expectNoActiveMemoryDerivationSessionMigrationLock(mock, "session")
 	mock.ExpectQuery(`(?s)SELECT turn_index.*FROM memories.*WHERE id = \? AND chat_session_id = \?.*FOR UPDATE`).
 		WithArgs(int64(17), "session").
 		WillReturnRows(sqlmock.NewRows([]string{"turn_index"}).AddRow(5))
@@ -886,7 +863,7 @@ func TestMariaDBCompletesVerifiedMemoryMaterializationAndOutboxAtomically(t *tes
 	}
 }
 
-func TestMariaDBMaterializedVectorCompletionRefusesNewSessionMigrationLock(t *testing.T) {
+func TestMariaDBMaterializedVectorCompletionUsesClaimedLeaseAndSourceFence(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
 		t.Fatal(err)
@@ -910,15 +887,19 @@ func TestMariaDBMaterializedVectorCompletionRefusesNewSessionMigrationLock(t *te
 			"leased", "upsert", materialization.ChatSessionID, materialization.SourceRevision, materialization.DocumentID,
 			"worker", now.Add(time.Minute), "active", "active", 5,
 		))
-	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*FOR UPDATE`).
-		WithArgs(materialization.ChatSessionID).
-		WillReturnRows(activeMemoryDerivationSessionMigrationLockRows(now, materialization.ChatSessionID))
-	mock.ExpectRollback()
+	mock.ExpectQuery(`(?s)SELECT turn_index.*FROM memories.*WHERE id = \? AND chat_session_id = \?.*FOR UPDATE`).
+		WithArgs(int64(17), materialization.ChatSessionID).
+		WillReturnRows(sqlmock.NewRows([]string{"turn_index"}).AddRow(5))
+	mock.ExpectExec(`(?s)UPDATE memories.*SET embedding = \?, embedding_model = \?.*WHERE id = \? AND chat_session_id = \?`).
+		WithArgs(materialization.EmbeddingJSON, materialization.EmbeddingModel, int64(17), materialization.ChatSessionID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(`(?s)UPDATE memory_vector_outbox.*SET status = 'completed'.*WHERE id = \?`).
+		WithArgs(now, int64(95)).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectCommit()
 
-	err = m.CompleteMemoryVectorMaterializedOperation(context.Background(), 95, "worker", now, materialization)
-	var blocker *SessionMigrationBlockerError
-	if !errors.As(err, &blocker) || blocker.Code != "source_session_locked_for_migration" || blocker.Phase != "memory_vector_materialized_finish" {
-		t.Fatalf("completion error=%v blocker=%#v", err, blocker)
+	if err := m.CompleteMemoryVectorMaterializedOperation(context.Background(), 95, "worker", now, materialization); err != nil {
+		t.Fatalf("completion error=%v", err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

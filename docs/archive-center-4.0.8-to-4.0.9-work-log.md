@@ -768,3 +768,66 @@ snapshot이지만, 깨끗한 checkout에서 같은 결과를 재현할 수 있�
 산출물은 아니다. 빌더가 기록한 `release_ready=true`는 필수 payload가 들어간
 패키지 무결성 상태이며, 10.8의 branch 첫 요청 경합과 migration worker fencing이
 해결됐다는 뜻은 아니다.
+
+### 10.12 과도한 차단 정책 재감사와 제거
+
+2026-08-30 KST, 기존 4.0.9 작업을 tag `v4.0.2`와 다시 대조했다. 이 재감사는
+사용자가 반복해서 금지한 다음 구현이 실제로 들어갔다는 피드백 때문에 수행했다.
+
+- 세계선 항목 하나가 미확정이라는 이유로 현재 요청 전체를 건너뜀
+- 오래 남은 pending 출력 하나가 실제 삭제 증거까지 전부 막음
+- worker 완료 시 migration lock을 다시 잠가 기존 drain·lease fence와 중복됨
+- 별도 테스트 실행기가 위 전역 차단을 올바른 결과로 고정함
+
+수정 전 상태 전체는 local checkpoint `f35f32d`로 보존했다. 그 뒤 새 보호 조건을
+추가하지 않고 기존 소유 경로에서 다음 조건만 제거·분리했다.
+
+1. `beforeRequest`의 세계선 사전 확인은 과거 턴 backfill 판정에만 사용한다.
+   `worldline_ownership_unresolved`여도 현재 `/prepare-turn`과 기억 주입은 계속된다.
+2. `onRisuOutput`의 정확한 A 세션 좌표 고정은 유지한다. 세계선 진단 실패·미확정은
+   A 세션의 최종 출력 원문 저장과 평론가 진입을 막지 않는다.
+3. 정확한 요청 소유자를 찾지 못한 `afterRequest`는 현재 세션으로 대체 저장하지
+   않는다. 무한 회전 `watching` 대신 기존 `deferred` 상태로 종료하고 공식 출력
+   callback이 캡처된 요청 문맥을 사용하게 둔다.
+4. JavaScript의 `pending_output_guard` 전송과 Go의 전역 차단을 제거했다. 실제
+   assistant 관측, source revision, lifecycle action, 캡처된 route와 one-use
+   decision token이 삭제 여부를 계속 결정한다.
+5. memory reprocessing·Vector worker 완료 transaction 안의 migration lock 재검사
+   세 곳과 helper를 제거했다. claim/wake의 migration 제외, source worker drain,
+   source lifecycle fence, 최종 active lease 및 relational/Vector parity 검사는
+   유지했다.
+6. `PrepareSessionMigrationSourceLock`가 동시에 non-nil provisional과 error를
+   반환한다고 가정한 도달 불가능 분기를 제거했다. prepare 성공 뒤 drain·parity·
+   lease 단계가 실패할 때 pending fence를 해제하는 실제 경로는 유지했다.
+7. 운영 경로와 분리되어 잘못된 `/prepare-turn` 0회 결과를 고정하던
+   `archive-center-runtime.test.cjs`를 제거했다. 회귀는 기존
+   `cmd/js-route-variant-smoke`에서 실제 `Archive Center.js` 함수를 추출해 실행하고
+   실제 Go HTTP 판정 함수를 호출하는 경로로 통합했다.
+
+Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair로 재검사하면
+충돌한 원문과 새로 복구한 원문이 잘못 짝지어질 수 있다. 따라서 conflict 턴의
+후속 rescan 제외는 이번에 무조건 제거하지 않았다. Go의 role별 정상 원문 저장은
+그대로 유지하며, role별 rescan 계약이 별도로 마련되기 전에는 턴 전체를 억지로
+재검사하지 않는다.
+
+이번 수정의 운영 코드 변화량은 다음과 같다.
+
+- `Archive Center.js`: `+29 / -44`
+- Go 운영 코드: `+6 / -51`
+- 중복 독립 테스트 파일: `-268`
+- 새 API·table·queue·timer·watcher·fallback: `0`
+
+검증 결과:
+
+- 번들 Node `--check Archive Center.js`: 통과
+- `go test ./cmd/js-route-variant-smoke -count=1`: 통과
+- `go test ./internal/httpapi -count=1`: 통과
+- `go test ./internal/store -count=1`: 통과
+- `go test ./... -count=1`: 통과
+- `git diff --check`: 통과
+
+위 결과는 소스와 자동 회귀 증거다. 실제 RisuAI에서 A 요청 중 B 세션 이동,
+미확정 branch 첫 요청, 출력 삭제 뒤 즉시 리롤, 실제 MariaDB·Chroma migration을
+사용한 실환경 검증은 테스트 패키지 갱신 뒤 별도로 확인해야 한다. 이 절은 10.8의
+첫 branch 요청 및 worker claim blocker, 10.9의 release 불가 판정, 10.11의 이전
+패키지 상태를 현재 소스 기준으로 갱신한다.

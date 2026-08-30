@@ -18967,27 +18967,26 @@
       if (matchingRequestContexts.length === 1) {
         const requestContext = matchingRequestContexts[0];
         const committedSessionId = String(requestContext.sessionId || "").trim();
-        Promise.resolve().then(async function confirmRoutingThenCommittedOutput() {
-          let routing = null;
-          if (worldlineObservation) {
-            routing = await requestBackendSessionRoutingTurnResolution(committedSessionId, "identity", {
+        if (worldlineObservation) {
+          Promise.resolve().then(function diagnoseCommittedOutputWorldline() {
+            return requestBackendSessionRoutingTurnResolution(committedSessionId, "identity", {
               stableCharacterId,
               stableCharacterIdState: stableCharacterId ? "observed" : "unobserved",
               hostChatId,
               hostChatIdState: "observed",
               worldlineObservation,
             });
-            if (!routing || !routing.worldline || routing.worldline.state !== "confirmed") {
-              return {
-                accepted: false,
-                reason: String(
-                  routing && routing.worldline && routing.worldline.reason
-                  || routing && routing.status
-                  || "worldline_ownership_unresolved"
-                ),
-              };
-            }
-          }
+          }).then(function recordCommittedOutputWorldline(routing) {
+            debugLog("[output] worldline diagnostic:", String(
+              routing && routing.worldline && routing.worldline.reason
+              || routing && routing.status
+              || "worldline_ownership_unresolved"
+            ));
+          }).catch(function reportCommittedOutputWorldlineFailure(err) {
+            warnLog("onRisuOutput worldline diagnostic failed:", err && err.message);
+          });
+        }
+        Promise.resolve().then(async function persistCommittedOutput() {
           const result = await observePendingFinalConfirmationAtHostSignal(committedSessionId, "output", snapshot);
           if (result && result.accepted === true && result.observation && result.assistantContent) {
             onAfterRequest(result.assistantContent, String(requestContext.requestType || "model"), result.observation);
@@ -19482,15 +19481,6 @@
     ).trim();
     if (payloadKey) return "complete|" + payloadKey;
     return "";
-  }
-
-  function hasPendingFinalConfirmationForSession(sessionId) {
-    const sid = String(sessionId || "").trim();
-    if (!sid) return false;
-    for (const pending of _pendingFinalConfirmations.values()) {
-      if (pending && String(pending.sessionId || "").trim() === sid) return true;
-    }
-    return false;
   }
 
   function queuePendingFinalConfirmation(pending) {
@@ -20326,7 +20316,6 @@
         incomplete_tail_candidate: !!(tailVerification && tailVerification.status === "incomplete_user_only_tail_candidate"),
         history_trim_guard: false,
         duplicate_blocked: false,
-        pending_output_guard: observed.pendingOutputGuard === true,
         host_lifecycle_observation: String(observed.hostLifecycleObservation || ""),
         lifecycle_action_observation: String(observed.lifecycleActionObservation || ""),
         allow_manual_candidate: String(requestSource || "auto") === "manual",
@@ -20559,7 +20548,6 @@
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
         hostContext: options.hostContext || null,
-        pendingOutputGuard: hasPendingFinalConfirmationForSession(sid),
         hostLifecycleObservation: String(
           options.hostLifecycleObservation
           || ""
@@ -32561,12 +32549,6 @@
         orchSessionId,
         { hostContext: orchHostContext }
       );
-      if (
-        activeChatBackfillIdentityPreflight
-        && activeChatBackfillIdentityPreflight.reason === "worldline_ownership_unresolved"
-      ) {
-        return payload;
-      }
       primeTurnWorkflowHUD(orchRequestId);
       if (!priorHostFinal || priorHostFinal.accepted !== true) {
         ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
@@ -33554,6 +33536,21 @@
       const selectedRequestContext = matchingRequestContexts.length === 1
         ? matchingRequestContexts[0]
         : null;
+      if (isSaveType(type) && !selectedRequestContext) {
+        const deferredDisplayContent = typeof content === "string"
+          ? sanitizeNarrativeOutputForDisplay(content)
+          : content;
+        updateRuntimeState("lastStreamingAfterRequest", "deferred", {
+          detail: "exact session host observation unavailable; waiting for the official output callback",
+          reason_code: matchingRequestContexts.length > 1
+            ? "after_request_session_owner_ambiguous"
+            : "after_request_session_owner_unobserved",
+          sessionId: "",
+          requestType,
+          promptMemoryAvailability: "deferred_current_turn",
+        });
+        return deferredDisplayContent;
+      }
       const selectedPendingContext = selectedRequestContext
         ? (_pendingOrchBySession.get(String(selectedRequestContext.sessionId || "")) || null)
         : null;
@@ -33657,18 +33654,6 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      if (isSaveType(type) && !selectedRequestContext) {
-        updateRuntimeState("lastStreamingAfterRequest", "watching", {
-          detail: "waiting for an exact session host observation",
-          reason_code: matchingRequestContexts.length > 1
-            ? "after_request_session_owner_ambiguous"
-            : "after_request_session_owner_unobserved",
-          sessionId: "",
-          requestType,
-          promptMemoryAvailability: "pending_current_turn",
-        });
-        return responseReturnContent;
-      }
       if (isSaveType(type)) {
         const requestContext = selectedRequestContext || _finalConfirmationRequestBySession.get(chatSessionId) || null;
         persistenceRequestContext = requestContext;

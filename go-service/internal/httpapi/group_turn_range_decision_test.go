@@ -2180,6 +2180,7 @@ func TestObservedAssistantDeletionRunsRealDecisionThenCanonicalRollback(t *testi
 		"request_source":"auto",
 		"candidate_from_turn":0,
 		"deletion_observed":true,
+		"pending_output_guard":true,
 		"assistant_observation_scope":"full_active_chat",
 		"assistant_observations":[
 			{"message_id":"assistant-1","content_hash":"`+prepareOR1CHash("a1")+`","message_index":0,"disabled_state":"active","streaming_state":"not_streaming","final_state":"active_final"}
@@ -2346,7 +2347,7 @@ func TestRollbackDecisionV2RejectsRouteRevisionChangeBeforeMutation(t *testing.T
 	}
 }
 
-func TestRollbackDecisionV2PendingOutputDoesNotIssueToken(t *testing.T) {
+func TestRollbackDecisionV2LegacyPendingOutputFlagDoesNotOverrideObservedSupersession(t *testing.T) {
 	const sid = "session-pending-output"
 	server := &Server{Store: &rollbackRoutedRecordingStore{
 		rollbackRecordingStore:      &rollbackRecordingStore{Store: store.NewNoopStore()},
@@ -2372,8 +2373,8 @@ func TestRollbackDecisionV2PendingOutputDoesNotIssueToken(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &decision); err != nil {
 		t.Fatal(err)
 	}
-	if decision.Allowed || decision.Reason != "pending_output_guard" || decision.DecisionToken != "" {
-		t.Fatalf("pending output decision=%+v", decision)
+	if !decision.Allowed || decision.FromTurn != 1 || decision.LifecycleAction != store.LogicalTurnLifecycleSuperseded || decision.DecisionToken == "" {
+		t.Fatalf("legacy pending output flag overrode observed supersession: %+v", decision)
 	}
 }
 
@@ -2851,19 +2852,6 @@ func TestRollbackDecisionBlocksHistoryTrimAndOutOfRange(t *testing.T) {
 	out := calculateRollbackDecision(rollbackDecisionRequest{ChatSessionID: "s", DeletionObserved: true, CandidateFromTurn: 9, BackendLatestTurn: 8})
 	if out.Allowed || out.Reason != "delete_anchor_after_backend_tail" {
 		t.Fatalf("out=%+v", out)
-	}
-}
-
-func TestRollbackDecisionDefersPocketRisuStyleTailRemovalDuringGeneration(t *testing.T) {
-	resp := calculateRollbackDecision(rollbackDecisionRequest{
-		ChatSessionID: "session-1", RequestSource: "auto",
-		CandidateFromTurn: 4, PreviousTurnIndex: 4,
-		RemovedAssistantCount: 1, VisibleCompletedTurns: 3,
-		BackendLatestTurn: 4, DeletionObserved: true, LedgerVerified: true,
-		PendingOutputGuard: true,
-	})
-	if resp.Allowed || resp.Reason != "pending_output_guard" || resp.DecisionToken != "" {
-		t.Fatalf("active generation must not authorize rollback: %+v", resp)
 	}
 }
 

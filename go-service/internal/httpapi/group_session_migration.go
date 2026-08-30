@@ -955,13 +955,6 @@ func (s *Server) handleSessionMigrateLockSource(w http.ResponseWriter, r *http.R
 		r.Context(), req.MigrationID, req.Reason,
 	)
 	if err != nil {
-		if provisional != nil && provisional.LockStatus == "lock_pending_verification" {
-			if releaseErr := fenceStore.ReleaseSessionMigrationSourceLockFence(
-				r.Context(), req.MigrationID, err.Error(),
-			); releaseErr != nil {
-				resp.BlockedReasons = append(resp.BlockedReasons, "source_lock_fence_release_failed")
-			}
-		}
 		if sessionMigrationAppendTypedBlocker(&resp.BlockedReasons, err) {
 			resp.Blocked = true
 			writeJSON(w, http.StatusOK, resp)

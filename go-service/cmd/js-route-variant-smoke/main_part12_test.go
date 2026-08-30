@@ -383,6 +383,7 @@ func TestOfficialActiveTailContentChangeCanReachCanonicalReplacement(t *testing.
 	}
 	src := readArchiveCenterJS(t)
 	backfill := extractArchiveCenterJSAsyncFunction(t, src, "backfillOneActiveChatCompletedTurn")
+	preflight := extractArchiveCenterJSAsyncFunction(t, src, "preflightActiveChatBackfillIdentity")
 	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
 	script := `
 const SESSION_FALLBACK = "default";
@@ -397,6 +398,7 @@ async function requestBackendSessionRoutingTurnResolution(){
 }
 function extractActiveChatMessageList(){ return []; }
 function buildRisuWorldlineObservationFromMessages(){ return null; }
+function buildRollbackAssistantObservations(){ return []; }
 async function fetchCanonicalChatLogsForTurn(){
   return [
     {role:"user",content:"old user"},
@@ -434,7 +436,7 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
     {userContent:"edited user",assistantContent:"edited answer",risuUserMessageIndex:6,risuAssistantMessageIndex:7,hash:"unsaved-tail"},
   ];
 }
-` + backfill + "\n" + ensure + `
+` + backfill + "\n" + preflight + "\n" + ensure + `
 (async()=>{
   const pair = {
     userContent:"edited user",
@@ -527,6 +529,7 @@ func TestActiveChatWorldlinePreflightSeparatesInheritedPrefixBeforeBackfill(t *t
 	}
 	src := readArchiveCenterJS(t)
 	builder := extractJSFunctionBlockForTest(t, src, "function buildRisuWorldlineObservationFromMessages(messages, observedAtMs, hostSignalSource)")
+	preflight := extractArchiveCenterJSAsyncFunction(t, src, "preflightActiveChatBackfillIdentity")
 	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
 	script := `
 const SESSION_FALLBACK = "default";
@@ -546,6 +549,7 @@ let backfilled = [];
 async function resolveCurrentActiveChatObject(){ return {chat:rawChat}; }
 function extractActiveChatMessageList(chat){ return chat && Array.isArray(chat.message) ? chat.message : []; }
 function extractActiveChatComparableMessages(){ return []; }
+function buildRollbackAssistantObservations(){ return []; }
 function buildCompletedTurnPairsFromActiveChatMessages(){
   return [
     {hash:"pair-a",risuUserMessageIndex:0,observedPairOrdinal:1},
@@ -564,7 +568,7 @@ async function backfillOneActiveChatCompletedTurn(sid,pair,options){
   return {status:"skipped",turnIndex:0};
 }
 function updateRuntimeState(){}
-` + builder + "\n" + ensure + `
+` + builder + "\n" + preflight + "\n" + ensure + `
 const assert = (condition,message) => { if (!condition) throw new Error(message); };
 (async()=>{
   const confirmed = await ensureActiveChatCompletedTurnsBackfilled("child-session",{reason:"plugin_init"});
@@ -1637,7 +1641,7 @@ function debugLog() {}
 	}
 }
 
-func TestRisuOutputDelegatesExactCommittedOutputToCanonicalAfterRequestOwner(t *testing.T) {
+func TestRisuOutputPersistsExactCommittedOutputDespiteUnresolvedWorldline(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -1657,6 +1661,7 @@ const _finalConfirmationRequestBySession = new Map([
 const delegated = [];
 let observationCalls = 0;
 let directPersistenceCalls = 0;
+let routeCalls = 0;
 function observePendingFinalConfirmationAtHostSignal(sessionId,source,snapshot){
   observationCalls++;
   if(sessionId!=="session-a" || source!=="output" || !snapshot || snapshot.messageIndex!==1) {
@@ -1677,8 +1682,12 @@ function observePendingFinalConfirmationAtHostSignal(sessionId,source,snapshot){
 }
 function onAfterRequest(content,type,observation){ delegated.push({content,type,observation}); return content; }
 function backfillOneActiveChatCompletedTurn(){ directPersistenceCalls++; throw new Error("output used an alternate persistence path"); }
-function buildRisuWorldlineObservationFromMessages(){ return null; }
-function requestBackendSessionRoutingTurnResolution(){ throw new Error("ordinary output must not route a worldline"); }
+function buildRisuWorldlineObservationFromMessages(){ return {contract_version:"risu_worldline_observation.v2"}; }
+function requestBackendSessionRoutingTurnResolution(sessionId,mode){
+  routeCalls++;
+  if(sessionId!=="session-a" || mode!=="identity") throw new Error("worldline diagnostic escaped exact A coordinates");
+  return Promise.resolve({status:"worldline_ownership_unresolved",worldline:{state:"unresolved",reason:"parent_active_fork_source_unresolved"}});
+}
 function recordRisuHookLifecycle() {}
 function debugLog() {}
 function warnLog() {}
@@ -1689,8 +1698,8 @@ function warnLog() {}
   });
   if(result!==undefined) throw new Error("output listener became blocking");
   await new Promise(resolve=>setTimeout(resolve,0));
-  if(observationCalls!==1 || delegated.length!==1 || directPersistenceCalls!==0) {
-    throw new Error("exact output did not delegate once through the canonical path: "+JSON.stringify({observationCalls,delegated,directPersistenceCalls}));
+  if(observationCalls!==1 || delegated.length!==1 || directPersistenceCalls!==0 || routeCalls!==1) {
+    throw new Error("unresolved worldline blocked or rerouted exact output persistence: "+JSON.stringify({observationCalls,delegated,directPersistenceCalls,routeCalls}));
   }
   if(delegated[0].content!=="A output" || delegated[0].type!=="model" ||
      !delegated[0].observation || delegated[0].observation.session_id!=="session-a") {
@@ -1705,6 +1714,51 @@ function warnLog() {}
 	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("output-listener finality fixture failed: %v\n%s", err, out)
+	}
+}
+
+func TestAfterRequestWithoutExactOwnerDefersWithoutCurrentSessionFallback(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for afterRequest ownership fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	onAfterRequest := extractJSFunctionBlockForTest(t, src, "function onAfterRequest(content, type)")
+	script := onAfterRequest + `
+const settings = {enabled:true};
+const _finalConfirmationRequestBySession = new Map([
+  ["session-a",{sessionId:"session-a",state:"captured",requestType:"model"}],
+  ["session-b",{sessionId:"session-b",state:"captured",requestType:"model"}],
+]);
+const updates = [];
+function recordRisuHookLifecycle() {}
+function debugLog() {}
+function isNarrativeType(type) { return type === "model"; }
+function isSaveType(type) { return type === "model"; }
+function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
+function sanitizeNarrativeOutputForDisplay(value) { return String(value || ""); }
+function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || ""); }
+function updateRuntimeState(key,status,detail) { updates.push({key,status,detail}); }
+(function(){
+  const content = "committed output";
+  const returned = onAfterRequest(content,"model");
+  if (returned !== content) throw new Error("deferred owner path changed displayed output");
+  if (updates.length !== 1 || updates[0].key !== "lastStreamingAfterRequest" || updates[0].status !== "deferred") {
+    throw new Error("missing non-spinning deferred state: "+JSON.stringify(updates));
+  }
+  if (!updates[0].detail || updates[0].detail.reason_code !== "after_request_session_owner_ambiguous") {
+    throw new Error("ambiguous exact-owner reason missing: "+JSON.stringify(updates[0]));
+  }
+})();
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("afterRequest exact-owner fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -2012,6 +2066,16 @@ const Risuai = {
           child_session_id: body.chat_session_id,
           fork_turn_index: 1,
         };
+		if (
+			body.chat_session_id === sessionIDFor(2)
+			&& body.worldline_observation.host_signal_source === "active_chat_pre_backfill"
+		) {
+			routingPayload.resolution = "worldline_ownership_unresolved";
+			routingPayload.worldline = {
+				state: "unresolved",
+				reason: "fixture_parent_active_fork_source_unresolved",
+			};
+		}
       }
       if (
         holdNextOutputBranchRouting
@@ -2316,9 +2380,9 @@ global.risuai = Risuai;
 	await new Promise(resolve => setTimeout(resolve, 20));
 	assert(completed.length === 3, "duplicate A2 output scheduled another complete-turn");
 
-	// A first branch output must not persist until the backend has confirmed the
-	// branch lineage for the same frozen child session.  No-marker A/B requests
-	// above remain direct and unchanged.
+	// An unresolved branch preflight may skip historical backfill, but it cannot
+	// suppress the current prepare-turn or exact committed-output persistence.
+	// Output-side worldline routing remains diagnostic and may finish later.
 	const userChild = {
 		role: "user", data: "Child input " + (++sequence), chatId: "user-child", time: 1000 + sequence,
 	};
@@ -2338,11 +2402,15 @@ global.risuai = Risuai;
 		char: chars[0], chat: chats[2], characterIndex: 0, chatIndex: 2,
 		messageIndex: chats[2].message.length - 1,
 	});
-	await waitFor(() => typeof releaseOutputBranchRouting === "function", "held child output routing request");
-	assert(completed.length === 3, "child complete-turn ran before branch routing confirmation");
+	await waitFor(
+		() => typeof releaseOutputBranchRouting === "function" && completed.length === 4,
+		"child complete-turn independent of held worldline diagnostic",
+	);
+	assert(completed[3].chat_session_id === sessionIDFor(2),
+		"unresolved branch final was not persisted to the frozen child session");
 	releaseOutputBranchRouting();
-	await waitFor(() => completed.length === 4, "child complete-turn after branch routing confirmation");
-	assert(completed[3].chat_session_id === sessionIDFor(2), "branch final was not persisted to the frozen child session");
+	await new Promise(resolve => setTimeout(resolve, 20));
+	assert(completed.length === 4, "late worldline diagnostic scheduled duplicate child persistence");
 
 	// A backend source-acceptance rejection remains durably recorded for the
 	// existing retry-after-new-observation path.  Replaying the same output is

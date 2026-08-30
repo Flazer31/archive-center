@@ -57,7 +57,6 @@ type rollbackDecisionRequest struct {
 	BackendIncompleteTailVerified   bool                                     `json:"-"`
 	HistoryTrimGuard                bool                                     `json:"history_trim_guard"`
 	DuplicateBlocked                bool                                     `json:"duplicate_blocked"`
-	PendingOutputGuard              bool                                     `json:"pending_output_guard"`
 	HostLifecycleObservation        string                                   `json:"host_lifecycle_observation"`
 	LifecycleActionObservation      string                                   `json:"lifecycle_action_observation"`
 	AllowManualCandidate            bool                                     `json:"allow_manual_candidate"`
@@ -621,10 +620,6 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 		return resp
 	}
 	manual := strings.EqualFold(strings.TrimSpace(req.RequestSource), "manual")
-	if req.PendingOutputGuard {
-		resp.Reason = "pending_output_guard"
-		return resp
-	}
 	lifecycleAction := strings.ToLower(strings.TrimSpace(req.LifecycleActionObservation))
 	switch lifecycleAction {
 	case "":
