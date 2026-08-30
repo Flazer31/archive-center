@@ -32545,16 +32545,19 @@
         orchSessionId,
         "beforeRequest"
       );
-      const activeChatBackfillIdentityPreflight = await preflightActiveChatBackfillIdentity(
-        orchSessionId,
-        { hostContext: orchHostContext }
-      );
       primeTurnWorkflowHUD(orchRequestId);
       if (!priorHostFinal || priorHostFinal.accepted !== true) {
-        ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
-          reason: "before_request",
-          hostContext: orchHostContext,
-          identityPreflight: activeChatBackfillIdentityPreflight,
+        Promise.resolve().then(function resolveBackfillIdentityAfterCurrentRequestCapture() {
+          return preflightActiveChatBackfillIdentity(
+            orchSessionId,
+            { hostContext: orchHostContext }
+          );
+        }).then(function backfillCompletedTurnsWithResolvedIdentity(identityPreflight) {
+          return ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
+            reason: "before_request",
+            hostContext: orchHostContext,
+            identityPreflight,
+          });
         }).catch(function(err) {
           debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
