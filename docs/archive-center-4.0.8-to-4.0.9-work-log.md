@@ -799,10 +799,14 @@ snapshot이지만, 깨끗한 checkout에서 같은 결과를 재현할 수 있�
 6. `PrepareSessionMigrationSourceLock`가 동시에 non-nil provisional과 error를
    반환한다고 가정한 도달 불가능 분기를 제거했다. prepare 성공 뒤 drain·parity·
    lease 단계가 실패할 때 pending fence를 해제하는 실제 경로는 유지했다.
-7. 운영 경로와 분리되어 잘못된 `/prepare-turn` 0회 결과를 고정하던
-   `archive-center-runtime.test.cjs`를 제거했다. 회귀는 기존
-   `cmd/js-route-variant-smoke`에서 실제 `Archive Center.js` 함수를 추출해 실행하고
-   실제 Go HTTP 판정 함수를 호출하는 경로로 통합했다.
+7. `archive-center-runtime.test.cjs` 전체를 제거했던 변경은 다시 취소했다. 이 파일은
+   실제 `Archive Center.js` 전체를 VM에서 실행하며 완료 토큰 기본값, assistant-only
+   정상화 안내, deferred 제목도 함께 검사한다. 잘못된 세계선 기대값 두 개만 현재
+   계약에 맞게 교체하고 나머지 회귀는 그대로 유지했다.
+8. `beforeRequest`는 세계선 backfill 사전 확인을 더 이상 기다리지 않는다. 캡처된
+   현재 요청의 세션 문맥과 `/prepare-turn`은 계속 진행하고, 세계선 확인·과거 턴
+   backfill만 별도의 비차단 작업으로 수행한다. 지연된 세계선 응답 중에도 실제
+   production hook이 `/prepare-turn`을 호출하는 전체 런타임 회귀로 확인했다.
 
 Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair로 재검사하면
 충돌한 원문과 새로 복구한 원문이 잘못 짝지어질 수 있다. 따라서 conflict 턴의
@@ -812,14 +816,15 @@ Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair�
 
 이번 수정의 운영 코드 변화량은 다음과 같다.
 
-- `Archive Center.js`: `+29 / -44`
+- `Archive Center.js`: `+40 / -52`
 - Go 운영 코드: `+6 / -51`
-- 중복 독립 테스트 파일: `-268`
+- 전체 production runtime 테스트: 보존, 기대값 교체 `+6 / -3`
 - 새 API·table·queue·timer·watcher·fallback: `0`
 
 검증 결과:
 
 - 번들 Node `--check Archive Center.js`: 통과
+- 번들 Node `archive-center-runtime.test.cjs`: `5/5` 통과
 - `go test ./cmd/js-route-variant-smoke -count=1`: 통과
 - `go test ./internal/httpapi -count=1`: 통과
 - `go test ./internal/store -count=1`: 통과
@@ -834,7 +839,7 @@ Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair�
 
 ### 10.13 과도한 차단 제거판 테스트 패키지 갱신
 
-2026-08-30 KST에 10.12의 정리 커밋 `f3ca0fb`에서 기존 4.0.9 Windows 테스트
+2026-08-30 KST에 10.12의 최종 정리 커밋 `969c2d2`에서 기존 4.0.9 Windows 테스트
 패키지를 같은 위치에 갱신했다. 앞선 빌드 실패로 대상 폴더가 비어 있던 상태를
 발견했으므로, 임시 위치에서 패키지를 완전히 빌드하고 검증한 뒤 기존 폴더와 ZIP을
 교체했다. 새 패키지 이름이나 병렬 배포 경로는 만들지 않았다.
@@ -842,16 +847,16 @@ Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair�
 - package root:
   `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test`
 - package source commit:
-  `f3ca0fbc68ccbf418d3ea4c34ea15b1479dc072b`
+  `969c2d229e1490da064296d94a6572d2463f1216`
 - package source dirty: `false`
 - package version / status: `4.0.9 / release_ready=true`
 - managed files: `46`
 - 누락 / 크기 불일치 / SHA-256 불일치: `0 / 0 / 0`
 - source/package `Archive Center.js` SHA-256:
-  `67ca7f9db74d21697330ba4530955abad1731475e68d3f0e29a7c78028f0e3cd`
+  `4eb58bf1ccce8bd0c6b46546b65a295369fa22b558757ce130470a6887487810`
 - ZIP entries: `49`
 - ZIP SHA-256:
-  `5a12b5cc74648ebd7c8421aaf156fe4d6cbf5dee168f5af7ce89cdc659a31f68`
+  `fb628b6c9096c494fc24ab21aa11420c875e6d2d44392c19cd898aca97a9868a`
 - 외부 `SHA256SUMS-4.0.9.txt`와 실제 ZIP hash: 일치
 - update contract: target `4.0.9`, minimum source `3.9.9`,
   `direct_update_supported=true`, `automatic_update_apply=true`
