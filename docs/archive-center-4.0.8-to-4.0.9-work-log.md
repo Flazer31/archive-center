@@ -831,3 +831,34 @@ Repair Replay에서 한 role이 충돌한 턴을 그대로 user+assistant pair�
 사용한 실환경 검증은 테스트 패키지 갱신 뒤 별도로 확인해야 한다. 이 절은 10.8의
 첫 branch 요청 및 worker claim blocker, 10.9의 release 불가 판정, 10.11의 이전
 패키지 상태를 현재 소스 기준으로 갱신한다.
+
+### 10.13 과도한 차단 제거판 테스트 패키지 갱신
+
+2026-08-30 KST에 10.12의 정리 커밋 `f3ca0fb`에서 기존 4.0.9 Windows 테스트
+패키지를 같은 위치에 갱신했다. 앞선 빌드 실패로 대상 폴더가 비어 있던 상태를
+발견했으므로, 임시 위치에서 패키지를 완전히 빌드하고 검증한 뒤 기존 폴더와 ZIP을
+교체했다. 새 패키지 이름이나 병렬 배포 경로는 만들지 않았다.
+
+- package root:
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test`
+- package source commit:
+  `f3ca0fbc68ccbf418d3ea4c34ea15b1479dc072b`
+- package source dirty: `false`
+- package version / status: `4.0.9 / release_ready=true`
+- managed files: `46`
+- 누락 / 크기 불일치 / SHA-256 불일치: `0 / 0 / 0`
+- source/package `Archive Center.js` SHA-256:
+  `67ca7f9db74d21697330ba4530955abad1731475e68d3f0e29a7c78028f0e3cd`
+- ZIP entries: `49`
+- ZIP SHA-256:
+  `5a12b5cc74648ebd7c8421aaf156fe4d6cbf5dee168f5af7ce89cdc659a31f68`
+- 외부 `SHA256SUMS-4.0.9.txt`와 실제 ZIP hash: 일치
+- update contract: target `4.0.9`, minimum source `3.9.9`,
+  `direct_update_supported=true`, `automatic_update_apply=true`
+- ZIP 안 사용자 `.env.full.local`, DB, runtime, log: `0건`
+
+패키지 갱신 과정에서 실행 중이던 해당 4.0.9 Go backend만 종료했으며, 최종 확인
+시 `28080`, `8000`, `3306` 포트에는 수신 중인 프로세스가 없었다. 이 패키지는
+소스·manifest·ZIP 무결성까지 검증한 시험용 산출물이다. 실제 RisuAI와 사용자 DB를
+사용한 A→B 세션 이동, 삭제 직후 리롤, 첫 branch 요청 검증은 여전히 별도의 실사용
+확인 항목이다.
