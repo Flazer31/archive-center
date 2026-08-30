@@ -621,6 +621,63 @@ func (f *memoryAdmissionWorkerStore) ListActiveSourceRevisions(context.Context, 
 	return []store.MemorySourceRevision{*f.source}, nil
 }
 
+type migrationFencedMemoryAdmissionWorkerStore struct {
+	*memoryAdmissionWorkerStore
+	activeMigrationLock *store.SessionMigrationLock
+}
+
+func (f *migrationFencedMemoryAdmissionWorkerStore) LockSessionMigrationSource(context.Context, int64, string) (*store.SessionMigrationSourceLockResult, error) {
+	return nil, errors.New("not used by this fixture")
+}
+
+func (f *migrationFencedMemoryAdmissionWorkerStore) GetSessionMigrationSourceLock(_ context.Context, sourceSessionID string) (*store.SessionMigrationLock, error) {
+	if f.activeMigrationLock == nil || !f.activeMigrationLock.Locked || f.activeMigrationLock.SourceSessionID != sourceSessionID {
+		return nil, store.ErrNotFound
+	}
+	copy := *f.activeMigrationLock
+	return &copy, nil
+}
+
+func TestAcceptedSourceStopsBeforeDerivationWhenSessionMigrationFenceIsActive(t *testing.T) {
+	source := &store.MemorySourceRevision{
+		SourceRevision:   "revision-migration-fenced",
+		ChatSessionID:    "session-migration-fenced",
+		LogicalTurnID:    "turn:8",
+		TurnIndex:        8,
+		LifecycleState:   "active",
+		UserContent:      "user",
+		AssistantContent: "assistant",
+	}
+	st := &migrationFencedMemoryAdmissionWorkerStore{
+		memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+			Store:  store.NewNoopStore(),
+			source: source,
+		},
+		activeMigrationLock: &store.SessionMigrationLock{
+			MigrationID:     71,
+			SourceSessionID: source.ChatSessionID,
+			TargetSessionID: "session-migration-target",
+			Locked:          true,
+			LockStatus:      "lock_pending_verification",
+		},
+	}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+
+	result := srv.processAcceptedSourceRevision(
+		context.Background(), source, completeTurnExtractionConfig{}, false,
+	)
+	if result.State != "retryable" || result.Failure != "source_session_migration_locked" {
+		t.Fatalf("derivation crossed migration fence: %+v", result)
+	}
+	if len(st.admissions) != 0 || st.legacyMemories != 0 || st.legacyEvidence != 0 {
+		t.Fatalf("migration-fenced source wrote artifacts: admissions=%d memory=%d evidence=%d",
+			len(st.admissions), st.legacyMemories, st.legacyEvidence)
+	}
+	if srv.SourceAcceptances != nil && len(srv.SourceAcceptances.reprocessingWorkers) != 0 {
+		t.Fatalf("migration-fenced worker registration leaked: %#v", srv.SourceAcceptances.reprocessingWorkers)
+	}
+}
+
 func (f *memoryAdmissionWorkerStore) EnqueueMemoryReprocessingJob(_ context.Context, item *store.MemoryReprocessingJob) (bool, error) {
 	f.enqueuedJobs = append(f.enqueuedJobs, item)
 	return true, nil

@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"sync"
@@ -599,19 +600,66 @@ func TestMariaDBStoreLockSessionMigrationSourceFailsClosedAfterVectorReindexUnti
 	defer db.Close()
 
 	m := &mariadbStore{db: db}
+	manifestEntries := len(SessionMigrationManifest())
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count").
 		WithArgs(int64(42)).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count",
 		}).AddRow("source", "target", SessionMigrationModeCopyThenLockSource, "vector_reindexed", 2))
+	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*FOR UPDATE`).
+		WithArgs("source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"migration_id", "source_session_id", "target_session_id", "locked", "lock_status", "reason", "locked_at",
+		}).AddRow(int64(42), "source", "target", true, "lock_pending_verification", "operator confirmed", time.Now().UTC()))
+	mock.ExpectQuery(`(?s)FROM memory_reprocessing_jobs.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`(?s)FROM memory_vector_outbox.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
 		WithArgs(int64(42), SessionMigrationManifestVersion).
-		WillReturnRows(sqlmock.NewRows([]string{"total", "relational_verified", "vector_verified"}).AddRow(49, 49, 49))
+		WillReturnRows(sqlmock.NewRows([]string{"total", "relational_verified", "vector_verified"}).AddRow(manifestEntries-1, manifestEntries-1, manifestEntries-1))
 	mock.ExpectRollback()
 	result, err := m.LockSessionMigrationSource(context.Background(), 42, "operator confirmed")
-	if result != nil || err == nil || !strings.Contains(err.Error(), "manifest parity rows 49/50") {
-		t.Fatalf("result=%+v err=%v, want 50-entry manifest parity blocker", result, err)
+	want := fmt.Sprintf("manifest parity rows %d/%d", manifestEntries-1, manifestEntries)
+	if result != nil || err == nil || !strings.Contains(err.Error(), want) {
+		t.Fatalf("result=%+v err=%v, want %d-entry manifest parity blocker", result, err, manifestEntries)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBStoreLockSessionMigrationSourceBlocksWhenDerivationLeaseIsActive(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+
+	m := &mariadbStore{db: db}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT source_session_id, target_session_id, mode, status, chroma_reindexed_count").
+		WithArgs(int64(42)).
+		WillReturnRows(sqlmock.NewRows([]string{
+			"source_session_id", "target_session_id", "mode", "status", "chroma_reindexed_count",
+		}).AddRow("source", "target", SessionMigrationModeCopyThenLockSource, "vector_reindexed", 2))
+	mock.ExpectQuery(`(?s)FROM session_migration_locks.*source_session_id = \?.*FOR UPDATE`).
+		WithArgs("source").
+		WillReturnRows(sqlmock.NewRows([]string{
+			"migration_id", "source_session_id", "target_session_id", "locked", "lock_status", "reason", "locked_at",
+		}).AddRow(int64(42), "source", "target", true, "lock_pending_verification", "operator confirmed", time.Now().UTC()))
+	mock.ExpectQuery(`(?s)FROM memory_reprocessing_jobs.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(17)))
+	mock.ExpectRollback()
+
+	result, err := m.LockSessionMigrationSource(context.Background(), 42, "operator confirmed")
+	var blocker *SessionMigrationBlockerError
+	if result != nil || !errors.As(err, &blocker) || blocker.Code != "source_derivation_lease_active" || blocker.Phase != "memory_reprocessing_drain" {
+		t.Fatalf("result=%+v err=%v blocker=%+v", result, err, blocker)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

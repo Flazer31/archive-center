@@ -46,6 +46,7 @@ type sessionMigrationPreviewStore struct {
 	parityOperations    []string
 	lockCalled          bool
 	lockPrepareCalled   bool
+	lockErr             error
 	lockReleaseCalled   bool
 	lockReason          string
 	lockResult          *store.SessionMigrationSourceLockResult
@@ -353,6 +354,9 @@ func (s *sessionMigrationPreviewStore) LockSessionMigrationSource(ctx context.Co
 	s.lockCalled = true
 	s.lockReason = reason
 	s.events = append(s.events, "lock")
+	if s.lockErr != nil {
+		return nil, s.lockErr
+	}
 	if s.lockResult != nil {
 		return s.lockResult, nil
 	}
@@ -378,12 +382,13 @@ func (s *sessionMigrationPreviewStore) LockSessionMigrationSource(ctx context.Co
 func (s *sessionMigrationPreviewStore) PrepareSessionMigrationSourceLock(ctx context.Context, migrationID int64, reason string) (*store.SessionMigrationLock, error) {
 	s.lockPrepareCalled = true
 	s.events = append(s.events, "lock_prepare")
-	return &store.SessionMigrationLock{
+	lock := &store.SessionMigrationLock{
 		MigrationID: migrationID, SourceSessionID: "char_59_cid_source",
 		TargetSessionID: "char_59_cid_target", Locked: true,
 		LockStatus: "lock_pending_verification", Reason: reason,
 		LockedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
-	}, nil
+	}
+	return lock, nil
 }
 
 func (s *sessionMigrationPreviewStore) ReleaseSessionMigrationSourceLockFence(ctx context.Context, migrationID int64, reason string) error {
@@ -754,8 +759,9 @@ func TestSessionMigrateCompleteRunsFullManifestExecutorAndLeavesVectorPhasePendi
 	if resp.Blocked || !resp.WriteAttempted || resp.VectorWriteAttempted || resp.LLMCallAttempted {
 		t.Fatalf("full manifest copy response flags: %+v", resp)
 	}
+	directTables, _, _ := store.SessionMigrationManifestSummary()
 	if !resp.ReleaseBlocked || resp.ManifestParityVerified || !resp.ManifestExecutorComplete ||
-		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != 46 {
+		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != directTables {
 		t.Fatalf("complete response did not disclose completed relational/pending vector phases: %+v", resp)
 	}
 	if resp.MigrationID != 99 || resp.RowMapCount != 3 || !resp.ChromaReindexRequired {
@@ -1148,6 +1154,21 @@ func TestSessionMigrateLockSourceReleasesProvisionalFenceOnCurrentVectorDrift(t 
 	}
 }
 
+func TestSessionMigrateLockSourceReleasesProvisionalFenceWhenDerivationLeaseIsActive(t *testing.T) {
+	st := &sessionMigrationPreviewStore{
+		lockErr: &store.SessionMigrationBlockerError{
+			Code: "source_derivation_lease_active", Phase: "memory_reprocessing_drain",
+		},
+	}
+	resp := performSessionMigrationLockSource(t, st, &sessionMigrationPreviewVector{}, map[string]any{
+		"migration_id": float64(42),
+	})
+	if !resp.Blocked || !st.lockPrepareCalled || !st.lockReleaseCalled || !st.lockCalled ||
+		!sessionMigrationContainsString(resp.BlockedReasons, "source_derivation_lease_active") {
+		t.Fatalf("active derivation lease did not release provisional fence: resp=%+v events=%v", resp, st.events)
+	}
+}
+
 func TestSessionMigrateLockSourceDrainsAcceptedFinalWorkerBeforeParityRevalidation(t *testing.T) {
 	const sourceID = "char_59_cid_source"
 	base := &sessionMigrationPreviewStore{}
@@ -1214,6 +1235,61 @@ func TestSessionMigrateLockSourceDrainsAcceptedFinalWorkerBeforeParityRevalidati
 	case <-st.verifyStarted:
 	default:
 		t.Fatal("migration parity revalidation was not reached after drain")
+	}
+}
+
+func TestSessionMigrateLockSourceStopsBeforeParityWhenSourceWorkerDoesNotDrain(t *testing.T) {
+	const sourceID = "char_59_cid_source"
+	base := &sessionMigrationPreviewStore{}
+	st := &sourceLockDrainObservingStore{
+		sessionMigrationPreviewStore: base,
+		verifyStarted:                make(chan struct{}),
+	}
+	srv := &Server{
+		Store:  st,
+		Vector: vector.NewMutationFencedStore(&sessionMigrationPreviewVector{}),
+	}
+	srv.SourceAcceptances = newCompleteTurnSourceAcceptanceLedger()
+	source := &store.MemorySourceRevision{
+		ChatSessionID:  sourceID,
+		SourceRevision: "revision-migration-timeout",
+		TurnIndex:      1,
+	}
+	workerCtx, releaseWorker := srv.completeTurnStoredSourceProcessingContext(context.Background(), source)
+	defer releaseWorker()
+
+	originalTimeout := completeTurnSourceWorkerStopTimeout
+	completeTurnSourceWorkerStopTimeout = 10 * time.Millisecond
+	defer func() { completeTurnSourceWorkerStopTimeout = originalTimeout }()
+
+	body := bytes.NewBufferString(`{"migration_id":42,"reason":"must drain before lock"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/migrate-lock-source", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	mux.ServeHTTP(rec, req)
+
+	select {
+	case <-workerCtx.Done():
+	default:
+		t.Fatal("provisional migration fence did not cancel the in-flight reprocessing worker")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response sessionMigrationLockSourceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Blocked || !base.lockPrepareCalled || !base.lockReleaseCalled || base.lockCalled ||
+		!sessionMigrationContainsString(response.BlockedReasons, "source_worker_drain_failed") {
+		t.Fatalf("undrained worker crossed source lock boundary: response=%+v events=%v", response, base.events)
+	}
+	select {
+	case <-st.verifyStarted:
+		t.Fatal("vector parity started even though the source worker did not drain")
+	default:
 	}
 }
 

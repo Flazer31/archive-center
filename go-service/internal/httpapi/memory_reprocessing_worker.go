@@ -395,8 +395,22 @@ func (s *Server) processAcceptedSourceRevisionWithOptions(
 		result.Failure = "source_revision_store_unavailable"
 		return result
 	}
+	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
+	defer releaseSourceWorker()
+	lock, lockErr := s.sessionMigrationSourceLock(ctx, source.ChatSessionID)
+	if lockErr != nil {
+		result.State = "retryable"
+		result.Failure = "source_session_migration_lock_read_failed"
+		return result
+	}
+	if lock != nil {
+		result.State = "retryable"
+		result.Failure = "source_session_migration_locked"
+		result.RetryDelay = memoryWorkerOperationalRetryDelay
+		return result
+	}
 	active, err := sources.IsSourceRevisionActive(
-		ctx,
+		processingCtx,
 		source.ChatSessionID,
 		source.SourceRevision,
 	)
@@ -410,9 +424,6 @@ func (s *Server) processAcceptedSourceRevisionWithOptions(
 		result.Failure = "CRITIC_RESULT_SUPERSEDED"
 		return result
 	}
-	processingCtx, releaseSourceWorker := s.completeTurnStoredSourceProcessingContext(ctx, source)
-	defer releaseSourceWorker()
-
 	extraction, committedResult, committedFailure := storedMemoryAdmissionExtraction(source)
 	if committedResult {
 		if committedFailure != "" {

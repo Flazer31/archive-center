@@ -1199,6 +1199,28 @@ func (m *mariadbStore) DeleteSession(ctx context.Context, chatSessionID string) 
 			_ = tx.Rollback()
 		}
 	}()
+	if _, err := tx.ExecContext(ctx, `
+		DELETE entry
+		FROM lorebook_reference_entries AS entry
+		JOIN lorebook_reference_scopes AS scope ON scope.scope_id = entry.scope_id
+		WHERE scope.chat_session_id = ?
+	`, chatSessionID); err != nil {
+		return fmt.Errorf("delete lorebook reference entries: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE snapshot
+		FROM lorebook_reference_snapshots AS snapshot
+		JOIN lorebook_reference_scopes AS scope ON scope.scope_id = snapshot.scope_id
+		WHERE scope.chat_session_id = ?
+	`, chatSessionID); err != nil {
+		return fmt.Errorf("delete lorebook reference snapshots: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM lorebook_reference_scopes WHERE chat_session_id = ?", chatSessionID); err != nil {
+		return fmt.Errorf("delete lorebook reference scopes: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, "DELETE FROM lorebook_reference_session_locks WHERE chat_session_id = ?", chatSessionID); err != nil {
+		return fmt.Errorf("delete lorebook reference session lock: %w", err)
+	}
 	// Session deletion removes only the reusable-work link. The referenced
 	// work, documents, claims, and vectors are library-owned and must survive.
 	if _, err := tx.ExecContext(ctx, "DELETE FROM session_reference_bindings WHERE chat_session_id = ?", chatSessionID); err != nil {

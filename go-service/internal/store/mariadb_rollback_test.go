@@ -172,6 +172,10 @@ func TestMariaDBDeleteSession(t *testing.T) {
 	sid := "sess-delete"
 
 	mock.ExpectBegin()
+	mock.ExpectExec("(?s)DELETE entry.*FROM lorebook_reference_entries").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 3))
+	mock.ExpectExec("(?s)DELETE snapshot.*FROM lorebook_reference_snapshots").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("DELETE FROM lorebook_reference_scopes").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM lorebook_reference_session_locks").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM session_reference_bindings").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM persona_capsule_attachments").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM protagonist_entity_memories").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
@@ -271,6 +275,10 @@ func TestMariaDBDeleteSessionRollsBackAllRelationalChangesOnFailure(t *testing.T
 	m := &mariadbStore{db: db}
 	sid := "sess-delete-rollback"
 	mock.ExpectBegin()
+	mock.ExpectExec("(?s)DELETE entry.*FROM lorebook_reference_entries").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("(?s)DELETE snapshot.*FROM lorebook_reference_snapshots").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM lorebook_reference_scopes").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("DELETE FROM lorebook_reference_session_locks").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM session_reference_bindings").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM persona_capsule_attachments").WithArgs(sid).WillReturnError(errors.New("delete attachment failed"))
 	mock.ExpectRollback()
@@ -279,6 +287,31 @@ func TestMariaDBDeleteSessionRollsBackAllRelationalChangesOnFailure(t *testing.T
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("delete failure did not roll back the transaction: %v", err)
+	}
+}
+
+func TestMariaDBDeleteSessionRollsBackLorebookChildCleanupOnFailure(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	sid := "sess-delete-lorebook-rollback"
+	mock.ExpectBegin()
+	mock.ExpectExec("(?s)DELETE entry.*FROM lorebook_reference_entries").
+		WithArgs(sid).
+		WillReturnResult(sqlmock.NewResult(0, 2))
+	mock.ExpectExec("(?s)DELETE snapshot.*FROM lorebook_reference_snapshots").
+		WithArgs(sid).
+		WillReturnError(errors.New("delete lorebook snapshot failed"))
+	mock.ExpectRollback()
+	err = m.DeleteSession(context.Background(), sid)
+	if err == nil || !strings.Contains(err.Error(), "delete lorebook reference snapshots") {
+		t.Fatalf("DeleteSession error = %v, want lorebook snapshot delete failure", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("lorebook delete failure did not roll back the transaction: %v", err)
 	}
 }
 

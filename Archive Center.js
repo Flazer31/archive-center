@@ -66,6 +66,7 @@
   const NARRATIVE_GUIDE_MODES = Object.freeze(["auto", "off", "standard", "romantic", "action", "mature_soft", "mature_direct"]);
   const NARRATIVE_GUIDE_STRENGTH_OPTIONS = Object.freeze(["none", "weak", "medium", "strong", "extreme", "maximum"]);
   const PUBLISHER_GUIDANCE_FORMAT_OPTIONS = Object.freeze(["compact", "standard", "explicit"]);
+  const COMPLETION_TOKEN_PROFILE_VERSION = "p409_30000_v1";
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
   const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
@@ -189,6 +190,7 @@
     pluginMainReasoningEffort: "none",
     pluginMainReasoningBudgetTokens: 0,
     pluginMainMaxCompletionTokens: 30000,
+    completionTokenProfileVersion: COMPLETION_TOKEN_PROFILE_VERSION,
     pluginMainVertexFlexMode: "off",
     pluginMainLlmGatewayServiceTier: "standard",
     pluginMainClaudePromptCacheMode: "off",
@@ -8303,6 +8305,43 @@
     };
   }
 
+  async function preflightActiveChatBackfillIdentity(sessionId, options = {}) {
+    const sid = String(sessionId || "").trim();
+    if (!sid || sid === SESSION_FALLBACK) {
+      return { status: "skipped", reason: "invalid_session" };
+    }
+    const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, options && options.hostContext || null);
+    const rawMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
+    const worldlineObservation = buildRisuWorldlineObservationFromMessages(
+      rawMessages,
+      Date.now(),
+      "active_chat_pre_backfill"
+    );
+    let routingContext = "";
+    if (worldlineObservation) {
+      const hostChatId = String(resolvedActiveChat.chat && resolvedActiveChat.chat.id || "").trim();
+      const worldlineRouting = await requestBackendSessionRoutingTurnResolution(sid, "identity", {
+        hostChatId,
+        hostChatIdState: hostChatId ? "observed" : "unobserved",
+        worldlineObservation,
+      });
+      if (!worldlineRouting || !worldlineRouting.worldline || worldlineRouting.worldline.state !== "confirmed") {
+        const reason = String(
+          worldlineRouting && worldlineRouting.worldline && worldlineRouting.worldline.reason
+          || worldlineRouting && worldlineRouting.status
+          || "worldline_ownership_unresolved"
+        );
+        updateRuntimeState("lastActiveChatBackfill", "skipped", {
+          reason_code: "worldline_ownership_unresolved",
+          detail: reason,
+        });
+        return { status: "skipped", reason: "worldline_ownership_unresolved", detail: reason };
+      }
+      routingContext = "automatic_active_chat_full_sweep";
+    }
+    return { status: "ok", resolvedActiveChat, rawMessages, routingContext };
+  }
+
   async function ensureActiveChatCompletedTurnsBackfilled(sessionId, options = {}) {
     if (!settings.enabled || !settings.dbEnabled) return { status: "off" };
     const sid = String(sessionId || "").trim();
@@ -8311,43 +8350,32 @@
     }
     _activeChatBackfillInFlight.add(sid);
     try {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, options && options.hostContext || null);
-      const rawMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
-      const worldlineObservation = buildRisuWorldlineObservationFromMessages(
-        rawMessages,
-        Date.now(),
-        "active_chat_pre_backfill"
-      );
-      let routingContext = "";
-      if (worldlineObservation) {
-        const hostChatId = String(resolvedActiveChat.chat && resolvedActiveChat.chat.id || "").trim();
-        const worldlineRouting = await requestBackendSessionRoutingTurnResolution(sid, "identity", {
-          hostChatId,
-          hostChatIdState: hostChatId ? "observed" : "unobserved",
-          worldlineObservation,
-        });
-        if (!worldlineRouting || !worldlineRouting.worldline || worldlineRouting.worldline.state !== "confirmed") {
-          const reason = String(
-            worldlineRouting && worldlineRouting.worldline && worldlineRouting.worldline.reason
-            || worldlineRouting && worldlineRouting.status
-            || "worldline_ownership_unresolved"
-          );
-          updateRuntimeState("lastActiveChatBackfill", "skipped", {
-            reason_code: "worldline_ownership_unresolved",
-            detail: reason,
-          });
-          return { status: "skipped", reason: "worldline_ownership_unresolved", detail: reason };
-        }
-        routingContext = "automatic_active_chat_full_sweep";
+      const identityPreflight = options && options.identityPreflight
+        ? options.identityPreflight
+        : await preflightActiveChatBackfillIdentity(sid, options);
+      if (!identityPreflight || identityPreflight.status !== "ok") {
+        return identityPreflight || { status: "skipped", reason: "identity_preflight_unavailable" };
       }
+      const resolvedActiveChat = identityPreflight.resolvedActiveChat || { chat: null };
+      const rawMessages = Array.isArray(identityPreflight.rawMessages) ? identityPreflight.rawMessages : [];
+      const routingContext = String(identityPreflight.routingContext || "");
       const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
+      const assistantOnlyCount = buildRollbackAssistantObservations(rawMessages).filter(function(observation) {
+        return observation
+          && observation.final_state === "active_final"
+          && observation.adjacent_user_present !== true;
+      }).length;
       if (pairs.length === 0) {
+        const reason = assistantOnlyCount > 0
+          ? "assistant_only_requires_session_normalize"
+          : "no_completed_pairs";
         updateRuntimeState("lastActiveChatBackfill", "skipped", {
-          reason_code: "no_completed_pairs",
-          detail: "no_completed_pairs",
+          reason_code: reason,
+          detail: reason,
+          assistantOnlyCount,
         });
-        return { status: "skipped", reason: "no_completed_pairs" };
+        return { status: "skipped", reason, assistantOnlyCount };
       }
       const ledger = await loadActiveChatBackfillLedger();
       const savedHashes = new Set(
@@ -8386,15 +8414,17 @@
         detail,
         turnIndex: lastTurn,
         reason: options.reason || "",
+        reason_code: assistantOnlyCount > 0 ? "assistant_only_requires_session_normalize" : "",
         savedCount: saved,
         existingCount: exists,
         queuedCount: queued,
         skippedCount: skipped,
+        assistantOnlyCount,
       });
       if (saved > 0) {
         updateRuntimeState("lastSaveStatus", "ok", { turnIndex: lastTurn, detail });
       }
-      return { status, saved, exists, queued, skipped, totalPairs: pairs.length };
+      return { status, saved, exists, queued, skipped, totalPairs: pairs.length, assistantOnlyCount };
     } catch (err) {
       updateRuntimeState("lastActiveChatBackfill", "fail", { detail: err && err.message ? err.message : String(err || "backfill failed") });
       return { status: "fail", reason: err && err.message ? err.message : "backfill failed" };
@@ -11213,8 +11243,26 @@
     return migrated;
   }
 
+  function migrateLegacyCompletionTokenSettings(raw) {
+    const migrated = raw && typeof raw === "object" ? { ...raw } : {};
+    const profileVersion = String(migrated.completionTokenProfileVersion || "").trim();
+    if (!profileVersion) {
+      if (Number(migrated.pluginMainMaxCompletionTokens) === 1024) {
+        migrated.pluginMainMaxCompletionTokens = DEFAULT_SETTINGS.pluginMainMaxCompletionTokens;
+      }
+      if (Number(migrated.subLlmMaxCompletionTokens) === 1024) {
+        migrated.subLlmMaxCompletionTokens = DEFAULT_SETTINGS.subLlmMaxCompletionTokens;
+      }
+    }
+    migrated.completionTokenProfileVersion = COMPLETION_TOKEN_PROFILE_VERSION;
+    return migrated;
+  }
+
   function sanitizeSettings(raw) {
-    const merged = { ...DEFAULT_SETTINGS, ...migrateLegacyInjectionBudgetSettings(raw) };
+    const merged = {
+      ...DEFAULT_SETTINGS,
+      ...migrateLegacyCompletionTokenSettings(migrateLegacyInjectionBudgetSettings(raw)),
+    };
     // 숫자 검증
     merged.topK = sanitizeTopKSetting(merged.topK, DEFAULT_SETTINGS.topK);
     merged.coreObjectiveMemoryMaxItems = sanitizeTopKSetting(
@@ -32502,7 +32550,6 @@
         mainRequestActiveMessages = [];
       }
       const orchRequestId = makeOrchRequestId(orchSessionId);
-      primeTurnWorkflowHUD(orchRequestId);
       // Observe/capture at the supported host callback boundary even when the
       // backend prepare lane later fails open. Only this bounded snapshot work is
       // awaited; complete-turn/critic persistence remains fire-and-forget.
@@ -32510,10 +32557,22 @@
         orchSessionId,
         "beforeRequest"
       );
+      const activeChatBackfillIdentityPreflight = await preflightActiveChatBackfillIdentity(
+        orchSessionId,
+        { hostContext: orchHostContext }
+      );
+      if (
+        activeChatBackfillIdentityPreflight
+        && activeChatBackfillIdentityPreflight.reason === "worldline_ownership_unresolved"
+      ) {
+        return payload;
+      }
+      primeTurnWorkflowHUD(orchRequestId);
       if (!priorHostFinal || priorHostFinal.accepted !== true) {
         ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
           reason: "before_request",
           hostContext: orchHostContext,
+          identityPreflight: activeChatBackfillIdentityPreflight,
         }).catch(function(err) {
           debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
@@ -37776,6 +37835,7 @@
     const failedTurns = Array.isArray(rescan.failed_turns) ? rescan.failed_turns : [];
     const failures = failedTurns.map(normalizeSessionNormalizeFailure);
     const failedCount = Number(rescan.failed || 0);
+    const isDeferred = ["deferred", "partial_deferred"].includes(resultStatus);
     const hasFailure = failedCount > 0 ||
       ["partial_error", "failed", "error", "blocked"].includes(resultStatus);
     if (hasFailure && failures.length === 0) {
@@ -37785,9 +37845,11 @@
     }
     const heading = resultStatus === "ok"
       ? t("sessionNormalize.completed")
-      : (["failed", "error", "blocked"].includes(resultStatus)
+      : (isDeferred
+        ? t("sessionNormalize.deferred")
+        : (["failed", "error", "blocked"].includes(resultStatus)
         ? t("sessionNormalize.failed")
-        : (hasFailure ? t("sessionNormalize.completedWithErrors") : t("sessionNormalize.completed")));
+        : (hasFailure ? t("sessionNormalize.completedWithErrors") : t("sessionNormalize.completed"))));
     const countItems = [
       [t("sessionNormalize.count.raw"), Number(after.raw_complete_turns || 0) + "/" + Number(after.raw_turns || 0)],
       ["output only", Number(after.raw_assistant_only_turns || 0)],

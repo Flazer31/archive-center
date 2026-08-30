@@ -13,6 +13,11 @@ func TestSessionMigrationManifestMatchesAllDirectSchemaTables(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw010, err := os.ReadFile("../../../migrations/010_lorebook_reference_entries.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, raw010...)
 	createRE := regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS\s+` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*\((.*?)\)\s*(?:ENGINE|COMMENT|;)`)
 	sessionColumnRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z0-9_]*session_id)` + "`?" + `\s+`)
 	metadataTables := map[string]bool{
@@ -39,8 +44,8 @@ func TestSessionMigrationManifestMatchesAllDirectSchemaTables(t *testing.T) {
 		}
 		schemaTables[table] = blockColumns
 	}
-	if len(schemaTables) != 46 {
-		t.Fatalf("direct schema table count = %d, want 46: %v", len(schemaTables), sortedManifestKeys(schemaTables))
+	if len(schemaTables) != 48 {
+		t.Fatalf("direct schema table count = %d, want 48: %v", len(schemaTables), sortedManifestKeys(schemaTables))
 	}
 
 	manifestTables := map[string][]string{}
@@ -60,8 +65,8 @@ func TestSessionMigrationManifestMatchesAllDirectSchemaTables(t *testing.T) {
 		}
 		manifestTables[entry.Table] = columns
 	}
-	if len(manifestTables) != 46 {
-		t.Fatalf("direct manifest table count = %d, want 46", len(manifestTables))
+	if len(manifestTables) != 48 {
+		t.Fatalf("direct manifest table count = %d, want 48", len(manifestTables))
 	}
 	for table, columns := range schemaTables {
 		if strings.Join(manifestTables[table], ",") != strings.Join(columns, ",") {
@@ -157,6 +162,8 @@ func TestSessionMigrationManifestClassifiesIndirectChildrenAndPolicies(t *testin
 		"session_reference_runtime":            "session_reference_bindings",
 		"session_reference_coverage_snapshots": "session_reference_bindings",
 		"session_reference_coverage_fields":    "session_reference_coverage_snapshots",
+		"lorebook_reference_snapshots":         "lorebook_reference_scopes",
+		"lorebook_reference_entries":           "lorebook_reference_snapshots",
 	}
 	allowedPolicies := map[string]bool{
 		SessionMigrationPolicyCopy:                true,
@@ -198,8 +205,8 @@ func TestSessionMigrationManifestClassifiesIndirectChildrenAndPolicies(t *testin
 
 func TestSessionMigrationManifestHasExecutablePlanForEveryEntry(t *testing.T) {
 	direct, indirect, implemented := SessionMigrationManifestSummary()
-	if direct != 46 || indirect != 4 {
-		t.Fatalf("manifest summary direct=%d indirect=%d, want 46/4", direct, indirect)
+	if direct != 48 || indirect != 6 {
+		t.Fatalf("manifest summary direct=%d indirect=%d, want 48/6", direct, indirect)
 	}
 	if implemented != direct+indirect {
 		t.Fatalf("manifest executor implemented=%d total=%d", implemented, direct+indirect)
@@ -240,6 +247,11 @@ func TestSessionMigrationExecutionPlanColumnsAndPrimaryKeysMatchFreshSchema(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
+	raw010, err := os.ReadFile("../../../migrations/010_lorebook_reference_entries.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw = append(raw, raw010...)
 	createRE := regexp.MustCompile(`(?is)CREATE TABLE IF NOT EXISTS\s+` + "`?" + `([a-z0-9_]+)` + "`?" + `\s*\((.*?)\)\s*(?:ENGINE|COMMENT|;)`)
 	columnRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z_][a-z0-9_]*)` + "`?" + `\s+(?:BIGINT|INT|TINYINT|DECIMAL|DOUBLE|FLOAT|BOOLEAN|CHAR|VARCHAR|TEXT|LONGTEXT|MEDIUMTEXT|JSON|DATETIME|TIMESTAMP|DATE|BLOB|LONGBLOB|ENUM)\b`)
 	inlinePrimaryRE := regexp.MustCompile(`(?im)^\s*` + "`?" + `([a-z_][a-z0-9_]*)` + "`?" + `\s+[^\r\n,]*\bPRIMARY\s+KEY\b`)
@@ -304,9 +316,9 @@ func TestSessionMigrationExecutionPlanColumnsAndPrimaryKeysMatchFreshSchema(t *t
 	}
 }
 
-func TestSessionMigrationManifestV3IncludesWorldlineSourceRole(t *testing.T) {
-	if SessionMigrationManifestVersion != "session-migration.manifest.v3" {
-		t.Fatalf("manifest version=%q, want v3 after fork source role column change", SessionMigrationManifestVersion)
+func TestSessionMigrationManifestV4IncludesWorldlineAndLorebookSchemas(t *testing.T) {
+	if SessionMigrationManifestVersion != "session-migration.manifest.v4" {
+		t.Fatalf("manifest version=%q, want v4 after lorebook session ownership was added", SessionMigrationManifestVersion)
 	}
 	plan, ok := SessionMigrationExecutionPlanFor("session_fork_lineage")
 	if !ok {
@@ -342,6 +354,81 @@ func TestSessionMigrationManifestV3IncludesWorldlineSourceRole(t *testing.T) {
 	}
 	if !strings.Contains(string(raw012), "ADD COLUMN IF NOT EXISTS fork_source_role VARCHAR(16) NULL") {
 		t.Error("012 migration missing nullable fork_source_role column")
+	}
+	for table, parent := range map[string]string{
+		"lorebook_reference_session_locks": "",
+		"lorebook_reference_scopes":        "",
+		"lorebook_reference_snapshots":     "lorebook_reference_scopes",
+		"lorebook_reference_entries":       "lorebook_reference_snapshots",
+	} {
+		entry, ok := sessionMigrationManifestEntryByTable(table)
+		if !ok || entry.Policy != SessionMigrationPolicyCopy || entry.ParentTable != parent {
+			t.Errorf("%s manifest entry = %+v, found=%t", table, entry, ok)
+		}
+	}
+	snapshotPlan, ok := SessionMigrationExecutionPlanFor("lorebook_reference_snapshots")
+	if !ok || snapshotPlan.PrimaryKeyMode != SessionMigrationKeyDigest32 {
+		t.Fatalf("lorebook snapshot key plan = %+v, found=%t", snapshotPlan, ok)
+	}
+	if key := sessionMigrationDeterministicKey(snapshotPlan.PrimaryKeyMode, "source-snapshot"); len(key) != 32 {
+		t.Fatalf("lorebook snapshot target key length=%d, want 32: %q", len(key), key)
+	}
+}
+
+func TestSessionMigrationIndirectCopyAllowlistIsLorebookOnly(t *testing.T) {
+	want := map[string]bool{
+		"lorebook_reference_snapshots": true,
+		"lorebook_reference_entries":   true,
+	}
+	for _, entry := range SessionMigrationManifest() {
+		if entry.Direct || entry.Policy != SessionMigrationPolicyCopy {
+			continue
+		}
+		if !want[entry.Table] {
+			t.Fatalf("unexpected indirect copy table %q", entry.Table)
+		}
+		delete(want, entry.Table)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing indirect lorebook copy tables: %v", sortedManifestKeys(want))
+	}
+}
+
+func TestSessionMigrationDigest32KeyIsDeterministicAndTargetScoped(t *testing.T) {
+	parts := []string{
+		SessionMigrationManifestVersion,
+		"target-session-a",
+		"lorebook_reference_snapshots",
+		"snapshot_id",
+		"source-snapshot-a",
+	}
+	first := sessionMigrationDeterministicKey(SessionMigrationKeyDigest32, parts...)
+	second := sessionMigrationDeterministicKey(SessionMigrationKeyDigest32, parts...)
+	if first != second {
+		t.Fatalf("digest32 key is not stable: first=%q second=%q", first, second)
+	}
+	if len(first) != 32 {
+		t.Fatalf("digest32 key length=%d, want 32: %q", len(first), first)
+	}
+
+	otherSource := append([]string(nil), parts...)
+	otherSource[len(otherSource)-1] = "source-snapshot-b"
+	if got := sessionMigrationDeterministicKey(SessionMigrationKeyDigest32, otherSource...); got == first {
+		t.Fatalf("different source snapshot reused digest32 key %q", got)
+	}
+
+	otherTarget := append([]string(nil), parts...)
+	otherTarget[1] = "target-session-b"
+	if got := sessionMigrationDeterministicKey(SessionMigrationKeyDigest32, otherTarget...); got == first {
+		t.Fatalf("different target session reused digest32 key %q", got)
+	}
+
+	maps := newSessionMigrationKeyMaps()
+	if err := maps.put("lorebook_reference_snapshots", "snapshot_id", "source-a", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := maps.put("lorebook_reference_snapshots", "snapshot_id", "source-b", first); err == nil {
+		t.Fatal("expected target collision to be rejected")
 	}
 }
 
