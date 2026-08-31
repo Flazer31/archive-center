@@ -2184,3 +2184,23 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - `go test ./cmd/js-route-variant-smoke -count=1`: 통과.
 - `go test ./... -count=1`: 통과.
 - 이번 릴리스 게이트 정리의 production JavaScript 변경량은 추가 0줄, 제거 0줄이다.
+
+## 2026-08-31 · 정상 직전 턴 자동 삭제 회귀 긴급 수정
+
+- 실제 MariaDB audit API에서 세션
+  `char_0_cid_125f11ae-b87e-4dad-a0d0-c36ae9574796`의 정상 77턴이
+  `2026-08-31 22:27:41`에 `req_source=auto`인 `rollback from turn 77`로
+  삭제된 사실을 확인했다. 같은 세션에서 75·76턴에도 자동 rollback이 반복된 기록이
+  있었다.
+- 원인은 4.0.9가 실제 삭제 여부를 먼저 확인하지 않고 `beforeRequest`마다 현재
+  assistant 관측을 `/rollback/decision`으로 보내면서 삭제 관측값을 전달한 회귀였다.
+  이 경로가 정상 직전 턴의 일시적인 관측 누락을 삭제로 오인해 rollback과 평론가
+  재처리를 발생시켰다.
+- `beforeRequest`의 삭제 재판정 호출을 제거했다. Timeline UI의 기존 삭제 조정은
+  저장된 이전 turn ledger와 현재 활성 채팅을 비교해 assistant가 실제로 사라진
+  경우에만 기존 Go `/rollback/decision`과 `/rollback/{turn}`으로 진행하도록 되돌렸다.
+- 세션 고정 및 Go의 canonical rollback 소유권은 유지했다. 새 watcher, fallback,
+  자동 삭제 경로, 전역 검색은 추가하지 않았다.
+- 사용자 지시에 따라 이 긴급 수정에서는 테스트를 실행하지 않았다. 실제 RisuAI에
+  갱신 JS를 다시 등록한 뒤 정상 다음 턴에서 rollback이 발생하지 않고, 실제 tail
+  삭제 후 Timeline UI 진입에서만 해당 삭제 턴이 제거되는지 사용자 검증 대기다.

@@ -20166,15 +20166,27 @@
     if (_rollbackTailReconcileInFlightBySession.has(sid)) return false;
     _rollbackTailReconcileInFlightBySession.add(sid);
     try {
-      const currentMessages = extractActiveChatMessageList(activeChat);
-      if (!Array.isArray(currentMessages)) return false;
-      const currentAssistantObservations = buildRollbackAssistantObservations(currentMessages);
+      const rawMessages = extractActiveChatMessageList(activeChat);
+      if (!Array.isArray(rawMessages)) return false;
+      const currentMessages = extractActiveChatComparableMessages(activeChat);
+      const ledgerDeletion = buildRollbackFromPersistedLedgerFallbackOr1f(sid, currentMessages);
+      if (!ledgerDeletion || Number(ledgerDeletion.rollbackToTurn || 0) < 1) return false;
+      const ledgerDetail = ledgerDeletion.detail && typeof ledgerDeletion.detail === "object"
+        ? ledgerDeletion.detail
+        : {};
+      const currentAssistantObservations = buildRollbackAssistantObservations(rawMessages);
       const hostContext = options.hostContext && typeof options.hostContext === "object"
         ? options.hostContext
         : {};
       const detail = {
         reason: options.reason || "assistant_output_removed_from_active_chat",
         hostContext,
+        tailReconcileVerification: {
+          status: "verified_tail_delete",
+          removedMessageCount: Math.max(0, Number(ledgerDetail.removedMsgCount || 0)),
+          removedAssistantCount: Math.max(0, Number(ledgerDetail.removedAssistantCount || 0)),
+          removedUserCount: Math.max(0, Number(ledgerDetail.removedMsgCount || 0) - Number(ledgerDetail.removedAssistantCount || 0)),
+        },
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
         hostLifecycleObservation: String(
@@ -20185,13 +20197,12 @@
       };
       const decision = await requestBackendRollbackDecision(
         sid,
-        0,
+        Number(ledgerDeletion.rollbackToTurn),
         "assistant_output_removed_from_active_chat",
         detail,
         "auto"
       );
       if (!decision || decision.allowed !== true || Number(decision.from_turn || 0) < 1) {
-        updateSessionSnapshot(sid, currentMessages);
         return false;
       }
       const rolledBack = await executeAutoRollback(
@@ -32218,10 +32229,6 @@
         });
         return payload;
       }
-      await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext, {
-        reason: "before_request_assistant_observation",
-        hostLifecycleObservation: "before_request_observed",
-      });
       Promise.resolve().then(function resolveBackfillIdentityAfterRollbackReconciliation() {
         return preflightActiveChatBackfillIdentity(
           orchSessionId,
