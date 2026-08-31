@@ -1948,3 +1948,69 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 실제 RisuAI 확인은 `삭제 → 리롤 전 UI 진입 → 삭제된 꼬리 턴 DB 제거`와
   `리롤 저장 → UI 진입 → 새 출력 유지` 두 경우를 분리해 확인해야 한다. 이 확인 전에는
   `live_verified`로 기록하지 않는다.
+
+## 2026-08-31 · UI 삭제 관측의 잘못된 user-tail 조건 제거
+
+### 실환경 재확인
+
+- 실제 실행 중인 4.0.9 backend audit에서 17:13:42에 같은 세션의 76턴 rollback과
+  source acceptance invalidation이 수행된 뒤, 17:15:17에 새 76턴 source가 다시
+  저장된 것을 확인했다.
+- 그 뒤 사용자가 다시 턴을 삭제하고 UI에 들어간 경우에는 새 rollback audit가 없고
+  Timeline에는 76턴 자료가 그대로 남아 있었다. 따라서 Go가 삭제를 거절한 것이 아니라
+  UI 진입 adapter가 `/rollback/decision` 호출 전에 관측을 차단한 상태였다.
+- 차단 원인은 직전 수정에서 추가한 `requireUserTail`이었다. assistant 출력 하나만
+  지우면 마지막 메시지가 user라 통과하지만, user와 assistant가 포함된 한 턴을 함께
+  지우면 이전 정상 assistant가 마지막에 남아 삭제 관측 전체가 중단됐다.
+
+### 4.0.2와 4.0.8 실제 태그 비교
+
+- 실제 태그 `v4.0.2`와 `v4.0.8`의 `Archive Center.js`를 확인했다. 두 버전 모두
+  `loadTimelineData()`의 일반 UI 조회에서 Timeline GET 전에
+  `reconcileRollbackFromHostSignal()`을 호출했으며 마지막 메시지가 user인지 요구하지
+  않았다.
+- 두 버전은 메시지 수·tail hash watcher, session snapshot, persisted turn ledger와
+  backend 최신 턴을 사용했다. 4.0.8은 assistant 출력 순서에서 기존 assistant가
+  사라지고 새 assistant가 삽입되지 않은 경우를 삭제로 보고, user 입력만 사라진 경우는
+  완료 턴을 유지했다.
+- 4.0.8의 tail reconcile은 `DB 최신 턴 > 현재 완료 턴`을 먼저 확인하고 ledger의
+  연속 tail 또는 route baseline으로 범위를 검증했으며, 전체 assistant 관찰값을 기존
+  `/rollback/decision`에 전달했다. 리롤 새 출력이 존재하면 삭제로 판정하지 않았다.
+
+### 최소 수정
+
+- 현재 `reconcileRollbackFromHostSignal(...)`에서 `requireUserTail` 분기 4줄을 제거하고
+  Timeline 호출부의 해당 option 1줄을 제거했다. 새 guard, fallback, watcher, cache,
+  timer, 전역 검색, 자동 삭제 경로 또는 Go API는 추가하지 않았다.
+- UI는 시작 시 고정된 현재 활성 session과 host context의 전체 assistant 관찰값만 기존
+  Go `/rollback/decision`에 보낸다. 삭제 여부와 `from_turn`은 Go가 현재 active source
+  revision 중 실제로 사라진 첫 assistant 출력으로 계산한다. assistant 출력이 모두
+  남아 있으면 `assistant_output_not_removed`로 mutation 없이 끝난다.
+- 생산 JavaScript 변경량은 추가 0줄, 제거 5줄이다. Go 생산 코드는 변경하지 않았다.
+
+### 검증과 동일 위치 패키지 갱신
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- 실제 production `loadTimelineData()`와 `reconcileRollbackFromHostSignal(...)` 실행 회귀
+  2건: 통과. 이전 assistant가 마지막에 남는 한 턴 tail 삭제도 기존 backend decision에
+  전달되고, 세션별 고정 host context와 중복 실행 격리는 유지됐다.
+- 실제 Go `/rollback/decision`과 canonical rollback 회귀 묶음: 통과. assistant 출력이
+  모두 남은 경우와 disabled로 남은 경우에는 삭제하지 않고, 누락된 assistant가 있으면
+  실제 누락 시작 턴만 rollback했다.
+- source commit `bc07555c1bc2156949979eb3beb86ce9d9132092`에서 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존 package
+  이름으로 다시 만들었다.
+- 기존 backend PID `22664`는 executable이 해당 package 아래임을 확인한 뒤 종료했다.
+  package 루트 자체를 외부 프로세스가 점유해 루트 교체가 막혀, green staging package의
+  관리 payload를 같은 루트에 갱신했다. 최종 manifest 기준 managed files `46`,
+  missing/hash mismatch `0/0`이다.
+- package `release_ready=true`, status `green`, source dirty `false`다. source와 package의
+  `Archive Center.js` 개행 정규화 SHA-256은 모두
+  `9602DC1E7BC138C53BCD75BF20446DB003BA6631AACB4C976B95068A261DE608`다.
+- ZIP size는 `12,029,975 bytes`, SHA-256은
+  `FAEC80430DAA67A8BF7FD306C60A74AE0214F5D34AFB6F159DD8DE6765993149`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다. `.env.full.local` SHA-256은 갱신 전후 모두
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`다.
+- 패키지는 다시 실행하지 않았다. 실제 RisuAI에서 한 턴 삭제 후 UI 진입 시 해당
+  삭제 턴만 제거되는지, 저장 완료된 리롤 출력이 있는 상태에서 UI 진입 시 새 출력이
+  유지되는지는 사용자 확인 전까지 `live_unverified`다.
