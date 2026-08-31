@@ -1690,3 +1690,25 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 수정판의 실제 RisuAI 검증은 사용자가 수행한다. 패키지 무결성과 회귀가 통과해도
   실제 리롤 후 UI 진입에서 삭제 HUD와 auto rollback audit가 다시 생기지 않는 것을
   확인하기 전에는 `live_verified` 또는 완료로 기록하지 않는다.
+
+### 4.0.9 동일 위치 패키지 갱신
+
+- 갱신 전에 실행 중이던 4.0.9 package backend PID `9272`, MariaDB PID `21044`,
+  managed Chroma Python PID `10000`, Chroma server Python PID `6052`를 정상 종료했다.
+- 종료 뒤 package 포트 `28080`, `3307`, `8000`의 listener는 0개이며 위 PID도 모두
+  종료 상태임을 다시 확인했다.
+- source commit `611af229a673da9282535774ddf0392e22edd639`에서 managed 4.0.9
+  Windows 패키지를 다시 만들고 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치에 갱신했다.
+- 기존 package의 `.env.full.local`은 교체 전 새 staging package로 복사해 동일 hash를
+  확인한 뒤 설치했다. 교체 전후 SHA-256은 모두
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`다.
+- package `release_ready=true`, full manifest `status=green`, source dirty `false`다.
+- managed files `46`, missing/hash mismatch `0/0`이다.
+- source와 최종 package의 `Archive Center.js`는 개행 정규화 SHA-256
+  `4E31E9502417C7205361DB76399E4338988C2B8768483D13E4C5688C6DFF9128`로 일치한다.
+- 최종 ZIP size는 `12,030,281 bytes`, SHA-256은
+  `FACFBD3F6BFE372C9AF8F74BB5BEAB55C4884D4E0C363CC220654613101B1F31`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다.
+- 이 패키지는 다시 시작하지 않았다. 실제 RisuAI에서 리롤 저장 뒤 UI 진입 시 삭제
+  HUD와 auto rollback audit가 생기지 않는지에 대한 사용자 검증은 아직 남아 있다.
