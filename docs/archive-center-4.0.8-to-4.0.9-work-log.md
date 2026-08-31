@@ -1926,3 +1926,25 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   실제 RisuAI에서 `삭제 → 리롤 전 UI 진입` 확인은 아직 남아 있다.
 - HTML 피드백 문서 업데이트는 이 실사용 회귀 확인 때문에 중단된 상태이며 이번 수정에
   포함하지 않았다.
+
+### 4.0.9 동일 위치 패키지 갱신 결과
+
+- source commit `0ac718d08eb898012700853bd43f54b70915bd47`에서 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존 package
+  이름으로 다시 만들었다.
+- 기존 package backend PID `20732`만 실제 executable path 확인 후 종료했다. package
+  process와 `28080`, `3307`, `8000` listener는 최종 0개이며 패키지를 다시 실행하지
+  않았다.
+- 기존 `.env.full.local`은 package 밖에 보존한 뒤 복구했다. 복구 SHA-256은
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`로 이전과
+  같고 임시 사본은 삭제했다.
+- package `release_ready=true`, full manifest `status=green`, source dirty `false`,
+  managed files `46`, missing/hash mismatch `0/0`이다.
+- source와 package의 `Archive Center.js` 개행 정규화 SHA-256은 모두
+  `77B0794F1CEC8B79F83DBB61BC49AA656297A3F5183945AD97893882458EBD1D`다.
+- ZIP size는 `12,248,611 bytes`, SHA-256은
+  `3A976E667B9082EF3616ACEFDB09F3423B35E2612E8A7FC5F0CAF456FA3EE638`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다.
+- 실제 RisuAI 확인은 `삭제 → 리롤 전 UI 진입 → 삭제된 꼬리 턴 DB 제거`와
+  `리롤 저장 → UI 진입 → 새 출력 유지` 두 경우를 분리해 확인해야 한다. 이 확인 전에는
+  `live_verified`로 기록하지 않는다.
