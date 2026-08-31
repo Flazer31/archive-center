@@ -126,6 +126,22 @@ type ActiveSourceRevisionLister interface {
 	) ([]MemorySourceRevision, error)
 }
 
+// SourceRevisionHistoryLister is the read-only recovery view of source
+// revisions for one explicitly selected session.  Normal turn processing and
+// rollback continue to use ActiveSourceRevisionLister; session normalization
+// may additionally inspect inactive revisions so a deleted user side can be
+// restored without another LLM call. Explicit branch-lineage repair may use
+// the same bounded session history to recover an exact fork coordinate; it
+// must not reactivate or rewrite any revision.
+type SourceRevisionHistoryLister interface {
+	ListSourceRevisions(
+		context.Context,
+		string,
+		int,
+		int,
+	) ([]MemorySourceRevision, error)
+}
+
 type MemoryDerivationDependency struct {
 	ID                 int64
 	ContractVersion    string
@@ -169,6 +185,13 @@ type MemoryReprocessingJobStore interface {
 	ClaimMemoryReprocessingJob(ctx context.Context, leaseOwner string, now time.Time, leaseDuration time.Duration) (*MemoryReprocessingJob, error)
 	CompleteMemoryReprocessingJob(ctx context.Context, jobID int64, leaseOwner string, now time.Time) error
 	FailMemoryReprocessingJob(ctx context.Context, jobID int64, leaseOwner string, now, retryAfter time.Time, permanent bool, failure string) error
+}
+
+// MemoryReprocessingWakeScheduleStore exposes only the next durable wake time
+// for the existing reprocessing queue. The worker uses it to restore its
+// one-shot timer after a backend restart without polling or claiming work early.
+type MemoryReprocessingWakeScheduleStore interface {
+	NextMemoryReprocessingWakeAt(context.Context) (time.Time, error)
 }
 
 // MemoryReprocessingJobReopener is an optional administrative capability. It

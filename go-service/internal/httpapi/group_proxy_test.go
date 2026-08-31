@@ -31,6 +31,61 @@ func strPtr(v string) *string {
 	return &v
 }
 
+func TestProxyHTTPFailureMetadataKeepsLongestRetryAfterHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "90")
+		w.WriteHeader(524)
+		_, _ = w.Write([]byte(`{"retry_after":120,"detail":"origin timeout"}`))
+	}))
+	defer server.Close()
+
+	status, data, raw, err := proxyDoJSON(context.Background(), server.URL, nil, map[string]any{"test": true})
+	if err != nil || status != 524 || !strings.Contains(raw, "origin timeout") {
+		t.Fatalf("status=%d raw=%q err=%v", status, raw, err)
+	}
+	meta := mapFromAny(data[proxyResponseMetadataKey])
+	if got := intFromAny(meta["retry_after_seconds"], 0); got != 120 {
+		t.Fatalf("retry_after_seconds=%d meta=%+v", got, meta)
+	}
+	provider := "custom"
+	endpoint := server.URL
+	apiKey := "test-key"
+	model := "test-model"
+	upstream, upstreamStatus, upstreamErr := performProxyPluginMainWithRetryBudget(
+		context.Background(),
+		dto.ProxyPluginMainRequest{
+			Provider: &provider, Endpoint: &endpoint, APIKey: &apiKey, Model: &model,
+			Messages: []any{map[string]any{"role": "user", "content": "test"}},
+		},
+		nil,
+	)
+	if upstreamErr == nil || upstreamStatus != 524 {
+		t.Fatalf("upstream status=%d err=%v response=%+v", upstreamStatus, upstreamErr, upstream)
+	}
+	if got := intFromAny(mapFromAny(upstream[proxyResponseMetadataKey])["retry_after_seconds"], 0); got != 120 {
+		t.Fatalf("provider retry hint was discarded: got=%d response=%+v", got, upstream)
+	}
+}
+
+func TestProxyHTTPFailureMetadataIgnoresOnlyMalformedRetryHint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"retry_after":"later","detail":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	status, data, raw, err := proxyDoJSON(context.Background(), server.URL, nil, map[string]any{"test": true})
+	if err != nil || status != http.StatusTooManyRequests || !strings.Contains(raw, "rate limited") {
+		t.Fatalf("status=%d raw=%q err=%v", status, raw, err)
+	}
+	if got := intFromAny(mapFromAny(data[proxyResponseMetadataKey])["retry_after_seconds"], 0); got != 0 {
+		t.Fatalf("malformed hint should be ignored, got=%d data=%+v", got, data)
+	}
+	if extractionStringFromAny(data["detail"]) != "rate limited" {
+		t.Fatalf("valid error body was discarded: %+v", data)
+	}
+}
+
 func int64Ptr(v int64) *int64 {
 	return &v
 }
@@ -120,6 +175,126 @@ func TestProxyResolveVertexProjectIDRejectsMissingProjectID(t *testing.T) {
 	)
 	if err == nil || !strings.Contains(err.Error(), "missing project_id") {
 		t.Fatalf("expected missing project_id error, got %v", err)
+	}
+}
+
+func TestProxyProviderBaseURLDefaults(t *testing.T) {
+	wants := map[string]string{
+		"openai":     "https://api.openai.com/v1",
+		"openrouter": "https://openrouter.ai/api/v1",
+		"llmgateway": "https://api.llmgateway.io/v1",
+		"vercel":     "https://ai-gateway.vercel.sh/v1",
+		"neuralwatt": "https://api.neuralwatt.com/v1",
+		"copilot":    "https://api.githubcopilot.com",
+		"ollama":     "http://127.0.0.1:11434",
+		"claude":     "https://api.anthropic.com",
+		"gemini":     "https://generativelanguage.googleapis.com/v1beta",
+		"vertex":     "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models",
+	}
+	for provider, want := range wants {
+		if got := proxyProviderBaseURL(provider, ""); got != want {
+			t.Errorf("provider %s default = %q, want %q", provider, got, want)
+		}
+	}
+	if got := proxyProviderBaseURL("custom", ""); got != "" {
+		t.Fatalf("custom blank endpoint = %q, want empty", got)
+	}
+	if got := proxyProviderBaseURL("neuralwatt", "https://override.example/v1/"); got != "https://override.example/v1" {
+		t.Fatalf("explicit endpoint override = %q", got)
+	}
+}
+
+func TestProxyBlankEndpointUsesNamedProviderDefaultAndHonorsOverride(t *testing.T) {
+	t.Run("neuralwatt default", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		defer func() { proxyHTTPClient = oldClient }()
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.URL.String(); got != "https://api.neuralwatt.com/v1/chat/completions" {
+				t.Fatalf("default NeuralWatt URL = %q", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
+			}, nil
+		})}
+
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:   strPtr("nw-test"),
+			Endpoint: strPtr(""),
+			Model:    strPtr("test/model"),
+			Provider: strPtr("neuralwatt"),
+			Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+		})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("blank NeuralWatt endpoint status=%d err=%v", status, err)
+		}
+	})
+
+	t.Run("explicit override", func(t *testing.T) {
+		oldClient := proxyHTTPClient
+		defer func() { proxyHTTPClient = oldClient }()
+		proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			if got := r.URL.String(); got != "https://gateway.example.test/v1/chat/completions" {
+				t.Fatalf("override URL = %q", got)
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}`)),
+			}, nil
+		})}
+
+		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+			APIKey:   strPtr("openai-test"),
+			Endpoint: strPtr("https://gateway.example.test/v1"),
+			Model:    strPtr("gpt-test"),
+			Provider: strPtr("openai"),
+			Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+		})
+		if err != nil || status != http.StatusOK {
+			t.Fatalf("explicit endpoint status=%d err=%v", status, err)
+		}
+	})
+}
+
+func TestProxyBlankVertexEndpointUsesServiceAccountProjectAndGlobalLocation(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+	credential := testVertexServiceAccountJSON(t)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-test:generateContent":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected Vertex URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   &credential,
+		Endpoint: strPtr(""),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("vertex"),
+		Messages: []any{map[string]any{"role": "user", "content": "ping"}},
+	})
+	if err != nil || status != http.StatusOK {
+		t.Fatalf("blank Vertex endpoint status=%d err=%v", status, err)
 	}
 }
 
@@ -231,6 +406,132 @@ func TestProxyVertexEmptyContentPreservesActual2xxStatus(t *testing.T) {
 	}
 }
 
+func TestProxyClaudeReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if got := r.URL.String(); got != "https://api.anthropic.example/v1/messages" {
+			t.Fatalf("upstream URL = %q", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"stop_reason":"max_tokens",
+				"content":[{"type":"thinking","thinking":"reasoning only","text":"{\"turn_summary\":\"must not become final\"}"}],
+				"usage":{"input_tokens":40,"output_tokens":128}
+			}`)),
+		}, nil
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("anthropic-key"),
+		Endpoint: strPtr("https://api.anthropic.example"),
+		Model:    strPtr("claude-test"),
+		Provider: strPtr("claude"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || status != http.StatusOK {
+		t.Fatalf("Claude reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Claude thinking block became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "max_tokens" || metadata["termination_kind"] != "length" || intFromAny(metadata["output_tokens"], 0) != 128 {
+		t.Fatalf("Claude termination metadata=%#v", metadata)
+	}
+}
+
+func TestProxyGeminiReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Status:     "200 OK",
+			Header:     make(http.Header),
+			Body: io.NopCloser(strings.NewReader(`{
+				"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"thought":true,"text":"{\"turn_summary\":\"must not become final\"}"}]}}],
+				"usageMetadata":{"promptTokenCount":80,"candidatesTokenCount":16,"thoughtsTokenCount":16,"totalTokenCount":96}
+			}`)),
+		}, nil
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   strPtr("gemini-key"),
+		Endpoint: strPtr("https://generativelanguage.googleapis.com/v1beta"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("gemini"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || status != http.StatusOK {
+		t.Fatalf("Gemini reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Gemini thought part became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "MAX_TOKENS" || metadata["termination_kind"] != "length" || intFromAny(metadata["reasoning_tokens"], 0) != 16 {
+		t.Fatalf("Gemini termination metadata=%#v", metadata)
+	}
+}
+
+func TestProxyVertexReasoningOnlyMaxTokensIsOutputTokenExhausted(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	credential := testVertexServiceAccountJSON(t)
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://oauth2.googleapis.com/token":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader(`{"access_token":"vertex-token","expires_in":3600}`)),
+			}, nil
+		case "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models/gemini-test:generateContent":
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Status:     "200 OK",
+				Header:     make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{
+					"candidates":[{"finishReason":"MAX_TOKENS","content":{"parts":[{"thought":true,"text":"reasoning only"}]}}],
+					"usageMetadata":{"promptTokenCount":60,"candidatesTokenCount":12,"thoughtsTokenCount":12,"totalTokenCount":72}
+				}`)),
+			}, nil
+		default:
+			t.Fatalf("unexpected request URL: %s", r.URL.String())
+			return nil, nil
+		}
+	})}
+
+	resp, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
+		APIKey:   &credential,
+		Endpoint: strPtr("https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"),
+		Model:    strPtr("gemini-test"),
+		Provider: strPtr("vertex"),
+		Messages: []any{map[string]any{"role": "user", "content": "return JSON"}},
+	})
+	var exhaustedErr *proxyFinalOutputExhaustedError
+	if !errors.As(err, &exhaustedErr) || exhaustedErr.Provider != "vertex" || status != http.StatusOK {
+		t.Fatalf("Vertex reasoning-only response status=%d err=%T %v", status, err, err)
+	}
+	if got := chatCompletionText(resp); got != "" {
+		t.Fatalf("Vertex thought part became final text: %q", got)
+	}
+	metadata := mapFromAny(resp[proxyResponseMetadataKey])
+	if metadata["native_finish_reason"] != "MAX_TOKENS" || metadata["termination_kind"] != "length" || intFromAny(metadata["reasoning_tokens"], 0) != 12 {
+		t.Fatalf("Vertex termination metadata=%#v", metadata)
+	}
+}
+
 func TestProxyLocalRequestErrorsAreTypedSeparatelyFromUpstreamHTTP(t *testing.T) {
 	assertLocal := func(t *testing.T, status int, err error, wantStage string) {
 		t.Helper()
@@ -249,9 +550,9 @@ func TestProxyLocalRequestErrorsAreTypedSeparatelyFromUpstreamHTTP(t *testing.T)
 		}
 	}
 
-	t.Run("missing configuration", func(t *testing.T) {
+	t.Run("custom missing endpoint", func(t *testing.T) {
 		_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
-			Provider: strPtr("openai"),
+			Provider: strPtr("custom"),
 			Model:    strPtr("gpt-test"),
 			APIKey:   strPtr("sk-test"),
 		})
@@ -873,7 +1174,7 @@ func TestProxyLLMGatewayServiceTierRoutingAndTrace(t *testing.T) {
 			}
 		})
 	}
-	if got := proxyOpenAIBaseURL("llmgateway", ""); got != "https://api.llmgateway.io/v1" {
+	if got := proxyProviderBaseURL("llmgateway", ""); got != "https://api.llmgateway.io/v1" {
 		t.Fatalf("LLM Gateway default base = %q", got)
 	}
 }
@@ -1160,7 +1461,7 @@ func TestProxyOpenAICompatibleServiceTierProviders(t *testing.T) {
 			}
 		})
 	}
-	if got := proxyOpenAIBaseURL("vercel", ""); got != "https://ai-gateway.vercel.sh/v1" {
+	if got := proxyProviderBaseURL("vercel", ""); got != "https://ai-gateway.vercel.sh/v1" {
 		t.Fatalf("Vercel default base = %q", got)
 	}
 }
@@ -1750,6 +2051,7 @@ func TestProxyOllamaDeepSeekV4ReasoningRequestUsesProviderTransportContract(t *t
 		wantEffort string
 		wantTokens float64
 	}{
+		{name: "low", effort: "low", wantEffort: "low", wantTokens: 11873},
 		{name: "high", effort: "high", wantEffort: "high", wantTokens: 11873},
 		{name: "stored max", effort: "max", wantEffort: "high", wantTokens: 11873},
 		{name: "none", effort: "none", wantEffort: "none", wantTokens: 4096},
@@ -1834,10 +2136,16 @@ func TestProxyReasoningWireUsesProviderAndEndpointTransport(t *testing.T) {
 		wantNoTemperature  bool
 	}{
 		{name: "LLM Gateway Luna", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "gpt-5.6-luna", effort: "low", wantEffort: "low", wantNoTemperature: true},
-		{name: "LLM Gateway DeepSeek", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
-		{name: "OpenRouter DeepSeek", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "high", wantReasoning: "high"},
+		{name: "LLM Gateway DeepSeek low", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "low", wantEffort: "low"},
+		{name: "LLM Gateway DeepSeek medium compatibility", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
+		{name: "OpenRouter DeepSeek low", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "low", wantReasoning: "low"},
+		{name: "OpenRouter DeepSeek high", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "high", wantReasoning: "high"},
+		{name: "NeuralWatt DeepSeek Pro low", provider: "neuralwatt", endpoint: "https://api.neuralwatt.com/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low"},
+		{name: "NeuralWatt DeepSeek Flash low aliases high", provider: "neuralwatt", endpoint: "https://api.neuralwatt.com/v1", model: "deepseek-v4-flash-flex", effort: "low", wantEffort: "high"},
 		{name: "Vercel GPT", provider: "vercel", endpoint: "https://ai-gateway.vercel.sh/v1", model: "openai/gpt-5.6", effort: "medium", wantReasoning: "medium", wantNoTemperature: true},
-		{name: "custom exact DeepSeek endpoint", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
+		{name: "custom OpenAI-compatible DeepSeek low", provider: "custom", endpoint: "https://opencode.ai/zen/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low"},
+		{name: "custom exact DeepSeek endpoint low", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low", wantNativeThinking: true},
+		{name: "custom exact DeepSeek endpoint medium compatibility", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

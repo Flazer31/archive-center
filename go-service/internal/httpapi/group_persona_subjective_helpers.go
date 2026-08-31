@@ -11,15 +11,16 @@ import (
 )
 
 func (s *Server) listProtagonistEntityMemoriesByCanonicalOwner(ctx context.Context, st store.ProtagonistEntityMemoryStore, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemory, error) {
+	canonicalBySurface := s.characterCanonicalSurfaceMapForRead(ctx, filter.SourceChatSessionID)
 	requestedOwner := strings.TrimSpace(firstNonEmpty(filter.OwnerEntityKey, filter.PersonaEntityKey))
 	if requestedOwner == "" {
 		items, err := st.ListProtagonistEntityMemories(ctx, filter)
 		if err != nil {
 			return nil, err
 		}
-		return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, items), nil
+		return canonicalizeSubjectiveEntityMemoriesWithReadMap(items, canonicalBySurface), nil
 	}
-	canonicalOwner := s.canonicalSubjectiveEntityOwner(ctx, filter.SourceChatSessionID, requestedOwner, requestedOwner)
+	canonicalOwner := subjectiveEntityOwnerCanonicalFromReadMap(requestedOwner, requestedOwner, canonicalBySurface)
 	if filter.SourceChatSessionID == "" {
 		filter.OwnerEntityKey = canonicalOwner.Key
 		filter.PersonaEntityKey = ""
@@ -27,7 +28,7 @@ func (s *Server) listProtagonistEntityMemoriesByCanonicalOwner(ctx context.Conte
 		if err != nil {
 			return nil, err
 		}
-		return s.canonicalizeSubjectiveEntityMemoriesForRead(ctx, filter.SourceChatSessionID, items), nil
+		return canonicalizeSubjectiveEntityMemoriesWithReadMap(items, canonicalBySurface), nil
 	}
 	broadFilter := filter
 	broadFilter.OwnerEntityKey = ""
@@ -39,7 +40,7 @@ func (s *Server) listProtagonistEntityMemoriesByCanonicalOwner(ctx context.Conte
 	}
 	out := make([]store.ProtagonistEntityMemory, 0, len(broad))
 	for _, memory := range broad {
-		canonicalMemory := s.canonicalizeSubjectiveEntityMemoryForRead(ctx, filter.SourceChatSessionID, memory)
+		canonicalMemory := canonicalizeSubjectiveEntityMemoryWithReadMap(memory, canonicalBySurface)
 		if canonicalMemory.OwnerEntityKey != canonicalOwner.Key {
 			continue
 		}

@@ -800,6 +800,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	characterPrivateMemories, personaRoleTrace = excludeRisuPersonaFromStoredNPCMemories(characterPrivateMemories, req.ClientMeta)
 	entityIdentityAliases := buildPrepareTurnEntityIdentityAliases(r.Context(), s.Store, sid, charStates, characterPrivateMemories)
 	characterPrivateMemories = s.canonicalizeSubjectiveEntityMemoriesForRead(r.Context(), sid, characterPrivateMemories)
+	kgTriples = s.canonicalizeCharacterKGTriplesForRead(r.Context(), sid, kgTriples)
 	characterProjection := s.canonicalCharacterReadProjection(r.Context(), sid, charStates, charEvents)
 	charStates = characterProjection.States
 	charEvents = characterProjection.Events

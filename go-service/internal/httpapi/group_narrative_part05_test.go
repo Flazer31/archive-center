@@ -352,13 +352,39 @@ func (f *drainingSessionDeleteStore) DeleteSession(ctx context.Context, sid stri
 	return f.narrativeFakeStore.DeleteSession(ctx, sid)
 }
 
+func TestSessionDeleteRejectsNonManualRequestsWithoutMutation(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	fake := &narrativeFakeStore{}
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	for _, path := range []string{
+		"/sessions/sess-auto",
+		"/sessions/sess-auto?req_source=risu_plugin_chat_delete",
+	} {
+		req := httptest.NewRequest(http.MethodDelete, path, nil)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("path=%s status=%d body=%s", path, rec.Code, rec.Body.String())
+		}
+	}
+	if fake.deleteSessionCalled {
+		t.Fatal("non-manual session delete reached the store")
+	}
+}
+
 func TestSessionDeleteShadowNoMutation(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()
 	srv.Store = &narrativeFakeStore{}
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-shadow", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-shadow?req_source=timeline_manual_delete", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -391,7 +417,7 @@ func TestSessionDeleteLiveExecutes(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-live", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-live?req_source=timeline_manual_delete", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -475,7 +501,7 @@ func TestSessionDeleteDrainsAcceptedFinalWorkerBeforeDeleting(t *testing.T) {
 
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/"+sid, nil)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/"+sid+"?req_source=timeline_manual_delete", nil)
 	rec := httptest.NewRecorder()
 	handlerDone := make(chan struct{})
 	go func() {
@@ -535,7 +561,7 @@ func TestSessionDeleteLiveVectorWarning(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-vec-warn", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-vec-warn?req_source=timeline_manual_delete", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 
@@ -574,7 +600,7 @@ func TestSessionDeleteLiveStoreError(t *testing.T) {
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-err", nil)
+	req := httptest.NewRequest(http.MethodDelete, "/sessions/sess-err?req_source=timeline_manual_delete", nil)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 

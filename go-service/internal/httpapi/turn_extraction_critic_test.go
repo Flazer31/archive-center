@@ -830,6 +830,88 @@ func TestCriticPipelineErrorClassificationPreservesStageAndHTTPStatus(t *testing
 	}
 }
 
+func TestCriticProviderRequestUsesCanonicalRoleDefaultAndPreservesExplicitLimits(t *testing.T) {
+	oldClient := proxyHTTPClient
+	defer func() { proxyHTTPClient = oldClient }()
+
+	roleDefault := completeTurnExtractionConfigFromMeta(nil).Critic.MaxTokens
+	if roleDefault <= 0 {
+		t.Fatalf("canonical critic role default must be positive, got %d", roleDefault)
+	}
+	providerResponse := criticWireJSONForTest(map[string]any{
+		"turn_summary":      "Mina kept the key.",
+		"importance_score":  6,
+		"evidence_excerpts": []any{"Mina kept the key."},
+	})
+	tests := []struct {
+		name              string
+		maxTokens         int64
+		maxCompletion     int64
+		wantMaxTokens     int64
+		wantMaxCompletion int64
+	}{
+		{
+			name:              "unset uses canonical critic role default",
+			wantMaxTokens:     roleDefault,
+			wantMaxCompletion: roleDefault,
+		},
+		{
+			name:              "explicit limits remain unchanged",
+			maxTokens:         4321,
+			maxCompletion:     6789,
+			wantMaxTokens:     4321,
+			wantMaxCompletion: 6789,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var upstreamBody map[string]any
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				raw, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read provider request: %v", err)
+				}
+				if err := json.Unmarshal(raw, &upstreamBody); err != nil {
+					t.Fatalf("decode provider request: %v", err)
+				}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body: io.NopCloser(strings.NewReader(fmt.Sprintf(
+						`{"model":"critic-test","choices":[{"finish_reason":"stop","message":{"content":%s}}]}`,
+						strconv.Quote(providerResponse),
+					))),
+				}, nil
+			})}
+
+			srv := &Server{Cfg: config.Default(), Store: store.NewNoopStore()}
+			_, trace, err := srv.runCompleteTurnCritic(
+				context.Background(), "session", 1,
+				"Mina found the key.", "Mina kept the key.", nil, nil,
+				completeTurnLLMConfig{
+					Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key",
+					Model: "critic-test", TimeoutMs: 30_000,
+					MaxTokens: tt.maxTokens, MaxCompletionTokens: tt.maxCompletion,
+					RetryBudget: newLLMRetryBudget(0),
+				},
+			)
+			if err != nil {
+				t.Fatalf("runCompleteTurnCritic error: %v trace=%#v", err, trace)
+			}
+			if got := int64(intFromAny(upstreamBody["max_tokens"], 0)); got != tt.wantMaxTokens {
+				t.Fatalf("provider max_tokens=%d, want %d; body=%#v", got, tt.wantMaxTokens, upstreamBody)
+			}
+			ledger := mapFromAny(trace["provider_call_budget_ledger"])
+			if got := int64(intFromAny(ledger["requested_max_tokens"], 0)); got != tt.wantMaxTokens {
+				t.Fatalf("ledger requested_max_tokens=%d, want %d; ledger=%#v", got, tt.wantMaxTokens, ledger)
+			}
+			if got := int64(intFromAny(ledger["requested_max_completion_tokens"], 0)); got != tt.wantMaxCompletion {
+				t.Fatalf("ledger requested_max_completion_tokens=%d, want %d; ledger=%#v", got, tt.wantMaxCompletion, ledger)
+			}
+		})
+	}
+}
+
 func TestSanitizeContextMessagesUsesHostProvenanceInsteadOfProseKeywords(t *testing.T) {
 	messages := []map[string]any{
 		{

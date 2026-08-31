@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -1499,6 +1500,73 @@ func TestAdminSessionNormalizeRawRepairReportsRealCandidateCountAndCompletes(t *
 	}
 	if !sawRawRepair {
 		t.Fatalf("raw_repair_replay progress missing: %#v", updates)
+	}
+}
+
+func TestAdminSessionNormalizeKeepsRawConflictForReviewWithoutDerivedReplay(t *testing.T) {
+	dbUser := "database user"
+	activeUser := "active chat user"
+	missingAssistant := "verified missing assistant"
+	fake := newRepairReplayMutableStore([]store.ChatLog{
+		{ChatSessionID: "sess-normalize-conflict", TurnIndex: 2, Role: "user", Content: dbUser},
+	})
+	srv := NewServer(config.Default())
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	result, err := srv.runAdminSessionNormalize(context.Background(), "sess-normalize-conflict", adminSessionNormalizeRequest{
+		RepairEntries: []dto.ChatLogRepairEntryRequest{{
+			TurnIndex:        2,
+			UserContent:      &activeUser,
+			AssistantContent: &missingAssistant,
+		}},
+		TurnIndices: []int{2},
+		SkipReindex: true,
+	}, nil)
+	if err != nil {
+		t.Fatalf("runAdminSessionNormalize: %v", err)
+	}
+	if !reflect.DeepEqual(intSliceFromAny(result["review_needed_turns"]), []int{2}) {
+		t.Fatalf("review turns=%#v result=%#v", result["review_needed_turns"], result)
+	}
+	rescan := mapFromAny(result["rescan"])
+	if stringFromMap(rescan, "reason") != "all_requested_turns_require_raw_review" ||
+		intFromAny(rescan["candidate_count"], -1) != 0 {
+		t.Fatalf("conflicting raw turn reached derived replay: %#v", rescan)
+	}
+	repair := mapFromAny(result["repair_replay"])
+	if intFromAny(repair["total_conflict_role_count"], 0) != 1 ||
+		intFromAny(repair["total_repaired_role_count"], 0) != 1 ||
+		!reflect.DeepEqual(intSliceFromAny(repair["conflict_turns"]), []int{2}) {
+		t.Fatalf("repair conflict result=%#v", repair)
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].Role != "assistant" || fake.savedChatLogs[0].Content != missingAssistant {
+		t.Fatalf("independently verified assistant was not preserved: %#v", fake.savedChatLogs)
+	}
+}
+
+func TestAdminSessionNormalizeTreatsAssistantOnlyAsProcessableAndUserOnlyAsReview(t *testing.T) {
+	const sid = "sess-normalize-role-counts"
+	fake := &memoryFakeStore{chatLogs: []store.ChatLog{
+		{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "assistant-only output"},
+		{ChatSessionID: sid, TurnIndex: 2, Role: "user", Content: "user-only input"},
+		{ChatSessionID: sid, TurnIndex: 3, Role: "user", Content: "complete input"},
+		{ChatSessionID: sid, TurnIndex: 3, Role: "assistant", Content: "complete output"},
+	}}
+	srv := NewServer(config.Default())
+	srv.Store = fake
+
+	snapshot, warnings := srv.adminSessionNormalizeSnapshot(context.Background(), sid)
+	if len(warnings) != 0 ||
+		intFromAny(snapshot["raw_turns"], 0) != 3 ||
+		intFromAny(snapshot["raw_complete_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_assistant_only_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_user_only_turns"], 0) != 1 ||
+		intFromAny(snapshot["raw_processable_turns"], 0) != 2 {
+		t.Fatalf("snapshot=%+v warnings=%+v", snapshot, warnings)
+	}
+	if got := adminSessionNormalizeConflictTurns(snapshot); !reflect.DeepEqual(got, []int{2}) {
+		t.Fatalf("review turns=%v, want only user-only turn 2", got)
 	}
 }
 

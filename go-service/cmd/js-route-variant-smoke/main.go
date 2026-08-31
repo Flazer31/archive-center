@@ -397,6 +397,6 @@ func buildRouteCases(sessionID string) []routeCase {
 		{97, "version", http.MethodGet, "/version", "", "R0-operational", []string{"version"}, false},
 		{98, "prompts-list", http.MethodGet, "/prompts", "", "R1-read", []string{"status", "items"}, false},
 		{99, "rollback-auto-reroll", http.MethodDelete, fmt.Sprintf("/rollback/2?chat_session_id=%s&req_source=auto_rollback", sid), "", "R2-plan", []string{"status", "rollback_plan"}, false},
-		{100, "session-delete", http.MethodDelete, "/sessions/" + sid, "", "R2-plan", []string{"status", "deleted", "mutation_enabled"}, false},
+		{100, "session-delete", http.MethodDelete, "/sessions/" + sid + "?req_source=timeline_manual_delete", "", "R2-plan", []string{"status", "deleted", "mutation_enabled"}, false},
 	}
 }

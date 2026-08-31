@@ -2,6 +2,8 @@ package httpapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +56,8 @@ type worldlineViewModel struct {
 	ForkSourceRole       string `json:"fork_source_role,omitempty"`
 	InheritedThroughTurn int    `json:"inherited_through_turn"`
 	Reason               string `json:"reason"`
+	CandidateParentID    string `json:"candidate_parent_session_id,omitempty"`
+	CandidateForkTurns   []int  `json:"candidate_fork_turns,omitempty"`
 }
 
 type worldlineTopologyViewModel struct {
@@ -737,27 +741,32 @@ func worldlineViewModelFromRecord(record store.ForkLineageRecord) worldlineViewM
 	reason := "worldline_observation_unresolved"
 	if state == "confirmed" {
 		reason = "official_branch_marker_validated"
-	} else if strings.TrimSpace(record.DivergenceMarker) != "" {
-		var detail struct {
-			Reason string `json:"reason"`
-		}
-		if json.Unmarshal([]byte(record.DivergenceMarker), &detail) == nil && strings.TrimSpace(detail.Reason) != "" {
+	}
+	var detail struct {
+		Reason             string `json:"reason"`
+		CandidateParentID  string `json:"candidate_parent_session_id"`
+		CandidateForkTurns []int  `json:"candidate_fork_turns"`
+	}
+	if strings.TrimSpace(record.DivergenceMarker) != "" && json.Unmarshal([]byte(record.DivergenceMarker), &detail) == nil {
+		if strings.TrimSpace(detail.Reason) != "" {
 			reason = strings.TrimSpace(detail.Reason)
 		}
 	}
 	vm := worldlineViewModel{
-		ContractVersion:  worldlineViewModelContract,
-		State:            state,
-		CurrentSessionID: strings.TrimSpace(record.ChatSessionID),
-		Reason:           reason,
+		ContractVersion:     worldlineViewModelContract,
+		State:               state,
+		CurrentSessionID:    strings.TrimSpace(record.ChatSessionID),
+		ForkSourceMessageID: strings.TrimSpace(record.ForkSourceMessageID),
+		ForkSourceRole:      strings.TrimSpace(record.ForkSourceRole),
+		Reason:              reason,
+		CandidateParentID:   strings.TrimSpace(detail.CandidateParentID),
+		CandidateForkTurns:  append([]int(nil), detail.CandidateForkTurns...),
 	}
 	if state == "confirmed" {
 		vm.ParentSessionID = strings.TrimSpace(record.CopiedFromSessionID)
 		vm.ForkTurn = record.ForkTurn
-		vm.ForkSourceMessageID = strings.TrimSpace(record.ForkSourceMessageID)
 		if inheritedThroughTurn, ok := worldlineInheritedThroughTurn(record.ForkTurn, record.ForkSourceRole); ok &&
 			record.ContractVersion == store.RisuWorldlineForkLineageContractVersion {
-			vm.ForkSourceRole = strings.TrimSpace(record.ForkSourceRole)
 			vm.InheritedThroughTurn = inheritedThroughTurn
 		}
 	}
@@ -807,6 +816,7 @@ type step23ForkLineageListResponse struct {
 }
 
 type step23ForkLineageDeclareRequest struct {
+	Operation           string `json:"operation"`
 	ChatSessionID       string `json:"chat_session_id"`
 	ScopeID             string `json:"scope_id"`
 	ParentScopeID       string `json:"parent_scope_id"`
@@ -817,6 +827,9 @@ type step23ForkLineageDeclareRequest struct {
 	ProvenanceSource    string `json:"provenance_source"`
 	InheritanceMode     string `json:"inheritance_mode"`
 	InheritedItemsJSON  string `json:"inherited_items_json"`
+	ForkTurn            int    `json:"fork_turn"`
+	ForkSourceMessageID string `json:"fork_source_message_id"`
+	ForkSourceRole      string `json:"fork_source_role"`
 }
 
 type step23ForkLineageDeclareResponse struct {
@@ -824,6 +837,7 @@ type step23ForkLineageDeclareResponse struct {
 	ContractVersion string                          `json:"contract_version"`
 	Record          step23ForkLineageRecordResponse `json:"record"`
 	TruthBoundary   step23ForkLineageTruthBoundary  `json:"truth_boundary"`
+	Worldline       *worldlineViewModel             `json:"worldline,omitempty"`
 }
 
 func (s *Server) registerStep23ForkLineageRoutes(mux *http.ServeMux) {
@@ -882,6 +896,10 @@ func (s *Server) handleStep23ForkLineageDeclare(w http.ResponseWriter, r *http.R
 		writeError(w, http.StatusBadRequest, "invalid_json", err.Error())
 		return
 	}
+	if strings.TrimSpace(req.Operation) == "lineage_repair" {
+		s.handleStep23ForkLineageRepair(w, r, fs, req)
+		return
+	}
 	if err := step23ValidateForkLineageDeclare(req); err != nil {
 		writeError(w, http.StatusBadRequest, CodeMissingParam, err.Error())
 		return
@@ -913,6 +931,93 @@ func (s *Server) handleStep23ForkLineageDeclare(w http.ResponseWriter, r *http.R
 		ContractVersion: step23ForkLineageContractVersion,
 		Record:          step23ForkLineageFromStore(saved),
 		TruthBoundary:   step23ForkLineageTruthBoundaryValue(),
+	})
+}
+
+func (s *Server) handleStep23ForkLineageRepair(
+	w http.ResponseWriter,
+	r *http.Request,
+	fs store.ForkLineageStore,
+	req step23ForkLineageDeclareRequest,
+) {
+	childSessionID := strings.TrimSpace(req.ChatSessionID)
+	parentSessionID := strings.TrimSpace(req.CopiedFromSessionID)
+	sourceMessageID := strings.TrimSpace(req.ForkSourceMessageID)
+	sourceRole := strings.TrimSpace(req.ForkSourceRole)
+	if childSessionID == "" || parentSessionID == "" || childSessionID == parentSessionID || req.ForkTurn <= 0 ||
+		sourceMessageID == "" || (sourceRole != "user" && sourceRole != "char") {
+		writeError(w, http.StatusBadRequest, CodeBadRequest, "lineage_repair requires distinct child/parent sessions, a positive fork_turn, fork_source_message_id, and fork_source_role=user|char")
+		return
+	}
+	historyStore, ok := s.Store.(store.SourceRevisionHistoryLister)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "store_unavailable", "source revision history is not available")
+		return
+	}
+	sources, err := historyStore.ListSourceRevisions(r.Context(), parentSessionID, req.ForkTurn, req.ForkTurn)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	turnExists := false
+	matchingCharSource := false
+	charSourceObserved := false
+	for _, source := range sources {
+		if source.TurnIndex != req.ForkTurn {
+			continue
+		}
+		turnExists = true
+		if sourceRole == "char" && strings.TrimSpace(source.SourceMessageID) != "" {
+			charSourceObserved = true
+			if strings.TrimSpace(source.SourceMessageID) == sourceMessageID {
+				matchingCharSource = true
+			}
+		}
+	}
+	if !turnExists || (sourceRole == "char" && charSourceObserved && !matchingCharSource) {
+		writeError(w, http.StatusConflict, "fork_lineage_repair_source_mismatch", "selected fork turn does not match the parent session source revision")
+		return
+	}
+
+	keyHash := sha256.Sum256([]byte(strings.Join([]string{
+		childSessionID, parentSessionID, sourceRole, fmt.Sprintf("%d", req.ForkTurn), sourceMessageID,
+	}, "\x1f")))
+	markerJSON, _ := json.Marshal(map[string]any{
+		"reason":                      "manual_branch_lineage_repaired",
+		"candidate_parent_session_id": parentSessionID,
+		"candidate_fork_turns":        []int{req.ForkTurn},
+	})
+	record := store.ForkLineageRecord{
+		ContractVersion:     store.RisuWorldlineForkLineageContractVersion,
+		LineageState:        "confirmed",
+		ChatSessionID:       childSessionID,
+		CopiedFromSessionID: parentSessionID,
+		ForkTurn:            req.ForkTurn,
+		ForkSourceMessageID: sourceMessageID,
+		ForkSourceRole:      sourceRole,
+		IdempotencyKey:      "manual-worldline-repair:" + hex.EncodeToString(keyHash[:]),
+		ImportedAt:          time.Now().UTC(),
+		DivergenceMarker:    string(markerJSON),
+		ProvenanceSource:    "manual",
+		InheritanceMode:     "none",
+		InheritedItemsJSON:  "[]",
+	}
+	saved, err := fs.SaveForkLineageRecord(r.Context(), record)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "store_error", err.Error())
+		return
+	}
+	if worldlineConfirmedTupleKey(saved) != worldlineConfirmedTupleKey(record) {
+		writeError(w, http.StatusConflict, "fork_lineage_repair_conflict", "an existing confirmed lineage has different coordinates")
+		return
+	}
+	vm := worldlineViewModelFromRecord(saved)
+	writeJSON(w, http.StatusCreated, step23ForkLineageDeclareResponse{
+		Status:          "ok",
+		ContractVersion: step23ForkLineageContractVersion,
+		Record:          step23ForkLineageFromStore(saved),
+		TruthBoundary:   step23ForkLineageTruthBoundaryValue(),
+		Worldline:       &vm,
 	})
 }
 

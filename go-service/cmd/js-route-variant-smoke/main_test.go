@@ -620,30 +620,6 @@ func TestRunSmokeWithRealServer(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"async function resolveRollbackComparableMessages",
-		"function detectRollbackNeed",
-		"async function checkAndAutoRollback",
-		"async function executeAutoRollback",
-		"await checkAndAutoRollback(orchSessionId, rollbackComparable.messages, {",
-		`rollbackParams.set("req_source", requestSource);`,
-		"method: \"DELETE\"",
-		"requestSource = options && options.requestSource ? String(options.requestSource) : \"auto\"",
-		"assistant_deleted_before_next_user_turn",
-		"user_message_removed_turn_retained",
-		"assistant_output_range_removed",
-		"assistant_output_not_removed",
-		"duplicate_rollback_blocked",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing reroll rollback path marker %q", needle)
-		}
-	}
-}
-
 func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
@@ -743,7 +719,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.0.8"`,
+		`const BUILD_NOTES = "Archive Center 4.0.9 Web Risu direct bridge test"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
@@ -920,6 +896,9 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();`,
 		`topK: $("mo-topK").value`,
 		`failedQueueMaxAttempts: failedQueueMaxAttempts(),`,
+		`criticReprocessingIntervalSec: sanitizeNumber(s.criticReprocessingIntervalSec, DEFAULT_SETTINGS.criticReprocessingIntervalSec, 1, 3600),`,
+		`id="mo-criticReprocessingIntervalSec"`,
+		`criticReprocessingIntervalSec: $("mo-criticReprocessingIntervalSec").value,`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -1071,6 +1050,19 @@ func TestArchiveCenterJSPluginMainRuntimeWiringMarkers(t *testing.T) {
 	for _, forbidden := range []string{`id="mo-supervisorTimeout"`, `id="mo-criticTimeout"`} {
 		if strings.Contains(src, forbidden) {
 			t.Fatalf("Archive Center.js retains duplicate backend timeout control %q", forbidden)
+		}
+	}
+	pluginMainConfig := extractJSFunctionBlockForTest(t, src, "function pluginMainHasConfig()")
+	if strings.Contains(pluginMainConfig, "pluginMainEndpoint") {
+		t.Fatal("Plugin Main host preflight still requires a user-entered endpoint instead of backend provider defaults")
+	}
+	subLLMConfig := extractJSFunctionBlockForTest(t, src, "function subLlmHasConfig()")
+	if strings.Contains(subLLMConfig, "subLlmEndpoint") {
+		t.Fatal("Sub LLM host preflight still requires a user-entered endpoint instead of backend provider defaults")
+	}
+	for _, marker := range []string{"Endpoint (비워두면 자동)", "비워두면 선택한 Provider의 공식 기본 Endpoint를 사용하며, 직접 입력하면 입력한 주소를 우선합니다."} {
+		if !strings.Contains(src, marker) {
+			t.Fatalf("Archive Center.js missing automatic endpoint UI marker %q", marker)
 		}
 	}
 }

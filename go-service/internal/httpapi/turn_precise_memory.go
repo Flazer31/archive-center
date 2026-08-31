@@ -198,6 +198,10 @@ func (s *Server) buildPreciseMemoryUnitsFromExtraction(
 		idempotencyKey := fmt.Sprintf("%x", sha256.Sum256([]byte(keyMaterial)))
 		evidenceHash := fmt.Sprintf("%x", sha256.Sum256([]byte(candidate.excerpt)))
 		directEvidenceJSON := mustCompactJSON(evidenceIDs)
+		sourceRole := strings.TrimSpace(source.SourceRole)
+		if sourceRole == "" {
+			sourceRole = "combined_turn_pair"
+		}
 		unit := &store.PreciseMemoryUnit{
 			UnitID:                preciseMemoryStableID(sid, idempotencyKey),
 			ContractVersion:       store.PreciseMemoryUnitContract,
@@ -210,7 +214,7 @@ func (s *Server) buildPreciseMemoryUnitsFromExtraction(
 			SourceMessageID:       source.MessageID,
 			SourceGenerationID:    source.GenerationID,
 			SourceContentHash:     source.ContentHash,
-			SourceRole:            "combined_turn_pair",
+			SourceRole:            sourceRole,
 			SourceSpanStart:       spanStart,
 			SourceSpanEnd:         spanEnd,
 			EvidenceExcerpt:       candidate.excerpt,

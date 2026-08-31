@@ -110,6 +110,12 @@ func observeProviderCallBudgetResult(ledger map[string]any, providerResponse map
 	if terminationKind := extractionStringFromAny(providerResponse["termination_kind"]); terminationKind != "" {
 		ledger["termination_kind"] = terminationKind
 	}
+	if finishReason := extractionStringFromAny(providerResponse["native_finish_reason"]); finishReason != "" {
+		ledger["native_finish_reason"] = finishReason
+	}
+	if retryAfterSeconds := intFromAny(providerResponse["retry_after_seconds"], 0); retryAfterSeconds > 0 {
+		ledger["retry_after_seconds"] = retryAfterSeconds
+	}
 	if !boolFromAny(providerResponse["usage_reported"]) {
 		return
 	}
@@ -143,7 +149,9 @@ func safeProviderCallBudgetLedger(value any) map[string]any {
 		"json_response_format", "json_response_source", "json_response_schema_contract", "json_response_schema_source",
 		"assembly_chars", "user_prompt_chars", "final_prompt_chars", "provider_usage_status",
 		"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "total_tokens",
+		"requested_max_tokens", "requested_max_completion_tokens",
 		"status", "failure_stage", "failure_code", "http_status", "termination_kind",
+		"native_finish_reason", "retry_after_seconds",
 	} {
 		if field, ok := ledger[key]; ok {
 			safe[key] = field

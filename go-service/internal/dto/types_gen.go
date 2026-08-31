@@ -156,7 +156,19 @@ type ChatLogRepairEntryRequest struct {
 	AssistantContent *string `json:"assistant_content,omitempty"`
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
+	AssistantContentHash *string `json:"assistant_content_hash,omitempty"`
+	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
+	AssistantGenerationID *string `json:"assistant_generation_id,omitempty"`
+	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
+	AssistantMessageID *string `json:"assistant_message_id,omitempty"`
+	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
 	CreatedAt *string `json:"created_at,omitempty"`
+	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
+	InputMode *string `json:"input_mode,omitempty"`
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
 	Source    *string `json:"source,omitempty"`
@@ -164,6 +176,9 @@ type ChatLogRepairEntryRequest struct {
 	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
 	UserContent *string `json:"user_content,omitempty"`
+	// PRESENCE: Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (""): Go handler must apply default when field is absent in request.
+	UserInputState *string `json:"user_input_state,omitempty"`
 }
 
 // ApplyDefaults applies default values for optional pointer scalar fields in ChatLogRepairEntryRequest.
@@ -172,9 +187,25 @@ func (dto *ChatLogRepairEntryRequest) ApplyDefaults() {
 		v := ""
 		dto.AssistantContent = &v
 	}
+	if dto.AssistantContentHash == nil {
+		v := ""
+		dto.AssistantContentHash = &v
+	}
+	if dto.AssistantGenerationID == nil {
+		v := ""
+		dto.AssistantGenerationID = &v
+	}
+	if dto.AssistantMessageID == nil {
+		v := ""
+		dto.AssistantMessageID = &v
+	}
 	if dto.CreatedAt == nil {
 		v := ""
 		dto.CreatedAt = &v
+	}
+	if dto.InputMode == nil {
+		v := ""
+		dto.InputMode = &v
 	}
 	if dto.Source == nil {
 		v := ""
@@ -183,6 +214,10 @@ func (dto *ChatLogRepairEntryRequest) ApplyDefaults() {
 	if dto.UserContent == nil {
 		v := ""
 		dto.UserContent = &v
+	}
+	if dto.UserInputState == nil {
+		v := ""
+		dto.UserInputState = &v
 	}
 }
 
@@ -983,7 +1018,7 @@ type PrepareTurnSettings struct {
 	// DEFAULT: Optional field with default (true): Go handler must apply default when field is absent in request.
 	InputContextEnabled *bool `json:"input_context_enabled,omitempty"`
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
-	// DEFAULT: Optional field with default (9000): Go handler must apply default when field is absent in request.
+	// DEFAULT: Optional field with default (18000): Go handler must apply default when field is absent in request.
 	MaxInjectionChars *int `json:"max_injection_chars,omitempty"`
 	// MemoryDeliveryBudgetMode selects automatic profile budgets or user-supplied per-class reservations.
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
@@ -1054,7 +1089,7 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 		dto.InputContextEnabled = &v
 	}
 	if dto.MaxInjectionChars == nil {
-		v := 9000
+		v := 18000
 		dto.MaxInjectionChars = &v
 	}
 	if dto.LorebookReferenceMode == nil {

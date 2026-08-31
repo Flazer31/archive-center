@@ -69,6 +69,56 @@ func (m *mariadbStore) GetSessionMigrationResumeContext(
 	return result, nil
 }
 
+func (m *mariadbStore) InspectSessionMigrationOccupancy(ctx context.Context, sessionID string) (SessionMigrationOccupancy, error) {
+	if err := m.ensureDB(); err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	sid := strings.TrimSpace(sessionID)
+	if sid == "" {
+		return classifySessionMigrationOccupancy(map[string]int{}, false), nil
+	}
+	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	defer tx.Rollback()
+	counts := make(map[string]int)
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		if _, ok := SessionMigrationExecutionPlanFor(entry.Table); !ok {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration manifest plan missing for %s", entry.Table)
+		}
+		var count int
+		query := fmt.Sprintf("SELECT COUNT(*) FROM `%s` WHERE `%s` = ?", entry.Table, entry.SessionColumn)
+		if err := tx.QueryRowContext(ctx, query, sid).Scan(&count); err != nil {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration occupancy %s: %w", entry.Table, err)
+		}
+		counts[entry.Table] = count
+	}
+	starter := false
+	if counts["chat_logs"] == 1 {
+		var turnIndex int
+		var role string
+		err := tx.QueryRowContext(ctx, `
+			SELECT turn_index, role
+			FROM chat_logs
+			WHERE chat_session_id = ?
+			LIMIT 1
+		`, sid).Scan(&turnIndex, &role)
+		if err != nil {
+			return SessionMigrationOccupancy{}, fmt.Errorf("session migration occupancy chat_logs starter: %w", err)
+		}
+		starter = turnIndex == 0 && strings.EqualFold(strings.TrimSpace(role), "assistant")
+	}
+	occupancy := classifySessionMigrationOccupancy(counts, starter)
+	if err := tx.Commit(); err != nil {
+		return SessionMigrationOccupancy{}, err
+	}
+	return occupancy, nil
+}
+
 func (m *mariadbStore) GetSessionRoutingBaseline(ctx context.Context, targetSessionID string) (*SessionRoutingBaseline, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
@@ -553,9 +603,6 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 		if entry.Policy != SessionMigrationPolicyCopy {
 			continue
 		}
-		if !entry.Direct {
-			return nil, fmt.Errorf("session migration copy policy for indirect table %s requires an explicit copy owner", entry.Table)
-		}
 		plan, _ := SessionMigrationExecutionPlanFor(entry.Table)
 		for _, sourceRow := range sourceRows[entry.Table] {
 			targetRow, _, rowDeferred, err := sessionMigrationInsertManifestRow(
@@ -812,14 +859,16 @@ func sessionMigrationValidateSchemaTx(ctx context.Context, tx *sql.Tx, plan Sess
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	if strings.Join(actual, ",") != strings.Join(plan.Columns, ",") {
-		return fmt.Errorf("session migration schema mismatch for %s: actual=%q manifest=%q",
-			plan.Table, strings.Join(actual, ","), strings.Join(plan.Columns, ","))
+	if missing, extra, duplicates := sessionMigrationColumnSetDiff(actual, plan.Columns); len(missing) > 0 || len(extra) > 0 || len(duplicates) > 0 {
+		return fmt.Errorf("session migration schema mismatch for %s: actual=%q manifest=%q missing=%q extra=%q duplicates=%q",
+			plan.Table, strings.Join(actual, ","), strings.Join(plan.Columns, ","),
+			strings.Join(missing, ","), strings.Join(extra, ","), strings.Join(duplicates, ","))
 	}
-	if strings.Join(generated, ",") != strings.Join(plan.DatabaseGenerated, ",") {
+	if missing, extra, duplicates := sessionMigrationColumnSetDiff(generated, plan.DatabaseGenerated); len(missing) > 0 || len(extra) > 0 || len(duplicates) > 0 {
 		return fmt.Errorf(
-			"session migration generated-column mismatch for %s: actual=%q manifest=%q",
+			"session migration generated-column mismatch for %s: actual=%q manifest=%q missing=%q extra=%q duplicates=%q",
 			plan.Table, strings.Join(generated, ","), strings.Join(plan.DatabaseGenerated, ","),
+			strings.Join(missing, ","), strings.Join(extra, ","), strings.Join(duplicates, ","),
 		)
 	}
 	primaryRows, err := tx.QueryContext(ctx, `
@@ -871,6 +920,38 @@ func sessionMigrationValidateSchemaTx(ctx context.Context, tx *sql.Tx, plan Sess
 		}
 	}
 	return nil
+}
+
+func sessionMigrationColumnSetDiff(actual, expected []string) (missing, extra, duplicates []string) {
+	actualCounts := make(map[string]int, len(actual))
+	expectedCounts := make(map[string]int, len(expected))
+	for _, column := range actual {
+		column = strings.TrimSpace(column)
+		actualCounts[column]++
+		if actualCounts[column] == 2 {
+			duplicates = append(duplicates, column)
+		}
+	}
+	for _, column := range expected {
+		column = strings.TrimSpace(column)
+		expectedCounts[column]++
+		if expectedCounts[column] == 2 {
+			duplicates = append(duplicates, column)
+		}
+	}
+	for _, column := range expected {
+		column = strings.TrimSpace(column)
+		if actualCounts[column] == 0 {
+			missing = append(missing, column)
+		}
+	}
+	for _, column := range actual {
+		column = strings.TrimSpace(column)
+		if expectedCounts[column] == 0 {
+			extra = append(extra, column)
+		}
+	}
+	return missing, extra, duplicates
 }
 
 func sessionMigrationReadManifestRows(
@@ -1010,12 +1091,12 @@ func sessionMigrationValidateManifestSnapshots(
 	targetRows map[string][]sessionMigrationRow,
 ) (bool, error) {
 	sourceTotal := 0
-	targetTotal := 0
+	targetCounts := make(map[string]int)
 	targetStarter := false
 	for _, entry := range manifest {
 		if entry.Direct {
 			sourceTotal += len(sourceRows[entry.Table])
-			targetTotal += len(targetRows[entry.Table])
+			targetCounts[entry.Table] = len(targetRows[entry.Table])
 		}
 	}
 	if sourceTotal == 0 {
@@ -1027,13 +1108,44 @@ func sessionMigrationValidateManifestSnapshots(
 		targetStarter = turn.Valid && strings.TrimSpace(turn.Text) == "0" &&
 			role.Valid && strings.EqualFold(strings.TrimSpace(role.Text), "assistant")
 	}
-	if targetStarter {
-		targetTotal--
+	occupancy := classifySessionMigrationOccupancy(targetCounts, targetStarter)
+	if len(occupancy.BlockingTables) > 0 {
+		tables := make([]string, 0, len(occupancy.BlockingTables))
+		for table := range occupancy.BlockingTables {
+			tables = append(tables, table)
+		}
+		sort.Strings(tables)
+		return false, &SessionMigrationBlockerError{
+			Code: "target_session_not_empty", Phase: "copy_transaction",
+			Table: tables[0], Count: occupancy.BlockingTables[tables[0]],
+		}
 	}
-	if targetTotal != 0 {
-		return false, errors.New("target session is not empty")
+	return occupancy.ReplaceableStarterOnly, nil
+}
+
+func classifySessionMigrationOccupancy(counts map[string]int, starter bool) SessionMigrationOccupancy {
+	direct := make(map[string]int, len(counts))
+	blocking := make(map[string]int)
+	total := 0
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		count := counts[entry.Table]
+		direct[entry.Table] = count
+		total += count
+		if count > 0 {
+			blocking[entry.Table] = count
+		}
 	}
-	return targetStarter, nil
+	replaceableStarterOnly := starter && total == 1 && direct["chat_logs"] == 1
+	if replaceableStarterOnly {
+		delete(blocking, "chat_logs")
+	}
+	return SessionMigrationOccupancy{
+		DirectTableCounts: direct, TotalDirectRows: total,
+		ReplaceableStarterOnly: replaceableStarterOnly, BlockingTables: blocking,
+	}
 }
 
 func sessionMigrationLegacyCountsFromManifest(sourceRows map[string][]sessionMigrationRow) SessionMigrationArtifactCounts {
@@ -1063,14 +1175,25 @@ func sessionMigrationPrecomputeDeterministicKeys(
 			continue
 		}
 		plan, _ := SessionMigrationExecutionPlanFor(entry.Table)
-		if len(plan.PrimaryKey) == 1 && plan.PrimaryKeyMode == SessionMigrationKeyUUID {
+		if len(plan.PrimaryKey) == 1 && entry.Direct && plan.PrimaryKey[0] == entry.SessionColumn {
 			column := plan.PrimaryKey[0]
 			for _, row := range sourceRows[entry.Table] {
 				source := row.Values[column]
 				if !source.Valid || strings.TrimSpace(source.Text) == "" {
 					return fmt.Errorf("%s primary key %s is empty", entry.Table, column)
 				}
-				target := sessionMigrationDeterministicUUID(SessionMigrationManifestVersion, targetSessionID, entry.Table, column, source.Text)
+				if err := maps.put(entry.Table, column, source.Text, targetSessionID); err != nil {
+					return err
+				}
+			}
+		} else if len(plan.PrimaryKey) == 1 && sessionMigrationPrecomputedPrimaryKey(plan.PrimaryKeyMode) {
+			column := plan.PrimaryKey[0]
+			for _, row := range sourceRows[entry.Table] {
+				source := row.Values[column]
+				if !source.Valid || strings.TrimSpace(source.Text) == "" {
+					return fmt.Errorf("%s primary key %s is empty", entry.Table, column)
+				}
+				target := sessionMigrationDeterministicKey(plan.PrimaryKeyMode, SessionMigrationManifestVersion, targetSessionID, entry.Table, column, source.Text)
 				if err := maps.put(entry.Table, column, source.Text, target); err != nil {
 					return err
 				}
@@ -1114,8 +1237,15 @@ func sessionMigrationInsertManifestRow(
 	for column, value := range source.Values {
 		target.Values[column] = value
 	}
-	target.Values[entry.SessionColumn] = sessionMigrationCell{Valid: true, Text: targetSessionID}
-	if plan.PrimaryKeyMode == SessionMigrationKeyUUID {
+	if entry.Direct {
+		target.Values[entry.SessionColumn] = sessionMigrationCell{Valid: true, Text: targetSessionID}
+	}
+	if entry.Table == "lorebook_reference_scopes" {
+		if err := sessionMigrationRemapLorebookScopeIdentity(&target, targetSessionID); err != nil {
+			return sessionMigrationRow{}, "", nil, err
+		}
+	}
+	if sessionMigrationPrecomputedPrimaryKey(plan.PrimaryKeyMode) {
 		value, ok := maps.target(entry.Table, primaryKey, sourceKey.Text)
 		if !ok {
 			return sessionMigrationRow{}, "", nil, fmt.Errorf("precomputed primary key map missing")
@@ -1242,6 +1372,27 @@ func sessionMigrationInsertManifestRow(
 		}
 	}
 	return target, targetKey, deferred, nil
+}
+
+func sessionMigrationRemapLorebookScopeIdentity(target *sessionMigrationRow, targetSessionID string) error {
+	if target == nil {
+		return errors.New("lorebook reference scope target is required")
+	}
+	value := target.Values["scope_identity_json"]
+	if !value.Valid || strings.TrimSpace(value.Text) == "" {
+		return errors.New("lorebook_reference_scopes scope_identity_json is empty")
+	}
+	var scope LorebookReferenceScope
+	if err := json.Unmarshal([]byte(value.Text), &scope); err != nil {
+		return fmt.Errorf("lorebook_reference_scopes scope_identity_json: %w", err)
+	}
+	scope.ChatSessionID = strings.TrimSpace(targetSessionID)
+	_, identityJSON, err := lorebookScopeJSON(scope)
+	if err != nil {
+		return fmt.Errorf("lorebook_reference_scopes scope_identity_json: %w", err)
+	}
+	target.Values["scope_identity_json"] = sessionMigrationCell{Valid: true, Text: identityJSON}
+	return nil
 }
 
 func sessionMigrationRemappedAdmissionResult(row sessionMigrationRow) (string, string, error) {
@@ -1590,6 +1741,10 @@ func sessionMigrationCanonicalRowsHash(
 			textValue := value.Text
 			if entry.Direct && column == entry.SessionColumn {
 				textValue = "<session>"
+			} else if entry.Table == "lorebook_reference_scopes" && column == "scope_identity_json" {
+				if canonical, ok := sessionMigrationCanonicalLorebookScopeIdentity(textValue); ok {
+					textValue = canonical
+				}
 			} else if entry.Table == "memory_source_revisions" && column == "derived_result_hash" && strings.TrimSpace(textValue) != "" {
 				ownHash, _, ownErr := sessionMigrationRemappedAdmissionResult(row)
 				if ownErr == nil && ownHash != "" && strings.EqualFold(strings.TrimSpace(textValue), ownHash) {
@@ -1643,6 +1798,19 @@ func sessionMigrationCanonicalRowsHash(
 	}
 	_ = sessionID
 	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func sessionMigrationCanonicalLorebookScopeIdentity(raw string) (string, bool) {
+	var scope LorebookReferenceScope
+	if json.Unmarshal([]byte(strings.TrimSpace(raw)), &scope) != nil {
+		return "", false
+	}
+	scope.ChatSessionID = "<session>"
+	_, identityJSON, err := lorebookScopeJSON(scope)
+	if err != nil {
+		return "", false
+	}
+	return identityJSON, true
 }
 
 func sessionMigrationPlanDatabaseGenerated(plan SessionMigrationExecutionPlan, column string) bool {
@@ -1975,6 +2143,22 @@ func sessionMigrationDeterministicUUID(parts ...string) string {
 	bytes[8] = (bytes[8] & 0x3f) | 0x80
 	hex := fmt.Sprintf("%x", bytes)
 	return hex[0:8] + "-" + hex[8:12] + "-" + hex[12:16] + "-" + hex[16:20] + "-" + hex[20:32]
+}
+
+func sessionMigrationDeterministicDigest32(parts ...string) string {
+	sum := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
+	return fmt.Sprintf("%x", sum[:16])
+}
+
+func sessionMigrationPrecomputedPrimaryKey(mode string) bool {
+	return mode == SessionMigrationKeyUUID || mode == SessionMigrationKeyDigest32
+}
+
+func sessionMigrationDeterministicKey(mode string, parts ...string) string {
+	if mode == SessionMigrationKeyDigest32 {
+		return sessionMigrationDeterministicDigest32(parts...)
+	}
+	return sessionMigrationDeterministicUUID(parts...)
 }
 
 func sessionMigrationStringHash(parts ...string) string {
@@ -2457,6 +2641,8 @@ func (m *mariadbStore) PrepareSessionMigrationSourceLock(
 	if migrationID <= 0 {
 		return nil, ErrNotFound
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return nil, err
@@ -2534,6 +2720,52 @@ func (m *mariadbStore) PrepareSessionMigrationSourceLock(
 	return lock, nil
 }
 
+func sessionMigrationActiveDerivationLeasePhaseTx(ctx context.Context, tx *sql.Tx, sourceSessionID string) (string, error) {
+	checks := []struct {
+		phase string
+		query string
+	}{
+		{
+			phase: "memory_reprocessing_drain",
+			query: `
+				SELECT id
+				FROM memory_reprocessing_jobs
+				WHERE chat_session_id = ?
+				  AND status = 'leased'
+				  AND lease_until >= CURRENT_TIMESTAMP(3)
+				ORDER BY id
+				LIMIT 1
+				FOR UPDATE
+			`,
+		},
+		{
+			phase: "memory_vector_drain",
+			query: `
+				SELECT id
+				FROM memory_vector_outbox
+				WHERE chat_session_id = ?
+				  AND status = 'leased'
+				  AND lease_until >= CURRENT_TIMESTAMP(3)
+				ORDER BY id
+				LIMIT 1
+				FOR UPDATE
+			`,
+		},
+	}
+	for _, check := range checks {
+		var id int64
+		err := tx.QueryRowContext(ctx, check.query, sourceSessionID).Scan(&id)
+		if errors.Is(err, sql.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return check.phase, nil
+	}
+	return "", nil
+}
+
 func (m *mariadbStore) ReleaseSessionMigrationSourceLockFence(
 	ctx context.Context,
 	migrationID int64,
@@ -2602,6 +2834,8 @@ func (m *mariadbStore) LockSessionMigrationSource(ctx context.Context, migration
 	if blockers := SessionMigrationManifestReleaseBlockers(); len(blockers) > 0 {
 		return nil, fmt.Errorf("session migration source lock blocked: %s", SessionMigrationManifestParityUnverifiedReason)
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead})
 	if err != nil {
 		return nil, err
@@ -2633,6 +2867,26 @@ func (m *mariadbStore) LockSessionMigrationSource(ctx context.Context, migration
 	if status != "vector_reindexed" && status != "source_locked" {
 		return nil, fmt.Errorf("session migration source lock blocked: migration status %q is not vector_reindexed", status)
 	}
+	lock, err := sessionMigrationSelectActiveLockTx(ctx, tx, sourceID)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	if lock != nil && lock.MigrationID != migrationID {
+		return nil, fmt.Errorf("session migration source lock blocked: source session is already locked by migration %d", lock.MigrationID)
+	}
+	if lock == nil {
+		return nil, sessionMigrationBlocker("source_lock_fence_required", "source_lock", "")
+	}
+	if lock.LockStatus != "lock_pending_verification" && lock.LockStatus != "migrated_away" {
+		return nil, sessionMigrationBlocker("source_lock_fence_phase_mismatch", "source_lock", "")
+	}
+	leasePhase, err := sessionMigrationActiveDerivationLeasePhaseTx(ctx, tx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if leasePhase != "" {
+		return nil, sessionMigrationBlocker("source_derivation_lease_active", leasePhase, "")
+	}
 	if err := sessionMigrationVerifyDurableParityTx(ctx, tx, migrationID); err != nil {
 		return nil, err
 	}
@@ -2647,19 +2901,6 @@ func (m *mariadbStore) LockSessionMigrationSource(ctx context.Context, migration
 	}
 	_ = reindexedCount
 
-	lock, err := sessionMigrationSelectActiveLockTx(ctx, tx, sourceID)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, err
-	}
-	if lock != nil && lock.MigrationID != migrationID {
-		return nil, fmt.Errorf("session migration source lock blocked: source session is already locked by migration %d", lock.MigrationID)
-	}
-	if lock == nil {
-		return nil, sessionMigrationBlocker("source_lock_fence_required", "source_lock", "")
-	}
-	if lock.LockStatus != "lock_pending_verification" && lock.LockStatus != "migrated_away" {
-		return nil, sessionMigrationBlocker("source_lock_fence_phase_mismatch", "source_lock", "")
-	}
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE session_migration_locks
 		SET lock_status = 'migrated_away',
@@ -3805,7 +4046,7 @@ func rollbackSessionMigrationManifestRowsTx(ctx context.Context, tx *sql.Tx, mig
 			return nil, 0, err
 		}
 		entry, ok := sessionMigrationManifestEntryByTable(table)
-		if !ok || entry.Policy != SessionMigrationPolicyCopy || !entry.Direct {
+		if !ok || entry.Policy != SessionMigrationPolicyCopy {
 			rows.Close()
 			return nil, 0, fmt.Errorf("session migration rollback blocked: unsupported mapped table %q", table)
 		}

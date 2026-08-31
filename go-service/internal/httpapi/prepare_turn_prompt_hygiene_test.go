@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -86,6 +87,102 @@ func TestPrepareTurnCanonicalCharacterRosterDoesNotConsumeStateBudget(t *testing
 	}
 	if got := intFromAny(assembly.Counts["canonical_character_roster_only_dropped"], 0); got != 1 {
 		t.Fatalf("roster drop count=%d, want 1: %#v", got, assembly.Counts)
+	}
+}
+
+func TestPrepareTurnCanonicalCharacterCandidateRemainsWholeUntilFinalBudget(t *testing.T) {
+	const tail = "canonical-character-tail-끝"
+	longState := strings.Repeat("정밀한 상태 기록 ", 40) + tail
+	canonicalJSON := mustCompactJSON(map[string]any{
+		"characters": []any{map[string]any{
+			"name": "Mira", "location": "forge", "state": longState,
+		}},
+	})
+	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
+		StateType: "scene", Content: `{"location":"forge","present_entities":["Mira"]}`,
+	}})
+	assembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil, nil, nil,
+		[]store.CanonicalStateLayer{{ID: 1, LayerType: "entity_state", Content: canonicalJSON, TurnIndex: 9, SourceTurn: 9, Confidence: 0.9}},
+		nil, nil, nil, nil,
+		5, 30000, "Mira checks her precise state at the forge.", "default", nil, nil, nil, perspective,
+	)
+
+	var payload string
+	for _, line := range strings.Split(assembly.CanonCharacterText, "\n") {
+		if strings.HasPrefix(line, "- entity_state: ") {
+			payload = strings.TrimPrefix(line, "- entity_state: ")
+			break
+		}
+	}
+	if payload == "" || !strings.Contains(payload, tail) {
+		t.Fatalf("canonical character candidate lost its tail: %q", assembly.CanonCharacterText)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		t.Fatalf("canonical character candidate is not complete JSON: %v payload=%q", err, payload)
+	}
+	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
+	if !strings.Contains(finalText, tail) {
+		t.Fatalf("adequate final budget did not deliver the whole canonical candidate: %q", finalText)
+	}
+
+	bounded := prepareTurnInjectionAssembly{CanonCharacterText: assembly.CanonCharacterText}
+	boundedPlan := buildPrepareTurnMemoryDeliveryPlan(&bounded, 160, map[string]any{})
+	boundedText := extractionStringFromAny(boundedPlan["final_text"])
+	if strings.Contains(boundedText, "entity_state") || strings.Contains(boundedText, tail) {
+		t.Fatalf("small final budget partially injected an oversized canonical item: %q", boundedText)
+	}
+}
+
+func TestPrepareTurnMemoryCandidateRenderersPreserveLongTails(t *testing.T) {
+	const tail = "memory-candidate-tail-끝"
+	longText := strings.Repeat("완전한 기억 문장 ", 70) + tail
+	longJSON := mustCompactJSON([]any{longText})
+
+	cases := map[string]string{
+		"episode_dense_anchor": episodeDenseAnchorPreview(store.EpisodeSummary{
+			KeyEvents: longJSON, RelationshipChangesJSON: longJSON, OpenLoopsJSON: longJSON,
+		}, "different summary", 0),
+		"chapter": prepareTurnChapterRecallText(store.ChapterSummary{
+			FromTurn: 1, ToTurn: 10, ChapterTitle: longText, ResumeText: longText,
+			OpenLoopsJSON: longJSON, RelationshipChangesJSON: longJSON, WorldChangesJSON: longJSON, CallbackCandidatesJSON: longJSON,
+		}),
+		"arc": prepareTurnArcRecallText(store.ArcSummary{
+			FromTurn: 1, ToTurn: 20, ArcName: longText, ArcStatus: longText, ArcResumeText: longText,
+			KeyTurningPointsJSON: longJSON, UnresolvedDebtsJSON: longJSON, CallbackCandidatesJSON: longJSON,
+		}),
+		"saga": prepareTurnSagaRecallText(store.SagaDigest{
+			FromTurn: 1, ToTurn: 30, EraLabel: longText, ResumePackText: longText,
+			PersistentFactsJSON: longJSON, NeverDropCandidatesJSON: longJSON,
+		}),
+		"persona":           personaRecollectionPromptLineText(store.PersonaMemoryEntry{MemoryText: longText}, 32),
+		"character_private": characterPrivateRecollectionPromptLineText(store.ProtagonistEntityMemory{MemoryText: longText}, 32),
+	}
+	for name, text := range cases {
+		if !strings.Contains(text, tail) {
+			t.Errorf("%s candidate lost its tail: %q", name, text)
+		}
+	}
+}
+
+func TestPrepareTurnContinuityCorrectionPreservesLongCurrentValue(t *testing.T) {
+	const tail = "continuity-current-tail-끝"
+	current := strings.Repeat("현재 연속성 상태 ", 40) + tail
+	value := store.StatusCurrentValue{
+		StatusKey:  narrativeStateStatusKey,
+		WriteState: "current",
+		SourceTurn: 12,
+		ValueJSON: mustCompactJSON(map[string]any{
+			"subject": "Mira", "subject_type": "entity", "state_slot": "physical_state",
+			"value": current, "previous_value": "old state", "claim_scope": "objective", "transition": "change",
+		}),
+	}
+	text, trace := buildNarrativeContinuityCorrection(
+		[]store.StatusCurrentValue{value}, "Mira checks her condition.", nil, nil, prepareTurnMemoryLaneSelection{}, 5,
+	)
+	if intFromAny(trace["selected_count"], 0) != 1 || !strings.Contains(text, tail) {
+		t.Fatalf("continuity correction lost the current-value tail: trace=%#v text=%q", trace, text)
 	}
 }
 

@@ -504,6 +504,36 @@ func (d *dualWriteStore) ResolveReviewedCanonicalEntityID(ctx context.Context, c
 	return "", ErrNotEnabled
 }
 
+func (d *dualWriteStore) ListActiveEntityIdentities(ctx context.Context, chatSessionID string) ([]EntityIdentity, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListActiveEntityIdentities(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListActiveEntityIdentities(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListActiveEntityIdentitySurfaces(ctx context.Context, chatSessionID string) ([]EntityIdentitySurface, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListActiveEntityIdentitySurfaces(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListActiveEntityIdentitySurfaces(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) ListReviewedEntityIdentityLinks(ctx context.Context, chatSessionID string) ([]EntityIdentityLink, error) {
+	if primary, ok := d.primary.(EntityIdentityCatalogReader); ok {
+		return primary.ListReviewedEntityIdentityLinks(ctx, chatSessionID)
+	}
+	if shadow, ok := d.shadow.(EntityIdentityCatalogReader); ok {
+		return shadow.ListReviewedEntityIdentityLinks(ctx, chatSessionID)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) ResolveUniqueActiveEntityIDBySurface(ctx context.Context, chatSessionID, normalizedSurface string) (string, error) {
 	if primary, ok := d.primary.(UniqueActiveEntitySurfaceResolver); ok {
 		return primary.ResolveUniqueActiveEntityIDBySurface(ctx, chatSessionID, normalizedSurface)
@@ -741,6 +771,21 @@ func (d *dualWriteStore) ListActiveSourceRevisions(
 	return nil, ErrNotEnabled
 }
 
+func (d *dualWriteStore) ListSourceRevisions(
+	ctx context.Context,
+	sid string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	if reader, ok := d.primary.(SourceRevisionHistoryLister); ok {
+		return reader.ListSourceRevisions(ctx, sid, fromTurn, toTurn)
+	}
+	if reader, ok := d.shadow.(SourceRevisionHistoryLister); ok {
+		return reader.ListSourceRevisions(ctx, sid, fromTurn, toTurn)
+	}
+	return nil, ErrNotEnabled
+}
+
 func (d *dualWriteStore) InvalidateSourceRevisions(ctx context.Context, sid string, fromTurn int, lifecycleState, reason string, invalidatedAt time.Time) error {
 	primary, primaryOK := memoryLifecycleSourceStore(d.primary)
 	shadow, shadowOK := memoryLifecycleSourceStore(d.shadow)
@@ -781,6 +826,16 @@ func (d *dualWriteStore) ClaimMemoryReprocessingJob(ctx context.Context, owner s
 		return shadow.ClaimMemoryReprocessingJob(ctx, owner, now, lease)
 	}
 	return nil, ErrNotEnabled
+}
+
+func (d *dualWriteStore) NextMemoryReprocessingWakeAt(ctx context.Context) (time.Time, error) {
+	if primary, ok := d.primary.(MemoryReprocessingWakeScheduleStore); ok {
+		return primary.NextMemoryReprocessingWakeAt(ctx)
+	}
+	if shadow, ok := d.shadow.(MemoryReprocessingWakeScheduleStore); ok {
+		return shadow.NextMemoryReprocessingWakeAt(ctx)
+	}
+	return time.Time{}, ErrNotEnabled
 }
 
 func (d *dualWriteStore) CompleteMemoryReprocessingJob(ctx context.Context, id int64, owner string, now time.Time) error {

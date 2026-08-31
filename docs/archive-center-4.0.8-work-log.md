@@ -1,8 +1,8 @@
 # Archive Center 4.0.8 작업 기록
 
-기록일: 2026-08-27
+기록일: 2026-08-28
 
-상태: 활성 source 수정·회귀 검증 및 Windows 테스트 패키지 생성 완료
+상태: 활성 source 수정·회귀 검증 완료, 기존 Windows 테스트 패키지는 후속 source 갱신 전 산출물
 
 ## 1. 기준과 범위
 
@@ -120,6 +120,55 @@
   중간을 잘라 맞추지 않는다.
 - 다른 기억 lane의 선택·예산·축약 정책은 변경하지 않았다.
 
+### 2.6 DeepSeek V4 `low` 추론 강도 전달
+
+피드백:
+
+- DeepSeek 공식 API에는 `low` 추론 강도가 존재하지만 Archive Center의
+  DeepSeek V4 설정에는 `none/high/max`만 표시됐다.
+- Ollama, OpenCode Zen, NeuralWatt와 같은 비공식 제공 경로에서도 실제
+  Provider가 DeepSeek V4의 `low`를 인식한다면 해당 값을 선택하고 그대로
+  전달할 수 있어야 한다는 요청이 있었다.
+
+확인된 원인:
+
+- UI의 Direct DeepSeek 및 gateway용 DeepSeek V4 선택지가 `low`를 제외했다.
+- Go 백엔드의 Direct DeepSeek와 공용 gateway 변환기가 입력된 `low`를
+  호출 전에 `high`로 승격했다.
+- Ollama OpenAI 호환 경로는 이미 `low`를 보존하고 있었으나 이 동작을
+  직접 검증하는 회귀가 부족했다.
+- Provider마다 실제 의미가 같지는 않았다. NeuralWatt의
+  `deepseek-v4-pro`는 독립적인 `low`를 지원하지만
+  `deepseek-v4-flash`와 `-flex` 별칭에는 light tier가 없어 `low`가
+  `high` 의미로 처리된다.
+
+확인한 공식 계약:
+
+- DeepSeek Thinking Mode: <https://api-docs.deepseek.com/guides/thinking_mode/>
+- Ollama Thinking API 및 DeepSeek V4 Pro 모델 설명:
+  <https://docs.ollama.com/capabilities/thinking>,
+  <https://ollama.com/library/deepseek-v4-pro>
+- NeuralWatt Chat Completions의 모델별 `reasoning_effort` 매핑:
+  <https://portal.neuralwatt.com/docs/api/chat-completions>
+- OpenCode 모델 variant와 Zen endpoint:
+  <https://opencode.ai/docs/models/>, <https://opencode.ai/docs/zen/>
+
+반영:
+
+- DeepSeek 공식 endpoint에서는 UI에 `low`를 표시하고
+  `thinking.type=enabled`, `reasoning_effort=low`를 그대로 전송한다.
+- LLM Gateway에서는 `reasoning_effort=low`, OpenRouter·Vercel에서는
+  `reasoning.effort=low`를 전달한다. Archive Center가 먼저 `high`로 바꾸지
+  않으며 실제 지원 여부는 upstream 응답으로 확인한다.
+- OpenCode Zen과 같은 Custom OpenAI 호환 endpoint도 모델명이 DeepSeek V4로
+  판정되고 사용자가 `low`를 선택하면 `reasoning_effort=low`를 전달한다.
+- NeuralWatt `deepseek-v4-pro`는 `low`를 표시·전달한다.
+- NeuralWatt `deepseek-v4-flash` 및 `-flex`는 실제 light tier가 없으므로
+  `low`를 별도 단계로 표시하지 않고 문서화된 `high` 의미를 유지한다.
+- Ollama DeepSeek V4의 기존 `low`·`medium` 전달과 저장값 호환을 유지한다.
+- 지원하지 않는 Provider의 오류를 숨기지 않으며 다른 강도로 몰래 재호출하는
+  fallback이나 숨겨진 재시도를 추가하지 않았다.
+
 ## 3. 주요 변경 파일
 
 ### RisuAI host adapter
@@ -129,6 +178,7 @@
   - 출판사·평론가 타임아웃 값 전달
   - KG `종료 미기록` 표시
   - NeuralWatt Provider와 설정 표시
+  - Provider·모델 계약에 맞는 DeepSeek V4 `low` 선택 표시와 요청 전달
 
 ### Go backend
 
@@ -141,6 +191,7 @@
   - KG 선택 진단 용어 정리
 - `go-service/internal/httpapi/proxy_provider.go`
   - NeuralWatt Standard/Flex 요청 및 Flex SSE 조립
+  - Direct·gateway·Custom OpenAI 호환 DeepSeek V4 `low` wire 값 보존
 - `go-service/internal/config/config.go`
   - 기본 빌드 버전 4.0.8
 
@@ -187,6 +238,8 @@
 - 활성 소스와 패키지의 `Archive Center.js` SHA-256 일치
 - 활성 소스와 패키지의 `critic_system.txt` SHA-256 일치
 - 실제 NeuralWatt 계정 Standard/Flex 호출: 미검증
+- 실제 Direct DeepSeek·LLM Gateway·OpenRouter·OpenCode Zen의 `low` 적용:
+  미검증
 - 실제 RisuAI·MariaDB·ChromaDB 장기 세션: 미검증
 
 ## 6. 테스트 패키지
@@ -224,12 +277,15 @@
 - 세계 규칙 축약 제거: JavaScript `+0 / -0`
 - NeuralWatt 조각: JavaScript `+12 / -6`
 - 4.0.8 버전 표기 교체: JavaScript `+6 / -6`
-- 타임아웃 연결·KG 표시·NeuralWatt·버전 표기를 포함한 현재 작업 트리의
-  전체 JavaScript diff: `+33 / -45`
+- DeepSeek V4 `low` 후속 조각: JavaScript `+11 / -7`
+- 4.0.8 테스트 패키지 생성 당시 타임아웃 연결·KG 표시·NeuralWatt·버전
+  표기를 포함한 JavaScript diff: `+33 / -45`
+- 2026-08-28 후속 source 전체 JavaScript diff: `+42 / -39`
 
 ## 8. 아직 확인되지 않은 범위
 
 - 실제 NeuralWatt API의 Standard 및 Flex 과금·usage·완료 이벤트
+- 실제 Provider별 DeepSeek V4 `low` 수용·적용 결과와 응답 metadata
 - 실제 RisuAI에서 저장한 타임아웃이 외부 장시간 모델 호출에 적용되는지
 - 실제 사용자 DB에서 신규 주관 기억 점수가 다양하게 생성되는지
 - 장기 세계선에서 열린 KG가 지원 이력으로 전달되고 현재 상태로 오인되지

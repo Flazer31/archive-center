@@ -71,6 +71,7 @@ type RuntimeConfig struct {
 	SourceSearchPlannerReasoningBudget *int64
 	LLMRetryCount                      int
 	FailedQueueMaxAttempts             int
+	CriticReprocessingIntervalSec      int
 	TopK                               int64
 }
 
@@ -91,6 +92,20 @@ func firstRuntimeSourceValue(candidates ...runtimeSourceValue) runtimeSourceValu
 		}
 	}
 	return runtimeSourceValue{Source: "unset"}
+}
+
+func runtimeProviderEndpointSource(provider, endpoint runtimeSourceValue) runtimeSourceValue {
+	if strings.TrimSpace(endpoint.Value) != "" {
+		return endpoint
+	}
+	resolved := proxyProviderBaseURL(provider.Value, "")
+	if resolved == "" {
+		return endpoint
+	}
+	return runtimeSourceValue{
+		Value:  resolved,
+		Source: "provider_default." + strings.ToLower(strings.TrimSpace(provider.Value)),
+	}
 }
 
 func addRuntimeSourceTrace(trace map[string]any, provider, apiKey, endpoint, model runtimeSourceValue) {
@@ -269,6 +284,7 @@ func (s *Server) updateRuntimeConfig(body map[string]any) []string {
 	setIntPtr("sourceSearchPlannerReasoningBudgetTokens", &s.RuntimeConfig.SourceSearchPlannerReasoningBudget)
 	setClampedInt("llmRetryCount", &s.RuntimeConfig.LLMRetryCount, 0, 10)
 	setClampedInt("failedQueueMaxAttempts", &s.RuntimeConfig.FailedQueueMaxAttempts, 1, 11)
+	setClampedInt("criticReprocessingIntervalSec", &s.RuntimeConfig.CriticReprocessingIntervalSec, 1, 3600)
 	setInt("topK", &s.RuntimeConfig.TopK)
 
 	return updated
@@ -293,13 +309,13 @@ func (s *Server) supervisorLLMConfig() completeTurnLLMConfig {
 	if rt.SupervisorTemperature != nil {
 		temperature = *rt.SupervisorTemperature
 	}
-	maxTokens := int64(1200)
+	maxTokens := int64(30000)
 	if rt.SupervisorMaxTokens != nil && *rt.SupervisorMaxTokens > 0 {
 		maxTokens = *rt.SupervisorMaxTokens
 	}
 	return completeTurnLLMConfig{
 		APIKey:                rt.SupervisorAPIKey,
-		Endpoint:              rt.SupervisorEndpoint,
+		Endpoint:              proxyProviderBaseURL(rt.SupervisorProvider, rt.SupervisorEndpoint),
 		Model:                 rt.SupervisorModel,
 		Provider:              rt.SupervisorProvider,
 		TimeoutMs:             runtimeTimeoutMs(rt.SupervisorTimeoutSec),
@@ -336,7 +352,7 @@ func (s *Server) sourceSearchPlannerLLMConfig() completeTurnLLMConfig {
 		reasoningEffort = "none"
 	}
 	return completeTurnLLMConfig{
-		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: rt.SourceSearchPlannerEndpoint,
+		APIKey: rt.SourceSearchPlannerAPIKey, Endpoint: proxyProviderBaseURL(rt.SourceSearchPlannerProvider, rt.SourceSearchPlannerEndpoint),
 		Model: rt.SourceSearchPlannerModel, Provider: rt.SourceSearchPlannerProvider,
 		TimeoutMs:   runtimeTimeoutMs(rt.SourceSearchPlannerTimeoutSec),
 		Temperature: temperature, MaxTokens: maxTokens,
@@ -359,7 +375,7 @@ func (s *Server) chapterLLMConfig() completeTurnLLMConfig {
 	}
 	return completeTurnLLMConfig{
 		APIKey:                rt.MainAPIKey,
-		Endpoint:              rt.MainEndpoint,
+		Endpoint:              proxyProviderBaseURL(rt.MainProvider, rt.MainEndpoint),
 		Model:                 rt.MainModel,
 		Provider:              rt.MainProvider,
 		TimeoutMs:             runtimeTimeoutMs(rt.MainTimeoutSec),
@@ -522,6 +538,10 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 			embeddingEnvSource("AC_EMBEDDER_ENDPOINT", "AC_LT_EMBEDDING_ENDPOINT", "PROJECT_EMBEDDING_ENDPOINT", "AC_PROJECT_EMBEDDING_ENDPOINT"),
 		)
 	}
+	mainEndpointID = runtimeProviderEndpointSource(mainProviderID, mainEndpointID)
+	supervisorEndpointID = runtimeProviderEndpointSource(supervisorProviderID, supervisorEndpointID)
+	criticEndpointID = runtimeProviderEndpointSource(criticProviderID, criticEndpointID)
+	sourceSearchPlannerEndpointID = runtimeProviderEndpointSource(sourceSearchPlannerProviderID, sourceSearchPlannerEndpointID)
 	embeddingIdentity := s.currentEmbeddingModelIdentity()
 	embeddingModel := embeddingIdentity.Model
 	embeddingModelID := runtimeSourceValue{Value: embeddingModel, Source: embeddingIdentity.Source}

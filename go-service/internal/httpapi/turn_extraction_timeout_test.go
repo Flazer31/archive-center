@@ -41,6 +41,18 @@ func TestRuntimeTimeoutConversionDoesNotInventFallback(t *testing.T) {
 	}
 }
 
+func TestPublisherAndCriticDefaultCompletionTokensAreThirtyThousand(t *testing.T) {
+	critic := completeTurnExtractionConfigFromMeta(nil).Critic
+	if critic.MaxTokens != 30000 || critic.MaxCompletionTokens != 30000 {
+		t.Fatalf("critic defaults = max_tokens:%d max_completion_tokens:%d, want 30000/30000", critic.MaxTokens, critic.MaxCompletionTokens)
+	}
+
+	publisher := (&Server{}).supervisorLLMConfig()
+	if publisher.MaxTokens != 30000 {
+		t.Fatalf("publisher default max_tokens=%d, want 30000", publisher.MaxTokens)
+	}
+}
+
 func TestCompleteTurnConfigRequiresExplicitPositiveTimeout(t *testing.T) {
 	srv := &Server{Cfg: config.Default()}
 	cfg := srv.completeTurnExtractionConfig(map[string]any{

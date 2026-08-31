@@ -254,10 +254,11 @@ func TestDashboardLegacyBackfillUsesTypedCountsForDetailCode(t *testing.T) {
 	}
 }
 
-func TestDashboardViewModelRouteIncludesLatestSessionWorkflow(t *testing.T) {
+func TestDashboardViewModelRouteDoesNotPromoteHistoricalSessionWorkflowWithoutRequestID(t *testing.T) {
 	server := &Server{TurnWorkflows: newTurnWorkflowHUDLedger()}
 	server.TurnWorkflows.begin("request-latest", "session-latest", 3)
 	server.TurnWorkflows.setHostTurn("request-latest", 4, true)
+	server.TurnWorkflows.finishStage("request-latest", turnWorkflowStageFinalAccepted, "failed", "ASSISTANT_OUTPUT_DELETE_SYNC_PARTIAL")
 	body, err := json.Marshal(dashboardViewModelRequest{
 		PluginEnabled: true, CurrentSessionID: "session-latest", RuntimeState: map[string]any{},
 	})
@@ -273,9 +274,8 @@ func TestDashboardViewModelRouteIncludesLatestSessionWorkflow(t *testing.T) {
 	if err := json.Unmarshal(recorder.Body.Bytes(), &vm); err != nil {
 		t.Fatal(err)
 	}
-	alignment := requireDashboardRow(t, requireDashboardCard(t, vm, "current_workflow"), "turnAlignment")
-	if alignment.Status != "warn" || alignment.DetailCode != "host_turn_ahead_of_backend" {
-		t.Fatalf("latest workflow alignment=%+v", alignment)
+	if current := findDashboardCard(vm, "current_workflow"); current != nil {
+		t.Fatalf("historical workflow was promoted without an exact request id: %+v", current)
 	}
 }
 

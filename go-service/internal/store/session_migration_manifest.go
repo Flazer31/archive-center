@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	SessionMigrationManifestVersion = "session-migration.manifest.v3"
+	SessionMigrationManifestVersion = "session-migration.manifest.v4"
 
 	SessionMigrationPolicyCopy                = "copy"
 	SessionMigrationPolicyRetainAudit         = "retain_audit"
@@ -24,7 +24,8 @@ const (
 
 // SessionMigrationManifestEntry classifies one direct session-scoped table or
 // an indirect child reached through a direct table. The manifest is exhaustive
-// for migrations/001_schema.sql at SessionMigrationManifestVersion.
+// for the canonical and additive session-owned schemas at
+// SessionMigrationManifestVersion.
 //
 // Implemented is deliberately false for work that the current copy executor
 // cannot yet prove with source/target hash, row-map, FK, and vector parity.
@@ -43,6 +44,7 @@ type SessionMigrationManifestEntry struct {
 const (
 	SessionMigrationKeyAutoIncrement = "auto_increment"
 	SessionMigrationKeyUUID          = "uuid"
+	SessionMigrationKeyDigest32      = "digest32"
 	SessionMigrationKeyPreserve      = "preserve"
 )
 
@@ -132,6 +134,7 @@ type SessionMigrationBlockerError struct {
 	Code  string
 	Phase string
 	Table string
+	Count int
 }
 
 func (e *SessionMigrationBlockerError) Error() string {
@@ -144,6 +147,9 @@ func (e *SessionMigrationBlockerError) Error() string {
 	}
 	if e.Table != "" {
 		parts = append(parts, "table="+e.Table)
+	}
+	if e.Count > 0 {
+		parts = append(parts, fmt.Sprintf("count=%d", e.Count))
 	}
 	return strings.Join(parts, ": ")
 }
@@ -226,11 +232,15 @@ var sessionMigrationManifestV1 = []SessionMigrationManifestEntry{
 	{Table: "memory_derivation_dependencies", SessionColumn: "chat_session_id", Policy: SessionMigrationPolicyCopy, Direct: true},
 	{Table: "memory_reprocessing_jobs", SessionColumn: "chat_session_id", Policy: SessionMigrationPolicyDeleteAfterVerified, Direct: true},
 	{Table: "memory_vector_outbox", SessionColumn: "chat_session_id", Policy: SessionMigrationPolicyDeleteAfterVerified, Direct: true},
+	{Table: "lorebook_reference_session_locks", SessionColumn: "chat_session_id", Policy: SessionMigrationPolicyCopy, Direct: true},
+	{Table: "lorebook_reference_scopes", SessionColumn: "chat_session_id", Policy: SessionMigrationPolicyCopy, Direct: true},
 
 	{Table: "persona_memory_entries", ParentTable: "persona_memory_capsules", Policy: SessionMigrationPolicyRetainAudit},
 	{Table: "session_reference_runtime", ParentTable: "session_reference_bindings", Policy: SessionMigrationPolicyRegenerate},
 	{Table: "session_reference_coverage_snapshots", ParentTable: "session_reference_bindings", Policy: SessionMigrationPolicyRegenerate},
 	{Table: "session_reference_coverage_fields", ParentTable: "session_reference_coverage_snapshots", Policy: SessionMigrationPolicyRegenerate},
+	{Table: "lorebook_reference_snapshots", ParentTable: "lorebook_reference_scopes", Policy: SessionMigrationPolicyCopy},
+	{Table: "lorebook_reference_entries", ParentTable: "lorebook_reference_snapshots", Policy: SessionMigrationPolicyCopy},
 }
 
 var sessionMigrationMetadataExclusionsV1 = []SessionMigrationMetadataExclusion{
@@ -301,6 +311,10 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 		"memory_derivation_dependencies":       "id,contract_version,chat_session_id,source_revision,root_source_pointer,child_artifact_type,child_artifact_id,parent_artifact_type,parent_artifact_id,derivation_version,extractor_version,index_version,lifecycle_state,invalidated_at,created_at,updated_at",
 		"memory_reprocessing_jobs":             "id,contract_version,idempotency_key,chat_session_id,source_revision,source_contract,derivation_version,extractor_version,index_version,status,attempts,retry_after,lease_owner,lease_until,last_error,created_at,updated_at",
 		"memory_vector_outbox":                 "id,contract_version,operation_key,operation,chat_session_id,source_revision,document_id,document_json,embedding_ready,required_source_state,status,attempts,retry_after,lease_owner,lease_until,last_error,created_at,updated_at",
+		"lorebook_reference_session_locks":     "chat_session_id,created_at,updated_at",
+		"lorebook_reference_scopes":            "scope_id,chat_session_id,character_index,chat_index,enabled_modules_json,scope_identity_json,created_at,updated_at",
+		"lorebook_reference_snapshots":         "snapshot_id,scope_id,contract_version,consent_state,observation_state,complete_snapshot,entry_count,provenance_json,observed_at,created_at",
+		"lorebook_reference_entries":           "entry_record_id,scope_id,snapshot_id,host_entry_id,entry_ordinal,source_kind,source_identity,entry_key,second_key,entry_comment,content,normalized_search_text,entry_mode,always_active,selective,use_regex,insert_order,activation_percent,book_version,folder,extensions_json,content_hash,lifecycle_state,is_current,first_seen_at,last_seen_at,created_at,updated_at",
 		"persona_memory_entries":               "id,capsule_id,source_memory_type,source_memory_id,source_turn_index,memory_text,emotional_weight,importance_10,portability,tags_json,evidence_excerpt,injection_policy,created_at",
 		"session_reference_runtime":            "binding_id,candidate_node_id,candidate_source_turn,candidate_evidence_json,candidate_confirmed,last_claim_ids_json,diagnostics_json,revision,created_at,updated_at",
 		"session_reference_coverage_snapshots": "binding_id,contract_version,context_hash,inventory_hash,snapshot_hash,source_message_count,field_count,covered_field_count,stats_json,revision,created_at,updated_at",
@@ -316,6 +330,10 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 		"session_reference_runtime":            "binding_id",
 		"session_reference_coverage_snapshots": "binding_id",
 		"session_reference_coverage_fields":    "binding_id,field_key",
+		"lorebook_reference_session_locks":     "chat_session_id",
+		"lorebook_reference_scopes":            "scope_id",
+		"lorebook_reference_snapshots":         "snapshot_id",
+		"lorebook_reference_entries":           "entry_record_id",
 	}
 	uuidPrimaryKeys := map[string]bool{
 		"session_reference_bindings":        true,
@@ -458,6 +476,25 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 	setPlan("session_reference_runtime", func(plan *SessionMigrationExecutionPlan) { plan.ParentColumn = "binding_id" })
 	setPlan("session_reference_coverage_snapshots", func(plan *SessionMigrationExecutionPlan) { plan.ParentColumn = "binding_id" })
 	setPlan("session_reference_coverage_fields", func(plan *SessionMigrationExecutionPlan) { plan.ParentColumn = "binding_id" })
+	setPlan("lorebook_reference_session_locks", func(plan *SessionMigrationExecutionPlan) {
+		plan.PrimaryKeyMode = SessionMigrationKeyPreserve
+	})
+	setPlan("lorebook_reference_scopes", func(plan *SessionMigrationExecutionPlan) {
+		plan.PrimaryKeyMode = SessionMigrationKeyAutoIncrement
+	})
+	setPlan("lorebook_reference_snapshots", func(plan *SessionMigrationExecutionPlan) {
+		plan.PrimaryKeyMode = SessionMigrationKeyDigest32
+		plan.ParentColumn = "scope_id"
+		plan.ForeignKeys = []SessionMigrationForeignKeyPlan{{Column: "scope_id", ReferenceTable: "lorebook_reference_scopes", ReferenceColumn: "scope_id"}}
+	})
+	setPlan("lorebook_reference_entries", func(plan *SessionMigrationExecutionPlan) {
+		plan.PrimaryKeyMode = SessionMigrationKeyAutoIncrement
+		plan.ParentColumn = "snapshot_id"
+		plan.ForeignKeys = []SessionMigrationForeignKeyPlan{
+			{Column: "scope_id", ReferenceTable: "lorebook_reference_scopes", ReferenceColumn: "scope_id"},
+			{Column: "snapshot_id", ReferenceTable: "lorebook_reference_snapshots", ReferenceColumn: "snapshot_id"},
+		}
+	})
 	setPlan("memories", func(plan *SessionMigrationExecutionPlan) {
 		plan.Vector = &SessionMigrationVectorPlan{
 			Tier: "memory", IDColumn: "id", EmbeddingColumn: "embedding",

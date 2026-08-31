@@ -23,6 +23,7 @@ type entityIdentitySourceContext struct {
 	MessageID       string
 	GenerationID    string
 	ContentHash     string
+	SourceRole      string
 }
 
 type entityIdentitySourceContextKey struct{}
@@ -50,6 +51,10 @@ func contextWithStoredMemorySource(ctx context.Context, source *store.MemorySour
 		strings.TrimSpace(source.LogicalTurnID) == "" {
 		return ctx
 	}
+	sourceRole := "combined_turn_pair"
+	if strings.TrimSpace(source.UserContent) == "" {
+		sourceRole = "assistant_output"
+	}
 	return context.WithValue(ctx, entityIdentitySourceContextKey{}, entityIdentitySourceContext{
 		ContractVersion: completeTurnSourceAcceptanceContract,
 		Revision:        source.SourceRevision,
@@ -57,6 +62,7 @@ func contextWithStoredMemorySource(ctx context.Context, source *store.MemorySour
 		MessageID:       source.SourceMessageID,
 		GenerationID:    source.SourceGenerationID,
 		ContentHash:     source.CombinedContentHash,
+		SourceRole:      sourceRole,
 	})
 }
 

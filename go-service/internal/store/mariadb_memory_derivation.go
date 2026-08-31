@@ -21,6 +21,7 @@ var _ SourceRevisionStore = (*mariadbStore)(nil)
 var _ CriticInputSnapshotStore = (*mariadbStore)(nil)
 var _ MemoryDerivationLifecycleAvailability = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobStore = (*mariadbStore)(nil)
+var _ MemoryReprocessingWakeScheduleStore = (*mariadbStore)(nil)
 var _ MemoryReprocessingJobReopener = (*mariadbStore)(nil)
 var _ MemoryVectorOutboxStore = (*mariadbStore)(nil)
 var _ MemoryVectorMaterializedCompletionStore = (*mariadbStore)(nil)
@@ -133,9 +134,12 @@ func (m *mariadbStore) RegisterAcceptedSourceRevision(ctx context.Context, sourc
 	if err := canonicalRows.Err(); err != nil {
 		return result, err
 	}
-	if userRows != 1 || assistantRows != 1 ||
-		canonicalUser != source.UserContent ||
-		canonicalAssistant != source.AssistantContent {
+	userInputMissing := strings.TrimSpace(source.UserContent) == ""
+	userRowsValid := userRows == 1 && canonicalUser == source.UserContent
+	if userInputMissing {
+		userRowsValid = userRows == 0
+	}
+	if !userRowsValid || assistantRows != 1 || canonicalAssistant != source.AssistantContent {
 		return result, ErrSourceRevisionConflict
 	}
 
@@ -170,7 +174,6 @@ func validateMemorySourceRevision(source *MemorySourceRevision) error {
 		strings.TrimSpace(source.ChatSessionID) == "" ||
 		strings.TrimSpace(source.LogicalTurnID) == "" ||
 		source.TurnIndex <= 0 ||
-		strings.TrimSpace(source.UserContent) == "" ||
 		strings.TrimSpace(source.AssistantContent) == "" ||
 		strings.TrimSpace(source.CombinedContentHash) == "" ||
 		source.HostObservedAtMS <= 0 {
@@ -386,11 +389,33 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 	fromTurn int,
 	toTurn int,
 ) ([]MemorySourceRevision, error) {
+	return m.listSourceRevisions(ctx, chatSessionID, fromTurn, toTurn, true)
+}
+
+func (m *mariadbStore) ListSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+) ([]MemorySourceRevision, error) {
+	return m.listSourceRevisions(ctx, chatSessionID, fromTurn, toTurn, false)
+}
+
+func (m *mariadbStore) listSourceRevisions(
+	ctx context.Context,
+	chatSessionID string,
+	fromTurn int,
+	toTurn int,
+	activeOnly bool,
+) ([]MemorySourceRevision, error) {
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	where := "chat_session_id = ? AND lifecycle_state = 'active'"
+	where := "chat_session_id = ?"
 	args := []any{strings.TrimSpace(chatSessionID)}
+	if activeOnly {
+		where += " AND lifecycle_state = 'active'"
+	}
 	if fromTurn > 0 {
 		where += " AND turn_index >= ?"
 		args = append(args, fromTurn)
@@ -407,7 +432,7 @@ func (m *mariadbStore) ListActiveSourceRevisions(
 		       host_observed_at_ms, lifecycle_state
 		FROM memory_source_revisions
 		WHERE `+where+`
-		ORDER BY turn_index, id
+		ORDER BY turn_index, CASE WHEN lifecycle_state = 'active' THEN 0 ELSE 1 END, id DESC
 	`, args...)
 	if err != nil {
 		return nil, err
@@ -937,6 +962,40 @@ func (m *mariadbStore) ClaimMemoryReprocessingJob(ctx context.Context, leaseOwne
 	return job, nil
 }
 
+func (m *mariadbStore) NextMemoryReprocessingWakeAt(ctx context.Context) (time.Time, error) {
+	if err := m.ensureDB(); err != nil {
+		return time.Time{}, err
+	}
+	var next sql.NullTime
+	err := m.db.QueryRowContext(ctx, `
+		SELECT MIN(CASE
+		         WHEN j.status = 'leased' THEN j.lease_until
+		         ELSE j.retry_after
+		       END)
+		FROM memory_reprocessing_jobs j
+		JOIN memory_source_revisions s ON s.source_revision = j.source_revision
+		WHERE s.lifecycle_state = 'active'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM session_migration_locks migration_lock
+		    WHERE migration_lock.source_session_id = j.chat_session_id
+		      AND migration_lock.locked = TRUE
+		      AND migration_lock.unlocked_at IS NULL
+		  )
+		  AND (
+		    (j.status IN ('pending', 'retryable') AND j.retry_after IS NOT NULL)
+		    OR (j.status = 'leased' AND j.lease_until IS NOT NULL)
+		  )
+	`).Scan(&next)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if !next.Valid || next.Time.IsZero() {
+		return time.Time{}, ErrNotFound
+	}
+	return next.Time, nil
+}
+
 // selectMemoryReprocessingJobForLease treats retry_after as an exclusive wake
 // cursor so a job failed in this wake cannot be reclaimed by the same drain.
 func selectMemoryReprocessingJobForLease(ctx context.Context, tx *sql.Tx, now time.Time) (*MemoryReprocessingJob, error) {
@@ -952,6 +1011,13 @@ func selectMemoryReprocessingJobForLease(ctx context.Context, tx *sql.Tx, now ti
 		FROM memory_reprocessing_jobs j
 		JOIN memory_source_revisions s ON s.source_revision = j.source_revision
 		WHERE s.lifecycle_state = 'active'
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM session_migration_locks migration_lock
+		    WHERE migration_lock.source_session_id = j.chat_session_id
+		      AND migration_lock.locked = TRUE
+		      AND migration_lock.unlocked_at IS NULL
+		  )
 		  AND (
 		    (j.status IN ('pending', 'retryable') AND (j.retry_after IS NULL OR j.retry_after < ?))
 		    OR (j.status = 'leased' AND j.lease_until < ?)
@@ -1249,6 +1315,13 @@ func selectMemoryVectorOperationForLease(ctx context.Context, tx *sql.Tx, now ti
 		  )
 		  AND NOT EXISTS (
 		    SELECT 1
+		    FROM session_migration_locks migration_lock
+		    WHERE migration_lock.source_session_id = o.chat_session_id
+		      AND migration_lock.locked = TRUE
+		      AND migration_lock.unlocked_at IS NULL
+		  )
+		  AND NOT EXISTS (
+		    SELECT 1
 		    FROM memory_vector_outbox prior
 		    WHERE prior.chat_session_id = o.chat_session_id
 		      AND prior.document_id = o.document_id
@@ -1312,6 +1385,13 @@ func selectMemoryVectorOperationSiblingsForLease(ctx context.Context, tx *sql.Tx
 		FROM memory_vector_outbox o
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
 		WHERE `+where+`
+		  AND NOT EXISTS (
+		    SELECT 1
+		    FROM session_migration_locks migration_lock
+		    WHERE migration_lock.source_session_id = o.chat_session_id
+		      AND migration_lock.locked = TRUE
+		      AND migration_lock.unlocked_at IS NULL
+		  )
 		  AND NOT EXISTS (
 		    SELECT 1
 		    FROM memory_vector_outbox prior
@@ -1660,7 +1740,8 @@ func (m *mariadbStore) finishMemoryVectorOperation(ctx context.Context, outboxID
 	var currentOwner sql.NullString
 	var leaseUntil sql.NullTime
 	if err := tx.QueryRowContext(ctx, `
-		SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state, s.lifecycle_state
+		SELECT o.status, o.lease_owner, o.lease_until, o.required_source_state,
+		       s.lifecycle_state
 		FROM memory_vector_outbox o
 		JOIN memory_source_revisions s ON s.source_revision = o.source_revision
 		WHERE o.id = ?

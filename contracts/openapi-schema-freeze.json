@@ -132,6 +132,21 @@
     },
     "ChatLogRepairEntryRequest": {
       "properties": {
+        "assistant_content_hash": {
+          "type": "string",
+          "title": "Assistant Content Hash",
+          "default": ""
+        },
+        "assistant_generation_id": {
+          "type": "string",
+          "title": "Assistant Generation Id",
+          "default": ""
+        },
+        "assistant_message_id": {
+          "type": "string",
+          "title": "Assistant Message Id",
+          "default": ""
+        },
         "turn_index": {
           "type": "integer",
           "title": "Turn Index"
@@ -151,9 +166,19 @@
           "title": "Created At",
           "default": ""
         },
+        "input_mode": {
+          "type": "string",
+          "title": "Input Mode",
+          "default": ""
+        },
         "source": {
           "type": "string",
           "title": "Source",
+          "default": ""
+        },
+        "user_input_state": {
+          "type": "string",
+          "title": "User Input State",
           "default": ""
         }
       },
@@ -1947,7 +1972,7 @@
         "max_injection_chars": {
           "type": "integer",
           "title": "Max Injection Chars",
-          "default": 9000
+          "default": 18000
         },
         "core_objective_memory_max_items": {
           "type": "integer",

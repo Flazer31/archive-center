@@ -346,7 +346,7 @@
     {
       "schema_name": "ChatLogRepairEntryRequest",
       "go_type_name": "ChatLogRepairEntryRequest",
-      "field_count": 5,
+      "field_count": 10,
       "required_count": 1,
       "blocker_count": 0,
       "fields": [
@@ -365,9 +365,65 @@
           "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
         },
         {
+          "name": "assistant_content_hash",
+          "go_field_name": "AssistantContentHash",
+          "json_tag": "assistant_content_hash,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "",
+          "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
+          "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "assistant_generation_id",
+          "go_field_name": "AssistantGenerationID",
+          "json_tag": "assistant_generation_id,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "",
+          "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
+          "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "assistant_message_id",
+          "go_field_name": "AssistantMessageID",
+          "json_tag": "assistant_message_id,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "",
+          "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
+          "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
+        },
+        {
           "name": "created_at",
           "go_field_name": "CreatedAt",
           "json_tag": "created_at,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "",
+          "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
+          "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "input_mode",
+          "go_field_name": "InputMode",
+          "json_tag": "input_mode,omitempty",
           "required": false,
           "nullable": false,
           "proposed_go_type": "string",
@@ -410,6 +466,20 @@
           "name": "user_content",
           "go_field_name": "UserContent",
           "json_tag": "user_content,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "",
+          "decode_presence_note": "Optional non-null scalar string: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
+          "default_application_note": "Optional field with default (\"\"): Go handler must apply default when field is absent in request."
+        },
+        {
+          "name": "user_input_state",
+          "go_field_name": "UserInputState",
+          "json_tag": "user_input_state,omitempty",
           "required": false,
           "nullable": false,
           "proposed_go_type": "string",
@@ -4230,9 +4300,9 @@
           "blockers": [],
           "mapping_strategy": "direct",
           "has_default": true,
-          "default_value": 9000,
+          "default_value": 18000,
           "decode_presence_note": "Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.",
-          "default_application_note": "Optional field with default (9000): Go handler must apply default when field is absent in request."
+          "default_application_note": "Optional field with default (18000): Go handler must apply default when field is absent in request."
         },
         {
           "name": "reference_injection_budget_basis_chars",

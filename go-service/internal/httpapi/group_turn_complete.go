@@ -153,7 +153,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		view, ok := s.TurnWorkflows.snapshot(workflowRequestID)
-		if !ok || turnWorkflowHUDTerminal(view.Status) {
+		if !ok || turnWorkflowHUDTerminal(view.Status) || view.Status == "recovering" {
 			return
 		}
 		stageKey := turnWorkflowStageFinalAccepted
@@ -673,6 +673,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 	criticFailureReason := ""
 	reprocessingReason := ""
 	reprocessingDurable := false
+	reprocessingRetryAfter := time.Time{}
 	var criticFailureTrace map[string]any
 	criticFailure := map[string]any{}
 	failReasons := []string{}
@@ -1001,13 +1002,18 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				supported = false
 			}
 			if supported {
+				if strings.HasPrefix(strings.TrimSpace(reprocessingReason), "CRITIC_") || reprocessingReason == "critic_config_missing" {
+					reprocessingRetryAfter = time.Now().UTC().Add(
+						criticReprocessingDelay(s.runtimeConfigSnapshot(), criticFailureTrace),
+					)
+				}
 				storeWriteAttempted++
 				reprocessingJobReason := reprocessingReason
 				if reprocessingReason == "derived_persist_failed" {
 					reprocessingJobReason = completeTurnPersistenceFailureSummary(derivedDiagnostics)
 				}
 				if _, err := s.enqueueCompleteTurnReprocessingJob(
-					ctx, sourceAcceptance, sid, reprocessingJobReason, now,
+					ctx, sourceAcceptance, sid, reprocessingJobReason, now, reprocessingRetryAfter,
 				); err != nil {
 					storeWriteErrors++
 					storeWriteErrorDetails = append(
@@ -1033,15 +1039,12 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageDerivedPersist, "skipped", "critic_result_unavailable")
 				criticCode := strings.TrimSpace(stringFromMap(criticFailure, "code"))
 				if criticCode != "" {
-					details := []turnWorkflowHUDDetail{}
+					details := criticProviderHUDDetails(criticFailureTrace)
 					for _, item := range []struct {
 						key   string
 						value string
 					}{
 						{key: "pipeline_stage", value: stringFromMap(criticFailure, "stage")},
-						{key: "provider", value: stringFromMap(criticFailureTrace, "provider")},
-						{key: "model", value: stringFromMap(criticFailureTrace, "model")},
-						{key: "http_status", value: extractionStringFromAny(criticFailure["http_status"])},
 						{key: "cause", value: scrubCriticFailureText(criticFailureReason, extractionCfg.Critic.APIKey)},
 						{key: "raw_preview", value: stringFromMap(criticFailureTrace, "raw_preview")},
 					} {
@@ -1051,6 +1054,11 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 					}
 					if reprocessingDurable {
 						details = append(details, turnWorkflowHUDDetail{Key: "reprocessing", Value: "queued"})
+						if !reprocessingRetryAfter.IsZero() {
+							details = append(details, turnWorkflowHUDDetail{
+								Key: "next_retry_at", Value: reprocessingRetryAfter.UTC().Format(time.RFC3339Nano),
+							})
+						}
 					} else {
 						details = append(details, turnWorkflowHUDDetail{Key: "reprocessing", Value: "unavailable"})
 					}

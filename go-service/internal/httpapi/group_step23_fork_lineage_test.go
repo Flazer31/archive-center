@@ -17,6 +17,21 @@ type forkLineageHTTPStore struct {
 	store.Store
 	records []store.ForkLineageRecord
 	saved   store.ForkLineageRecord
+	history map[string][]store.MemorySourceRevision
+}
+
+func (f *forkLineageHTTPStore) ListSourceRevisions(_ context.Context, sid string, fromTurn, toTurn int) ([]store.MemorySourceRevision, error) {
+	out := []store.MemorySourceRevision{}
+	for _, source := range f.history[sid] {
+		if fromTurn > 0 && source.TurnIndex < fromTurn {
+			continue
+		}
+		if toTurn > 0 && source.TurnIndex > toTurn {
+			continue
+		}
+		out = append(out, source)
+	}
+	return out, nil
 }
 
 func (f *forkLineageHTTPStore) ListForkLineageRecords(ctx context.Context, chatSessionID, scopeID string, limit int) ([]store.ForkLineageRecord, error) {
@@ -37,6 +52,12 @@ func (f *forkLineageHTTPStore) ListForkLineageRecords(ctx context.Context, chatS
 }
 
 func (f *forkLineageHTTPStore) SaveForkLineageRecord(ctx context.Context, record store.ForkLineageRecord) (store.ForkLineageRecord, error) {
+	for _, existing := range f.records {
+		if record.IdempotencyKey != "" && existing.ChatSessionID == record.ChatSessionID && existing.IdempotencyKey == record.IdempotencyKey {
+			f.saved = existing
+			return existing, nil
+		}
+	}
 	record.ID = 88
 	if record.ImportedAt.IsZero() {
 		record.ImportedAt = time.Date(2026, 6, 23, 3, 0, 0, 0, time.UTC)
@@ -149,6 +170,71 @@ func TestStep23ForkLineageDeclareRejectsAutomaticHookAndSelfParent(t *testing.T)
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("self parent status=%d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestStep23ForkLineageRepairConfirmsOnlySelectedParentTurnWithoutCopyingArtifacts(t *testing.T) {
+	st := &forkLineageHTTPStore{
+		Store: store.NewNoopStore(),
+		history: map[string][]store.MemorySourceRevision{
+			"parent-session": {{ChatSessionID: "parent-session", TurnIndex: 8, SourceMessageID: "assistant-8", LifecycleState: "superseded"}},
+		},
+	}
+	srv := NewServer(config.Default())
+	srv.Store = st
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/step23/fork-lineage", strings.NewReader(`{
+		"operation":"lineage_repair","chat_session_id":"child-session","copied_from_session_id":"parent-session",
+		"fork_turn":8,"fork_source_message_id":"assistant-8","fork_source_role":"char"
+	}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var resp step23ForkLineageDeclareResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Worldline == nil || resp.Worldline.State != "confirmed" || resp.Worldline.ParentSessionID != "parent-session" || resp.Worldline.ForkTurn != 8 {
+		t.Fatalf("response=%+v", resp)
+	}
+	if st.saved.ContractVersion != store.RisuWorldlineForkLineageContractVersion || st.saved.InheritanceMode != "none" || st.saved.InheritedItemsJSON != "[]" {
+		t.Fatalf("saved lineage=%+v", st.saved)
+	}
+}
+
+func TestStep23ForkLineageRepairRejectsParentTurnMismatchWithoutSaving(t *testing.T) {
+	st := &forkLineageHTTPStore{Store: store.NewNoopStore(), history: map[string][]store.MemorySourceRevision{"parent-session": {{TurnIndex: 9, SourceMessageID: "assistant-9"}}}}
+	srv := NewServer(config.Default())
+	srv.Store = st
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/step23/fork-lineage", strings.NewReader(`{"operation":"lineage_repair","chat_session_id":"child-session","copied_from_session_id":"parent-session","fork_turn":8,"fork_source_message_id":"assistant-8","fork_source_role":"char"}`))
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict || len(st.records) != 0 {
+		t.Fatalf("status=%d records=%+v body=%s", rec.Code, st.records, rec.Body.String())
+	}
+}
+
+func TestStep23ForkLineageRepairIsIdempotentForSameChildParentTurn(t *testing.T) {
+	st := &forkLineageHTTPStore{Store: store.NewNoopStore(), history: map[string][]store.MemorySourceRevision{"parent-session": {{TurnIndex: 8, SourceMessageID: "assistant-8"}}}}
+	srv := NewServer(config.Default())
+	srv.Store = st
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"operation":"lineage_repair","chat_session_id":"child-session","copied_from_session_id":"parent-session","fork_turn":8,"fork_source_message_id":"assistant-8","fork_source_role":"char"}`
+	for attempt := 0; attempt < 2; attempt++ {
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/step23/fork-lineage", strings.NewReader(body)))
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("attempt=%d status=%d body=%s", attempt, rec.Code, rec.Body.String())
+		}
+	}
+	if len(st.records) != 1 {
+		t.Fatalf("duplicate lineage records=%+v", st.records)
 	}
 }
 

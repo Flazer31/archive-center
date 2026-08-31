@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -392,6 +393,163 @@ func TestRepairReplayWriteStoreDryRunAndReplay(t *testing.T) {
 	}
 	if !foundAudit {
 		t.Fatalf("expected repair_replay audit, got %#v", fake.savedAuditLogs)
+	}
+}
+
+type repairReplayMutableStore struct {
+	*turnRecordingStore
+	saveCalls int
+}
+
+func newRepairReplayMutableStore(rows []store.ChatLog) *repairReplayMutableStore {
+	return &repairReplayMutableStore{turnRecordingStore: &turnRecordingStore{returnChatLogs: append([]store.ChatLog{}, rows...)}}
+}
+
+func (f *repairReplayMutableStore) SaveChatLog(_ context.Context, log *store.ChatLog) error {
+	f.saveCalls++
+	for _, current := range f.returnChatLogs {
+		if current.ChatSessionID != log.ChatSessionID || current.TurnIndex != log.TurnIndex ||
+			strings.ToLower(strings.TrimSpace(current.Role)) != strings.ToLower(strings.TrimSpace(log.Role)) {
+			continue
+		}
+		if strings.TrimSpace(current.Content) != strings.TrimSpace(log.Content) {
+			return fmt.Errorf("unexpected conflicting raw role write for turn %d role %s", log.TurnIndex, log.Role)
+		}
+		return nil
+	}
+	item := *log
+	f.returnChatLogs = append(f.returnChatLogs, item)
+	f.savedChatLogs = append(f.savedChatLogs, &item)
+	return nil
+}
+
+func (f *repairReplayMutableStore) ListChatLogs(_ context.Context, sid string, fromTurn, toTurn int) ([]store.ChatLog, error) {
+	rows := []store.ChatLog{}
+	for _, item := range f.returnChatLogs {
+		if item.ChatSessionID != sid || (fromTurn > 0 && item.TurnIndex < fromTurn) || (toTurn > 0 && item.TurnIndex > toTurn) {
+			continue
+		}
+		rows = append(rows, item)
+	}
+	return rows, nil
+}
+
+func postRepairReplay(t *testing.T, srv *Server, sid string, entries []dto.ChatLogRepairEntryRequest) map[string]any {
+	t.Helper()
+	body, err := json.Marshal(dto.ChatLogRepairReplayRequest{
+		ChatSessionID: &sid,
+		Entries:       entries,
+	})
+	if err != nil {
+		t.Fatalf("marshal repair replay request: %v", err)
+	}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	req := httptest.NewRequest(http.MethodPost, "/turns/repair-replay", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("repair replay status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var result map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode repair replay response: %v", err)
+	}
+	return result
+}
+
+func newRepairReplayServer(fake store.Store) *Server {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	return srv
+}
+
+func TestRepairReplayUserConflictPreservesVerifiedMissingAssistantAndIsIdempotent(t *testing.T) {
+	const sid = "sess-repair-user-conflict"
+	databaseUser := "database user"
+	activeUser := "active chat user"
+	missingAssistant := "verified missing assistant"
+	fake := newRepairReplayMutableStore([]store.ChatLog{{ChatSessionID: sid, TurnIndex: 2, Role: "user", Content: databaseUser}})
+	srv := newRepairReplayServer(fake)
+	entry := dto.ChatLogRepairEntryRequest{TurnIndex: 2, UserContent: &activeUser, AssistantContent: &missingAssistant}
+
+	result := postRepairReplay(t, srv, sid, []dto.ChatLogRepairEntryRequest{entry})
+	if intFromAny(result["total_conflict_role_count"], 0) != 1 ||
+		intFromAny(result["total_repaired_role_count"], 0) != 1 ||
+		!reflect.DeepEqual(intSliceFromAny(result["conflict_turns"]), []int{2}) ||
+		!reflect.DeepEqual(intSliceFromAny(result["repaired_turns"]), []int{2}) {
+		t.Fatalf("mixed role repair result=%#v", result)
+	}
+	conflicts := sliceFromAny(result["conflicts"])
+	if len(conflicts) != 1 || stringFromMap(mapFromAny(conflicts[0]), "role") != "user" ||
+		stringFromMap(mapFromAny(conflicts[0]), "reason") != "existing_role_content_conflict" {
+		t.Fatalf("user conflict detail=%#v", conflicts)
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].Role != "assistant" || fake.savedChatLogs[0].Content != missingAssistant {
+		t.Fatalf("saved chat logs=%#v, want only independently missing assistant", fake.savedChatLogs)
+	}
+	if fake.returnChatLogs[0].Content != databaseUser {
+		t.Fatalf("conflicting stored user was changed: %#v", fake.returnChatLogs)
+	}
+
+	firstSaveCalls := fake.saveCalls
+	rerun := postRepairReplay(t, srv, sid, []dto.ChatLogRepairEntryRequest{entry})
+	if intFromAny(rerun["total_repaired_role_count"], 0) != 0 || fake.saveCalls != firstSaveCalls || len(fake.savedChatLogs) != 1 {
+		t.Fatalf("rerun was not idempotent: result=%#v save_calls=%d logs=%#v", rerun, fake.saveCalls, fake.savedChatLogs)
+	}
+	if intFromAny(rerun["total_conflict_role_count"], 0) != 1 || intFromAny(rerun["total_existing_role_count"], 0) != 1 {
+		t.Fatalf("rerun did not preserve conflict/existing role accounting: %#v", rerun)
+	}
+}
+
+func TestRepairReplayAssistantConflictPreservesVerifiedMissingUser(t *testing.T) {
+	const sid = "sess-repair-assistant-conflict"
+	databaseAssistant := "database assistant"
+	activeAssistant := "active chat assistant"
+	missingUser := "verified missing user"
+	fake := newRepairReplayMutableStore([]store.ChatLog{{ChatSessionID: sid, TurnIndex: 4, Role: "assistant", Content: databaseAssistant}})
+	srv := newRepairReplayServer(fake)
+
+	result := postRepairReplay(t, srv, sid, []dto.ChatLogRepairEntryRequest{{
+		TurnIndex:        4,
+		UserContent:      &missingUser,
+		AssistantContent: &activeAssistant,
+	}})
+	if intFromAny(result["total_conflict_role_count"], 0) != 1 || intFromAny(result["total_repaired_role_count"], 0) != 1 {
+		t.Fatalf("mixed role repair result=%#v", result)
+	}
+	conflicts := sliceFromAny(result["conflicts"])
+	if len(conflicts) != 1 || stringFromMap(mapFromAny(conflicts[0]), "role") != "assistant" {
+		t.Fatalf("assistant conflict detail=%#v", conflicts)
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].Role != "user" || fake.savedChatLogs[0].Content != missingUser {
+		t.Fatalf("saved chat logs=%#v, want only independently missing user", fake.savedChatLogs)
+	}
+}
+
+func TestRepairReplayBothRoleConflictsSaveNothing(t *testing.T) {
+	const sid = "sess-repair-both-conflict"
+	databaseUser, databaseAssistant := "database user", "database assistant"
+	activeUser, activeAssistant := "active user", "active assistant"
+	fake := newRepairReplayMutableStore([]store.ChatLog{
+		{ChatSessionID: sid, TurnIndex: 6, Role: "user", Content: databaseUser},
+		{ChatSessionID: sid, TurnIndex: 6, Role: "assistant", Content: databaseAssistant},
+	})
+	srv := newRepairReplayServer(fake)
+
+	result := postRepairReplay(t, srv, sid, []dto.ChatLogRepairEntryRequest{{
+		TurnIndex: 6, UserContent: &activeUser, AssistantContent: &activeAssistant,
+	}})
+	if intFromAny(result["total_conflict_role_count"], 0) != 2 || intFromAny(result["total_repaired_role_count"], 0) != 0 ||
+		!reflect.DeepEqual(intSliceFromAny(result["conflict_turns"]), []int{6}) {
+		t.Fatalf("full conflict result=%#v", result)
+	}
+	if fake.saveCalls != 0 || len(fake.savedChatLogs) != 0 {
+		t.Fatalf("conflicting roles reached raw save: calls=%d logs=%#v", fake.saveCalls, fake.savedChatLogs)
 	}
 }
 

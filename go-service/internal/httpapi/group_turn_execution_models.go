@@ -155,7 +155,10 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 	now := time.Now().UTC()
 	repairedTurns := []int{}
 	failedTurns := []map[string]any{}
+	failedTurnIndices := []int{}
 	checkedTurns := []int{}
+	conflictTurns := []int{}
+	conflicts := []map[string]any{}
 	totalMissingRoles := 0
 	totalRepairedRoles := 0
 	totalConflictRoles := 0
@@ -174,7 +177,10 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 			"entries_count":             len(req.Entries),
 			"checked_turns":             uniqueSortedInts(checkedTurns),
 			"repaired_turns":            uniqueSortedInts(repairedTurns),
+			"conflict_turns":            uniqueSortedInts(conflictTurns),
+			"conflicts":                 conflicts,
 			"failed_turns":              failedTurns,
+			"failed_turn_indices":       uniqueSortedInts(failedTurnIndices),
 			"total_missing_role_count":  totalMissingRoles,
 			"total_repaired_role_count": totalRepairedRoles,
 			"total_conflict_role_count": totalConflictRoles,
@@ -213,6 +219,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 		turnIndex := entry.TurnIndex
 		if turnIndex < 0 {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "reason": "invalid_turn_index"})
+			failedTurnIndices = append(failedTurnIndices, turnIndex)
 			processedEntries++
 			failedEntries++
 			reportProgress(turnIndex, "entry_complete")
@@ -226,6 +233,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 		}
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "reason": "list_chat_logs_failed: " + err.Error()})
+			failedTurnIndices = append(failedTurnIndices, turnIndex)
 			processedEntries++
 			failedEntries++
 			reportProgress(turnIndex, "entry_complete")
@@ -243,17 +251,16 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 			}
 		}
 
-		createdAt := parseRepairReplayCreatedAt(entry.CreatedAt, now)
-		repairedThisTurn := 0
-		missingBefore := totalMissingRoles
-		failedThisTurn := false
-		for _, candidate := range []struct {
+		candidates := []struct {
 			role    string
 			content *string
 		}{
 			{role: "user", content: entry.UserContent},
 			{role: "assistant", content: entry.AssistantContent},
-		} {
+		}
+		turnHasConflict := false
+		conflictedRoles := map[string]bool{}
+		for _, candidate := range candidates {
 			content := ""
 			if candidate.content != nil {
 				content = sanitizeCriticStorageText(*candidate.content)
@@ -264,9 +271,38 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 			if current, ok := existing[candidate.role]; ok {
 				if strings.TrimSpace(current) != strings.TrimSpace(content) {
 					totalConflictRoles++
+					turnHasConflict = true
+					conflictedRoles[candidate.role] = true
+					conflicts = append(conflicts, map[string]any{
+						"turn_index": turnIndex,
+						"role":       candidate.role,
+						"reason":     "existing_role_content_conflict",
+					})
 				} else {
 					totalExistingRoles++
 				}
+			}
+		}
+		if turnHasConflict {
+			conflictTurns = append(conflictTurns, turnIndex)
+		}
+
+		createdAt := parseRepairReplayCreatedAt(entry.CreatedAt, now)
+		repairedThisTurn := 0
+		missingBefore := totalMissingRoles
+		failedThisTurn := false
+		for _, candidate := range candidates {
+			if conflictedRoles[candidate.role] {
+				continue
+			}
+			content := ""
+			if candidate.content != nil {
+				content = sanitizeCriticStorageText(*candidate.content)
+			}
+			if strings.TrimSpace(content) == "" {
+				continue
+			}
+			if _, ok := existing[candidate.role]; ok {
 				continue
 			}
 			totalMissingRoles++
@@ -284,6 +320,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 					return buildResult("cancelled"), ctxErr
 				}
 				failedTurns = append(failedTurns, map[string]any{"turn_index": turnIndex, "role": candidate.role, "reason": "save_chat_log_failed: " + err.Error()})
+				failedTurnIndices = append(failedTurnIndices, turnIndex)
 				failedThisTurn = true
 				continue
 			}
@@ -315,6 +352,7 @@ func (s *Server) runChatLogRepairReplayWithProgress(ctx context.Context, sid str
 			Summary:       fmt.Sprintf("Repair replay restored %d chat log roles", totalRepairedRoles),
 			DetailsJSON: mustCompactJSON(map[string]any{
 				"repaired_turns":            repairedTurns,
+				"conflict_turns":            uniqueSortedInts(conflictTurns),
 				"total_repaired_role_count": totalRepairedRoles,
 				"total_conflict_role_count": totalConflictRoles,
 			}),

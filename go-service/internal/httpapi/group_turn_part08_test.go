@@ -349,6 +349,23 @@ func (r *rollbackLifecycleStore) FailMemoryVectorOperation(_ context.Context, _ 
 	return nil
 }
 
+type sessionDeleteOutboxProbeStore struct {
+	*rollbackLifecycleStore
+	claimCalls           int
+	unrelatedOutboxState string
+}
+
+func (s *sessionDeleteOutboxProbeStore) ClaimMemoryVectorOperations(
+	ctx context.Context,
+	owner string,
+	now time.Time,
+	lease time.Duration,
+) ([]*store.MemoryVectorOutboxItem, error) {
+	s.claimCalls++
+	s.unrelatedOutboxState = "leased"
+	return s.rollbackLifecycleStore.ClaimMemoryVectorOperations(ctx, owner, now, lease)
+}
+
 func TestRollbackLiveWriteExecutesDeletions(t *testing.T) {
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -679,7 +696,10 @@ func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *t
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
 	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
-	lifecycle := &rollbackLifecycleStore{rollbackRecordingStore: base}
+	lifecycle := &sessionDeleteOutboxProbeStore{
+		rollbackLifecycleStore: &rollbackLifecycleStore{rollbackRecordingStore: base},
+		unrelatedOutboxState:   "pending",
+	}
 	vec := &turnRecordingVectorStore{deleteErr: errors.New("chroma unavailable")}
 	srv := &Server{
 		Cfg: cfg, Store: lifecycle, Vector: vec,
@@ -690,7 +710,7 @@ func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *t
 	mux := http.NewServeMux()
 	srv.RegisterRoutes(mux)
 
-	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-outbox", nil)
+	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-outbox?req_source=timeline_manual_delete", nil)
 	recorder := httptest.NewRecorder()
 	mux.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK {
@@ -704,14 +724,64 @@ func TestSessionDeleteLifecycleUsesOutboxInsteadOfDirectVectorSessionDelete(t *t
 		t.Fatalf("response=%+v", response)
 	}
 	cleanup := response["vector_cleanup"].(map[string]any)
-	if cleanup["mode"] != "durable_outbox" || cleanup["retryable_queued"] != float64(1) {
+	if cleanup["mode"] != "durable_outbox" || cleanup["vector_cleanup"] != "queued" ||
+		cleanup["queued"] != true || cleanup["canonical_committed"] != true ||
+		cleanup["drain_attempted"] != false || cleanup["processed"] != float64(0) {
 		t.Fatalf("cleanup=%+v", cleanup)
 	}
 	if vec.deleteSessionCalls != 0 {
 		t.Fatalf("direct vector session delete calls=%d", vec.deleteSessionCalls)
 	}
-	if lifecycle.outbox == nil || lifecycle.outbox.Status != "retryable" {
+	if lifecycle.claimCalls != 0 || lifecycle.unrelatedOutboxState != "pending" {
+		t.Fatalf("manual delete drained global outbox: claims=%d unrelated=%q", lifecycle.claimCalls, lifecycle.unrelatedOutboxState)
+	}
+	if lifecycle.outbox == nil || lifecycle.outbox.Status != "pending" || lifecycle.outbox.ChatSessionID != "sess-session-outbox" {
 		t.Fatalf("outbox=%+v", lifecycle.outbox)
+	}
+	select {
+	case <-srv.memoryWorkerWakeChannel():
+	default:
+		t.Fatal("session delete did not wake the existing bounded memory worker")
+	}
+}
+
+func TestSessionDeleteLifecycleStoreFailureDoesNotReportSuccessOrWakeWorker(t *testing.T) {
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	base := &rollbackRecordingStore{Store: &turnRecordingStore{}}
+	lifecycle := &sessionDeleteOutboxProbeStore{
+		rollbackLifecycleStore: &rollbackLifecycleStore{
+			rollbackRecordingStore: base,
+			invalidationErr:        errors.New("database commit failed"),
+		},
+		unrelatedOutboxState: "pending",
+	}
+	vec := &turnRecordingVectorStore{}
+	srv := &Server{Cfg: cfg, Store: lifecycle, Vector: vec}
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	request := httptest.NewRequest(http.MethodDelete, "/sessions/sess-session-db-failure?req_source=timeline_manual_delete", nil)
+	recorder := httptest.NewRecorder()
+	mux.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusInternalServerError {
+		t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response["deleted"] == true || response["status"] == "ok" {
+		t.Fatalf("database failure reported success: %+v", response)
+	}
+	if lifecycle.claimCalls != 0 || lifecycle.unrelatedOutboxState != "pending" || vec.deleteSessionCalls != 0 {
+		t.Fatalf("database failure crossed cleanup boundary: claims=%d unrelated=%q direct_vector=%d",
+			lifecycle.claimCalls, lifecycle.unrelatedOutboxState, vec.deleteSessionCalls)
+	}
+	select {
+	case <-srv.memoryWorkerWakeChannel():
+		t.Fatal("database failure woke the vector worker")
+	default:
 	}
 }
 

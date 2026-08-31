@@ -57,13 +57,460 @@ func (s *Server) handleCharactersGet(w http.ResponseWriter, r *http.Request) {
 			character["stable_entity_id"] = stableID
 		}
 	}
+	identityLinks := []map[string]any{}
+	if reader, ok := s.Store.(store.EntityIdentityCatalogReader); ok {
+		if links, readErr := reader.ListReviewedEntityIdentityLinks(r.Context(), sid); readErr == nil {
+			labels := map[string]string{}
+			characterIDs := map[string]bool{}
+			if identities, identityErr := reader.ListActiveEntityIdentities(r.Context(), sid); identityErr == nil {
+				for _, identity := range identities {
+					labels[identity.StableEntityID] = identity.CanonicalLabel
+					if identity.EntityKind == "character" {
+						characterIDs[identity.StableEntityID] = true
+					}
+				}
+			}
+			for _, link := range links {
+				if !characterIDs[link.SourceEntityID] || !characterIDs[link.TargetEntityID] {
+					continue
+				}
+				identityLinks = append(identityLinks, map[string]any{
+					"link_id": link.LinkID, "source_entity_id": link.SourceEntityID,
+					"source_label": labels[link.SourceEntityID], "target_entity_id": link.TargetEntityID,
+					"target_label": labels[link.TargetEntityID], "link_state": link.LinkState,
+				})
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":          "ok",
 		"chat_session_id": sid,
 		"characters":      characters,
+		"identity_links":  identityLinks,
 		"count":           len(characters),
 		"omitted_count":   characterOmittedCount(items, events, referenceTurn, recentMentionText, recentMentionKeywords),
 	})
+}
+
+const characterIdentityManualMergeContract = "character_identity_manual_merge.v1"
+
+type characterIdentityMergeRequest struct {
+	TargetEntityID  string   `json:"target_entity_id"`
+	SourceEntityIDs []string `json:"source_entity_ids"`
+}
+
+type characterIdentityImpact struct {
+	Status string `json:"status"`
+	Count  int    `json:"count"`
+	Detail string `json:"detail,omitempty"`
+}
+
+type characterIdentityCatalog struct {
+	Identities map[string]store.EntityIdentity
+	Surfaces   []store.EntityIdentitySurface
+	Links      []store.EntityIdentityLink
+}
+
+type characterIdentitySourceSelection struct {
+	RequestedID string
+	RootID      string
+	Status      string
+	Detail      string
+}
+
+func (s *Server) handleCharacterIdentityMergePreview(w http.ResponseWriter, r *http.Request) {
+	sid := strings.TrimSpace(r.PathValue("chat_session_id"))
+	req, ok := decodeCharacterIdentityMergeRequest(w, r, sid)
+	if !ok {
+		return
+	}
+	catalog, selected, target, sourceSelections, err := s.characterIdentityMergeSelection(r.Context(), sid, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "character_identity_merge_invalid", err.Error())
+		return
+	}
+	impacts := s.characterIdentityMergeImpacts(r.Context(), sid, selected, catalog)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "contract_version": characterIdentityManualMergeContract,
+		"chat_session_id": sid, "target": target,
+		"sources":        characterIdentitySelectionItems(req.SourceEntityIDs, catalog.Identities),
+		"source_results": characterIdentitySourceSelectionItems(sourceSelections),
+		"impacts":        impacts, "writes_performed": false,
+	})
+}
+
+func (s *Server) handleCharacterIdentityMerge(w http.ResponseWriter, r *http.Request) {
+	sid := strings.TrimSpace(r.PathValue("chat_session_id"))
+	req, ok := decodeCharacterIdentityMergeRequest(w, r, sid)
+	if !ok {
+		return
+	}
+	catalog, _, target, sourceSelections, err := s.characterIdentityMergeSelection(r.Context(), sid, req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "character_identity_merge_invalid", err.Error())
+		return
+	}
+	writer, ok := s.Store.(store.EntityIdentityLinkWriter)
+	if !ok {
+		writeError(w, http.StatusConflict, "character_identity_merge_unavailable", "entity identity links are not writable")
+		return
+	}
+	targetID := strings.TrimSpace(target.StableEntityID)
+	results := make([]map[string]any, 0, len(sourceSelections))
+	succeeded := 0
+	for _, selection := range sourceSelections {
+		requestedSourceID := selection.RequestedID
+		if selection.Status != "ready" {
+			results = append(results, map[string]any{"source_entity_id": requestedSourceID, "status": "failed", "detail": selection.Detail})
+			continue
+		}
+		sourceID := selection.RootID
+		if sourceID == targetID {
+			results = append(results, map[string]any{"source_entity_id": requestedSourceID, "status": "already_merged", "target_entity_id": targetID})
+			continue
+		}
+		link := characterIdentityManualLink(sid, sourceID, targetID, store.EntityIdentityLinkStateReviewed)
+		if err := writer.SaveEntityIdentityLink(r.Context(), &link); err != nil {
+			results = append(results, map[string]any{"source_entity_id": requestedSourceID, "status": "failed", "detail": err.Error()})
+			continue
+		}
+		succeeded++
+		results = append(results, map[string]any{"source_entity_id": requestedSourceID, "status": "linked", "target_entity_id": targetID, "link_id": link.LinkID})
+	}
+	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
+		ChatSessionID: sid, EventType: "character_identity_manual_merge", TargetType: "entity_identity",
+		Summary:     fmt.Sprintf("linked %d character identities to %s", succeeded, target.CanonicalLabel),
+		DetailsJSON: mustCompactJSON(map[string]any{"target_entity_id": targetID, "results": results}), Source: s.storeWriteSource(),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "contract_version": characterIdentityManualMergeContract,
+		"chat_session_id": sid, "target": target, "results": results,
+		"linked_count": succeeded, "stored_rows_rewritten": 0, "critic_calls": 0, "vector_reindex_queued": false,
+		"catalog_identity_count": len(catalog.Identities),
+	})
+}
+
+func (s *Server) handleCharacterIdentityUnmerge(w http.ResponseWriter, r *http.Request) {
+	sid := strings.TrimSpace(r.PathValue("chat_session_id"))
+	req, ok := decodeCharacterIdentityMergeRequest(w, r, sid)
+	if !ok {
+		return
+	}
+	catalog, err := s.characterIdentityCatalogForSession(r.Context(), sid)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "character_identity_unmerge_invalid", err.Error())
+		return
+	}
+	// Unmerge addresses stored direct edges without resolving them first. This
+	// also lets a user break an accidental ambiguous or cyclic link graph.
+	target, exists := catalog.Identities[req.TargetEntityID]
+	if !exists {
+		writeError(w, http.StatusBadRequest, "character_identity_unmerge_invalid", "target entity is not an active character in this session")
+		return
+	}
+	for _, sourceID := range req.SourceEntityIDs {
+		if _, exists := catalog.Identities[sourceID]; !exists {
+			writeError(w, http.StatusBadRequest, "character_identity_unmerge_invalid", "source entity is not an active character in this session")
+			return
+		}
+	}
+	writer, ok := s.Store.(store.EntityIdentityLinkWriter)
+	if !ok {
+		writeError(w, http.StatusConflict, "character_identity_unmerge_unavailable", "entity identity links are not writable")
+		return
+	}
+	active := map[string]store.EntityIdentityLink{}
+	for _, link := range catalog.Links {
+		active[link.SourceEntityID+"\x1f"+link.TargetEntityID] = link
+	}
+	results := make([]map[string]any, 0, len(req.SourceEntityIDs))
+	revoked := 0
+	for _, sourceID := range uniqueNonEmptyStrings(req.SourceEntityIDs) {
+		key := sourceID + "\x1f" + target.StableEntityID
+		if _, exists := active[key]; !exists {
+			results = append(results, map[string]any{"source_entity_id": sourceID, "status": "not_linked", "target_entity_id": target.StableEntityID})
+			continue
+		}
+		link := characterIdentityManualLink(sid, sourceID, target.StableEntityID, store.EntityIdentityLinkStateRevoked)
+		if err := writer.SaveEntityIdentityLink(r.Context(), &link); err != nil {
+			results = append(results, map[string]any{"source_entity_id": sourceID, "status": "failed", "detail": err.Error()})
+			continue
+		}
+		revoked++
+		results = append(results, map[string]any{"source_entity_id": sourceID, "status": "unlinked", "target_entity_id": target.StableEntityID})
+	}
+	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
+		ChatSessionID: sid, EventType: "character_identity_manual_unmerge", TargetType: "entity_identity",
+		Summary:     fmt.Sprintf("revoked %d character identity links", revoked),
+		DetailsJSON: mustCompactJSON(map[string]any{"target_entity_id": target.StableEntityID, "results": results}), Source: s.storeWriteSource(),
+	})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status": "ok", "contract_version": characterIdentityManualMergeContract,
+		"chat_session_id": sid, "results": results, "unlinked_count": revoked,
+		"stored_rows_deleted": 0, "critic_calls": 0, "vector_reindex_queued": false,
+	})
+}
+
+func decodeCharacterIdentityMergeRequest(w http.ResponseWriter, r *http.Request, sid string) (characterIdentityMergeRequest, bool) {
+	if sid == "" {
+		writeError(w, http.StatusBadRequest, "missing_param", "chat_session_id is required")
+		return characterIdentityMergeRequest{}, false
+	}
+	var req characterIdentityMergeRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return characterIdentityMergeRequest{}, false
+	}
+	req.TargetEntityID = strings.TrimSpace(req.TargetEntityID)
+	req.SourceEntityIDs = uniqueNonEmptyStrings(req.SourceEntityIDs)
+	if req.TargetEntityID == "" || len(req.SourceEntityIDs) == 0 {
+		writeError(w, http.StatusBadRequest, "missing_param", "target_entity_id and source_entity_ids are required")
+		return characterIdentityMergeRequest{}, false
+	}
+	return req, true
+}
+
+func (s *Server) characterIdentityMergeSelection(ctx context.Context, sid string, req characterIdentityMergeRequest) (characterIdentityCatalog, map[string]bool, store.EntityIdentity, []characterIdentitySourceSelection, error) {
+	return s.entityIdentityMergeSelection(ctx, sid, req, "character")
+}
+
+func (s *Server) entityIdentityMergeSelection(ctx context.Context, sid string, req characterIdentityMergeRequest, entityKind string) (characterIdentityCatalog, map[string]bool, store.EntityIdentity, []characterIdentitySourceSelection, error) {
+	catalog, err := s.entityIdentityCatalogForSession(ctx, sid, entityKind)
+	if err != nil {
+		return characterIdentityCatalog{}, nil, store.EntityIdentity{}, nil, err
+	}
+	targetID, err := s.characterIdentityRootForWrite(ctx, sid, req.TargetEntityID)
+	if err != nil {
+		return catalog, nil, store.EntityIdentity{}, nil, err
+	}
+	target, exists := catalog.Identities[targetID]
+	if !exists {
+		return catalog, nil, store.EntityIdentity{}, nil, fmt.Errorf("target entity %q is not an active %s in this session", req.TargetEntityID, entityKind)
+	}
+	selected := map[string]bool{targetID: true, req.TargetEntityID: true}
+	selections := make([]characterIdentitySourceSelection, 0, len(req.SourceEntityIDs))
+	for _, sourceID := range req.SourceEntityIDs {
+		if _, exists := catalog.Identities[sourceID]; !exists {
+			selections = append(selections, characterIdentitySourceSelection{
+				RequestedID: sourceID, Status: "unavailable",
+				Detail: fmt.Sprintf("source entity %q is not an active %s in this session", sourceID, entityKind),
+			})
+			continue
+		}
+		selected[sourceID] = true
+		rootID, rootErr := s.characterIdentityRootForWrite(ctx, sid, sourceID)
+		if rootErr != nil {
+			selections = append(selections, characterIdentitySourceSelection{RequestedID: sourceID, Status: "unavailable", Detail: rootErr.Error()})
+			continue
+		}
+		if _, exists := catalog.Identities[rootID]; !exists {
+			selections = append(selections, characterIdentitySourceSelection{
+				RequestedID: sourceID, Status: "unavailable",
+				Detail: fmt.Sprintf("resolved source entity %q is not an active %s in this session", rootID, entityKind),
+			})
+			continue
+		}
+		selected[rootID] = true
+		selections = append(selections, characterIdentitySourceSelection{RequestedID: sourceID, RootID: rootID, Status: "ready"})
+	}
+	return catalog, selected, target, selections, nil
+}
+
+func (s *Server) characterIdentityCatalogForSession(ctx context.Context, sid string) (characterIdentityCatalog, error) {
+	return s.entityIdentityCatalogForSession(ctx, sid, "character")
+}
+
+func (s *Server) entityIdentityCatalogForSession(ctx context.Context, sid, entityKind string) (characterIdentityCatalog, error) {
+	reader, ok := s.Store.(store.EntityIdentityCatalogReader)
+	if !ok {
+		return characterIdentityCatalog{}, store.ErrNotEnabled
+	}
+	identities, err := reader.ListActiveEntityIdentities(ctx, sid)
+	if err != nil {
+		return characterIdentityCatalog{}, err
+	}
+	surfaces, err := reader.ListActiveEntityIdentitySurfaces(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return characterIdentityCatalog{}, err
+	}
+	links, err := reader.ListReviewedEntityIdentityLinks(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return characterIdentityCatalog{}, err
+	}
+	catalog := characterIdentityCatalog{Identities: map[string]store.EntityIdentity{}, Surfaces: nonNilSlice(surfaces), Links: nonNilSlice(links)}
+	for _, identity := range identities {
+		if identity.ChatSessionID == sid && (entityKind == "" || identity.EntityKind == entityKind) {
+			catalog.Identities[strings.TrimSpace(identity.StableEntityID)] = identity
+		}
+	}
+	return catalog, nil
+}
+
+func (s *Server) characterIdentityRoot(ctx context.Context, sid, entityID string) string {
+	entityID = strings.TrimSpace(entityID)
+	resolver, ok := s.Store.(store.ReviewedEntityIdentityResolver)
+	if !ok || entityID == "" {
+		return entityID
+	}
+	root, err := resolver.ResolveReviewedCanonicalEntityID(ctx, sid, entityID)
+	if err == nil && strings.TrimSpace(root) != "" {
+		return strings.TrimSpace(root)
+	}
+	return entityID
+}
+
+func (s *Server) characterIdentityRootForWrite(ctx context.Context, sid, entityID string) (string, error) {
+	entityID = strings.TrimSpace(entityID)
+	resolver, ok := s.Store.(store.ReviewedEntityIdentityResolver)
+	if !ok || entityID == "" {
+		return entityID, nil
+	}
+	root, err := resolver.ResolveReviewedCanonicalEntityID(ctx, sid, entityID)
+	if errors.Is(err, store.ErrNotFound) {
+		return entityID, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(root) == "" {
+		return entityID, nil
+	}
+	return strings.TrimSpace(root), nil
+}
+
+func characterIdentityManualLink(sid, sourceID, targetID, state string) store.EntityIdentityLink {
+	now := time.Now().UTC()
+	return store.EntityIdentityLink{
+		LinkID:        entityIdentityStableID("character_identity_manual_link", sid, sourceID, targetID),
+		ChatSessionID: sid, SourceEntityID: sourceID, TargetEntityID: targetID,
+		LinkKind: store.EntityIdentityLinkKindCanonicalEquivalence, LinkState: state,
+		EvidenceJSON:    mustCompactJSON(map[string]any{"contract_version": characterIdentityManualMergeContract, "operator_explicit": true, "link_state": state}),
+		MappingRevision: 1, SourceContract: characterIdentityManualMergeContract,
+		SourceRevision: characterIdentityManualMergeContract + ":" + sourceID + ":" + targetID,
+		CreatedAt:      now, UpdatedAt: now,
+	}
+}
+
+func characterIdentitySelectionItems(ids []string, identities map[string]store.EntityIdentity) []map[string]any {
+	out := []map[string]any{}
+	for _, id := range uniqueNonEmptyStrings(ids) {
+		if item, ok := identities[id]; ok {
+			out = append(out, map[string]any{"stable_entity_id": id, "canonical_label": item.CanonicalLabel})
+		}
+	}
+	return out
+}
+
+func characterIdentitySourceSelectionItems(items []characterIdentitySourceSelection) []map[string]any {
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		row := map[string]any{"source_entity_id": item.RequestedID, "status": item.Status}
+		if item.RootID != "" {
+			row["resolved_entity_id"] = item.RootID
+		}
+		if item.Detail != "" {
+			row["detail"] = item.Detail
+		}
+		out = append(out, row)
+	}
+	return out
+}
+
+func (s *Server) characterIdentityMergeImpacts(ctx context.Context, sid string, selected map[string]bool, catalog characterIdentityCatalog) map[string]characterIdentityImpact {
+	impacts := map[string]characterIdentityImpact{}
+	selectedNames := map[string]bool{}
+	for id := range selected {
+		if identity, ok := catalog.Identities[id]; ok {
+			selectedNames[comparableEntityKey(identity.CanonicalLabel)] = true
+		}
+	}
+	for _, surface := range catalog.Surfaces {
+		if selected[surface.StableEntityID] {
+			selectedNames[comparableEntityKey(surface.SurfaceText)] = true
+		}
+	}
+	impacts["alias_surfaces"] = characterIdentityImpact{Status: "ready", Count: len(selectedNames)}
+
+	states, err := s.Store.ListCharacterStates(ctx, sid)
+	if err != nil {
+		impacts["character_states"] = characterIdentityUnavailableImpact(err)
+	} else {
+		count := 0
+		for _, item := range states {
+			if selectedNames[comparableEntityKey(item.CharacterName)] {
+				count++
+			}
+		}
+		impacts["character_states"] = characterIdentityImpact{Status: "ready", Count: count}
+	}
+	events, err := s.Store.ListCharacterEvents(ctx, sid, "")
+	if err != nil {
+		impacts["character_events"] = characterIdentityUnavailableImpact(err)
+	} else {
+		count := 0
+		for _, item := range events {
+			if selectedNames[comparableEntityKey(item.CharacterName)] {
+				count++
+			}
+		}
+		impacts["character_events"] = characterIdentityImpact{Status: "ready", Count: count}
+	}
+	triples, err := s.Store.ListKGTriples(ctx, sid)
+	if err != nil {
+		impacts["relationship_knowledge"] = characterIdentityUnavailableImpact(err)
+		impacts["items_equipment"] = characterIdentityUnavailableImpact(err)
+	} else {
+		relations, equipment := 0, 0
+		for _, item := range triples {
+			involvesSelected := selectedNames[comparableEntityKey(item.Subject)] || selectedNames[comparableEntityKey(item.Object)]
+			if !involvesSelected {
+				continue
+			}
+			relations++
+			predicate := strings.ToLower(strings.TrimSpace(item.Predicate))
+			if strings.Contains(predicate, "equip") || strings.Contains(predicate, "possess") ||
+				strings.Contains(predicate, "own") || strings.Contains(predicate, "wear") ||
+				strings.Contains(predicate, "장착") || strings.Contains(predicate, "소유") || strings.Contains(predicate, "착용") {
+				equipment++
+			}
+		}
+		impacts["relationship_knowledge"] = characterIdentityImpact{Status: "ready", Count: relations}
+		impacts["items_equipment"] = characterIdentityImpact{Status: "ready", Count: equipment}
+	}
+	if reader, ok := s.Store.(store.ProtagonistEntityMemoryStore); ok {
+		memories, readErr := reader.ListProtagonistEntityMemories(ctx, store.ProtagonistEntityMemoryFilter{SourceChatSessionID: sid})
+		if readErr != nil {
+			impacts["subjective_memories"] = characterIdentityUnavailableImpact(readErr)
+		} else {
+			count := 0
+			for _, item := range memories {
+				if selectedNames[comparableEntityKey(item.OwnerEntityName)] || selectedNames[comparableEntityKey(item.SourceCharacterName)] || selected[item.OwnerEntityKey] {
+					count++
+				}
+			}
+			impacts["subjective_memories"] = characterIdentityImpact{Status: "ready", Count: count}
+		}
+	} else {
+		impacts["subjective_memories"] = characterIdentityImpact{Status: "unavailable", Detail: "subjective memory reader is not enabled"}
+	}
+	return impacts
+}
+
+func characterIdentityUnavailableImpact(err error) characterIdentityImpact {
+	return characterIdentityImpact{Status: "unavailable", Detail: err.Error()}
+}
+
+func uniqueNonEmptyStrings(values []string) []string {
+	out := []string{}
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" && !seen[value] {
+			seen[value] = true
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 type characterReadProjection struct {
@@ -173,6 +620,22 @@ func (s *Server) canonicalCharacterReadProjection(ctx context.Context, sid strin
 		out.Aliases[nameKey] = append([]string(nil), aliasesByGroup[groupKey]...)
 		out.StableIDs[nameKey] = stableID
 	}
+	if catalogReader, ok := s.Store.(store.EntityIdentityCatalogReader); ok {
+		if surfaces, err := catalogReader.ListActiveEntityIdentitySurfaces(ctx, sid); err == nil {
+			for _, surface := range surfaces {
+				rootID := s.characterIdentityRoot(ctx, sid, surface.StableEntityID)
+				for canonicalNameKey, stableID := range out.StableIDs {
+					if stableID != rootID {
+						continue
+					}
+					label := strings.TrimSpace(surface.SurfaceText)
+					if label != "" && comparableEntityKey(label) != canonicalNameKey {
+						out.Aliases[canonicalNameKey] = appendUniqueString(out.Aliases[canonicalNameKey], label)
+					}
+				}
+			}
+		}
+	}
 	for index := range out.Events {
 		resolved := resolve(out.Events[index].CharacterName)
 		if resolved.stableID != "" && resolved.label != "" {
@@ -193,6 +656,155 @@ func canonicalCharacterTypedProjectionForRead(raw, contractVersion, stableID, ca
 	payload["subject_entity_id"] = strings.TrimSpace(stableID)
 	payload["subject_label"] = strings.TrimSpace(canonicalLabel)
 	return mustCompactJSON(payload)
+}
+
+// canonicalizeCharacterKGTriplesForRead changes only the request-local copy.
+// Historical KG rows keep their original labels and provenance in storage.
+func (s *Server) canonicalizeCharacterKGTriplesForRead(ctx context.Context, sid string, items []store.KGTriple) []store.KGTriple {
+	out := append([]store.KGTriple(nil), items...)
+	canonicalBySession := map[string]map[string]string{}
+	for index := range out {
+		itemSID := strings.TrimSpace(out[index].ChatSessionID)
+		if itemSID == "" {
+			itemSID = sid
+		}
+		canonical, loaded := canonicalBySession[itemSID]
+		if !loaded {
+			canonical = s.characterCanonicalSurfaceMapForRead(ctx, itemSID)
+			canonicalBySession[itemSID] = canonical
+		}
+		if label := canonical[comparableEntityKey(out[index].Subject)]; label != "" {
+			out[index].Subject = label
+		}
+		if label := canonical[comparableEntityKey(out[index].Object)]; label != "" {
+			out[index].Object = label
+		}
+	}
+	return out
+}
+
+// characterCanonicalSurfaceMapForRead resolves the request-local character
+// catalog without issuing one database lookup per KG endpoint. Ambiguous or
+// broken reviewed links are omitted from the map, leaving the original KG
+// label intact for that surface.
+func (s *Server) characterCanonicalSurfaceMapForRead(ctx context.Context, sid string, preloaded ...characterIdentityCatalog) map[string]string {
+	out := map[string]string{}
+	sid = strings.TrimSpace(sid)
+	if sid == "" || s.Store == nil {
+		return out
+	}
+	catalog := characterIdentityCatalog{}
+	if len(preloaded) > 0 {
+		catalog = preloaded[0]
+	} else {
+		var err error
+		catalog, err = s.characterIdentityCatalogForSession(ctx, sid)
+		if err != nil {
+			return out
+		}
+	}
+	characterIdentities := map[string]store.EntityIdentity{}
+	for id, identity := range catalog.Identities {
+		if identity.ChatSessionID == sid && identity.EntityKind == "character" {
+			characterIdentities[id] = identity
+		}
+	}
+	if len(characterIdentities) == 0 {
+		return out
+	}
+
+	targets := map[string]map[string]bool{}
+	for _, link := range catalog.Links {
+		if link.ChatSessionID != sid || link.LinkKind != store.EntityIdentityLinkKindCanonicalEquivalence ||
+			link.LinkState != store.EntityIdentityLinkStateReviewed {
+			continue
+		}
+		sourceID := strings.TrimSpace(link.SourceEntityID)
+		targetID := strings.TrimSpace(link.TargetEntityID)
+		if _, ok := characterIdentities[sourceID]; !ok {
+			continue
+		}
+		if _, ok := characterIdentities[targetID]; !ok {
+			continue
+		}
+		if targets[sourceID] == nil {
+			targets[sourceID] = map[string]bool{}
+		}
+		targets[sourceID][targetID] = true
+	}
+	rootCache := map[string]string{}
+	invalidRoot := map[string]bool{}
+	var rootFor func(string, map[string]bool) string
+	rootFor = func(entityID string, visiting map[string]bool) string {
+		if invalidRoot[entityID] {
+			return ""
+		}
+		if root, ok := rootCache[entityID]; ok {
+			return root
+		}
+		if visiting[entityID] || len(targets[entityID]) > 1 {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		visiting[entityID] = true
+		root := entityID
+		for targetID := range targets[entityID] {
+			root = rootFor(targetID, visiting)
+		}
+		delete(visiting, entityID)
+		if root == "" {
+			invalidRoot[entityID] = true
+			return ""
+		}
+		rootCache[entityID] = root
+		return root
+	}
+
+	type surfaceCandidate struct {
+		roots   map[string]string
+		blocked bool
+	}
+	candidates := map[string]*surfaceCandidate{}
+	addSurface := func(surface, entityID string) {
+		key := comparableEntityKey(surface)
+		if key == "" {
+			return
+		}
+		candidate := candidates[key]
+		if candidate == nil {
+			candidate = &surfaceCandidate{roots: map[string]string{}}
+			candidates[key] = candidate
+		}
+		if _, ok := characterIdentities[entityID]; !ok {
+			candidate.blocked = true
+			return
+		}
+		rootID := rootFor(entityID, map[string]bool{})
+		identity, ok := characterIdentities[rootID]
+		label := strings.TrimSpace(identity.CanonicalLabel)
+		if !ok || rootID == "" || label == "" {
+			candidate.blocked = true
+			return
+		}
+		candidate.roots[rootID] = label
+	}
+	for id, identity := range characterIdentities {
+		addSurface(identity.CanonicalLabel, id)
+	}
+	for _, surface := range catalog.Surfaces {
+		if surface.ChatSessionID == sid {
+			addSurface(surface.SurfaceText, strings.TrimSpace(surface.StableEntityID))
+		}
+	}
+	for key, candidate := range candidates {
+		if candidate.blocked || len(candidate.roots) != 1 {
+			continue
+		}
+		for _, label := range candidate.roots {
+			out[key] = label
+		}
+	}
+	return out
 }
 
 func (s *Server) characterReferenceTurn(ctx context.Context, sid string, characters []store.CharacterState) int {

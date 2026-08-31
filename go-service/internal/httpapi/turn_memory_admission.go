@@ -308,15 +308,25 @@ func (s *Server) commitAcceptedMemoryAdmission(
 					if position < 0 {
 						continue
 					}
-					vectors[vectorIndex].Embedding = parseFloat32JSONList(grouped[position])
+					embedding := parseFloat32JSONList(grouped[position])
+					vectors[vectorIndex].Embedding = embedding
 					vectors[vectorIndex].EmbeddingModel = model
+					if len(embedding) > 0 {
+						vectors[vectorIndex].ContextChunks = nil
+						vectors[vectorIndex].ContextChunkIndex = 0
+					}
 				}
 				for preciseIndex, position := range preciseContextPositions {
 					if position < 0 {
 						continue
 					}
-					preciseUnits[preciseIndex].VectorEmbedding = parseFloat32JSONList(grouped[position])
+					embedding := parseFloat32JSONList(grouped[position])
+					preciseUnits[preciseIndex].VectorEmbedding = embedding
 					preciseUnits[preciseIndex].VectorEmbeddingModel = model
+					if len(embedding) > 0 {
+						preciseUnits[preciseIndex].VectorContextChunks = nil
+						preciseUnits[preciseIndex].VectorContextChunkIndex = 0
+					}
 				}
 				if memory != nil && memoryContextPosition >= 0 {
 					memory.Embedding = grouped[memoryContextPosition]
@@ -518,7 +528,7 @@ func buildMemoryAdmissionEvidence(
 			CaptureStage:         "critic_extract",
 			CaptureVerification:  "verified",
 			CommittedGate:        "auto_grounded_excerpt",
-			LineageJSON:          mustCompactJSON(completeTurnEvidenceLineage("critic.evidence_excerpts", excerptIndex, languageContext)),
+			LineageJSON:          mustCompactJSON(completeTurnEvidenceLineage("critic.evidence_excerpts", excerptIndex, languageContext, stringFromMap(extraction, "input_mode"))),
 			SourceMessageIDsJSON: mustCompactJSON([]string{fmt.Sprintf("turn:%d", turnIndex)}),
 			CreatedAt:            now,
 		}

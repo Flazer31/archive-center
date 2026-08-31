@@ -166,6 +166,7 @@ type turnWorkflowHUDRecoveryStore struct {
 	reopenErr   error
 	reopenCalls int
 	listCalls   int
+	onReopen    func()
 }
 
 func (f *turnWorkflowHUDRecoveryStore) ListActiveSourceRevisions(
@@ -188,6 +189,9 @@ func (f *turnWorkflowHUDRecoveryStore) ReopenMemoryReprocessingJob(
 	f.reopenCalls++
 	if chatSessionID != f.source.ChatSessionID || sourceRevision != f.source.SourceRevision {
 		return false, errors.New("unexpected recovery source")
+	}
+	if f.onReopen != nil {
+		f.onReopen()
 	}
 	if f.reopenErr != nil {
 		return false, f.reopenErr
@@ -227,6 +231,12 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	); !ok {
 		t.Fatal("failed to expose manual recovery action")
 	}
+	st.onReopen = func() {
+		view, found := ledger.snapshot("request-recovery")
+		if !found || view.Status != "recovering" || turnWorkflowHUDTerminal(view.Status) || view.EndedAt != nil {
+			t.Fatalf("memory job reopened before HUD entered recovering state: found=%t view=%+v", found, view)
+		}
+	}
 	srv := &Server{
 		Cfg:   config.Config{StoreMode: config.StoreModeMariaDBAuthority},
 		Store: st,
@@ -265,6 +275,8 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	}
 	view, ok := ledger.snapshot("request-recovery")
 	if !ok || view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
+		view.Status != "recovering" || view.Severity != turnWorkflowHUDSeverityWarning ||
+		view.DismissalPolicy != turnWorkflowHUDDismissNone || view.EndedAt != nil ||
 		view.Error.RecoveryActions[0].Status != "requested" {
 		t.Fatalf("recovery view=%+v found=%t", view, ok)
 	}
@@ -278,6 +290,25 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	if stringFromMap(response, "chat_session_id") != base.source.ChatSessionID ||
 		intFromAny(response["turn_index"], 0) != base.source.TurnIndex {
 		t.Fatalf("recovery response used stale HUD coordinates: %#v", response)
+	}
+	responseHUD := mapFromAny(response["turn_workflow_hud"])
+	if stringFromMap(responseHUD, "status") != "recovering" {
+		t.Fatalf("recovery response did not expose nonterminal HUD state: %#v", responseHUD)
+	}
+	if !ledger.updateRecoveryResult(
+		base.source.ChatSessionID,
+		base.source.TurnIndex,
+		base.source.SourceRevision,
+		"completed",
+		"",
+		artifactSaveResult{Memories: 1, Evidence: 2},
+	) {
+		t.Fatal("worker completion was rejected after manual retry entered recovering state")
+	}
+	completed, found := ledger.snapshot("request-recovery")
+	if !found || completed.Status != "completed" || completed.Error != nil ||
+		completed.NoticeCode != "CRITIC_REPROCESSING_COMPLETED" {
+		t.Fatalf("manual retry completion HUD=%+v found=%t", completed, found)
 	}
 }
 
@@ -463,8 +494,9 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 		true,
 		[]turnWorkflowHUDDetail{{Key: "reprocessing", Value: "queued"}},
 	)
-	if !ledger.updateRecoveryResult(
+	if !ledger.updateRecoveryResultWithAttempt(
 		"session-recovery", 22, "sar-terminal", "terminal", "CRITIC_RETRY_LIMIT_REACHED", artifactSaveResult{},
+		4, 4, time.Time{}, nil,
 	) {
 		t.Fatal("terminal recovery result did not update the HUD")
 	}
@@ -473,6 +505,48 @@ func TestTurnWorkflowHUDQueuedRecoveryTerminalFailureRestoresManualAction(t *tes
 		failed.Error.Code != "CRITIC_RETRY_LIMIT_REACHED" ||
 		len(failed.Error.RecoveryActions) != 1 || failed.Error.RecoveryActions[0].Status != "available" {
 		t.Fatalf("terminal recovery view=%+v found=%t", failed, ok)
+	}
+	details := map[string]string{}
+	for _, detail := range failed.Error.Details {
+		details[detail.Key] = detail.Value
+	}
+	if details["retry_attempt"] != "4" || details["retry_max_attempts"] != "4" ||
+		details["retry_state"] != "exhausted" {
+		t.Fatalf("terminal recovery retry details=%+v", details)
+	}
+}
+
+func TestCriticProviderHUDDetailsPreserveIndependentTokenFields(t *testing.T) {
+	details := criticProviderHUDDetails(map[string]any{
+		"provider": "neuralwatt",
+		"model":    "critic-model",
+		"provider_response": map[string]any{
+			"native_finish_reason": "length",
+			"termination_kind":     "length",
+			"output_tokens":        4096,
+			"reasoning_tokens":     1024,
+		},
+		"provider_call_budget_ledger": map[string]any{
+			"contract_version":                providerCallBudgetLedgerContractV1,
+			"owner":                           "go",
+			"requested_max_completion_tokens": 30000,
+		},
+	})
+	got := map[string]string{}
+	for _, detail := range details {
+		got[detail.Key] = detail.Value
+	}
+	for key, want := range map[string]string{
+		"provider": "neuralwatt", "native_finish_reason": "length",
+		"output_tokens": "4096", "reasoning_tokens": "1024",
+		"requested_max_completion_tokens": "30000",
+	} {
+		if got[key] != want {
+			t.Fatalf("%s=%q want=%q details=%+v", key, got[key], want, details)
+		}
+	}
+	if _, exists := got["input_tokens"]; exists {
+		t.Fatalf("missing input token field should stay absent: %+v", details)
 	}
 }
 

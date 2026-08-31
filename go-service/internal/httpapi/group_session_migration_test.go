@@ -46,6 +46,7 @@ type sessionMigrationPreviewStore struct {
 	parityOperations    []string
 	lockCalled          bool
 	lockPrepareCalled   bool
+	lockErr             error
 	lockReleaseCalled   bool
 	lockReason          string
 	lockResult          *store.SessionMigrationSourceLockResult
@@ -63,6 +64,70 @@ type sessionMigrationPreviewStore struct {
 	cleanupReason       string
 	cleanupResult       *store.SessionMigrationCleanupResult
 	cleanupErr          error
+	occupancyBySession  map[string]map[string]int
+}
+
+func (s *sessionMigrationPreviewStore) InspectSessionMigrationOccupancy(_ context.Context, sessionID string) (store.SessionMigrationOccupancy, error) {
+	counts := map[string]int{}
+	for _, item := range s.chatLogs {
+		if item.ChatSessionID == sessionID {
+			counts["chat_logs"]++
+		}
+	}
+	for _, item := range s.effectiveInputs {
+		if item.ChatSessionID == sessionID {
+			counts["effective_input_logs"]++
+		}
+	}
+	for _, item := range s.memories {
+		if item.ChatSessionID == sessionID {
+			counts["memories"]++
+		}
+	}
+	for _, item := range s.evidence {
+		if item.ChatSessionID == sessionID {
+			counts["direct_evidence_records"]++
+		}
+	}
+	for _, item := range s.triples {
+		if item.ChatSessionID == sessionID {
+			counts["kg_triples"]++
+		}
+	}
+	for _, item := range s.episodes {
+		if item.ChatSessionID == sessionID {
+			counts["episode_summaries"]++
+		}
+	}
+	for _, item := range s.subjective {
+		if item.SourceChatSessionID == sessionID {
+			counts["protagonist_entity_memories"]++
+		}
+	}
+	for table, count := range s.occupancyBySession[sessionID] {
+		counts[table] = count
+	}
+	total := 0
+	blocking := map[string]int{}
+	for table, count := range counts {
+		total += count
+		if count > 0 {
+			blocking[table] = count
+		}
+	}
+	starter := false
+	if total == 1 && counts["chat_logs"] == 1 {
+		for _, item := range s.chatLogs {
+			if item.ChatSessionID == sessionID && item.TurnIndex == 0 && strings.EqualFold(strings.TrimSpace(item.Role), "assistant") {
+				starter = true
+				delete(blocking, "chat_logs")
+			}
+		}
+	}
+	return store.SessionMigrationOccupancy{
+		DirectTableCounts: counts, TotalDirectRows: total,
+		ReplaceableStarterOnly: starter, BlockingTables: blocking,
+	}, nil
 }
 
 type sourceLockDrainObservingStore struct {
@@ -289,6 +354,9 @@ func (s *sessionMigrationPreviewStore) LockSessionMigrationSource(ctx context.Co
 	s.lockCalled = true
 	s.lockReason = reason
 	s.events = append(s.events, "lock")
+	if s.lockErr != nil {
+		return nil, s.lockErr
+	}
 	if s.lockResult != nil {
 		return s.lockResult, nil
 	}
@@ -314,12 +382,13 @@ func (s *sessionMigrationPreviewStore) LockSessionMigrationSource(ctx context.Co
 func (s *sessionMigrationPreviewStore) PrepareSessionMigrationSourceLock(ctx context.Context, migrationID int64, reason string) (*store.SessionMigrationLock, error) {
 	s.lockPrepareCalled = true
 	s.events = append(s.events, "lock_prepare")
-	return &store.SessionMigrationLock{
+	lock := &store.SessionMigrationLock{
 		MigrationID: migrationID, SourceSessionID: "char_59_cid_source",
 		TargetSessionID: "char_59_cid_target", Locked: true,
 		LockStatus: "lock_pending_verification", Reason: reason,
 		LockedAt: time.Date(2026, 6, 18, 0, 0, 0, 0, time.UTC),
-	}, nil
+	}
+	return lock, nil
 }
 
 func (s *sessionMigrationPreviewStore) ReleaseSessionMigrationSourceLockFence(ctx context.Context, migrationID int64, reason string) error {
@@ -568,6 +637,45 @@ func TestSessionMigratePreviewAllowsEmptyTargetDryRun(t *testing.T) {
 	}
 }
 
+func TestSessionMigratePreviewBlocksReferenceBindingOnlyTargetAndReportsCount(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_target"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sourceID}},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {"session_reference_bindings": 1},
+		},
+	}
+	resp := performSessionMigrationPreview(t, st, &sessionMigrationPreviewVector{}, map[string]string{
+		"source_session_id": sourceID, "target_session_id": targetID,
+	})
+	if !resp.Blocked || resp.TargetEmpty || resp.BlockedArtifacts["session_reference_bindings"] != 1 || resp.TargetTableCounts["session_reference_bindings"] != 1 {
+		t.Fatalf("reference-only target preview=%+v", resp)
+	}
+	for _, reason := range []string{"target_session_not_empty", "target_reference_bindings_not_empty"} {
+		if !sessionMigrationContainsString(resp.BlockedReasons, reason) {
+			t.Fatalf("missing %q in %#v", reason, resp.BlockedReasons)
+		}
+	}
+}
+
+func TestSessionMigratePreviewBlocksManifestOnlyWorkQueueTarget(t *testing.T) {
+	sourceID := "char_59_cid_source"
+	targetID := "char_59_cid_target"
+	st := &sessionMigrationPreviewStore{
+		chatLogs: []store.ChatLog{{ID: 1, ChatSessionID: sourceID}},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {"memory_reprocessing_jobs": 2},
+		},
+	}
+	resp := performSessionMigrationPreview(t, st, &sessionMigrationPreviewVector{}, map[string]string{
+		"source_session_id": sourceID, "target_session_id": targetID,
+	})
+	if !resp.Blocked || resp.BlockedArtifacts["memory_reprocessing_jobs"] != 2 || !sessionMigrationContainsString(resp.BlockedReasons, "target_background_jobs_not_empty") {
+		t.Fatalf("work-queue target preview=%+v", resp)
+	}
+}
+
 func TestSessionMigratePreviewAllowsTargetWithOnlyStarterTurnZero(t *testing.T) {
 	sourceID := "char_59_cid_source"
 	targetID := "char_59_cid_fresh"
@@ -651,8 +759,9 @@ func TestSessionMigrateCompleteRunsFullManifestExecutorAndLeavesVectorPhasePendi
 	if resp.Blocked || !resp.WriteAttempted || resp.VectorWriteAttempted || resp.LLMCallAttempted {
 		t.Fatalf("full manifest copy response flags: %+v", resp)
 	}
+	directTables, _, _ := store.SessionMigrationManifestSummary()
 	if !resp.ReleaseBlocked || resp.ManifestParityVerified || !resp.ManifestExecutorComplete ||
-		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != 46 {
+		resp.ManifestVersion != store.SessionMigrationManifestVersion || resp.ManifestDirectTables != directTables {
 		t.Fatalf("complete response did not disclose completed relational/pending vector phases: %+v", resp)
 	}
 	if resp.MigrationID != 99 || resp.RowMapCount != 3 || !resp.ChromaReindexRequired {
@@ -703,6 +812,12 @@ func TestSessionMigrateCompletePostVectorResumeRevalidatesInsideFenceBeforeConsu
 		chatLogs: []store.ChatLog{
 			{ID: 1, ChatSessionID: sourceID},
 			{ID: 11, ChatSessionID: targetID},
+		},
+		occupancyBySession: map[string]map[string]int{
+			targetID: {
+				"session_reference_bindings": 1,
+				"memory_reprocessing_jobs":   1,
+			},
 		},
 		resumeContext: &store.SessionMigrationResumeContext{
 			MigrationID: 42, Status: "vector_reindexed",
@@ -1039,6 +1154,21 @@ func TestSessionMigrateLockSourceReleasesProvisionalFenceOnCurrentVectorDrift(t 
 	}
 }
 
+func TestSessionMigrateLockSourceReleasesProvisionalFenceWhenDerivationLeaseIsActive(t *testing.T) {
+	st := &sessionMigrationPreviewStore{
+		lockErr: &store.SessionMigrationBlockerError{
+			Code: "source_derivation_lease_active", Phase: "memory_reprocessing_drain",
+		},
+	}
+	resp := performSessionMigrationLockSource(t, st, &sessionMigrationPreviewVector{}, map[string]any{
+		"migration_id": float64(42),
+	})
+	if !resp.Blocked || !st.lockPrepareCalled || !st.lockReleaseCalled || !st.lockCalled ||
+		!sessionMigrationContainsString(resp.BlockedReasons, "source_derivation_lease_active") {
+		t.Fatalf("active derivation lease did not release provisional fence: resp=%+v events=%v", resp, st.events)
+	}
+}
+
 func TestSessionMigrateLockSourceDrainsAcceptedFinalWorkerBeforeParityRevalidation(t *testing.T) {
 	const sourceID = "char_59_cid_source"
 	base := &sessionMigrationPreviewStore{}
@@ -1105,6 +1235,61 @@ func TestSessionMigrateLockSourceDrainsAcceptedFinalWorkerBeforeParityRevalidati
 	case <-st.verifyStarted:
 	default:
 		t.Fatal("migration parity revalidation was not reached after drain")
+	}
+}
+
+func TestSessionMigrateLockSourceStopsBeforeParityWhenSourceWorkerDoesNotDrain(t *testing.T) {
+	const sourceID = "char_59_cid_source"
+	base := &sessionMigrationPreviewStore{}
+	st := &sourceLockDrainObservingStore{
+		sessionMigrationPreviewStore: base,
+		verifyStarted:                make(chan struct{}),
+	}
+	srv := &Server{
+		Store:  st,
+		Vector: vector.NewMutationFencedStore(&sessionMigrationPreviewVector{}),
+	}
+	srv.SourceAcceptances = newCompleteTurnSourceAcceptanceLedger()
+	source := &store.MemorySourceRevision{
+		ChatSessionID:  sourceID,
+		SourceRevision: "revision-migration-timeout",
+		TurnIndex:      1,
+	}
+	workerCtx, releaseWorker := srv.completeTurnStoredSourceProcessingContext(context.Background(), source)
+	defer releaseWorker()
+
+	originalTimeout := completeTurnSourceWorkerStopTimeout
+	completeTurnSourceWorkerStopTimeout = 10 * time.Millisecond
+	defer func() { completeTurnSourceWorkerStopTimeout = originalTimeout }()
+
+	body := bytes.NewBufferString(`{"migration_id":42,"reason":"must drain before lock"}`)
+	req := httptest.NewRequest(http.MethodPost, "/sessions/migrate-lock-source", body)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	mux.ServeHTTP(rec, req)
+
+	select {
+	case <-workerCtx.Done():
+	default:
+		t.Fatal("provisional migration fence did not cancel the in-flight reprocessing worker")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var response sessionMigrationLockSourceResponse
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Blocked || !base.lockPrepareCalled || !base.lockReleaseCalled || base.lockCalled ||
+		!sessionMigrationContainsString(response.BlockedReasons, "source_worker_drain_failed") {
+		t.Fatalf("undrained worker crossed source lock boundary: response=%+v events=%v", response, base.events)
+	}
+	select {
+	case <-st.verifyStarted:
+		t.Fatal("vector parity started even though the source worker did not drain")
+	default:
 	}
 }
 

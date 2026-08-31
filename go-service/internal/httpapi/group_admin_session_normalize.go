@@ -76,10 +76,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	entries := adminSessionNormalizeRepairEntries(req)
 	before, warnings := s.adminSessionNormalizeSnapshot(ctx, sid)
 	plan := adminSessionNormalizePlan(req, entries, before)
-	reviewNeededTurns := adminSessionNormalizeConflictTurns(before)
-	if len(reviewNeededTurns) > 0 {
-		warnings = append(warnings, "raw_mismatch_or_partial_requires_review")
-	}
+	initialReviewNeededTurns := adminSessionNormalizeConflictTurns(before)
 
 	var repairResult map[string]any
 	if !req.SkipRepair && len(entries) > 0 {
@@ -93,7 +90,7 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 				"succeeded":             0,
 				"failed_count":          0,
 				"skipped_count":         0,
-				"review_needed_turns":   reviewNeededTurns,
+				"review_needed_turns":   initialReviewNeededTurns,
 				"progress_percent":      8,
 				"non_destructive_scope": "insert_missing_raw_roles_only",
 			})
@@ -123,18 +120,57 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"reason":          adminSessionNormalizeSkipReason(req.SkipRepair, len(entries), "no_repair_entries"),
 		}
 	}
+	afterRepair, afterRepairWarnings := s.adminSessionNormalizeSnapshot(ctx, sid)
+	warnings = append(warnings, afterRepairWarnings...)
+	reviewNeededTurns := append(
+		adminSessionNormalizeConflictTurns(afterRepair),
+		intSliceFromAny(repairResult["conflict_turns"])...,
+	)
+	reviewNeededTurns = append(reviewNeededTurns, intSliceFromAny(repairResult["failed_turn_indices"])...)
+	reviewNeededTurns = uniqueSortedInts(reviewNeededTurns)
+	if len(reviewNeededTurns) > 0 {
+		warnings = append(warnings, "raw_mismatch_or_partial_requires_review")
+	}
+	requestedRescanTurns := uniqueSortedNonNegativeInts(req.TurnIndices)
+	rescanTurns := append([]int{}, requestedRescanTurns...)
+	if len(reviewNeededTurns) > 0 && len(rescanTurns) > 0 {
+		reviewSet := map[int]bool{}
+		for _, turn := range reviewNeededTurns {
+			reviewSet[turn] = true
+		}
+		filtered := rescanTurns[:0]
+		for _, turn := range rescanTurns {
+			if !reviewSet[turn] {
+				filtered = append(filtered, turn)
+			}
+		}
+		rescanTurns = filtered
+	}
 
 	var rescanResult map[string]any
-	if !req.SkipRescan {
+	if !req.SkipRescan && len(requestedRescanTurns) > 0 && len(rescanTurns) == 0 {
+		rescanResult = map[string]any{
+			"status":              "skipped",
+			"chat_session_id":     sid,
+			"dry_run":             req.DryRun,
+			"candidate_count":     0,
+			"succeeded":           0,
+			"failed":              0,
+			"skipped":             len(requestedRescanTurns),
+			"review_needed_turns": reviewNeededTurns,
+			"reason":              "all_requested_turns_require_raw_review",
+		}
+	} else if !req.SkipRescan {
 		meta := adminSessionNormalizeClientMeta(req.ClientMeta)
 		rescanReq := adminRescanRequest{
 			ChatSessionID:      sid,
 			MaxItems:           req.MaxItems,
-			TurnIndices:        uniqueSortedNonNegativeInts(req.TurnIndices),
+			TurnIndices:        rescanTurns,
 			ClientMeta:         meta,
 			DryRun:             req.DryRun,
 			Background:         false,
 			CanonicalRawReplay: true,
+			SourceObservations: adminSessionNormalizeSourceObservations(entries),
 		}
 		res, err := s.runAdminRescanWithProgress(ctx, sid, rescanReq, adminSessionNormalizeProgressAdapter(progress, "critic_rescan_backfill", 18, 52))
 		if err != nil {
@@ -148,6 +184,19 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"dry_run":         req.DryRun,
 			"reason":          "skip_rescan_requested",
 		}
+	}
+
+	if progress != nil {
+		progress(map[string]any{
+			"status":           "running",
+			"stage":            "character_identity_repair",
+			"progress_percent": 71,
+			"destructive":      false,
+		})
+	}
+	identityRepairResult := s.repairMissingCharacterIdentities(ctx, sid, req.DryRun)
+	if intFromAny(identityRepairResult["failed"], 0) > 0 {
+		warnings = append(warnings, "character_identity_repair_partial")
 	}
 
 	var reindexResult map[string]any
@@ -190,28 +239,65 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 	status := adminSessionNormalizeStatus(
 		repairResult,
 		rescanResult,
+		identityRepairResult,
 		reindexResult,
 		warnings,
 	)
+	pendingCount := maxInt(
+		intFromAny(rescanResult["deferred"], 0),
+		intFromAny(rescanResult["queued"], 0),
+	)
+	pendingTurns := []int{}
+	for _, item := range adminSessionNormalizeMapItems(rescanResult["deferred_turns"]) {
+		if turn := intFromAny(item["turn_index"], 0); turn > 0 {
+			pendingTurns = append(pendingTurns, turn)
+		}
+	}
+	pendingTurns = uniqueSortedNonNegativeInts(pendingTurns)
+	pendingTurnsAvailable := pendingCount == 0 || len(pendingTurns) == pendingCount
+	failedCount := intFromAny(rescanResult["failed"], 0)
+	failedTurns := adminSessionNormalizeMapItems(rescanResult["failed_turns"])
+	completionReason := ""
+	if pendingCount > 0 {
+		completionReason = "derived_reprocessing_pending"
+	} else if failedCount > 0 {
+		completionReason = "derived_reprocessing_failed"
+	}
 	result := map[string]any{
-		"status":              status,
-		"contract_version":    "session-normalize.v1",
-		"source":              s.storeWriteSource(),
-		"chat_session_id":     sid,
-		"dry_run":             req.DryRun,
-		"destructive":         false,
-		"rollback_attempted":  false,
-		"delete_attempted":    false,
-		"plan":                plan,
-		"counts_before":       before,
-		"counts_after":        after,
-		"repair_replay":       repairResult,
-		"rescan":              rescanResult,
-		"reindex":             reindexResult,
-		"review_needed_turns": reviewNeededTurns,
-		"warnings":            uniqueStrings(warnings),
-		"generated_at":        time.Now().UTC(),
-		"note":                "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
+		"status":                    status,
+		"contract_version":          "session-normalize.v1",
+		"source":                    s.storeWriteSource(),
+		"chat_session_id":           sid,
+		"dry_run":                   req.DryRun,
+		"destructive":               false,
+		"rollback_attempted":        false,
+		"delete_attempted":          false,
+		"plan":                      plan,
+		"counts_before":             before,
+		"counts_after":              after,
+		"repair_replay":             repairResult,
+		"rescan":                    rescanResult,
+		"character_identity_repair": identityRepairResult,
+		"reindex":                   reindexResult,
+		"review_needed_turns":       reviewNeededTurns,
+		"pending_count":             pendingCount,
+		"pending_turns_available":   pendingTurnsAvailable,
+		"failed_count":              failedCount,
+		"failed_turns":              failedTurns,
+		"completion_reason":         completionReason,
+		"warnings":                  uniqueStrings(warnings),
+		"generated_at":              time.Now().UTC(),
+		"note":                      "session normalize repaired canonical raw logs, rebuilt derived artifacts from canonical backend state, and reported vector reindex separately without rollback or destructive trim",
+	}
+	if pendingTurnsAvailable {
+		result["pending_turns"] = pendingTurns
+	} else {
+		result["pending_turns_unavailable_reason"] = "durable_reprocessing_result_has_aggregate_count_only"
+	}
+	for _, key := range []string{"retry_attempt", "retry_max_attempts", "next_retry_at", "retry_after_seconds"} {
+		if value, ok := rescanResult[key]; ok {
+			result[key] = value
+		}
 	}
 	s.saveAuditLogBestEffort(ctx, &store.AuditLog{
 		ChatSessionID: sid,
@@ -225,28 +311,377 @@ func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req a
 			"destructive":         false,
 			"repair_entry_count":  len(entries),
 			"review_needed_turns": reviewNeededTurns,
-			"plan":                plan,
-			"warnings":            uniqueStrings(warnings),
+			"pending_count":       pendingCount,
+			"failed_count":        failedCount,
+			"character_identity_repair": map[string]any{
+				"status":             identityRepairResult["status"],
+				"candidates":         identityRepairResult["candidates"],
+				"created_identities": identityRepairResult["created_identities"],
+				"created_surfaces":   identityRepairResult["created_surfaces"],
+				"skipped":            identityRepairResult["skipped"],
+				"failed":             identityRepairResult["failed"],
+			},
+			"plan":     plan,
+			"warnings": uniqueStrings(warnings),
 		}),
 		Source:    s.storeWriteSource(),
 		CreatedAt: time.Now().UTC(),
 	})
 	if progress != nil {
 		finalStage := "completed"
+		finalProgressStatus := "completed"
+		finalProgressPercent := 100
 		if status != "ok" {
 			finalStage = status
 		}
-		progress(map[string]any{
-			"status":              "completed",
-			"stage":               finalStage,
-			"outcome_status":      status,
-			"progress_percent":    100,
-			"review_needed_turns": reviewNeededTurns,
-			"counts_after":        after,
-			"warnings":            uniqueStrings(warnings),
-		})
+		switch status {
+		case "partial_deferred":
+			finalProgressStatus = "deferred"
+			finalProgressPercent = 99
+		case "partial_error":
+			finalProgressStatus = "partial_error"
+		case "failed", "blocked":
+			finalProgressStatus = status
+		}
+		finalProgress := map[string]any{
+			"status":                  finalProgressStatus,
+			"stage":                   finalStage,
+			"outcome_status":          status,
+			"progress_percent":        finalProgressPercent,
+			"review_needed_turns":     reviewNeededTurns,
+			"pending_count":           pendingCount,
+			"pending_turns_available": pendingTurnsAvailable,
+			"failed_count":            failedCount,
+			"failed_turns":            failedTurns,
+			"reason":                  completionReason,
+			"counts_after":            after,
+			"warnings":                uniqueStrings(warnings),
+		}
+		if pendingTurnsAvailable {
+			finalProgress["pending_turns"] = pendingTurns
+		} else {
+			finalProgress["pending_turns_unavailable_reason"] = "durable_reprocessing_result_has_aggregate_count_only"
+		}
+		for _, key := range []string{"retry_attempt", "retry_max_attempts", "next_retry_at", "retry_after_seconds"} {
+			if value, ok := rescanResult[key]; ok {
+				finalProgress[key] = value
+			}
+		}
+		progress(finalProgress)
 	}
 	return result, nil
+}
+
+func (s *Server) repairMissingCharacterIdentities(ctx context.Context, sid string, dryRun bool) map[string]any {
+	result := map[string]any{
+		"status": "ok", "chat_session_id": sid, "dry_run": dryRun,
+		"candidates": 0, "created_identities": 0, "created_surfaces": 0,
+		"would_create": 0, "skipped": 0, "failed": 0, "skipped_items": []any{}, "errors": []any{},
+		"character_candidates": 0, "character_created_identities": 0, "character_created_surfaces": 0,
+		"item_candidates": 0, "item_created_identities": 0, "item_created_surfaces": 0,
+	}
+	writer, writerOK := s.Store.(store.EntityIdentityWriter)
+	catalogReader, catalogOK := s.Store.(store.EntityIdentityCatalogReader)
+	history, historyOK := s.Store.(store.SourceRevisionHistoryLister)
+	if !writerOK || !catalogOK || !historyOK {
+		result["status"] = "skipped"
+		result["reason"] = "entity_identity_repair_not_supported"
+		return result
+	}
+	if availability, ok := s.Store.(store.EntityIdentityWriteAvailability); ok && !availability.EntityIdentityWritesEnabled() {
+		result["status"] = "skipped"
+		result["reason"] = "entity_identity_writes_disabled"
+		return result
+	}
+	states, err := s.Store.ListCharacterStates(ctx, sid)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_character_states", "detail": err.Error()}}
+		return result
+	}
+	identities, err := catalogReader.ListActiveEntityIdentities(ctx, sid)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_entity_identities", "detail": err.Error()}}
+		return result
+	}
+	surfaces, err := catalogReader.ListActiveEntityIdentitySurfaces(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_entity_surfaces", "detail": err.Error()}}
+		return result
+	}
+	sources, err := history.ListSourceRevisions(ctx, sid, 0, 0)
+	if err != nil {
+		result["status"] = "partial_error"
+		result["failed"] = 1
+		result["errors"] = []any{map[string]any{"stage": "list_source_revisions", "detail": err.Error()}}
+		return result
+	}
+
+	activeCharacterIdentities := map[string]store.EntityIdentity{}
+	identityIDsByName := map[string][]string{}
+	for _, identity := range identities {
+		id := strings.TrimSpace(identity.StableEntityID)
+		if identity.ChatSessionID != sid || identity.EntityKind != "character" || id == "" {
+			continue
+		}
+		activeCharacterIdentities[id] = identity
+		key := comparableEntityKey(identity.CanonicalLabel)
+		if key != "" {
+			identityIDsByName[key] = appendUniqueString(identityIDsByName[key], id)
+		}
+	}
+	surfaceExistsByName := map[string]bool{}
+	for _, surface := range surfaces {
+		if surface.ChatSessionID != sid {
+			continue
+		}
+		if _, ok := activeCharacterIdentities[strings.TrimSpace(surface.StableEntityID)]; !ok {
+			continue
+		}
+		if key := comparableEntityKey(surface.SurfaceText); key != "" {
+			surfaceExistsByName[key] = true
+		}
+	}
+	activeSourcesByTurn := map[int][]store.MemorySourceRevision{}
+	for _, source := range sources {
+		if source.ChatSessionID == sid && strings.EqualFold(strings.TrimSpace(source.LifecycleState), "active") {
+			activeSourcesByTurn[source.TurnIndex] = append(activeSourcesByTurn[source.TurnIndex], source)
+		}
+	}
+	statesByName := map[string][]store.CharacterState{}
+	nameOrder := []string{}
+	for _, state := range states {
+		name := strings.TrimSpace(state.CharacterName)
+		key := comparableEntityKey(name)
+		if state.ChatSessionID != sid || name == "" || key == "" || surfaceExistsByName[key] {
+			continue
+		}
+		if _, seen := statesByName[key]; !seen {
+			nameOrder = append(nameOrder, key)
+		}
+		statesByName[key] = append(statesByName[key], state)
+	}
+	sort.Strings(nameOrder)
+	errorsOut := []any{}
+	skippedOut := []any{}
+	for _, key := range nameOrder {
+		candidates := statesByName[key]
+		sort.SliceStable(candidates, func(i, j int) bool {
+			if candidates[i].TurnIndex != candidates[j].TurnIndex {
+				return candidates[i].TurnIndex < candidates[j].TurnIndex
+			}
+			return candidates[i].ID < candidates[j].ID
+		})
+		result["candidates"] = intFromAny(result["candidates"], 0) + 1
+		result["character_candidates"] = intFromAny(result["character_candidates"], 0) + 1
+		name := strings.TrimSpace(candidates[0].CharacterName)
+		ids := uniqueNonEmptyStrings(identityIDsByName[key])
+		if len(ids) > 1 {
+			result["skipped"] = intFromAny(result["skipped"], 0) + 1
+			skippedOut = append(skippedOut, map[string]any{"character_name": name, "reason": "multiple_existing_character_identities"})
+			continue
+		}
+		var state store.CharacterState
+		var source store.MemorySourceRevision
+		foundSource := false
+		for _, candidate := range candidates {
+			turnSources := activeSourcesByTurn[candidate.TurnIndex]
+			if len(turnSources) == 1 {
+				state = candidate
+				source = turnSources[0]
+				foundSource = true
+				break
+			}
+		}
+		if !foundSource {
+			result["skipped"] = intFromAny(result["skipped"], 0) + 1
+			skippedOut = append(skippedOut, map[string]any{"character_name": name, "reason": "unique_active_source_revision_not_found"})
+			continue
+		}
+		result["would_create"] = intFromAny(result["would_create"], 0) + 1
+		if dryRun {
+			continue
+		}
+		now := time.Now().UTC()
+		idempotencyKey := entityIdentityIdempotencyKey("session_normalize_character", source.SourceRevision, key)
+		stableID := ""
+		if len(ids) == 1 {
+			stableID = ids[0]
+		} else {
+			stableID = entityIdentityStableID("entity", sid, idempotencyKey)
+			identity := store.EntityIdentity{
+				StableEntityID: stableID, ChatSessionID: sid, IdentityNamespace: "session_npc", EntityKind: "character",
+				CanonicalLabel: name, LifecycleState: "active", ReviewState: store.EntityIdentityReviewStateSourceObserved,
+				PresenceAuthority: "observed", OccurrenceAuthority: "derived_character_state",
+				SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+				SourceLogicalTurnID: source.LogicalTurnID, SourceMessageID: source.SourceMessageID,
+				SourceGenerationID: source.SourceGenerationID, SourceContentHash: source.CombinedContentHash,
+				SourceTurn: state.TurnIndex, IdempotencyKey: idempotencyKey, MappingRevision: 1,
+				FirstSeenTurn: state.TurnIndex, LastSeenTurn: state.TurnIndex, CreatedAt: now, UpdatedAt: now,
+			}
+			if err := writer.SaveEntityIdentity(ctx, &identity); err != nil {
+				result["failed"] = intFromAny(result["failed"], 0) + 1
+				errorsOut = append(errorsOut, map[string]any{"character_name": name, "stage": "save_identity", "detail": err.Error()})
+				continue
+			}
+			result["created_identities"] = intFromAny(result["created_identities"], 0) + 1
+			result["character_created_identities"] = intFromAny(result["character_created_identities"], 0) + 1
+		}
+		surfaceKey := entityIdentityIdempotencyKey("session_normalize_character_surface", stableID, key, source.SourceRevision)
+		surface := store.EntityIdentitySurface{
+			SurfaceID: entityIdentityStableID("surface", sid, surfaceKey), StableEntityID: stableID,
+			ChatSessionID: sid, IdentityNamespace: "session_npc", SurfaceKind: "display_name",
+			SurfaceText: name, NormalizedSurface: key, Scope: store.EntityIdentitySurfaceScopeCurrent,
+			ValidFromTurn: state.TurnIndex, SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+			SourceTurn: state.TurnIndex, SourceSpanStart: -1, SourceSpanEnd: -1,
+			ReviewState: store.EntityIdentityReviewStateSourceObserved, IdempotencyKey: surfaceKey,
+			CreatedAt: now, UpdatedAt: now,
+		}
+		if err := writer.SaveEntityIdentitySurface(ctx, &surface); err != nil {
+			result["failed"] = intFromAny(result["failed"], 0) + 1
+			errorsOut = append(errorsOut, map[string]any{"character_name": name, "stage": "save_surface", "detail": err.Error()})
+			continue
+		}
+		result["created_surfaces"] = intFromAny(result["created_surfaces"], 0) + 1
+		result["character_created_surfaces"] = intFromAny(result["character_created_surfaces"], 0) + 1
+	}
+
+	activeItemIdentities := map[string]store.EntityIdentity{}
+	itemIdentityIDsByName := map[string][]string{}
+	for _, identity := range identities {
+		id := strings.TrimSpace(identity.StableEntityID)
+		if identity.ChatSessionID != sid || identity.EntityKind != "item" || id == "" {
+			continue
+		}
+		activeItemIdentities[id] = identity
+		if key := comparableEntityKey(identity.CanonicalLabel); key != "" {
+			itemIdentityIDsByName[key] = appendUniqueString(itemIdentityIDsByName[key], id)
+		}
+	}
+	itemSurfaceExistsByName := map[string]bool{}
+	for _, surface := range surfaces {
+		if surface.ChatSessionID != sid {
+			continue
+		}
+		if _, ok := activeItemIdentities[strings.TrimSpace(surface.StableEntityID)]; !ok {
+			continue
+		}
+		if key := comparableEntityKey(surface.SurfaceText); key != "" {
+			itemSurfaceExistsByName[key] = true
+		}
+	}
+	itemTriples, itemListErr := s.Store.ListKGTriples(ctx, sid)
+	if itemListErr != nil {
+		result["failed"] = intFromAny(result["failed"], 0) + 1
+		errorsOut = append(errorsOut, map[string]any{"stage": "list_item_kg_triples", "detail": itemListErr.Error()})
+	} else {
+		triplesByName := map[string][]store.KGTriple{}
+		itemNameOrder := []string{}
+		for _, triple := range itemTriples {
+			name := strings.TrimSpace(triple.Object)
+			key := comparableEntityKey(name)
+			if triple.ChatSessionID != sid || !durableItemIdentityPredicate(triple.Predicate) || name == "" || key == "" || itemSurfaceExistsByName[key] {
+				continue
+			}
+			if _, seen := triplesByName[key]; !seen {
+				itemNameOrder = append(itemNameOrder, key)
+			}
+			triplesByName[key] = append(triplesByName[key], triple)
+		}
+		sort.Strings(itemNameOrder)
+		for _, key := range itemNameOrder {
+			candidates := triplesByName[key]
+			sort.SliceStable(candidates, func(i, j int) bool {
+				if candidates[i].SourceTurn != candidates[j].SourceTurn {
+					return candidates[i].SourceTurn < candidates[j].SourceTurn
+				}
+				return candidates[i].ID < candidates[j].ID
+			})
+			result["candidates"] = intFromAny(result["candidates"], 0) + 1
+			result["item_candidates"] = intFromAny(result["item_candidates"], 0) + 1
+			name := strings.TrimSpace(candidates[0].Object)
+			ids := uniqueNonEmptyStrings(itemIdentityIDsByName[key])
+			if len(ids) > 1 {
+				result["skipped"] = intFromAny(result["skipped"], 0) + 1
+				skippedOut = append(skippedOut, map[string]any{"item_name": name, "reason": "multiple_existing_item_identities"})
+				continue
+			}
+			var triple store.KGTriple
+			var source store.MemorySourceRevision
+			foundSource := false
+			for _, candidate := range candidates {
+				turnSources := activeSourcesByTurn[candidate.SourceTurn]
+				if len(turnSources) == 1 {
+					triple = candidate
+					source = turnSources[0]
+					foundSource = true
+					break
+				}
+			}
+			if !foundSource {
+				result["skipped"] = intFromAny(result["skipped"], 0) + 1
+				skippedOut = append(skippedOut, map[string]any{"item_name": name, "reason": "unique_active_source_revision_not_found"})
+				continue
+			}
+			result["would_create"] = intFromAny(result["would_create"], 0) + 1
+			if dryRun {
+				continue
+			}
+			now := time.Now().UTC()
+			idempotencyKey := entityIdentityIdempotencyKey("session_normalize_item", source.SourceRevision, key)
+			stableID := ""
+			if len(ids) == 1 {
+				stableID = ids[0]
+			} else {
+				stableID = entityIdentityStableID("entity", sid, idempotencyKey)
+				identity := store.EntityIdentity{
+					StableEntityID: stableID, ChatSessionID: sid, IdentityNamespace: "session_item", EntityKind: "item",
+					CanonicalLabel: name, LifecycleState: "active", ReviewState: store.EntityIdentityReviewStateSourceObserved,
+					PresenceAuthority: "observed", OccurrenceAuthority: "derived_kg_item",
+					SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+					SourceLogicalTurnID: source.LogicalTurnID, SourceMessageID: source.SourceMessageID,
+					SourceGenerationID: source.SourceGenerationID, SourceContentHash: source.CombinedContentHash,
+					SourceTurn: triple.SourceTurn, IdempotencyKey: idempotencyKey, MappingRevision: 1,
+					FirstSeenTurn: triple.SourceTurn, LastSeenTurn: triple.SourceTurn, CreatedAt: now, UpdatedAt: now,
+				}
+				if err := writer.SaveEntityIdentity(ctx, &identity); err != nil {
+					result["failed"] = intFromAny(result["failed"], 0) + 1
+					errorsOut = append(errorsOut, map[string]any{"item_name": name, "stage": "save_item_identity", "detail": err.Error()})
+					continue
+				}
+				result["created_identities"] = intFromAny(result["created_identities"], 0) + 1
+				result["item_created_identities"] = intFromAny(result["item_created_identities"], 0) + 1
+			}
+			surfaceKey := entityIdentityIdempotencyKey("session_normalize_item_surface", stableID, key, source.SourceRevision)
+			surface := store.EntityIdentitySurface{
+				SurfaceID: entityIdentityStableID("surface", sid, surfaceKey), StableEntityID: stableID,
+				ChatSessionID: sid, IdentityNamespace: "session_item", SurfaceKind: "display_name",
+				SurfaceText: name, NormalizedSurface: key, Scope: store.EntityIdentitySurfaceScopeCurrent,
+				ValidFromTurn: triple.SourceTurn, SourceContract: completeTurnSourceAcceptanceContract, SourceRevision: source.SourceRevision,
+				SourceTurn: triple.SourceTurn, SourceSpanStart: -1, SourceSpanEnd: -1,
+				ReviewState: store.EntityIdentityReviewStateSourceObserved, IdempotencyKey: surfaceKey,
+				CreatedAt: now, UpdatedAt: now,
+			}
+			if err := writer.SaveEntityIdentitySurface(ctx, &surface); err != nil {
+				result["failed"] = intFromAny(result["failed"], 0) + 1
+				errorsOut = append(errorsOut, map[string]any{"item_name": name, "stage": "save_item_surface", "detail": err.Error()})
+				continue
+			}
+			result["created_surfaces"] = intFromAny(result["created_surfaces"], 0) + 1
+			result["item_created_surfaces"] = intFromAny(result["item_created_surfaces"], 0) + 1
+		}
+	}
+	result["skipped_items"] = skippedOut
+	result["errors"] = errorsOut
+	if intFromAny(result["failed"], 0) > 0 {
+		result["status"] = "partial_error"
+	}
+	return result
 }
 
 func adminSessionNormalizeProgressAdapter(progress adminJobProgressFunc, stage string, base, span int) adminJobProgressFunc {
@@ -302,6 +737,21 @@ func adminSessionNormalizeRepairEntries(req adminSessionNormalizeRequest) []dto.
 		if current.Source == nil || strings.TrimSpace(*current.Source) == "" {
 			current.Source = item.Source
 		}
+		if current.AssistantMessageID == nil || strings.TrimSpace(*current.AssistantMessageID) == "" {
+			current.AssistantMessageID = item.AssistantMessageID
+		}
+		if current.AssistantGenerationID == nil || strings.TrimSpace(*current.AssistantGenerationID) == "" {
+			current.AssistantGenerationID = item.AssistantGenerationID
+		}
+		if current.AssistantContentHash == nil || strings.TrimSpace(*current.AssistantContentHash) == "" {
+			current.AssistantContentHash = item.AssistantContentHash
+		}
+		if current.InputMode == nil || strings.TrimSpace(*current.InputMode) == "" {
+			current.InputMode = item.InputMode
+		}
+		if current.UserInputState == nil || strings.TrimSpace(*current.UserInputState) == "" {
+			current.UserInputState = item.UserInputState
+		}
 		byTurn[item.TurnIndex] = current
 	}
 	turns := make([]int, 0, len(byTurn))
@@ -314,6 +764,30 @@ func adminSessionNormalizeRepairEntries(req adminSessionNormalizeRequest) []dto.
 		out = append(out, byTurn[turn])
 	}
 	return out
+}
+
+func adminSessionNormalizeSourceObservations(entries []dto.ChatLogRepairEntryRequest) map[int]adminRescanSourceObservation {
+	out := map[int]adminRescanSourceObservation{}
+	for _, entry := range entries {
+		if entry.TurnIndex <= 0 {
+			continue
+		}
+		out[entry.TurnIndex] = adminRescanSourceObservation{
+			AssistantMessageID:    stringFromOptional(entry.AssistantMessageID),
+			AssistantGenerationID: stringFromOptional(entry.AssistantGenerationID),
+			AssistantContentHash:  stringFromOptional(entry.AssistantContentHash),
+			InputMode:             stringFromOptional(entry.InputMode),
+			UserInputState:        stringFromOptional(entry.UserInputState),
+		}
+	}
+	return out
+}
+
+func stringFromOptional(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return strings.TrimSpace(*value)
 }
 
 func adminSessionNormalizeClientMeta(raw map[string]any) map[string]any {
@@ -398,22 +872,27 @@ func adminSessionNormalizeMetaKeys(meta map[string]any) []string {
 
 func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) (map[string]any, []string) {
 	counts := map[string]any{
-		"chat_log_rows":        0,
-		"raw_turns":            0,
-		"raw_complete_turns":   0,
-		"raw_partial_turns":    0,
-		"starter_turn_present": false,
-		"memories":             0,
-		"direct_evidence":      0,
-		"kg_triples":           0,
-		"world_rules":          0,
-		"episode_summaries":    0,
-		"chapter_summaries":    0,
-		"arc_summaries":        0,
-		"saga_digests":         0,
-		"min_turn":             0,
-		"max_turn":             0,
-		"partial_turn_preview": []int{},
+		"chat_log_rows":               0,
+		"raw_turns":                   0,
+		"raw_complete_turns":          0,
+		"raw_partial_turns":           0,
+		"raw_assistant_only_turns":    0,
+		"raw_user_only_turns":         0,
+		"raw_processable_turns":       0,
+		"starter_turn_present":        false,
+		"memories":                    0,
+		"direct_evidence":             0,
+		"kg_triples":                  0,
+		"world_rules":                 0,
+		"episode_summaries":           0,
+		"chapter_summaries":           0,
+		"arc_summaries":               0,
+		"saga_digests":                0,
+		"min_turn":                    0,
+		"max_turn":                    0,
+		"partial_turn_preview":        []int{},
+		"assistant_only_turn_preview": []int{},
+		"user_only_turn_preview":      []int{},
 	}
 	warnings := []string{}
 	logs, err := s.Store.ListChatLogs(ctx, sid, 0, 0)
@@ -444,6 +923,8 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 			roleByTurn[log.TurnIndex][role] = true
 		}
 		partialTurns := []int{}
+		assistantOnlyTurns := []int{}
+		userOnlyTurns := []int{}
 		completeTurns := 0
 		dialogueTurns := 0
 		starterTurnPresent := false
@@ -460,16 +941,26 @@ func (s *Server) adminSessionNormalizeSnapshot(ctx context.Context, sid string) 
 				completeTurns++
 			} else {
 				partialTurns = append(partialTurns, turn)
+				if roles["assistant"] {
+					assistantOnlyTurns = append(assistantOnlyTurns, turn)
+				} else if roles["user"] {
+					userOnlyTurns = append(userOnlyTurns, turn)
+				}
 			}
 		}
 		counts["chat_log_rows"] = len(logs)
 		counts["raw_turns"] = dialogueTurns
 		counts["raw_complete_turns"] = completeTurns
 		counts["raw_partial_turns"] = len(partialTurns)
+		counts["raw_assistant_only_turns"] = len(assistantOnlyTurns)
+		counts["raw_user_only_turns"] = len(userOnlyTurns)
+		counts["raw_processable_turns"] = completeTurns + len(assistantOnlyTurns)
 		counts["starter_turn_present"] = starterTurnPresent
 		counts["min_turn"] = minTurn
 		counts["max_turn"] = maxTurn
 		counts["partial_turn_preview"] = uniqueSortedNonNegativeInts(partialTurns)
+		counts["assistant_only_turn_preview"] = uniqueSortedNonNegativeInts(assistantOnlyTurns)
+		counts["user_only_turn_preview"] = uniqueSortedNonNegativeInts(userOnlyTurns)
 	}
 	if memories, err := s.Store.ListMemories(ctx, sid, 0, 0); err == nil {
 		counts["memories"] = len(memories)
@@ -542,12 +1033,14 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"raw_turns_before":               rawTurns,
 		"memory_rows_before":             memories,
 		"advanced_tools_consolidated":    []string{"active_chat_dry_run", "repair_replay", "admin_rescan", "hierarchy_backfill", "admin_reindex"},
+		"character_identity_repair":      "missing_exact_character_names_only",
+		"item_identity_repair":           "missing_exact_kg_item_names_only",
 		"visible_trim_delete_protection": "enabled",
 	}
 }
 
 func adminSessionNormalizeConflictTurns(snapshot map[string]any) []int {
-	return uniqueSortedInts(intSliceFromAny(snapshot["partial_turn_preview"]))
+	return uniqueSortedInts(intSliceFromAny(snapshot["user_only_turn_preview"]))
 }
 
 func intSliceFromAny(v any) []int {
@@ -577,10 +1070,32 @@ func adminSessionNormalizeSkipReason(skipped bool, count int, fallback string) s
 	return "not_run"
 }
 
-func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[string]any, warnings []string) string {
+func adminSessionNormalizeStatus(repairResult, rescanResult, identityRepairResult, reindexResult map[string]any, warnings []string) string {
 	deferred := false
-	for _, result := range []map[string]any{repairResult, rescanResult, reindexResult} {
+	rescanPendingRetryOnly := false
+	rescanFailedCount := intFromAny(rescanResult["failed"], 0)
+	if rescanFailedCount > 0 && intFromAny(rescanResult["queued"], 0) > 0 {
+		failedTurns := adminSessionNormalizeMapItems(rescanResult["failed_turns"])
+		rescanPendingRetryOnly = len(failedTurns) == rescanFailedCount
+		for _, item := range failedTurns {
+			if !strings.EqualFold(strings.TrimSpace(stringFromAny(item["state"])), "retryable") {
+				rescanPendingRetryOnly = false
+				break
+			}
+		}
+		for _, warning := range stringsFromAny(rescanResult["warnings"]) {
+			if strings.Contains(strings.ToLower(warning), "reprocessing_enqueue_failed") {
+				rescanPendingRetryOnly = false
+				break
+			}
+		}
+	}
+	for index, result := range []map[string]any{repairResult, rescanResult, identityRepairResult, reindexResult} {
 		status := strings.ToLower(strings.TrimSpace(stringFromMap(result, "status")))
+		if index == 1 && rescanPendingRetryOnly {
+			deferred = true
+			continue
+		}
 		if status == "failed" || status == "error" {
 			return "failed"
 		}
@@ -601,6 +1116,23 @@ func adminSessionNormalizeStatus(repairResult, rescanResult, reindexResult map[s
 		return "partial_warning"
 	}
 	return "ok"
+}
+
+func adminSessionNormalizeMapItems(value any) []map[string]any {
+	switch items := value.(type) {
+	case []map[string]any:
+		return append([]map[string]any{}, items...)
+	case []any:
+		out := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if mapped, ok := item.(map[string]any); ok {
+				out = append(out, mapped)
+			}
+		}
+		return out
+	default:
+		return []map[string]any{}
+	}
 }
 
 func adminSessionNormalizeReindexDeferredReasons(rescanResult map[string]any) []string {

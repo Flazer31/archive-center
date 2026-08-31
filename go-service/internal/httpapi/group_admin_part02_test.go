@@ -1113,8 +1113,8 @@ func TestCompleteTurnConfigBlocksPartialClientMetaCriticWithoutRuntimeFallback(t
 	if cfg.Critic.Source != "client_meta_partial.critic" {
 		t.Fatalf("critic source = %q, want client_meta_partial.critic", cfg.Critic.Source)
 	}
-	if cfg.Critic.APIKey != "" || cfg.Critic.Endpoint != "" {
-		t.Fatalf("partial client_meta critic must not be filled from runtime: %#v", cfg.Critic)
+	if cfg.Critic.APIKey != "" || cfg.Critic.Endpoint != "https://api.openai.com/v1" {
+		t.Fatalf("partial client_meta critic must keep its provider default without runtime credential fallback: %#v", cfg.Critic)
 	}
 	if cfg.Critic.hasConfig() {
 		t.Fatalf("partial client_meta critic unexpectedly configured: %#v", cfg.Critic)

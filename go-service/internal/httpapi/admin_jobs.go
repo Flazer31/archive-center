@@ -118,7 +118,18 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 			m.finish(id, "failed", result, err.Error())
 			return
 		}
-		m.finish(id, "completed", result, "")
+		terminalStatus := "completed"
+		if strings.EqualFold(normalizedKind, "session_normalize") {
+			switch strings.ToLower(strings.TrimSpace(stringFromAny(result["status"]))) {
+			case "deferred", "partial_deferred":
+				terminalStatus = "deferred"
+			case "partial_error":
+				terminalStatus = "partial_error"
+			case "failed", "error", "blocked":
+				terminalStatus = "failed"
+			}
+		}
+		m.finish(id, terminalStatus, result, "")
 	}()
 
 	return snapshot
@@ -228,6 +239,8 @@ func (m *adminJobManager) finish(id, status string, result map[string]any, errTe
 	}
 	if status == "completed" {
 		job.Progress["progress_percent"] = 100
+	} else if status == "deferred" && intFromAny(job.Progress["progress_percent"], 0) >= 100 {
+		job.Progress["progress_percent"] = 99
 	}
 	job.publishChangeLocked()
 }
@@ -283,7 +296,7 @@ func (j *adminBackgroundJob) publishChangeLocked() {
 
 func adminJobTerminal(status string) bool {
 	switch strings.TrimSpace(status) {
-	case "completed", "failed", "cancelled":
+	case "completed", "deferred", "partial_error", "failed", "cancelled":
 		return true
 	default:
 		return false

@@ -4,7 +4,9 @@ import (
 	"context"
 	"database/sql"
 	"database/sql/driver"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -12,6 +14,65 @@ import (
 
 	"github.com/DATA-DOG/go-sqlmock"
 )
+
+func TestSessionMigrationActiveDerivationLeasePhaseChecksBothWorkerLanes(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(`(?s)FROM memory_reprocessing_jobs.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("session-source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectQuery(`(?s)FROM memory_vector_outbox.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("session-source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectCommit()
+
+	phase, err := sessionMigrationActiveDerivationLeasePhaseTx(context.Background(), tx, "session-source")
+	if err != nil || phase != "" {
+		t.Fatalf("phase=%q err=%v", phase, err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionMigrationActiveDerivationLeasePhaseReportsLeasedReprocessingJob(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mock.ExpectQuery(`(?s)FROM memory_reprocessing_jobs.*chat_session_id = \?.*status = 'leased'.*FOR UPDATE`).
+		WithArgs("session-source").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(17)))
+	mock.ExpectRollback()
+
+	phase, err := sessionMigrationActiveDerivationLeasePhaseTx(context.Background(), tx, "session-source")
+	if err != nil || phase != "memory_reprocessing_drain" {
+		t.Fatalf("phase=%q err=%v", phase, err)
+	}
+	if err := tx.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
 
 func sessionMigrationExpectCurrentRelationalLedger(
 	mock sqlmock.Sqlmock,
@@ -79,6 +140,278 @@ func sessionMigrationExpectEmptyCurrentManifestReads(
 	return sessionMigrationStringHash(fingerprintParts...)
 }
 
+func TestClassifySessionMigrationOccupancyUsesEveryDirectManifestTable(t *testing.T) {
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		occupancy := classifySessionMigrationOccupancy(map[string]int{entry.Table: 1}, false)
+		if occupancy.TotalDirectRows != 1 || occupancy.BlockingTables[entry.Table] != 1 {
+			t.Fatalf("direct manifest table %s was not classified: %+v", entry.Table, occupancy)
+		}
+	}
+}
+
+func TestClassifySessionMigrationOccupancyAllowsOnlyExactStarterRow(t *testing.T) {
+	starter := classifySessionMigrationOccupancy(map[string]int{"chat_logs": 1}, true)
+	if !starter.ReplaceableStarterOnly || len(starter.BlockingTables) != 0 {
+		t.Fatalf("exact starter should be replaceable: %+v", starter)
+	}
+	withBinding := classifySessionMigrationOccupancy(map[string]int{"chat_logs": 1, "session_reference_bindings": 1}, true)
+	if withBinding.ReplaceableStarterOnly || withBinding.BlockingTables["chat_logs"] != 1 || withBinding.BlockingTables["session_reference_bindings"] != 1 {
+		t.Fatalf("starter plus binding must be blocked: %+v", withBinding)
+	}
+}
+
+func TestInspectSessionMigrationOccupancyTreatsLorebookScopeAsTargetContent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	store := &mariadbStore{db: db}
+	sid := "target-with-lorebook"
+	mock.ExpectBegin()
+	for _, entry := range SessionMigrationManifest() {
+		if !entry.Direct {
+			continue
+		}
+		count := 0
+		if entry.Table == "lorebook_reference_scopes" {
+			count = 1
+		}
+		mock.ExpectQuery("SELECT COUNT\\(\\*\\) FROM `" + regexp.QuoteMeta(entry.Table) + "` WHERE `" + regexp.QuoteMeta(entry.SessionColumn) + "` = \\?").
+			WithArgs(sid).
+			WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(count))
+	}
+	mock.ExpectCommit()
+	occupancy, err := store.InspectSessionMigrationOccupancy(context.Background(), sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if occupancy.TotalDirectRows != 1 || occupancy.BlockingTables["lorebook_reference_scopes"] != 1 || occupancy.ReplaceableStarterOnly {
+		t.Fatalf("lorebook target occupancy = %+v, want one blocking scope row", occupancy)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionMigrationLorebookCopyUsesProductionKeyAndFKMappings(t *testing.T) {
+	const (
+		migrationID = int64(91)
+		sourceID    = "source-lorebook"
+		targetID    = "target-lorebook"
+	)
+	characterIndex := int64(2)
+	chatIndex := int64(3)
+	sourceScope := LorebookReferenceScope{
+		ChatSessionID: sourceID, CharacterIndex: &characterIndex, ChatIndex: &chatIndex,
+		EnabledModuleIDs: []string{"module-a"}, EnabledModulesObserved: true,
+	}
+	modulesJSON, sourceScopeIdentityJSON, err := lorebookScopeJSON(sourceScope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sourceRows := map[string][]sessionMigrationRow{
+		"lorebook_reference_session_locks": {sessionMigrationTestRow(map[string]string{
+			"chat_session_id": sourceID, "created_at": "2026-08-30 01:00:00.000", "updated_at": "2026-08-30 01:00:00.000",
+		})},
+		"lorebook_reference_scopes": {sessionMigrationTestRow(map[string]string{
+			"scope_id": "11", "chat_session_id": sourceID, "character_index": "2", "chat_index": "3",
+			"enabled_modules_json": modulesJSON, "scope_identity_json": sourceScopeIdentityJSON,
+			"created_at": "2026-08-30 01:00:00.000", "updated_at": "2026-08-30 01:00:00.000",
+		})},
+		"lorebook_reference_snapshots": {sessionMigrationTestRow(map[string]string{
+			"snapshot_id": "0123456789abcdef0123456789abcdef", "scope_id": "11",
+			"contract_version": "lorebook_reference.snapshot.v1", "consent_state": "granted",
+			"observation_state": "complete", "complete_snapshot": "1", "entry_count": "1",
+			"provenance_json": "{\"source\":\"host\"}", "observed_at": "2026-08-30 01:00:00.000",
+			"created_at": "2026-08-30 01:00:00.000",
+		})},
+		"lorebook_reference_entries": {sessionMigrationTestRow(map[string]string{
+			"entry_record_id": "21", "scope_id": "11", "snapshot_id": "0123456789abcdef0123456789abcdef",
+			"host_entry_id": "host-entry", "entry_ordinal": "0", "source_kind": "current_host_aggregate",
+			"entry_key": "key", "second_key": "", "entry_comment": "comment", "content": "content",
+			"normalized_search_text": "key content", "extensions_json": "{}", "lifecycle_state": "catalog_current",
+			"is_current": "1", "first_seen_at": "2026-08-30 01:00:00.000", "last_seen_at": "2026-08-30 01:00:00.000",
+			"created_at": "2026-08-30 01:00:00.000", "updated_at": "2026-08-30 01:00:00.000",
+		})},
+	}
+	maps := newSessionMigrationKeyMaps()
+	if err := sessionMigrationPrecomputeDeterministicKeys(SessionMigrationManifest(), sourceRows, targetID, maps); err != nil {
+		t.Fatal(err)
+	}
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	targetRows := map[string][]sessionMigrationRow{}
+	for _, table := range []string{
+		"lorebook_reference_session_locks",
+		"lorebook_reference_scopes",
+		"lorebook_reference_snapshots",
+		"lorebook_reference_entries",
+	} {
+		entry, _ := sessionMigrationManifestEntryByTable(table)
+		plan, _ := SessionMigrationExecutionPlanFor(table)
+		insertID := int64(0)
+		if table == "lorebook_reference_scopes" {
+			insertID = 101
+		} else if table == "lorebook_reference_entries" {
+			insertID = 202
+		}
+		mock.ExpectExec("INSERT INTO `" + regexp.QuoteMeta(table) + "`").WillReturnResult(sqlmock.NewResult(insertID, 1))
+		mock.ExpectExec("INSERT INTO session_migration_artifact_row_map").WillReturnResult(sqlmock.NewResult(0, 1))
+		if plan.PrimaryKeyMode == SessionMigrationKeyAutoIncrement {
+			mock.ExpectExec("INSERT INTO session_migration_row_map").WillReturnResult(sqlmock.NewResult(0, 1))
+		}
+		targetRow, _, deferred, err := sessionMigrationInsertManifestRow(
+			context.Background(), tx, migrationID, entry, plan, sourceRows[table][0], targetID, maps,
+		)
+		if err != nil {
+			t.Fatalf("copy %s: %v", table, err)
+		}
+		if len(deferred) != 0 {
+			t.Fatalf("copy %s deferred FK count=%d, want 0", table, len(deferred))
+		}
+		targetRows[table] = []sessionMigrationRow{targetRow}
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	for _, table := range []string{
+		"lorebook_reference_session_locks",
+		"lorebook_reference_scopes",
+		"lorebook_reference_snapshots",
+		"lorebook_reference_entries",
+	} {
+		entry, _ := sessionMigrationManifestEntryByTable(table)
+		plan, _ := SessionMigrationExecutionPlanFor(table)
+		sourceHash := sessionMigrationCanonicalRowsHash(entry, plan, sourceRows[table], sourceID, false, maps)
+		targetHash := sessionMigrationCanonicalRowsHash(entry, plan, targetRows[table], targetID, true, maps)
+		parity, err := sessionMigrationEvaluateArtifactParity(entry, plan, sourceRows[table], targetRows[table], sourceHash, targetHash, maps)
+		if err != nil {
+			t.Fatalf("parity %s: %v", table, err)
+		}
+		if parity.ParityState != "verified_copy" || parity.RowMapVerified != parity.RowMapExpected || parity.FKVerified != parity.FKExpected {
+			t.Errorf("parity %s = %+v", table, parity)
+		}
+	}
+	snapshotKey := targetRows["lorebook_reference_snapshots"][0].Values["snapshot_id"].Text
+	if len(snapshotKey) != 32 || snapshotKey == sourceRows["lorebook_reference_snapshots"][0].Values["snapshot_id"].Text {
+		t.Errorf("target snapshot key=%q, want remapped CHAR(32)", snapshotKey)
+	}
+	entryRow := targetRows["lorebook_reference_entries"][0]
+	if entryRow.Values["scope_id"].Text != "101" || entryRow.Values["snapshot_id"].Text != snapshotKey {
+		t.Errorf("target lorebook entry FK values scope=%q snapshot=%q", entryRow.Values["scope_id"].Text, entryRow.Values["snapshot_id"].Text)
+	}
+	targetScopeRow := targetRows["lorebook_reference_scopes"][0]
+	var targetScope LorebookReferenceScope
+	if err := json.Unmarshal([]byte(targetScopeRow.Values["scope_identity_json"].Text), &targetScope); err != nil {
+		t.Fatal(err)
+	}
+	if targetScope.ChatSessionID != targetID {
+		t.Fatalf("target lorebook scope identity session=%q, want %q", targetScope.ChatSessionID, targetID)
+	}
+	observedAt := time.Date(2026, 8, 30, 1, 0, 0, 0, time.UTC)
+	mock.ExpectQuery(`(?s)SELECT scope_id, enabled_modules_json, scope_identity_json, created_at, updated_at.*FROM lorebook_reference_scopes.*WHERE chat_session_id = \? AND character_index <=> \? AND chat_index <=> \?`).
+		WithArgs(targetID, characterIndex, chatIndex).
+		WillReturnRows(sqlmock.NewRows([]string{"scope_id", "enabled_modules_json", "scope_identity_json", "created_at", "updated_at"}).
+			AddRow(int64(101), targetScopeRow.Values["enabled_modules_json"].Text, targetScopeRow.Values["scope_identity_json"].Text, observedAt, observedAt))
+	if _, err := findLorebookReferenceScope(context.Background(), db, targetScope, false); err != nil {
+		t.Fatalf("migrated lorebook scope was not reusable by the production scope resolver: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSessionMigrationMalformedLorebookRowRollsBackPriorTargetWrite(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	maps := newSessionMigrationKeyMaps()
+	lockEntry, _ := sessionMigrationManifestEntryByTable("lorebook_reference_session_locks")
+	lockPlan, _ := SessionMigrationExecutionPlanFor(lockEntry.Table)
+	mock.ExpectExec("INSERT INTO `lorebook_reference_session_locks`").WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("INSERT INTO session_migration_artifact_row_map").WillReturnResult(sqlmock.NewResult(0, 1))
+	if _, _, _, err := sessionMigrationInsertManifestRow(context.Background(), tx, 92, lockEntry, lockPlan,
+		sessionMigrationTestRow(map[string]string{"chat_session_id": "source"}), "target", maps); err != nil {
+		t.Fatal(err)
+	}
+	snapshotEntry, _ := sessionMigrationManifestEntryByTable("lorebook_reference_snapshots")
+	snapshotPlan, _ := SessionMigrationExecutionPlanFor(snapshotEntry.Table)
+	_, _, _, err = sessionMigrationInsertManifestRow(context.Background(), tx, 92, snapshotEntry, snapshotPlan,
+		sessionMigrationTestRow(map[string]string{"scope_id": "11"}), "target", maps)
+	if err == nil || !strings.Contains(err.Error(), "source primary key snapshot_id is empty") {
+		t.Fatalf("malformed lorebook row error=%v", err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("malformed row did not leave the target transaction rollback-only: %v", err)
+	}
+}
+
+func TestSessionMigrationMoveSourceCleanupDeletesLorebookOwners(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	const sourceID = "source-lorebook-move"
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := SessionMigrationManifest()
+	for index := len(manifest) - 1; index >= 0; index-- {
+		entry := manifest[index]
+		if !entry.Direct || (entry.Policy != SessionMigrationPolicyCopy && entry.Policy != SessionMigrationPolicyDeleteAfterVerified) {
+			continue
+		}
+		affected := int64(0)
+		if entry.Table == "lorebook_reference_scopes" || entry.Table == "lorebook_reference_session_locks" {
+			affected = 1
+		}
+		mock.ExpectExec("DELETE FROM `" + regexp.QuoteMeta(entry.Table) + "` WHERE `" + regexp.QuoteMeta(entry.SessionColumn) + "` = \\?").
+			WithArgs(sourceID).
+			WillReturnResult(sqlmock.NewResult(0, affected))
+	}
+	deleted, err := sessionMigrationDeleteSourceManifestRowsTx(context.Background(), tx, sourceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted["lorebook_reference_scopes"] != 1 || deleted["lorebook_reference_session_locks"] != 1 {
+		t.Fatalf("lorebook source cleanup counts = %+v", deleted)
+	}
+	mock.ExpectCommit()
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func sessionMigrationRequireBlockerCode(t *testing.T, err error, code string) {
 	t.Helper()
 	var blocker *SessionMigrationBlockerError
@@ -118,6 +451,61 @@ func TestSessionMigrationSchemaMismatchFailsBeforeMutation(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("schema mismatch performed an unexpected write: %v", err)
+	}
+}
+
+func TestSessionMigrationSchemaAcceptsUpgradedColumnOrder(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectBegin()
+	tx, err := db.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan, ok := SessionMigrationExecutionPlanFor("memory_source_revisions")
+	if !ok {
+		t.Fatal("memory_source_revisions execution plan missing")
+	}
+	upgradedOrder := make([]string, 0, len(plan.Columns))
+	for _, column := range plan.Columns {
+		if column != "critic_input_snapshot_json" && column != "critic_input_snapshot_hash" {
+			upgradedOrder = append(upgradedOrder, column)
+		}
+	}
+	upgradedOrder = append(upgradedOrder, "critic_input_snapshot_json", "critic_input_snapshot_hash")
+	columnRows := sqlmock.NewRows([]string{"COLUMN_NAME", "EXTRA", "GENERATION_EXPRESSION"})
+	for _, column := range upgradedOrder {
+		if column == "active_logical_turn_slot" {
+			columnRows.AddRow(column, "VIRTUAL GENERATED", "case when lifecycle_state = 'active' then logical_turn_id end")
+		} else {
+			columnRows.AddRow(column, "", nil)
+		}
+	}
+	mock.ExpectQuery("SELECT COLUMN_NAME, EXTRA, GENERATION_EXPRESSION.*INFORMATION_SCHEMA.COLUMNS").
+		WithArgs("memory_source_revisions").
+		WillReturnRows(columnRows)
+	primaryRows := sqlmock.NewRows([]string{"COLUMN_NAME"})
+	for _, column := range plan.PrimaryKey {
+		primaryRows.AddRow(column)
+	}
+	mock.ExpectQuery("SELECT COLUMN_NAME.*INFORMATION_SCHEMA.KEY_COLUMN_USAGE").
+		WithArgs("memory_source_revisions").
+		WillReturnRows(primaryRows)
+	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*INFORMATION_SCHEMA.STATISTICS").
+		WithArgs("memory_source_revisions", "chat_session_id").
+		WillReturnRows(sqlmock.NewRows([]string{"COUNT(*)"}).AddRow(1))
+	if err := sessionMigrationValidateSchemaTx(context.Background(), tx, plan); err != nil {
+		t.Fatalf("upgraded physical column order was rejected: %v", err)
+	}
+	mock.ExpectRollback()
+	if err := tx.Rollback(); err != nil && err != sql.ErrTxDone {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -709,6 +1097,7 @@ func TestResumeCompletedSessionMigrationReturnsDurableLedger(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
+	manifestEntries := len(SessionMigrationManifest())
 	countsJSON := `{"chat_logs":2,"canonical_total":2,"canonical_and_subjective_total":2}`
 	mock.ExpectQuery("SELECT sm.id, sm.status, sm.counts_json").
 		WithArgs("source", "target", SessionMigrationModeCopyThenLockSource).
@@ -719,7 +1108,7 @@ func TestResumeCompletedSessionMigrationReturnsDurableLedger(t *testing.T) {
 	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
 		WithArgs(int64(44), SessionMigrationManifestVersion).
 		WillReturnRows(sqlmock.NewRows([]string{"total", "relational", "row_maps"}).
-			AddRow(50, 50, 2))
+			AddRow(manifestEntries, manifestEntries, 2))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*session_migration_artifact_row_map").
 		WithArgs(int64(44)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(2))
@@ -786,6 +1175,7 @@ func TestResumeCompletedSessionMigrationRejectsMissingExpectedVectorID(t *testin
 		t.Fatal(err)
 	}
 	defer db.Close()
+	manifestEntries := len(SessionMigrationManifest())
 	mock.ExpectQuery("SELECT sm.id, sm.status, sm.counts_json").
 		WithArgs("source", "target", SessionMigrationModeCopyThenLockSource).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -795,7 +1185,7 @@ func TestResumeCompletedSessionMigrationRejectsMissingExpectedVectorID(t *testin
 	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
 		WithArgs(int64(45), SessionMigrationManifestVersion).
 		WillReturnRows(sqlmock.NewRows([]string{"total", "relational", "row_maps"}).
-			AddRow(50, 50, 0))
+			AddRow(manifestEntries, manifestEntries, 0))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*session_migration_artifact_row_map").
 		WithArgs(int64(45)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -1089,6 +1479,7 @@ func TestResumeCompletedSessionMigrationRequiresFreshOneShotVectorProofAfterVect
 		t.Fatal(err)
 	}
 	defer db.Close()
+	manifestEntries := len(SessionMigrationManifest())
 	mock.ExpectQuery("SELECT sm.id, sm.status, sm.counts_json").
 		WithArgs("source", "target", SessionMigrationModeCopyThenLockSource).
 		WillReturnRows(sqlmock.NewRows([]string{
@@ -1098,7 +1489,7 @@ func TestResumeCompletedSessionMigrationRequiresFreshOneShotVectorProofAfterVect
 	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
 		WithArgs(int64(46), SessionMigrationManifestVersion).
 		WillReturnRows(sqlmock.NewRows([]string{"total", "relational", "row_maps"}).
-			AddRow(50, 50, 0))
+			AddRow(manifestEntries, manifestEntries, 0))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\).*session_migration_artifact_row_map").
 		WithArgs(int64(46)).
 		WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(0))
@@ -1119,7 +1510,7 @@ func TestResumeCompletedSessionMigrationRequiresFreshOneShotVectorProofAfterVect
 	mock.ExpectQuery("SELECT.*COUNT\\(\\*\\).*FROM session_migration_artifact_parity").
 		WithArgs(int64(46), SessionMigrationManifestVersion).
 		WillReturnRows(sqlmock.NewRows([]string{"total", "relational", "vector"}).
-			AddRow(50, 50, 50))
+			AddRow(manifestEntries, manifestEntries, manifestEntries))
 	mock.ExpectQuery("SELECT COUNT\\(\\*\\), COALESCE\\(SUM.*session_migration_vector_expected_ids").
 		WithArgs(int64(46)).
 		WillReturnRows(sqlmock.NewRows([]string{"expected", "observed"}).AddRow(0, 0))
@@ -1147,6 +1538,7 @@ func TestResumeCompletedSessionMigrationRequiresFreshOneShotVectorProofAfterVect
 }
 
 func TestSessionMigrationDurableParityGateRejectsEachMissingProof(t *testing.T) {
+	manifestEntries := len(SessionMigrationManifest())
 	tests := []struct {
 		name               string
 		total              int
@@ -1157,11 +1549,11 @@ func TestSessionMigrationDurableParityGateRejectsEachMissingProof(t *testing.T) 
 		completedSaga      int
 		want               string
 	}{
-		{name: "manifest", total: 49, relationalVerified: 49, vectorVerified: 49, want: "manifest parity rows 49/50"},
-		{name: "relational", total: 50, relationalVerified: 49, vectorVerified: 50, want: "relational count/hash/row-map/FK parity 49/50"},
-		{name: "vector artifact", total: 50, relationalVerified: 50, vectorVerified: 49, want: "vector artifact parity 49/50"},
-		{name: "expected ids", total: 50, relationalVerified: 50, vectorVerified: 50, expectedVectors: 2, observedVectors: 1, want: "exact vector expected-ID parity 1/2"},
-		{name: "saga", total: 50, relationalVerified: 50, vectorVerified: 50, expectedVectors: 2, observedVectors: 2, completedSaga: 0, want: "vector exact-ID saga is not completed"},
+		{name: "manifest", total: manifestEntries - 1, relationalVerified: manifestEntries - 1, vectorVerified: manifestEntries - 1, want: fmt.Sprintf("manifest parity rows %d/%d", manifestEntries-1, manifestEntries)},
+		{name: "relational", total: manifestEntries, relationalVerified: manifestEntries - 1, vectorVerified: manifestEntries, want: fmt.Sprintf("relational count/hash/row-map/FK parity %d/%d", manifestEntries-1, manifestEntries)},
+		{name: "vector artifact", total: manifestEntries, relationalVerified: manifestEntries, vectorVerified: manifestEntries - 1, want: fmt.Sprintf("vector artifact parity %d/%d", manifestEntries-1, manifestEntries)},
+		{name: "expected ids", total: manifestEntries, relationalVerified: manifestEntries, vectorVerified: manifestEntries, expectedVectors: 2, observedVectors: 1, want: "exact vector expected-ID parity 1/2"},
+		{name: "saga", total: manifestEntries, relationalVerified: manifestEntries, vectorVerified: manifestEntries, expectedVectors: 2, observedVectors: 2, completedSaga: 0, want: "vector exact-ID saga is not completed"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1179,7 +1571,7 @@ func TestSessionMigrationDurableParityGateRejectsEachMissingProof(t *testing.T) 
 				WithArgs(int64(42), SessionMigrationManifestVersion).
 				WillReturnRows(sqlmock.NewRows([]string{"total", "relational", "vector"}).
 					AddRow(tc.total, tc.relationalVerified, tc.vectorVerified))
-			if tc.total == 50 && tc.relationalVerified == 50 && tc.vectorVerified == 50 {
+			if tc.total == manifestEntries && tc.relationalVerified == manifestEntries && tc.vectorVerified == manifestEntries {
 				mock.ExpectQuery("SELECT COUNT\\(\\*\\), COALESCE\\(SUM.*session_migration_vector_expected_ids").
 					WithArgs(int64(42)).
 					WillReturnRows(sqlmock.NewRows([]string{"expected", "observed"}).

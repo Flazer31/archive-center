@@ -249,14 +249,23 @@ func TestCompleteTurnTruncatedCriticWritesNoDerivedArtifactsAndEnqueuesOneRevisi
 		detailValues["provider"] != "openai" ||
 		detailValues["model"] != "critic" ||
 		detailValues["reprocessing"] != "queued" ||
+		detailValues["next_retry_at"] == "" ||
+		detailValues["native_finish_reason"] != "length" ||
+		detailValues["output_tokens"] != "20" ||
+		detailValues["requested_max_completion_tokens"] == "" ||
 		!strings.Contains(detailValues["cause"], "critic_json_incomplete") ||
 		detailValues["raw_preview"] == "" {
 		t.Fatalf("critic failure details=%#v", detailValues)
 	}
+	storedHUD, storedHUDOK := srv.TurnWorkflows.snapshot("critic-hud-recovery")
+	if !storedHUDOK || storedHUD.Status != "recovering" || storedHUD.Error == nil ||
+		storedHUD.Error.Code != "CRITIC_JSON_TRUNCATED" {
+		t.Fatalf("complete-turn defer overwrote queued recovery HUD: found=%t view=%+v", storedHUDOK, storedHUD)
+	}
 	for _, job := range recording.jobs {
 		if job.SourceRevision == "" || !strings.Contains(job.LastError, "CRITIC_JSON_TRUNCATED") ||
 			job.SourceContract != completeTurnSourceAcceptanceContract ||
-			job.Status != "pending" {
+			job.Status != "pending" || job.RetryAfter.Before(job.CreatedAt.Add(29*time.Second)) {
 			t.Fatalf("job=%+v", job)
 		}
 		firstKey := job.IdempotencyKey
@@ -268,6 +277,7 @@ func TestCompleteTurnTruncatedCriticWritesNoDerivedArtifactsAndEnqueuesOneRevisi
 			job.ChatSessionID,
 			job.LastError,
 			job.CreatedAt,
+			time.Time{},
 		)
 		if err != nil || inserted || len(recording.jobs) != 1 {
 			t.Fatalf("idempotent enqueue inserted=%v err=%v jobs=%d", inserted, err, len(recording.jobs))

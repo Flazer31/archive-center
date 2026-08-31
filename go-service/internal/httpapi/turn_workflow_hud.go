@@ -823,14 +823,43 @@ func (l *turnWorkflowHUDLedger) setRecoveryActionStatus(
 	if entry == nil || entry.view.Error == nil {
 		return turnWorkflowHUDViewModel{}, false
 	}
+	now := time.Now().UTC()
+	normalizedStatus := strings.TrimSpace(status)
 	for index := range entry.view.Error.RecoveryActions {
 		action := &entry.view.Error.RecoveryActions[index]
 		if action.ID != strings.TrimSpace(actionID) {
 			continue
 		}
-		action.Status = strings.TrimSpace(status)
+		action.Status = normalizedStatus
 		action.StatusMessageKey = strings.TrimSpace(statusMessageKey)
-		l.touchLocked(entry, time.Now().UTC())
+		if normalizedStatus == "requested" || normalizedStatus == "running" {
+			entry.view.Status = "recovering"
+			entry.view.Severity = turnWorkflowHUDSeverityWarning
+			entry.view.EndedAt = nil
+			if stageKey := strings.TrimSpace(entry.view.Error.StageKey); stageKey != "" {
+				if stageIndex := turnWorkflowHUDStageIndex(entry.view.Stages, stageKey); stageIndex >= 0 {
+					stage := &entry.view.Stages[stageIndex]
+					stage.Status = "running"
+					stage.ReasonCode = "critic_reprocessing_running"
+					stage.StartedAt = timePtr(now)
+					stage.EndedAt = nil
+					stage.DurationMS = 0
+					entry.view.CurrentStage = cloneTurnWorkflowHUDStage(stage)
+				}
+			}
+			setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
+				Key: "backend_processing", Owner: "go_backend", Scope: "current_request",
+				Status: "recovering", Disposition: "deferred", ReasonCode: "critic_reprocessing_running", Severity: turnWorkflowHUDSeverityWarning,
+			})
+			setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
+				Key: "finality", Owner: "go_backend", Scope: "current_request",
+				Status: "recovering", Disposition: "deferred", ReasonCode: "critic_reprocessing_running", Severity: turnWorkflowHUDSeverityWarning,
+			})
+			if entry.view.ChatSessionID != "" {
+				l.activeBySession[entry.view.ChatSessionID] = entry.view.RequestID
+			}
+		}
+		l.touchLocked(entry, now)
 		return cloneTurnWorkflowHUDView(entry.view), true
 	}
 	return turnWorkflowHUDViewModel{}, false
@@ -919,6 +948,24 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 	failure string,
 	saveResult artifactSaveResult,
 ) bool {
+	return l.updateRecoveryResultWithAttempt(
+		chatSessionID, logicalTurn, sourceRevision, state, failure, saveResult,
+		0, 0, time.Time{}, nil,
+	)
+}
+
+func (l *turnWorkflowHUDLedger) updateRecoveryResultWithAttempt(
+	chatSessionID string,
+	logicalTurn int,
+	sourceRevision string,
+	state string,
+	failure string,
+	saveResult artifactSaveResult,
+	attempt int,
+	maxAttempts int,
+	retryAfter time.Time,
+	providerDetails []turnWorkflowHUDDetail,
+) bool {
 	if l == nil {
 		return false
 	}
@@ -945,6 +992,24 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 		return false
 	}
 	now := time.Now().UTC()
+	if matched.view.Error == nil {
+		matched.view.Error = &turnWorkflowHUDError{
+			MessageKey: "turn_hud.error.critic_llm_failed",
+			StageKey:   turnWorkflowStageCriticLLM,
+		}
+	}
+	if attempt > 0 {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_attempt", strconv.Itoa(attempt))
+	}
+	if maxAttempts > 0 {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_max_attempts", strconv.Itoa(maxAttempts))
+	}
+	if !retryAfter.IsZero() {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "next_retry_at", retryAfter.UTC().Format(time.RFC3339Nano))
+	}
+	for _, detail := range providerDetails {
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, detail.Key, detail.Value)
+	}
 	switch state {
 	case "completed", "skipped_ooc":
 		setTurnWorkflowHUDCountValues(&matched.view, turnWorkflowHUDCountsFromArtifactSave(saveResult))
@@ -982,11 +1047,12 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 			delete(l.activeBySession, chatSessionID)
 		}
 	case "retryable":
-		if matched.view.Error != nil {
-			for index := range matched.view.Error.RecoveryActions {
-				matched.view.Error.RecoveryActions[index].Status = "running"
-				matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.running"
-			}
+		matched.view.Error.Code = strings.TrimSpace(failure)
+		matched.view.Error.Retryable = true
+		setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_state", "scheduled")
+		for index := range matched.view.Error.RecoveryActions {
+			matched.view.Error.RecoveryActions[index].Status = "running"
+			matched.view.Error.RecoveryActions[index].StatusMessageKey = "turn_hud.recovery.running"
 		}
 		matched.view.Status = "recovering"
 		matched.view.Severity = turnWorkflowHUDSeverityWarning
@@ -1000,6 +1066,10 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 		}
 		if strings.TrimSpace(failure) != "" {
 			matched.view.Error.Code = strings.TrimSpace(failure)
+		}
+		if state == "terminal" && (strings.HasPrefix(strings.TrimSpace(failure), criticRetryLimitReached) ||
+			strings.HasPrefix(strings.TrimSpace(failure), criticRetryLimitUnconfigured)) {
+			setTurnWorkflowHUDErrorDetail(matched.view.Error, "retry_state", "exhausted")
 		}
 		matched.view.Error.Retryable = state != "stale_rejected"
 		for index := range matched.view.Error.RecoveryActions {
@@ -1019,6 +1089,52 @@ func (l *turnWorkflowHUDLedger) updateRecoveryResult(
 	}
 	l.touchLocked(matched, now)
 	return true
+}
+
+func criticProviderHUDDetails(criticTrace map[string]any) []turnWorkflowHUDDetail {
+	providerResponse := mapFromAny(criticTrace["provider_response"])
+	ledger := safeProviderCallBudgetLedger(criticTrace["provider_call_budget_ledger"])
+	details := make([]turnWorkflowHUDDetail, 0, 12)
+	appendString := func(key string, sources ...map[string]any) {
+		for _, source := range sources {
+			if source == nil {
+				continue
+			}
+			if value, ok := source[key]; ok {
+				text := strings.TrimSpace(extractionStringFromAny(value))
+				if text != "" {
+					details = append(details, turnWorkflowHUDDetail{Key: key, Value: truncateRunes(text, 1000)})
+					return
+				}
+			}
+		}
+	}
+	appendString("provider", criticTrace)
+	appendString("model", criticTrace)
+	appendString("http_status", criticTrace, providerResponse, ledger)
+	appendString("native_finish_reason", providerResponse, ledger)
+	appendString("termination_kind", providerResponse, ledger)
+	appendString("input_tokens", providerResponse, ledger)
+	appendString("output_tokens", providerResponse, ledger)
+	appendString("reasoning_tokens", providerResponse, ledger)
+	appendString("total_tokens", providerResponse, ledger)
+	appendString("requested_max_tokens", ledger)
+	appendString("requested_max_completion_tokens", ledger)
+	appendString("retry_after_seconds", providerResponse, ledger)
+	return details
+}
+
+func setTurnWorkflowHUDErrorDetail(hudError *turnWorkflowHUDError, key, value string) {
+	if hudError == nil || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	for index := range hudError.Details {
+		if hudError.Details[index].Key == key {
+			hudError.Details[index].Value = value
+			return
+		}
+	}
+	hudError.Details = append(hudError.Details, turnWorkflowHUDDetail{Key: key, Value: value})
 }
 
 func (l *turnWorkflowHUDLedger) setMemorySelection(requestID string, selection turnWorkflowHUDMemorySelection) {
@@ -1953,6 +2069,27 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 		memoryAdmissionIndexVersion,
 	)
 	recoveryState := "requested"
+	updated, updatedOK := s.TurnWorkflows.setRecoveryActionStatus(
+		req.RequestID,
+		req.ActionID,
+		recoveryState,
+		"turn_hud.recovery.requested",
+	)
+	if !updatedOK {
+		writeError(w, http.StatusConflict, "recovery_action_stale", "turn workflow recovery action is no longer available")
+		return
+	}
+	recoveryFailed := func(code string) {
+		s.TurnWorkflows.updateRecoveryResult(
+			target.ChatSessionID,
+			target.LogicalTurn,
+			target.SourceRevision,
+			"terminal",
+			code,
+			artifactSaveResult{},
+		)
+	}
+	shouldWakeWorkers := false
 	reopened, reopenErr := reopener.ReopenMemoryReprocessingJob(
 		r.Context(),
 		idempotencyKey,
@@ -1962,7 +2099,7 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 	)
 	switch {
 	case reopenErr == nil && reopened:
-		s.wakeMemoryWorkers()
+		shouldWakeWorkers = true
 	case errors.Is(reopenErr, store.ErrMemoryReprocessingLeased):
 		recoveryState = "running"
 	case errors.Is(reopenErr, store.ErrNotFound):
@@ -1972,27 +2109,31 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 			source,
 			"turn_workflow_hud_recovery_requested",
 			time.Now().UTC(),
+			time.Time{},
+			false,
 		)
 		if enqueueErr != nil {
+			recoveryFailed("recovery_enqueue_failed")
 			writeError(w, http.StatusInternalServerError, "recovery_enqueue_failed", enqueueErr.Error())
 			return
 		}
+		shouldWakeWorkers = true
 		if !inserted {
 			recoveryState = "running"
-			s.wakeMemoryWorkers()
 		}
 	case reopenErr != nil:
+		recoveryFailed("recovery_reopen_failed")
 		writeError(w, http.StatusInternalServerError, "recovery_reopen_failed", reopenErr.Error())
 		return
 	default:
 		recoveryState = "running"
-		s.wakeMemoryWorkers()
+		shouldWakeWorkers = true
 	}
 	statusMessageKey := "turn_hud.recovery.requested"
 	if recoveryState == "running" {
 		statusMessageKey = "turn_hud.recovery.running"
 	}
-	updated, updatedOK := s.TurnWorkflows.setRecoveryActionStatus(
+	updated, updatedOK = s.TurnWorkflows.setRecoveryActionStatus(
 		req.RequestID,
 		req.ActionID,
 		recoveryState,
@@ -2001,6 +2142,9 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 	if !updatedOK {
 		writeError(w, http.StatusConflict, "recovery_action_stale", "turn workflow recovery action is no longer available")
 		return
+	}
+	if shouldWakeWorkers {
+		s.wakeMemoryWorkers()
 	}
 	s.saveAuditLogBestEffort(r.Context(), &store.AuditLog{
 		ChatSessionID: target.ChatSessionID,

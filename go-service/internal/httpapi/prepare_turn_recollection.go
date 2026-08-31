@@ -162,7 +162,7 @@ func buildCharacterPrivateRecollectionText(entries []store.ProtagonistEntityMemo
 	return makePrepareTurnSection("[Character Private Recollection]", lines)
 }
 
-func personaRecollectionPromptLineText(entry store.PersonaMemoryEntry, perEntryChars int) string {
+func personaRecollectionPromptLineText(entry store.PersonaMemoryEntry, _ int) string {
 	text := strings.TrimSpace(entry.MemoryText)
 	if text == "" {
 		return ""
@@ -170,16 +170,12 @@ func personaRecollectionPromptLineText(entry store.PersonaMemoryEntry, perEntryC
 	if personaRecollectionSecretGuardActive([]store.PersonaMemoryEntry{entry}) {
 		prefix := "Protected hint: "
 		text = strings.TrimSpace(text + " | " + protectedRecollectionGuardText(entry.TagsJSON, entry.Portability, entry.InjectionPolicy))
-		contentBudget := perEntryChars - len([]rune(prefix))
-		if contentBudget <= 0 {
-			contentBudget = perEntryChars
-		}
-		return prefix + compactPrepareTurnLine(text, contentBudget)
+		return prefix + compactPrepareTurnLine(text, 0)
 	}
-	return compactPrepareTurnLine(text, perEntryChars)
+	return compactPrepareTurnLine(text, 0)
 }
 
-func characterPrivateRecollectionPromptLineText(entry store.ProtagonistEntityMemory, perEntryChars int) string {
+func characterPrivateRecollectionPromptLineText(entry store.ProtagonistEntityMemory, _ int) string {
 	text := strings.TrimSpace(entry.MemoryText)
 	if text == "" {
 		return ""
@@ -187,18 +183,10 @@ func characterPrivateRecollectionPromptLineText(entry store.ProtagonistEntityMem
 	if characterPrivateRecollectionSecretGuardActive([]store.ProtagonistEntityMemory{entry}) {
 		prefix := "Protected NPC-private hint: "
 		text = strings.TrimSpace(text + " | " + protectedRecollectionGuardText(entry.TagsJSON, entry.Portability, entry.TargetRevealPolicy))
-		contentBudget := perEntryChars - len([]rune(prefix))
-		if contentBudget <= 0 {
-			contentBudget = perEntryChars
-		}
-		return prefix + compactPrepareTurnLine(text, contentBudget)
+		return prefix + compactPrepareTurnLine(text, 0)
 	}
 	prefix := "Private interpretation: "
-	contentBudget := perEntryChars - len([]rune(prefix))
-	if contentBudget <= 0 {
-		contentBudget = perEntryChars
-	}
-	return prefix + compactPrepareTurnLine(text, contentBudget)
+	return prefix + compactPrepareTurnLine(text, 0)
 }
 
 func protectedRecollectionGuardText(tagsJSON string, policyHints ...string) string {

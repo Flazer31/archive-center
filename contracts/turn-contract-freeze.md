@@ -92,7 +92,7 @@ Both routes are registered in `group_turn.go` and MUST remain R2 guards until li
 | `takeover_mode` | str | `"off"` | `"off"`, `"prompt"`, `"auto"` |
 | `injection_enabled` | bool | `true` | Enable memory injection |
 | `input_context_enabled` | bool | `true` | Enable input context |
-| `max_injection_chars` | int | `9000` | Independent main memory, world, and relationship injection cap |
+| `max_injection_chars` | int | `18000` | Independent main memory, world, and relationship injection cap |
 | `core_objective_memory_max_items` | int | none | Optional final-delivery ceiling for distinct objective event summaries; absent preserves legacy delivery; minimum 1; does not reinterpret `top_k` or count separately budgeted support lanes |
 | `reference_injection_budget_basis_chars` | int | `3000` | Independent original-work reference cap; does not borrow from memory or lorebook lanes |
 | `lorebook_reference_max_chars` | int | `3000` | Independent Host lorebook reference cap; does not borrow from memory or original-work lanes |

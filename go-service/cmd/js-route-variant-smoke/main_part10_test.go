@@ -131,11 +131,12 @@ func TestArchiveCenterJSDeepSeekV4ReasoningMarkers(t *testing.T) {
 		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
 		`function resolveReasoningTransport(provider, endpoint)`,
 		`transport === "ollama" && family !== "none"`,
-		`["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport)`,
+		`transport === "custom" && family === "deepseek_v4"`,
 		`mode: "gateway_reasoning_effort"`,
 		`mode: "deepseek_v4_reasoning_effort"`,
-		`effortOptions: ["none", "high", "max"]`,
-		`normalizedValue === "low" || normalizedValue === "medium"`,
+		`const deepSeekV4EffortOptions = transport === "neuralwatt"`,
+		`if (normalizedValue === "low" && !options.includes("low")) normalizedValue = "high"`,
+		`if (normalizedValue === "medium" && controls.mode !== "ollama_reasoning_effort") normalizedValue = "high"`,
 		`normalizedValue === "xhigh"`,
 		`controls.mode === "deepseek_v4_reasoning_effort"`,
 		`payload.reasoning_effort = effort || "none"`,
@@ -175,7 +176,7 @@ func TestArchiveCenterJSReasoningControlsUseProviderAndEndpointRuntime(t *testin
 		extractJSFunctionBlockForTest(t, src, "function applyReasoningFieldsToPayload("),
 	}
 	script := `
-const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgateway","vercel","vertex","copilot","ollama","custom"];
+const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgateway","vercel","neuralwatt","vertex","copilot","ollama","custom"];
 const REASONING_PRESET_OPTIONS = ["auto","gpt","gemini","claude","glm","custom"];
 ` + strings.Join(blocks, "\n") + `
 function assert(value, message) { if (!value) throw new Error(message); }
@@ -188,8 +189,25 @@ const gatewayLuna = resolveReasoningControls("llmgateway", "auto", "gpt-5.6-luna
 assert(gatewayLuna.mode === "gateway_reasoning_effort" && gatewayLuna.effortOptions.includes("low"), JSON.stringify(gatewayLuna));
 const gatewayDeepSeek = resolveReasoningControls("openrouter", "auto", "deepseek/deepseek-v4-pro", "https://openrouter.ai/api/v1");
 assert(gatewayDeepSeek.mode === "gateway_reasoning_effort", JSON.stringify(gatewayDeepSeek));
+assert(gatewayDeepSeek.effortOptions.includes("low"), JSON.stringify(gatewayDeepSeek));
 const directDeepSeek = resolveReasoningControls("custom", "auto", "deepseek-v4-pro", "https://api.deepseek.com/v1");
 assert(directDeepSeek.mode === "deepseek_v4_reasoning_effort", JSON.stringify(directDeepSeek));
+assert(JSON.stringify(directDeepSeek.effortOptions) === JSON.stringify(["none","low","high","max"]), JSON.stringify(directDeepSeek));
+assert(normalizeReasoningEffortForControls("low", directDeepSeek) === "low", "DeepSeek direct low was promoted");
+assert(normalizeReasoningEffortForControls("medium", directDeepSeek) === "high", "DeepSeek direct medium compatibility changed");
+const directDeepSeekPayload = {};
+applyReasoningFieldsToPayload(directDeepSeekPayload, directDeepSeek, "auto", "low", 0);
+assert(directDeepSeekPayload.reasoning_effort === "low", JSON.stringify(directDeepSeekPayload));
+const neuralWattPro = resolveReasoningControls("neuralwatt", "auto", "deepseek-v4-pro", "https://api.neuralwatt.com/v1");
+assert(neuralWattPro.effortOptions.includes("low"), JSON.stringify(neuralWattPro));
+const neuralWattFlash = resolveReasoningControls("neuralwatt", "auto", "deepseek-v4-flash-flex", "https://api.neuralwatt.com/v1");
+assert(!neuralWattFlash.effortOptions.includes("low"), JSON.stringify(neuralWattFlash));
+assert(normalizeReasoningEffortForControls("low", neuralWattFlash) === "high", "NeuralWatt Flash low was not mapped to its documented high tier");
+const customGatewayDeepSeek = resolveReasoningControls("custom", "auto", "deepseek-v4-pro", "https://opencode.ai/zen/v1");
+assert(customGatewayDeepSeek.mode === "gateway_reasoning_effort" && customGatewayDeepSeek.effortOptions.includes("low"), JSON.stringify(customGatewayDeepSeek));
+const customGatewayPayload = {};
+applyReasoningFieldsToPayload(customGatewayPayload, customGatewayDeepSeek, "auto", "low", 0);
+assert(customGatewayPayload.reasoning_effort === "low", JSON.stringify(customGatewayPayload));
 const conflict = resolveReasoningControls("ollama", "auto", "deepseek-v4-pro", "https://api.deepseek.com/v1");
 assert(conflict.mode === "unsupported" && !conflict.showEffort, JSON.stringify(conflict));
 const directGLM52 = resolveReasoningControls("custom", "auto", "glm-5.2", "https://api.z.ai/api/paas/v4");

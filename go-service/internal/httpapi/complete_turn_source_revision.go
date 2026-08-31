@@ -124,6 +124,7 @@ func (s *Server) enqueueCompleteTurnReprocessingJob(
 	sid string,
 	reason string,
 	now time.Time,
+	retryAfter time.Time,
 ) (bool, error) {
 	if !decision.Enabled || !decision.Accepted || strings.TrimSpace(reason) == "" ||
 		s == nil || s.Store == nil {
@@ -141,7 +142,7 @@ func (s *Server) enqueueCompleteTurnReprocessingJob(
 		ChatSessionID:  strings.TrimSpace(sid),
 		SourceRevision: strings.TrimSpace(decision.Revision),
 	}
-	return s.enqueueSourceRevisionReprocessingJob(ctx, writer, source, reason, now, false)
+	return s.enqueueSourceRevisionReprocessingJob(ctx, writer, source, reason, now, retryAfter, false)
 }
 
 func (s *Server) enqueueSourceRevisionReprocessingJob(
@@ -150,7 +151,8 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 	source *store.MemorySourceRevision,
 	reason string,
 	now time.Time,
-	wakeAfterEnqueue ...bool,
+	retryAfter time.Time,
+	wakeAfterEnqueue bool,
 ) (bool, error) {
 	if source == nil ||
 		strings.TrimSpace(source.ChatSessionID) == "" ||
@@ -171,6 +173,7 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		ExtractorVersion:  completeTurnCriticPipelineVersion,
 		IndexVersion:      memoryAdmissionIndexVersion,
 		Status:            initialStatus,
+		RetryAfter:        retryAfter,
 		LastError:         strings.TrimSpace(reason),
 		CreatedAt:         now,
 		UpdatedAt:         now,
@@ -183,8 +186,7 @@ func (s *Server) enqueueSourceRevisionReprocessingJob(
 		job.IndexVersion,
 	)
 	inserted, err := writer.EnqueueMemoryReprocessingJob(ctx, job)
-	shouldWake := len(wakeAfterEnqueue) == 0 || wakeAfterEnqueue[0]
-	if shouldWake && err == nil && (job.Status == "pending" || job.Status == "retryable") {
+	if wakeAfterEnqueue && err == nil && (job.Status == "pending" || job.Status == "retryable") {
 		s.wakeMemoryWorkers()
 	}
 	return inserted, err

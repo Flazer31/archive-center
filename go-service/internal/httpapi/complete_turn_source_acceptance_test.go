@@ -429,6 +429,66 @@ func TestCompleteTurnSourceAcceptanceUsesOfficialActiveChatObservation(t *testin
 	}
 }
 
+func TestValidateCompleteTurnSourceObservationAcceptsOfficialOutputV1Snapshot(t *testing.T) {
+	const (
+		sid       = "char_0_cid_fixture-chat-a"
+		user      = "A input"
+		assistant = "A output"
+	)
+	req := dto.M4CompleteTurnRequest{
+		ChatSessionID:    sid,
+		UserInput:        stringPointer(user),
+		AssistantContent: stringPointer(assistant),
+	}
+	observation := completeTurnSourceObservation{
+		ContractVersion:              completeTurnSourceAcceptanceContract,
+		HostLifecycleContractVersion: completeTurnRisuHostLifecycleContract,
+		ObservedAtMS:                 1000,
+		SessionID:                    sid,
+		FinalitySource:               "risu_output",
+		FinalityState:                "committed_assistant_observed",
+		HostSignalSource:             "output",
+		ArchiveCenterCorrelationID:   "fixture-request-a",
+		RequestIDProvenance:          "archive_center_correlation",
+		RequestCorrelationState:      "matched_before_request_context",
+		RequestType:                  "model",
+		ResponseRole:                 "assistant",
+		HostChatID:                   "fixture-chat-a",
+		HostChatIDState:              "observed",
+		ChatStreamingState:           "not_streaming",
+		ActiveMessageCount:           2,
+		MessageIndex:                 1,
+		MessageRole:                  "char",
+		MessageChatID:                "assistant-a",
+		MessageChatIDState:           "observed",
+		GenerationID:                 "generation-a",
+		GenerationIDState:            "observed",
+		BranchIDState:                "not_exposed_by_risuai",
+		MessageSwipeID:               -1,
+		MessageSwipeIDState:          "not_present",
+		MessageTimeMS:                900,
+		MessageTimeState:             "observed",
+		UserMessageIndex:             0,
+		UserMessageChatID:            "user-a",
+		UserMessageChatIDState:       "observed_before_request",
+		UserMessageTimeMS:            800,
+		UserMessageTimeState:         "observed_before_request",
+		UserObservedContentHash:      prepareOR1CHash(user),
+		UserPersistenceContentHash:   prepareOR1CHash(user),
+		ObservedContentHash:          prepareOR1CHash(assistant),
+		PersistenceContentHash:       prepareOR1CHash(sanitizeCriticStorageText(assistant)),
+		HashAlgorithm:                "or1c_utf16_djb2.v1",
+		PositionObservation:          "current_active_chat_tail",
+		MessageDisabledState:         "not_disabled",
+		RevisionState:                "not_exposed_by_risuai",
+	}
+
+	decision := validateCompleteTurnSourceObservation(req, observation)
+	if !decision.Accepted || decision.Reason != "active_final_observation_accepted" {
+		t.Fatalf("decision=%+v, want official output v1 observation accepted", decision)
+	}
+}
+
 func TestCompleteTurnSourceAcceptanceRejectsBranchIdentityWithoutObservedState(t *testing.T) {
 	req := completeTurnAnchoredAcceptanceTestRequest(
 		"session-1", 1, "user", "answer", 1000,

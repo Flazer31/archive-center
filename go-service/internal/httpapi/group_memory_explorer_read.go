@@ -1037,7 +1037,8 @@ func (s *Server) handleExplorerKGTriples(w http.ResponseWriter, r *http.Request)
 			if end > len(triples) {
 				end = len(triples)
 			}
-			for _, t := range triples[start:end] {
+			page := s.canonicalizeCharacterKGTriplesForRead(r.Context(), sid, triples[start:end])
+			for _, t := range page {
 				items = append(items, explorerHistoryItem(kgTripleExplorerItem(t), sid, t.ChatSessionID))
 			}
 		}

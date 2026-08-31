@@ -44,6 +44,13 @@ func (s *Server) registerNarrativeRoutes(mux *http.ServeMux) {
 
 	// Character: R1 read, R2 write
 	mux.HandleFunc("GET /characters/{chat_session_id}", s.handleCharactersGet)
+	mux.HandleFunc("POST /characters/{chat_session_id}/identity-merge/preview", s.handleCharacterIdentityMergePreview)
+	mux.HandleFunc("POST /characters/{chat_session_id}/identity-merge", s.handleCharacterIdentityMerge)
+	mux.HandleFunc("POST /characters/{chat_session_id}/identity-merge/unmerge", s.handleCharacterIdentityUnmerge)
+	mux.HandleFunc("GET /items/{chat_session_id}", s.handleItemsGet)
+	mux.HandleFunc("POST /items/{chat_session_id}/identity-merge/preview", s.handleItemIdentityMergePreview)
+	mux.HandleFunc("POST /items/{chat_session_id}/identity-merge", s.handleItemIdentityMerge)
+	mux.HandleFunc("POST /items/{chat_session_id}/identity-merge/unmerge", s.handleItemIdentityUnmerge)
 	mux.HandleFunc("GET /characters/{chat_session_id}/{character_name}", s.handleCharacterDetail)
 	mux.HandleFunc("GET /characters/{chat_session_id}/{character_name}/events", s.handleCharacterEvents)
 	mux.HandleFunc("GET /characters/{chat_session_id}/{character_name}/state-history", s.handleCharacterStateHistory)

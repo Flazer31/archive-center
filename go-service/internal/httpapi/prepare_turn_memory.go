@@ -994,21 +994,21 @@ func prepareTurnHierarchyMode(text string) string {
 
 func prepareTurnChapterRecallText(ch store.ChapterSummary) string {
 	lines := []string{}
-	title := compactPrepareTurnLine(q1FirstNonEmptyString(ch.ChapterTitle, fmt.Sprintf("Chapter %d", ch.ChapterIndex)), 80)
-	summary := compactPrepareTurnLine(q1FirstNonEmptyString(ch.ResumeText, ch.SummaryText), 360)
+	title := compactPrepareTurnLine(q1FirstNonEmptyString(ch.ChapterTitle, fmt.Sprintf("Chapter %d", ch.ChapterIndex)), 0)
+	summary := compactPrepareTurnLine(q1FirstNonEmptyString(ch.ResumeText, ch.SummaryText), 0)
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- turns %d-%d %s: %s", ch.FromTurn, ch.ToTurn, title, summary))
 	}
-	if loops := compactEpisodeJSONPreview(ch.OpenLoopsJSON, 160); loops != "" {
+	if loops := compactEpisodeJSONPreview(ch.OpenLoopsJSON, 0); loops != "" {
 		lines = append(lines, "- open_loop: "+loops)
 	}
-	if rel := compactEpisodeJSONPreview(ch.RelationshipChangesJSON, 160); rel != "" {
+	if rel := compactEpisodeJSONPreview(ch.RelationshipChangesJSON, 0); rel != "" {
 		lines = append(lines, "- relationship_shift: "+rel)
 	}
-	if world := compactEpisodeJSONPreview(ch.WorldChangesJSON, 160); world != "" {
+	if world := compactEpisodeJSONPreview(ch.WorldChangesJSON, 0); world != "" {
 		lines = append(lines, "- world_change: "+world)
 	}
-	if callbacks := compactEpisodeJSONPreview(ch.CallbackCandidatesJSON, 140); callbacks != "" {
+	if callbacks := compactEpisodeJSONPreview(ch.CallbackCandidatesJSON, 0); callbacks != "" {
 		lines = append(lines, "- callback: "+callbacks)
 	}
 	return makePrepareTurnSection("[Chapter Recall]", lines)
@@ -1016,21 +1016,21 @@ func prepareTurnChapterRecallText(ch store.ChapterSummary) string {
 
 func prepareTurnArcRecallText(arc store.ArcSummary) string {
 	lines := []string{}
-	name := compactPrepareTurnLine(q1FirstNonEmptyString(arc.ArcName, fmt.Sprintf("Arc %d", arc.ArcIndex)), 80)
-	summary := compactPrepareTurnLine(q1FirstNonEmptyString(arc.ArcResumeText, arc.CoreConflict, arc.ArcName), 360)
+	name := compactPrepareTurnLine(q1FirstNonEmptyString(arc.ArcName, fmt.Sprintf("Arc %d", arc.ArcIndex)), 0)
+	summary := compactPrepareTurnLine(q1FirstNonEmptyString(arc.ArcResumeText, arc.CoreConflict, arc.ArcName), 0)
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- turns %d-%d %s: %s", arc.FromTurn, arc.ToTurn, name, summary))
 	}
 	if status := strings.TrimSpace(arc.ArcStatus); status != "" {
-		lines = append(lines, "- status: "+compactPrepareTurnLine(status, 80))
+		lines = append(lines, "- status: "+compactPrepareTurnLine(status, 0))
 	}
-	if turns := compactEpisodeJSONPreview(arc.KeyTurningPointsJSON, 180); turns != "" {
+	if turns := compactEpisodeJSONPreview(arc.KeyTurningPointsJSON, 0); turns != "" {
 		lines = append(lines, "- turning_point: "+turns)
 	}
-	if debts := compactEpisodeJSONPreview(arc.UnresolvedDebtsJSON, 160); debts != "" {
+	if debts := compactEpisodeJSONPreview(arc.UnresolvedDebtsJSON, 0); debts != "" {
 		lines = append(lines, "- unresolved: "+debts)
 	}
-	if callbacks := compactEpisodeJSONPreview(arc.CallbackCandidatesJSON, 140); callbacks != "" {
+	if callbacks := compactEpisodeJSONPreview(arc.CallbackCandidatesJSON, 0); callbacks != "" {
 		lines = append(lines, "- callback: "+callbacks)
 	}
 	return makePrepareTurnSection("[Arc Recall]", lines)
@@ -1038,15 +1038,15 @@ func prepareTurnArcRecallText(arc store.ArcSummary) string {
 
 func prepareTurnSagaRecallText(saga store.SagaDigest) string {
 	lines := []string{}
-	label := compactPrepareTurnLine(q1FirstNonEmptyString(saga.EraLabel, "Saga"), 80)
-	summary := compactPrepareTurnLine(q1FirstNonEmptyString(saga.ResumePackText, saga.SagaSummary, saga.EraLabel), 420)
+	label := compactPrepareTurnLine(q1FirstNonEmptyString(saga.EraLabel, "Saga"), 0)
+	summary := compactPrepareTurnLine(q1FirstNonEmptyString(saga.ResumePackText, saga.SagaSummary, saga.EraLabel), 0)
 	if summary != "" {
 		lines = append(lines, fmt.Sprintf("- turns %d-%d %s: %s", saga.FromTurn, saga.ToTurn, label, summary))
 	}
-	if facts := compactEpisodeJSONPreview(saga.PersistentFactsJSON, 180); facts != "" {
+	if facts := compactEpisodeJSONPreview(saga.PersistentFactsJSON, 0); facts != "" {
 		lines = append(lines, "- persistent_fact: "+facts)
 	}
-	if neverDrop := compactEpisodeJSONPreview(saga.NeverDropCandidatesJSON, 160); neverDrop != "" {
+	if neverDrop := compactEpisodeJSONPreview(saga.NeverDropCandidatesJSON, 0); neverDrop != "" {
 		lines = append(lines, "- never_drop: "+neverDrop)
 	}
 	return makePrepareTurnSection("[Saga Recall]", lines)

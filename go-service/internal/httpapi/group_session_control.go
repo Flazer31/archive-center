@@ -3,7 +3,6 @@ package httpapi
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"sort"
 	"strings"
@@ -457,6 +456,16 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		writeBadRequest(w, "chat_session_id is required")
 		return
 	}
+	if requestSource := strings.TrimSpace(r.URL.Query().Get("req_source")); requestSource != "timeline_manual_delete" {
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"status":          "error",
+			"code":            "session_delete_requires_manual_action",
+			"detail":          "session deletion is only allowed from the explicit Archive Center delete action",
+			"chat_session_id": sid,
+			"deleted":         false,
+		})
+		return
+	}
 
 	rollbackStore, hasRollback := s.Store.(store.RollbackStore)
 	if !hasRollback || !s.usesShadowWriteStore() {
@@ -498,40 +507,18 @@ func (s *Server) handleSessionDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if lifecycleOutbox {
-		runtimeConfig := s.runtimeConfigSnapshot()
-		results := []memoryVectorProcessResult{}
-		if leaseDuration := memoryWorkerLeaseDuration(runtimeConfig); runtimeConfig.Synced && leaseDuration > 0 {
-			results = s.processMemoryVectorOutboxBatch(
-				ctx,
-				fmt.Sprintf("session-delete:%s", sid),
-				time.Now().UTC(),
-				leaseDuration,
-				0,
-			)
-		}
 		s.wakeMemoryWorkers()
-		completed := 0
-		retryable := 0
-		permanent := 0
-		for _, result := range results {
-			switch result.CanonicalState {
-			case "completed", "stale_rejected":
-				completed++
-			case "retryable":
-				retryable++
-			case "permanent":
-				permanent++
-			}
-		}
 		vectorCleanup = map[string]any{
-			"attempted":        true,
-			"ok":               true,
-			"mode":             "durable_outbox",
-			"processed":        len(results),
-			"completed":        completed,
-			"retryable_queued": retryable,
-			"permanent":        permanent,
-			"error":            nil,
+			"attempted":           false,
+			"ok":                  true,
+			"mode":                "durable_outbox",
+			"canonical_committed": true,
+			"vector_cleanup":      "queued",
+			"queued":              true,
+			"drain_attempted":     false,
+			"processed":           0,
+			"error":               nil,
+			"canonical_note":      "MariaDB session deletion is committed; vector cleanup is queued for the bounded worker",
 		}
 	} else if s.Vector != nil {
 		vectorCleanup["attempted"] = true

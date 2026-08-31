@@ -3,6 +3,7 @@ package archive
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -60,9 +61,10 @@ func TestBridgeGetVerbatimByTurnUsesSessionScopedChatLogs(t *testing.T) {
 
 func TestBuildScopedVerbatimSupportMatchesVR18Surface(t *testing.T) {
 	now := time.Now().UTC()
+	longEvidence := "Turn 12 confirms east bell roof breach. " + longText("E", 220) + " scoped-verbatim-tail"
 	evidence := []store.DirectEvidence{
 		{ID: 1, EvidenceText: "Turn 10 confirms smoke over the archive yard.", EvidenceKind: "fact_event", SourceTurnStart: 10, SourceTurnEnd: 10, TurnAnchor: 10, CreatedAt: now},
-		{ID: 2, EvidenceText: "Turn 12 confirms east bell roof breach. " + longText("E", 220), EvidenceKind: "fact_event", SourceTurnStart: 12, SourceTurnEnd: 12, TurnAnchor: 12, CreatedAt: now},
+		{ID: 2, EvidenceText: longEvidence, EvidenceKind: "fact_event", SourceTurnStart: 12, SourceTurnEnd: 12, TurnAnchor: 12, CreatedAt: now},
 		{ID: 3, EvidenceText: "Turn 11 confirms sparks crossing the tower rail.", EvidenceKind: "fact_event", SourceTurnStart: 11, SourceTurnEnd: 11, TurnAnchor: 11, CreatedAt: now},
 		{ID: 4, EvidenceText: "ignored tombstone", Tombstoned: true, SourceTurnStart: 13, SourceTurnEnd: 13, TurnAnchor: 13, CreatedAt: now},
 		{ID: 5, EvidenceText: "Turn 9 confirms lower ladder intact.", EvidenceKind: "fact_event", SourceTurnStart: 9, SourceTurnEnd: 9, TurnAnchor: 9, CreatedAt: now},
@@ -81,11 +83,11 @@ func TestBuildScopedVerbatimSupportMatchesVR18Surface(t *testing.T) {
 	if support.Items[0].AnchorTurn != 12 {
 		t.Fatalf("first anchor = %v, want 12", support.Items[0].AnchorTurn)
 	}
-	if len([]rune(support.Items[0].Excerpt)) > 160 {
-		t.Fatalf("excerpt too long: %d", len([]rune(support.Items[0].Excerpt)))
+	if support.Items[0].Excerpt != longEvidence || !strings.Contains(support.Text, "scoped-verbatim-tail") {
+		t.Fatalf("full latest evidence was not preserved: item=%q text=%q", support.Items[0].Excerpt, support.Text)
 	}
-	if len([]rune(support.Text)) > 720 {
-		t.Fatalf("text too long: %d", len([]rune(support.Text)))
+	if support.MaxTotalChars != 0 || support.MaxExcerptChars != 0 {
+		t.Fatalf("removed pre-truncation limits were still advertised: total=%d excerpt=%d", support.MaxTotalChars, support.MaxExcerptChars)
 	}
 	if support.SurfacePriority[0] != "latest_direct_evidence" || support.SurfacePriority[1] != "recent_raw_turn" {
 		t.Fatalf("surface priority = %#v", support.SurfacePriority)

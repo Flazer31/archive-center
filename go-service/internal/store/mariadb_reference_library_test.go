@@ -135,12 +135,26 @@ func TestReferenceWorkRevisionConflict(t *testing.T) {
 	}
 }
 
-func TestSessionDeleteStartsByRemovingBindingOnly(t *testing.T) {
+func TestSessionDeleteRemovesLorebookBeforeReusableWorkBinding(t *testing.T) {
 	store, mock := newReferenceLibraryMock(t)
 	stop := errors.New("stop after binding cleanup probe")
+	mock.ExpectBegin()
+	mock.ExpectExec("(?s)DELETE entry.*FROM lorebook_reference_entries").
+		WithArgs("session-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec("(?s)DELETE snapshot.*FROM lorebook_reference_snapshots").
+		WithArgs("session-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM lorebook_reference_scopes WHERE chat_session_id = ?")).
+		WithArgs("session-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM lorebook_reference_session_locks WHERE chat_session_id = ?")).
+		WithArgs("session-1").
+		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec(regexp.QuoteMeta("DELETE FROM session_reference_bindings WHERE chat_session_id = ?")).
 		WithArgs("session-1").
 		WillReturnError(stop)
+	mock.ExpectRollback()
 	err := store.DeleteSession(context.Background(), "session-1")
 	if !errors.Is(err, stop) {
 		t.Fatalf("DeleteSession error = %v, want probe error", err)

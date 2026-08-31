@@ -59,6 +59,7 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 	plan := subjectiveEntityAliasRepairPlan{Scanned: len(memories)}
 	order := []string{}
 	groups := map[string]*groupState{}
+	canonicalBySurface := s.characterCanonicalSurfaceMapForRead(ctx, sourceSID)
 	for _, memory := range memories {
 		originalOwnerKey := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityKey, memory.PersonaEntityKey))
 		originalOwnerName := strings.TrimSpace(firstNonEmpty(memory.OwnerEntityName, memory.PersonaEntityName, originalOwnerKey))
@@ -70,7 +71,7 @@ func (s *Server) buildSubjectiveEntityAliasRepairPlan(ctx context.Context, sourc
 		if ownerVisibility == "" {
 			ownerVisibility = "player_known"
 		}
-		canonicalMemory := s.canonicalizeSubjectiveEntityMemoryForRead(ctx, sourceSID, memory)
+		canonicalMemory := canonicalizeSubjectiveEntityMemoryWithReadMap(memory, canonicalBySurface)
 		canonicalKey := strings.TrimSpace(firstNonEmpty(canonicalMemory.OwnerEntityKey, canonicalMemory.PersonaEntityKey))
 		if canonicalKey == "" {
 			continue

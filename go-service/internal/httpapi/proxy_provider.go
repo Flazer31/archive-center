@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -81,10 +82,10 @@ func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map
 }
 
 func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
-	endpoint := strings.TrimSpace(stringPtrValue(req.Endpoint, ""))
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
 	provider := strings.ToLower(strings.TrimSpace(stringPtrValue(req.Provider, "")))
+	endpoint := proxyProviderBaseURL(provider, stringPtrValue(req.Endpoint, ""))
 	if provider == "" || endpoint == "" || model == "" || (apiKey == "" && provider != "ollama") {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
 			Stage: "configuration",
@@ -133,7 +134,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		return proxyCallOpenAIResponses(ctx, req, endpoint, apiKey, model, provider, policy)
 	}
 	isGLM := provider != "ollama" && proxyIsGLMLike(model, endpoint, provider)
-	target := proxyOpenAIChatEndpoint(proxyOpenAIBaseURL(provider, endpoint), provider, isGLM)
+	target := proxyOpenAIChatEndpoint(proxyProviderBaseURL(provider, endpoint), provider, isGLM)
 	reasoningTransport, transportErr := proxyReasoningTransport(provider, endpoint)
 	if transportErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "configuration", Cause: transportErr}
@@ -188,8 +189,8 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" {
-		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || (reasoningTransport == "custom" && reasoningFamily == "deepseek_v4") {
+		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 			if reasoningFamily == "gpt" {
@@ -197,7 +198,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			}
 		}
 	} else if reasoningTransport == "openrouter" || reasoningTransport == "vercel" {
-		if effort := proxyGatewayReasoningEffort(reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
+		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning"] = map[string]any{"effort": effort}
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 			if reasoningFamily == "gpt" {
@@ -225,9 +226,9 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
 		normalizedEffort := "none"
 		switch effort {
-		case "high", "max":
+		case "low", "high", "max":
 			normalizedEffort = effort
-		case "low", "medium":
+		case "medium":
 			normalizedEffort = "high"
 		case "xhigh":
 			normalizedEffort = "max"
@@ -325,7 +326,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		}
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("OpenAI-like provider returned invalid JSON")
@@ -438,7 +439,7 @@ func proxyCallOpenAIResponses(ctx context.Context, req dto.ProxyPluginMainReques
 		return nil, http.StatusBadGateway, callErr
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	if data == nil {
 		return nil, http.StatusBadGateway, fmt.Errorf("Responses provider returned invalid JSON")
@@ -644,15 +645,19 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		return nil, http.StatusBadGateway, err
 	}
 	if status < 200 || status >= 300 {
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(proxyErrorDetail(status, data, raw), apiKey))
 	}
 	content := proxyExtractClaudeText(data)
 	finishReason := strings.TrimSpace(extractionStringFromAny(data["stop_reason"]))
 	resp := proxyNormalizeChatResponse(content, model, finishReason)
 	proxyAttachClaudeUsage(resp, data, overrideTrace)
-	resp[proxyResponseMetadataKey] = buildProxyResponseMetadata("anthropic_messages", finishReason, mapFromAny(data["usage"]))
+	responseMeta := buildProxyResponseMetadata("anthropic_messages", finishReason, mapFromAny(data["usage"]))
+	resp[proxyResponseMetadataKey] = responseMeta
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	if content == "" && policy.Purpose != "publisher" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return resp, status, &proxyFinalOutputExhaustedError{Provider: "claude"}
+		}
 		return resp, status, &proxyEmptyContentError{Provider: "claude"}
 	}
 	return resp, http.StatusOK, nil
@@ -732,7 +737,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		if vertex {
 			detail = proxyVertexEndpointErrorDetail(status, target, data, raw)
 		}
-		return nil, status, fmt.Errorf("%s", scrubProxySecret(detail, apiKey))
+		return data, status, fmt.Errorf("%s", scrubProxySecret(detail, apiKey))
 	}
 	content := proxyExtractGeminiText(data)
 	candidate := map[string]any{}
@@ -742,9 +747,13 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	finishReason := strings.TrimSpace(extractionStringFromAny(candidate["finishReason"]))
 	resp := proxyNormalizeChatResponse(content, model, finishReason)
 	proxyAttachGeminiUsage(resp, data, overrideTrace)
-	resp[proxyResponseMetadataKey] = buildProxyResponseMetadata("google_generate_content", finishReason, mapFromAny(data["usageMetadata"]))
+	responseMeta := buildProxyResponseMetadata("google_generate_content", finishReason, mapFromAny(data["usageMetadata"]))
+	resp[proxyResponseMetadataKey] = responseMeta
 	proxyAttachRequestOverrideTrace(resp, overrideTrace)
 	if content == "" && policy.Purpose != "publisher" {
+		if stringFromMap(responseMeta, "termination_kind") == "length" {
+			return resp, status, &proxyFinalOutputExhaustedError{Provider: geminiProvider}
+		}
 		return resp, status, &proxyEmptyContentError{Provider: geminiProvider}
 	}
 	return resp, http.StatusOK, nil
@@ -1258,6 +1267,9 @@ func proxyDoJSON(ctx context.Context, target string, headers map[string]string, 
 	if err := json.Unmarshal(rawBytes, &data); err != nil {
 		data = nil
 	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		data = proxyAttachHTTPFailureMetadata(data, resp.StatusCode, resp.Header, time.Now().UTC())
+	}
 	return resp.StatusCode, data, raw, nil
 }
 
@@ -1290,6 +1302,7 @@ func proxyDoNeuralWattFlex(ctx context.Context, target string, headers map[strin
 		if json.Unmarshal(rawBytes, &data) != nil {
 			data = nil
 		}
+		data = proxyAttachHTTPFailureMetadata(data, resp.StatusCode, resp.Header, time.Now().UTC())
 		return resp.StatusCode, data, raw, nil
 	}
 
@@ -1785,6 +1798,66 @@ func proxyAttachGeminiUsage(resp, upstream map[string]any, trace map[string]any)
 
 const proxyResponseMetadataKey = "_archive_center_response_meta"
 
+func proxyAttachHTTPFailureMetadata(data map[string]any, status int, headers http.Header, now time.Time) map[string]any {
+	if data == nil {
+		data = map[string]any{}
+	}
+	meta := mapFromAny(data[proxyResponseMetadataKey])
+	if len(meta) == 0 {
+		meta = map[string]any{
+			"contract_version": "archive_center.provider_response.v1",
+			"adapter":          "http_error",
+			"usage_reported":   false,
+		}
+	}
+	meta["http_status"] = status
+	if retryAfterSeconds := proxyRetryAfterSeconds(headers, data, now); retryAfterSeconds > 0 {
+		meta["retry_after_seconds"] = retryAfterSeconds
+	}
+	data[proxyResponseMetadataKey] = meta
+	return data
+}
+
+func proxyRetryAfterSeconds(headers http.Header, data map[string]any, now time.Time) int {
+	seconds := proxyRetryAfterSecondsFromValue(data["retry_after"])
+	if nested := mapFromAny(data["error"]); len(nested) > 0 {
+		seconds = maxInt(seconds, proxyRetryAfterSecondsFromValue(nested["retry_after"]))
+	}
+	if raw := strings.TrimSpace(headers.Get("Retry-After")); raw != "" {
+		if parsed := proxyRetryAfterSecondsFromValue(raw); parsed > 0 {
+			seconds = maxInt(seconds, parsed)
+		} else if retryAt, err := http.ParseTime(raw); err == nil {
+			delay := retryAt.Sub(now)
+			if delay > 0 {
+				seconds = maxInt(seconds, int((delay+time.Second-1)/time.Second))
+			}
+		}
+	}
+	return seconds
+}
+
+func proxyRetryAfterSecondsFromValue(value any) int {
+	var seconds float64
+	switch typed := value.(type) {
+	case float64:
+		seconds = typed
+	case float32:
+		seconds = float64(typed)
+	case int:
+		seconds = float64(typed)
+	case int64:
+		seconds = float64(typed)
+	case json.Number:
+		seconds, _ = typed.Float64()
+	case string:
+		seconds, _ = strconv.ParseFloat(strings.TrimSpace(typed), 64)
+	}
+	if seconds <= 0 {
+		return 0
+	}
+	return int(math.Ceil(seconds))
+}
+
 func buildProxyResponseMetadata(adapter, finishReason string, usage map[string]any) map[string]any {
 	meta := map[string]any{
 		"contract_version":     "archive_center.provider_response.v1",
@@ -1862,14 +1935,16 @@ func proxyAttachRequestOverrideTrace(resp map[string]any, trace map[string]any) 
 	resp["_proxy_request_overrides"] = trace
 }
 
-func proxyOpenAIBaseURL(provider, endpoint string) string {
+func proxyProviderBaseURL(provider, endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint != "" {
 		return endpoint
 	}
-	switch provider {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai":
+		return "https://api.openai.com/v1"
 	case "openrouter":
-		return "https://openrouter.ai/api"
+		return "https://openrouter.ai/api/v1"
 	case "llmgateway":
 		return "https://api.llmgateway.io/v1"
 	case "vercel":
@@ -1878,8 +1953,16 @@ func proxyOpenAIBaseURL(provider, endpoint string) string {
 		return "https://api.neuralwatt.com/v1"
 	case "copilot":
 		return "https://api.githubcopilot.com"
+	case "ollama":
+		return "http://127.0.0.1:11434"
+	case "claude":
+		return "https://api.anthropic.com"
+	case "gemini":
+		return "https://generativelanguage.googleapis.com/v1beta"
+	case "vertex":
+		return "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models"
 	default:
-		return "https://api.openai.com"
+		return ""
 	}
 }
 
@@ -2214,7 +2297,7 @@ func proxyOllamaReasoningEffort(family, model, effort, glmThinkingType string) s
 	}
 }
 
-func proxyGatewayReasoningEffort(family, model, effort, glmThinkingType string) string {
+func proxyGatewayReasoningEffort(transport, family, model, effort, glmThinkingType string) string {
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	switch family {
 	case "glm":
@@ -2226,7 +2309,12 @@ func proxyGatewayReasoningEffort(family, model, effort, glmThinkingType string) 
 		switch effort {
 		case "none", "high", "max":
 			return effort
-		case "minimal", "low", "medium":
+		case "low":
+			if transport == "neuralwatt" && strings.Contains(strings.ToLower(strings.TrimSpace(model)), "flash") {
+				return "high"
+			}
+			return "low"
+		case "minimal", "medium":
 			return "high"
 		case "xhigh":
 			return "max"
@@ -2309,6 +2397,10 @@ func proxyExtractClaudeText(data map[string]any) string {
 	parts := make([]string, 0, len(blocks))
 	for _, block := range blocks {
 		item := mapFromAny(block)
+		blockType := strings.ToLower(strings.TrimSpace(extractionStringFromAny(item["type"])))
+		if strings.Contains(blockType, "thinking") || strings.Contains(blockType, "reasoning") {
+			continue
+		}
 		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
 		if text != "" {
 			parts = append(parts, text)

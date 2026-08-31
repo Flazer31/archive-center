@@ -142,9 +142,34 @@ type memoryWorkerEventStore struct {
 
 type memoryReprocessingDrainStore struct {
 	*memoryAdmissionWorkerStore
-	queue   []*store.MemoryReprocessingJob
-	sources map[string]*store.MemorySourceRevision
-	claimed map[int64]*store.MemoryReprocessingJob
+	queue     []*store.MemoryReprocessingJob
+	sources   map[string]*store.MemorySourceRevision
+	claimed   map[int64]*store.MemoryReprocessingJob
+	completed chan int64
+}
+
+func (f *memoryReprocessingDrainStore) NextMemoryReprocessingWakeAt(context.Context) (time.Time, error) {
+	var next time.Time
+	for _, item := range f.queue {
+		if item == nil || item.RetryAfter.IsZero() {
+			continue
+		}
+		if next.IsZero() || item.RetryAfter.Before(next) {
+			next = item.RetryAfter
+		}
+	}
+	for _, item := range f.claimed {
+		if item == nil || item.LeaseUntil.IsZero() {
+			continue
+		}
+		if next.IsZero() || item.LeaseUntil.Before(next) {
+			next = item.LeaseUntil
+		}
+	}
+	if next.IsZero() {
+		return time.Time{}, store.ErrNotFound
+	}
+	return next, nil
 }
 
 func (f *memoryReprocessingDrainStore) ClaimMemoryReprocessingJob(
@@ -200,7 +225,14 @@ func (f *memoryReprocessingDrainStore) CompleteMemoryReprocessingJob(
 	now time.Time,
 ) error {
 	delete(f.claimed, id)
-	return f.memoryAdmissionWorkerStore.CompleteMemoryReprocessingJob(ctx, id, owner, now)
+	err := f.memoryAdmissionWorkerStore.CompleteMemoryReprocessingJob(ctx, id, owner, now)
+	if err == nil && f.completed != nil {
+		select {
+		case f.completed <- id:
+		default:
+		}
+	}
+	return err
 }
 
 func (f *memoryReprocessingDrainStore) FailMemoryReprocessingJob(
@@ -221,6 +253,22 @@ func (f *memoryReprocessingDrainStore) FailMemoryReprocessingJob(
 	return f.memoryAdmissionWorkerStore.FailMemoryReprocessingJob(
 		ctx, id, owner, now, retryAfter, permanent, failure,
 	)
+}
+
+func (f *memoryReprocessingDrainStore) EnqueueMemoryVectorOperation(context.Context, *store.MemoryVectorOutboxItem) (bool, error) {
+	return true, nil
+}
+
+func (f *memoryReprocessingDrainStore) ClaimMemoryVectorOperations(context.Context, string, time.Time, time.Duration) ([]*store.MemoryVectorOutboxItem, error) {
+	return nil, store.ErrNotFound
+}
+
+func (f *memoryReprocessingDrainStore) CompleteMemoryVectorOperation(context.Context, int64, string, time.Time) error {
+	return nil
+}
+
+func (f *memoryReprocessingDrainStore) FailMemoryVectorOperation(context.Context, int64, string, time.Time, time.Time, bool, string) error {
+	return nil
 }
 
 func (f *memoryWorkerEventStore) EnqueueMemoryVectorOperation(_ context.Context, item *store.MemoryVectorOutboxItem) (bool, error) {
@@ -459,16 +507,108 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
 	}
 	for i, item := range admission.Vectors {
-		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
-			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != 0 || len(item.ContextChunks) != 0 {
+			t.Fatalf("vector[%d] retained contextual retry input after embedding success: %+v", i, item)
 		}
 	}
 	precise := admission.PreciseUnits[0]
-	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
-		t.Fatalf("precise vector not materialized in source group: %+v", precise)
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != 0 || len(precise.VectorContextChunks) != 0 {
+		t.Fatalf("precise vector retained contextual retry input after embedding success: %+v", precise)
 	}
 	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
 		t.Fatalf("memory provenance/embedding missing: %+v", admission.Memory)
+	}
+}
+
+func TestCurrentTurnVoyageContextRetainsRetryInputWhenEmbeddingFails(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"temporarily unavailable"}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{source: &store.MemorySourceRevision{
+		SourceRevision:   "revision-context-retry",
+		UserContent:      "RAW PRIVATE USER SOURCE",
+		AssistantContent: "RAW PRIVATE ASSISTANT SOURCE",
+	}}
+	srv := &Server{Store: fake}
+	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-retry",
+		LogicalTurnID:   "logical-context-retry",
+	})
+	extraction := map[string]any{
+		"turn_summary":     "A bell rang and the gate opened.",
+		"importance_score": 6,
+		"evidence_excerpts": []any{
+			"A bell rang.",
+			"The gate opened.",
+		},
+		"narrative_events": []any{map[string]any{
+			"summary":          "The bell rang.",
+			"evidence_excerpt": "A bell rang.",
+			"confidence":       0.9,
+		}},
+	}
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-retry", 10, extraction, "A bell rang. The gate opened.",
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(1000, 0), &result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+	if calls != 1 || !strings.HasPrefix(result.EmbeddingStatus, "error: ") {
+		t.Fatalf("embedding calls=%d status=%q", calls, result.EmbeddingStatus)
+	}
+	admission := fake.admissions[0]
+	if len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
+		t.Fatalf("vectors=%d precise=%d", len(admission.Vectors), len(admission.PreciseUnits))
+	}
+	wantChunkCount := len(admission.Vectors) + len(admission.PreciseUnits)
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) != 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != wantChunkCount {
+			t.Fatalf("vector[%d] lost contextual retry input after embedding failure: %+v", i, item)
+		}
+	}
+	precise := admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) != 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != wantChunkCount {
+		t.Fatalf("precise vector lost contextual retry input after embedding failure: %+v", precise)
+	}
+
+	fake.admissions = nil
+	missingConfigResult := artifactSaveResult{}
+	handled, _, _ = srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-retry", 11, extraction, "A bell rang. The gate opened.",
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(1100, 0), &missingConfigResult,
+	)
+	if !handled || missingConfigResult.Errors != 0 || len(fake.admissions) != 1 || calls != 1 {
+		t.Fatalf("missing config handled=%t result=%+v admissions=%d calls=%d", handled, missingConfigResult, len(fake.admissions), calls)
+	}
+	admission = fake.admissions[0]
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) != 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != wantChunkCount {
+			t.Fatalf("vector[%d] lost contextual retry input without provider config: %+v", i, item)
+		}
+	}
+	precise = admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) != 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != wantChunkCount {
+		t.Fatalf("precise vector lost contextual retry input without provider config: %+v", precise)
 	}
 }
 
@@ -571,6 +711,63 @@ func (f *memoryAdmissionWorkerStore) ListActiveSourceRevisions(context.Context, 
 		return nil, nil
 	}
 	return []store.MemorySourceRevision{*f.source}, nil
+}
+
+type migrationFencedMemoryAdmissionWorkerStore struct {
+	*memoryAdmissionWorkerStore
+	activeMigrationLock *store.SessionMigrationLock
+}
+
+func (f *migrationFencedMemoryAdmissionWorkerStore) LockSessionMigrationSource(context.Context, int64, string) (*store.SessionMigrationSourceLockResult, error) {
+	return nil, errors.New("not used by this fixture")
+}
+
+func (f *migrationFencedMemoryAdmissionWorkerStore) GetSessionMigrationSourceLock(_ context.Context, sourceSessionID string) (*store.SessionMigrationLock, error) {
+	if f.activeMigrationLock == nil || !f.activeMigrationLock.Locked || f.activeMigrationLock.SourceSessionID != sourceSessionID {
+		return nil, store.ErrNotFound
+	}
+	copy := *f.activeMigrationLock
+	return &copy, nil
+}
+
+func TestAcceptedSourceStopsBeforeDerivationWhenSessionMigrationFenceIsActive(t *testing.T) {
+	source := &store.MemorySourceRevision{
+		SourceRevision:   "revision-migration-fenced",
+		ChatSessionID:    "session-migration-fenced",
+		LogicalTurnID:    "turn:8",
+		TurnIndex:        8,
+		LifecycleState:   "active",
+		UserContent:      "user",
+		AssistantContent: "assistant",
+	}
+	st := &migrationFencedMemoryAdmissionWorkerStore{
+		memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+			Store:  store.NewNoopStore(),
+			source: source,
+		},
+		activeMigrationLock: &store.SessionMigrationLock{
+			MigrationID:     71,
+			SourceSessionID: source.ChatSessionID,
+			TargetSessionID: "session-migration-target",
+			Locked:          true,
+			LockStatus:      "lock_pending_verification",
+		},
+	}
+	srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+
+	result := srv.processAcceptedSourceRevision(
+		context.Background(), source, completeTurnExtractionConfig{}, false,
+	)
+	if result.State != "retryable" || result.Failure != "source_session_migration_locked" {
+		t.Fatalf("derivation crossed migration fence: %+v", result)
+	}
+	if len(st.admissions) != 0 || st.legacyMemories != 0 || st.legacyEvidence != 0 {
+		t.Fatalf("migration-fenced source wrote artifacts: admissions=%d memory=%d evidence=%d",
+			len(st.admissions), st.legacyMemories, st.legacyEvidence)
+	}
+	if srv.SourceAcceptances != nil && len(srv.SourceAcceptances.reprocessingWorkers) != 0 {
+		t.Fatalf("migration-fenced worker registration leaked: %#v", srv.SourceAcceptances.reprocessingWorkers)
+	}
 }
 
 func (f *memoryAdmissionWorkerStore) EnqueueMemoryReprocessingJob(_ context.Context, item *store.MemoryReprocessingJob) (bool, error) {
@@ -1510,6 +1707,239 @@ func TestMemoryReprocessingRetryDoesNotBlockOtherJobsInSameWake(t *testing.T) {
 	}
 }
 
+func TestMemoryReprocessingRetryRunsWhenItsStoredDelayExpires(t *testing.T) {
+	now := time.Now().UTC()
+	source := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry", ChatSessionID: "session-retry",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("c", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(source)
+	base := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), nextEvidenceID: 300}
+	completed := make(chan int64, 1)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: base,
+		queue: []*store.MemoryReprocessingJob{{
+			ID: 7, ChatSessionID: source.ChatSessionID, SourceRevision: source.SourceRevision,
+			DerivationVersion: store.MemoryAdmissionContract,
+			ExtractorVersion:  completeTurnCriticPipelineVersion, IndexVersion: memoryAdmissionIndexVersion,
+			CreatedAt: now,
+		}},
+		sources:   map[string]*store.MemorySourceRevision{source.SourceRevision: source},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		if callCount == 1 {
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"retry later"}}`)),
+			}, nil
+		}
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina found the brass key.", "importance_score": 7,
+			"evidence_excerpts": []any{"Mina found a brass key."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+			CriticReprocessingIntervalSec: 1,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	select {
+	case id := <-completed:
+		if id != 7 || callCount != 2 || len(st.failedJobs) != 1 {
+			t.Fatalf("id=%d calls=%d failed=%v", id, callCount, st.failedJobs)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("stored retry did not run automatically: calls=%d queue=%+v", callCount, st.queue)
+	}
+}
+
+func TestMemoryReprocessingFutureRetrySurvivesWorkerRestart(t *testing.T) {
+	now := time.Now().UTC()
+	source := &store.MemorySourceRevision{
+		SourceRevision: "revision-restart-retry", ChatSessionID: "session-restart-retry",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("f", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(source)
+	completed := make(chan int64, 1)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+			Store: store.NewNoopStore(), nextEvidenceID: 500,
+		},
+		queue: []*store.MemoryReprocessingJob{{
+			ID: 10, ChatSessionID: source.ChatSessionID, SourceRevision: source.SourceRevision,
+			DerivationVersion: store.MemoryAdmissionContract,
+			ExtractorVersion:  completeTurnCriticPipelineVersion,
+			IndexVersion:      memoryAdmissionIndexVersion,
+			RetryAfter:        now.Add(100 * time.Millisecond),
+			CreatedAt:         now,
+		}},
+		sources:   map[string]*store.MemorySourceRevision{source.SourceRevision: source},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina found the brass key.", "importance_score": 7,
+			"evidence_excerpts": []any{"Mina found a brass key."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	select {
+	case id := <-completed:
+		if id != 10 || callCount != 1 {
+			t.Fatalf("id=%d calls=%d", id, callCount)
+		}
+	case <-time.After(600 * time.Millisecond):
+		t.Fatalf("persisted future retry was stranded after restart: calls=%d queue=%+v", callCount, st.queue)
+	}
+}
+
+func TestMemoryReprocessingMultipleStoredRetryTimesAllWake(t *testing.T) {
+	now := time.Now().UTC()
+	firstSource := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry-first", ChatSessionID: "session-retry-many",
+		LogicalTurnID: "turn:1", TurnIndex: 1,
+		UserContent: "Mina opened the first drawer.", AssistantContent: "The first drawer was empty.",
+		CombinedContentHash: strings.Repeat("d", 64), LifecycleState: "active",
+	}
+	secondSource := &store.MemorySourceRevision{
+		SourceRevision: "revision-retry-second", ChatSessionID: "session-retry-many",
+		LogicalTurnID: "turn:2", TurnIndex: 2,
+		UserContent: "Mina opened the second drawer.", AssistantContent: "Mina found a brass key.",
+		CombinedContentHash: strings.Repeat("e", 64), LifecycleState: "active",
+	}
+	attachCriticInputSnapshotForTest(firstSource)
+	attachCriticInputSnapshotForTest(secondSource)
+	base := &memoryAdmissionWorkerStore{Store: store.NewNoopStore(), nextEvidenceID: 400}
+	completed := make(chan int64, 2)
+	st := &memoryReprocessingDrainStore{
+		memoryAdmissionWorkerStore: base,
+		queue: []*store.MemoryReprocessingJob{
+			{ID: 8, ChatSessionID: firstSource.ChatSessionID, SourceRevision: firstSource.SourceRevision,
+				DerivationVersion: store.MemoryAdmissionContract, ExtractorVersion: completeTurnCriticPipelineVersion,
+				IndexVersion: memoryAdmissionIndexVersion, CreatedAt: now},
+			{ID: 9, ChatSessionID: secondSource.ChatSessionID, SourceRevision: secondSource.SourceRevision,
+				DerivationVersion: store.MemoryAdmissionContract, ExtractorVersion: completeTurnCriticPipelineVersion,
+				IndexVersion: memoryAdmissionIndexVersion, CreatedAt: now},
+		},
+		sources: map[string]*store.MemorySourceRevision{
+			firstSource.SourceRevision: firstSource, secondSource.SourceRevision: secondSource,
+		},
+		completed: completed,
+	}
+	oldClient := proxyHTTPClient
+	callCount := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		callCount++
+		if callCount <= 2 {
+			if callCount == 2 {
+				time.Sleep(250 * time.Millisecond)
+			}
+			return &http.Response{
+				StatusCode: http.StatusTooManyRequests, Header: make(http.Header),
+				Body: io.NopCloser(strings.NewReader(`{"error":{"message":"retry later"}}`)),
+			}, nil
+		}
+		extraction := criticWireJSONForTest(map[string]any{
+			"turn_summary": "Mina checked a drawer.", "importance_score": 6,
+			"evidence_excerpts": []any{"Mina checked a drawer."},
+		})
+		payload, _ := json.Marshal(map[string]any{
+			"model":   "critic-test",
+			"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}},
+		})
+		return &http.Response{
+			StatusCode: http.StatusOK, Header: make(http.Header),
+			Body: io.NopCloser(strings.NewReader(string(payload))),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := &Server{
+		Cfg: cfg, Store: st, Vector: vector.NewFakeVectorStore(),
+		RuntimeConfig: RuntimeConfig{
+			Synced: true, CriticProvider: "openai", CriticAPIKey: "test-key",
+			CriticEndpoint: "https://example.invalid/v1", CriticModel: "critic-test",
+			CriticTimeoutSec: 30, EmbeddingTimeoutSec: 1, FailedQueueMaxAttempts: 4,
+			CriticReprocessingIntervalSec: 1,
+		},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if !srv.StartMemoryWorkers(ctx) {
+		t.Fatal("memory workers did not start")
+	}
+	seen := map[int64]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-completed:
+			seen[id] = true
+		case <-time.After(4 * time.Second):
+			t.Fatalf("not every scheduled retry ran: completed=%v calls=%d queue=%+v", seen, callCount, st.queue)
+		}
+	}
+	if !seen[8] || !seen[9] || callCount != 4 || len(st.failedJobs) != 2 {
+		t.Fatalf("completed=%v calls=%d failed=%v", seen, callCount, st.failedJobs)
+	}
+}
+
 func TestRuntimeConfigSyncSignalsMemoryWorker(t *testing.T) {
 	srv := &Server{}
 	wake := srv.memoryWorkerWakeChannel()
@@ -1522,6 +1952,24 @@ func TestRuntimeConfigSyncSignalsMemoryWorker(t *testing.T) {
 	case <-wake:
 	default:
 		t.Fatal("runtime config sync did not signal the memory worker")
+	}
+}
+
+func TestCriticReprocessingDelayUsesConfiguredBaseAndLongerProviderHint(t *testing.T) {
+	trace := map[string]any{
+		"provider_response": map[string]any{"retry_after_seconds": 120},
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 30}, trace); got != 120*time.Second {
+		t.Fatalf("provider hint delay=%s", got)
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 180}, trace); got != 180*time.Second {
+		t.Fatalf("configured base delay=%s", got)
+	}
+	malformed := map[string]any{
+		"provider_response": map[string]any{"retry_after_seconds": "later"},
+	}
+	if got := criticReprocessingDelay(RuntimeConfig{CriticReprocessingIntervalSec: 30}, malformed); got != 30*time.Second {
+		t.Fatalf("malformed hint changed base delay=%s", got)
 	}
 }
 
