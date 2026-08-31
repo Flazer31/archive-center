@@ -1857,3 +1857,26 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   관찰 전에는 이 작업을 완료 또는 `live_verified`로 기록하지 않는다.
 - Cold Start/reindex 중복 직렬화 대응인 2번은 이번 작업에 포함하지 않았으며, 1번의
   효과를 먼저 관찰한다.
+
+### 4.0.9 동일 위치 패키지 갱신 결과
+
+- source commit `c0db198bdef1533f1e3fe5a57a57afa8e13b5f08`에서 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존
+  `Archive Center 4.0.9 Windows Auto Install Package` 이름으로 다시 만들었다.
+- 패키지 안에서 실행 중이던 backend PID `21464`는 실제 executable path가 해당
+  package 아래임을 확인한 뒤 종료했다. 이후 package process와 `28080`, `3307`,
+  `8000` listener는 모두 0개이며 패키지는 다시 실행하지 않았다.
+- 기존 `.env.full.local`을 target package 밖에 임시 보존하고 새 package에 복구했다.
+  복구 전후 SHA-256은 모두
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`이며 임시
+  사본은 hash 확인 후 삭제했다.
+- package `release_ready=true`, `automatic_update_apply=true`, full manifest
+  `status=green`, source dirty `false`다.
+- managed files `46`, missing/hash mismatch `0/0`이다.
+- source와 package의 `Archive Center.js`는 개행 정규화 SHA-256
+  `7A18635A20AB09D68B34EE076CE2596F838B5DAB1FF9958796C3C8AC3D48A888`로 일치한다.
+- ZIP size는 `12,248,438 bytes`, SHA-256은
+  `BF1DB4A80BFDEDAA77F60C2BD6AF55E50AFDEA81A29B247AC14C258AC604E33F`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다.
+- 실제 RisuAI의 RSS/live heap 관찰은 사용자 확인 대기 상태다. 이 패키지 빌드와
+  무결성 검증만으로 완료 또는 `live_verified`로 기록하지 않는다.
