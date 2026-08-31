@@ -1852,7 +1852,7 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 
 ### 현재 완료 경계
 
-- 동일 위치 4.0.9 Windows 테스트 패키지 갱신과 실제 RisuAI 관찰은 아직 남아 있다.
+- 동일 위치 4.0.9 Windows 테스트 패키지는 갱신했으며 실제 RisuAI 관찰만 남아 있다.
 - 실제 RisuAI에서 Cold Start 후 백그라운드 처리와 다음 턴을 겹쳐 보낸 RSS/live heap
   관찰 전에는 이 작업을 완료 또는 `live_verified`로 기록하지 않는다.
 - Cold Start/reindex 중복 직렬화 대응인 2번은 이번 작업에 포함하지 않았으며, 1번의
@@ -1878,5 +1878,6 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - ZIP size는 `12,248,438 bytes`, SHA-256은
   `BF1DB4A80BFDEDAA77F60C2BD6AF55E50AFDEA81A29B247AC14C258AC604E33F`이며 외부
   `SHA256SUMS-4.0.9.txt`와 일치한다.
-- 실제 RisuAI의 RSS/live heap 관찰은 사용자 확인 대기 상태다. 이 패키지 빌드와
-  무결성 검증만으로 완료 또는 `live_verified`로 기록하지 않는다.
+- 사용자는 실제 RisuAI의 RSS/live heap 항목을 직접 검증할 수 없다고 확인했다. 이
+  항목은 사용자 확인 대기가 아니라 `live_unverified`로 계속 남기며, 미보고 또는
+  패키지 빌드·무결성 검증을 성공 증거로 대체하지 않는다.
