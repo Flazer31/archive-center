@@ -2127,7 +2127,25 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 ### 현재 경계
 
 - 소스 수정, 행동 회귀, 실제 Go API와 실제 MariaDB/ChromaDB payload 검증까지 완료했다.
-- 동일 위치 4.0.9 Windows 테스트 패키지는 이 기록 다음에 갱신한다.
+- source commit `3b32e9921696d23298bea2107f581b8211186902`에서 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존
+  `Archive Center 4.0.9 Windows Auto Install Package` 이름으로 패키지를 갱신했다.
+- 기존 package backend PID `10112`는 executable path가 대상 package 아래임을 확인한
+  뒤 종료했다. package 루트가 다른 프로세스에 계속 점유돼 정식 빌더의 루트 교체가
+  막혔으므로, green staging package를 만든 뒤 그 manifest의 관리 payload를 비어 있는
+  기존 루트에 복사했다.
+- package `release_ready=true`, `automatic_update_apply=true`, full manifest
+  `status=green`, source dirty `false`다. managed files는 46개이고 missing/hash mismatch는
+  `0/0`이다.
+- source와 package의 `Archive Center.js` 개행 정규화 SHA-256은 모두
+  `F48D0B94B2507F52E24437D8A9F153DF7876D61EE88CC58A3167B0F3314C9C87`이다.
+- ZIP size는 `12,248,375 bytes`, SHA-256은
+  `1A7CD0ED9157AF649A90983B54082361E6EB0C78134F5C0772D106FDFF05F942`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다.
+- `.env.full.local`은 대상 밖에 보존한 뒤 복구했다. 복구 전후 SHA-256은 모두
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`다.
+- 패키지와 runtime은 갱신 뒤 다시 실행하지 않았다. 최종 backend, MariaDB, ChromaDB
+  process count는 모두 0이다.
 - 실제 RisuAI에 갱신 package를 등록해 HUD의 기억 입력과 실제 다음 본문을 확인하는 일은
   사용자 검증 대기다. 그 확인 전에는 이 항목을 `live_verified` 또는 완료로 기록하지
   않는다.
