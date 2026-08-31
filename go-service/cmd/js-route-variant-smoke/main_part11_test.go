@@ -709,8 +709,8 @@ func TestTimelineLoadReconcilesDeletedAssistantBeforeRead(t *testing.T) {
 	script := `
 const _timelineState = {
   loading:false, loadingMore:false, hasMore:false, nextBeforeTurn:0, error:"", requestId:0,
-  currentSessionId:"session-reroll", selectedSessionId:"session-reroll", sessionId:"session-reroll",
-  sessions:[{chat_session_id:"session-reroll"}], items:[], meta:null, expandedTurnKey:"",
+  currentSessionId:"session-active", selectedSessionId:"session-selected", sessionId:"session-selected",
+  sessions:[{chat_session_id:"session-active"},{chat_session_id:"session-selected"}], items:[], meta:null, expandedTurnKey:"",
   detailItem:null, detailLoading:false, detailError:""
 };
 let _timelineSelectedDetail = null;
@@ -727,19 +727,20 @@ function timelineResetEditState() {}
 function pruneTimelinePendingArtifacts() {}
 function t(key) { return key; }
 function getRequestTimeoutSettingMs() { return 19000; }
-async function getCurrentChatSessionId() { throw new Error("fixed timeline session was discarded"); }
+async function getCurrentChatSessionId() { return "session-active"; }
 async function loadTimelineSessions() { throw new Error("existing session list was needlessly reloaded"); }
 async function ensureActiveChatCompletedTurnsBackfilled(sessionId) {
-  if (sessionId !== "session-reroll") throw new Error("timeline backfill used another session");
+  if (sessionId !== "session-active") throw new Error("timeline backfill used another session");
   backfillCalls++;
 }
 async function reconcileRollbackFromHostSignal(sessionId, hostContext, options) {
-  if (sessionId !== "session-reroll") throw new Error("timeline rollback used another session");
+  if (sessionId !== "session-active") throw new Error("timeline rollback did not use the fixed active session");
+  if (!hostContext || hostContext.hostChatId !== "chat-session-active") throw new Error("timeline rollback lost active host context");
   rollbackReconcileCalls++;
   rollbackReconcileOptions.push(options || {});
   return true;
 }
-function captureSessionHostContextFromCache(sessionId) { return {sessionId:sessionId,hostChatId:"chat-reroll"}; }
+function captureSessionHostContextFromCache(sessionId) { return {sessionId:sessionId,hostChatId:"chat-"+sessionId}; }
 async function safeCall(fn) { return await fn(); }
 async function bridgeFetch(path, options) {
   if (!String(path).startsWith("/timeline?")) throw new Error("timeline load reached mutation path " + path);
@@ -749,11 +750,11 @@ async function bridgeFetch(path, options) {
 }
 ` + "\n" + loadTimeline + `
 (async function() {
-  const options = {sessionId:"session-reroll",skipRuntimeSessionResolve:true,skipSessionListRefresh:true};
+  const options = {sessionId:"session-selected",skipSessionListRefresh:true};
   await loadTimelineData(true, options);
   await loadTimelineData(true, options);
   assert(timelineReads === 2, "timeline UI did not perform exactly two reads");
-  assert(backfillCalls === 2, "timeline refresh did not keep its existing non-delete synchronization");
+  assert(backfillCalls === 0, "timeline backfilled the selected non-active session");
   assert(rollbackReconcileCalls === 2, "opening or refreshing timeline did not reconcile a deleted assistant");
   assert(rollbackReconcileOptions.every(function(item) { return item.reason === "timeline_open_assistant_deletion_observation"; }),
     "timeline rollback reconciliation lost its host observation reason");

@@ -45703,6 +45703,13 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         : await getCurrentChatSessionId();
       if (_timelineState.requestId !== requestId) return;
       const runtimeSid = timelineIsPlaceholderSessionId(sid) ? "" : sid;
+      if (!append && !skipRuntimeSessionResolve && runtimeSid) {
+        await reconcileRollbackFromHostSignal(runtimeSid, captureSessionHostContextFromCache(runtimeSid), {
+          reason: "timeline_open_assistant_deletion_observation",
+          hostLifecycleObservation: "timeline_open_observed",
+        });
+        if (_timelineState.requestId !== requestId) return;
+      }
       const previousSessionId = String(_timelineState.sessionId || _timelineState.selectedSessionId || "");
       const sessionsNeedRefresh = !!(runtimeSid && !_timelineState.sessions.some((session) => timelineSessionId(session) === runtimeSid));
       _timelineState.currentSessionId = runtimeSid;
@@ -45727,11 +45734,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         timelineResetEditState();
       }
       if (!append && requestedSessionId && runtimeSid && requestedSessionId === runtimeSid) {
-        await reconcileRollbackFromHostSignal(requestedSessionId, captureSessionHostContextFromCache(requestedSessionId), {
-          reason: "timeline_open_assistant_deletion_observation",
-          hostLifecycleObservation: "timeline_open_observed",
-        });
-        if (_timelineState.requestId !== requestId) return;
         await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh" });
         if (_timelineState.requestId !== requestId) return;
       }
