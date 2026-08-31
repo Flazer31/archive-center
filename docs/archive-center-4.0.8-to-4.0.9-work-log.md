@@ -2014,3 +2014,54 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 패키지는 다시 실행하지 않았다. 실제 RisuAI에서 한 턴 삭제 후 UI 진입 시 해당
   삭제 턴만 제거되는지, 저장 완료된 리롤 출력이 있는 상태에서 UI 진입 시 새 출력이
   유지되는지는 사용자 확인 전까지 `live_unverified`다.
+
+## 2026-08-31 · Timeline 선택 세션과 활성 삭제 세션 분리
+
+### 두 번째 실환경 실패 원인
+
+- `requireUserTail` 제거 package는 17:54:47에 실제 활성 세션의 76턴 삭제를 인식해
+  rollback과 source acceptance invalidation을 수행했다. 따라서 전체 assistant 관찰과
+  기존 Go 삭제 판정 자체는 실환경에서 동작했다.
+- 17:56:45에 같은 세션의 새 76턴이 active final로 저장된 뒤 다시 보고된 실패에서는
+  새 rollback audit가 없었다. UI 진입 adapter가 Go decision에 도달하지 않은 경우다.
+- `loadTimelineData()`는 UI가 기억한 `requestedSessionId`와 현재 `runtimeSid`가 같은
+  경우에만 삭제 관측을 호출하고 있었다. A 세션에서 삭제한 뒤 Timeline의 이전 선택이
+  B 세션으로 남아 있으면 A의 삭제 관측 전체를 건너뛰었다.
+- 실제 `v4.0.2`와 `v4.0.8`은 Timeline 표시 세션을 정하기 전에 현재 활성 채팅의
+  rollback preflight를 실행했다. UI 표시 대상과 활성 삭제 관측 대상을 같은 값으로
+  요구하지 않았다.
+
+### 최소 수정
+
+- 일반 Timeline UI 진입 시 먼저 얻은 `runtimeSid`를 그 호출의 활성 삭제 관측 세션으로
+  고정하고, 해당 세션의 고정 host context와 함께 기존
+  `reconcileRollbackFromHostSignal(...)`에 전달한다.
+- 이후 Timeline은 사용자가 선택해 둔 `requestedSessionId`를 그대로 조회한다. 따라서
+  A의 삭제 관측과 B의 Timeline 열람이 서로의 세션 ID를 덮어쓰지 않는다.
+- migration·copy·move 등 명시적 세션을 `skipRuntimeSessionResolve`로 읽는 내부 갱신에는
+  활성 삭제 관측을 새로 실행하지 않는다. 기존 작업 시작 세션은 그대로 유지된다.
+- 삭제 조건, 턴 범위와 mutation은 계속 기존 Go `/rollback/decision`과
+  `/rollback/{turn}`이 소유한다. 새 fallback, watcher, cache, 전역 세션 검색, 자동 삭제
+  경로 또는 Go API는 추가하지 않았다.
+- 이 수정의 생산 JavaScript 변경량은 추가 7줄, 제거 5줄이며 Go 생산 코드는 변경하지
+  않았다.
+
+### 검증과 패키지
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- production `loadTimelineData()` 실행 회귀에서 Timeline 선택 B를 유지한 상태로 UI를
+  열어도 삭제 관측은 고정된 활성 세션 A와 A의 host context로 전달되고, B를 active
+  session으로 backfill하지 않는 것을 확인했다.
+- session-scoped rollback adapter 회귀와 실제 Go rollback decision/canonical mutation
+  회귀 묶음: 통과.
+- source commit `e47ea21edc2fbf00aedf83d054492a9a73cfabb7`에서 기존 4.0.9
+  Windows 테스트 package를 같은 위치에 갱신했다. package `release_ready=true`, source
+  dirty `false`, managed files `46`, missing/hash mismatch `0/0`이다.
+- source와 package의 `Archive Center.js` 개행 정규화 SHA-256은 모두
+  `F48D0B94B2507F52E24437D8A9F153DF7876D61EE88CC58A3167B0F3314C9C87`다.
+- ZIP size는 `12,030,002 bytes`, SHA-256은
+  `A6269C2CE57C12F4BF6D14FEA67AF476AC0833E42F8E5A4D9267BF1378A4A363`이며 외부
+  checksum과 일치한다. `.env.full.local`은 기존 hash를 유지했다.
+- package와 의존 runtime은 갱신 뒤 다시 실행하지 않았다. 이 package를 실제 RisuAI에
+  다시 등록해 A 삭제/B 선택 상태와 리롤 저장 상태를 확인하기 전에는
+  `live_verified`가 아니다.
