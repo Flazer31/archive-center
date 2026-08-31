@@ -2219,3 +2219,47 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   호출하지 않는다. `beforeRequest` 삭제 재판정은 계속 제거된 상태다.
 - 사용자 지시에 따라 이 후속 정정도 테스트를 실행하지 않았다. 실제 RisuAI 재등록
   전에는 적용 또는 완료로 판단하지 않는다.
+
+## 2026-08-31 · 81~82턴 실환경 DB 감사로 자동 오삭제 재발 여부 확인
+
+### 실제 RisuAI와 MariaDB 감사 결과
+
+- 사용자가 후속 수정이 반영된 실행 환경에서 81턴과 82턴을 이어서 진행한 뒤, 실제
+  Go canonical API와 MariaDB audit를 같은 세션
+  `char_0_cid_125f11ae-b87e-4dad-a0d0-c36ae9574796` 기준으로 다시 확인했다.
+- 마지막 자동 rollback은 audit `5863`, `2026-08-31 23:00:47 KST`의
+  `rollback from turn 80`, `req_source=auto`였다. 이후 81턴과 82턴에는 `rollback`과
+  `source_acceptance_invalidation`이 한 건도 없었다.
+- canonical raw chat에는 81턴 user/assistant `2317/2318`, 82턴 user/assistant
+  `2321/2322`가 모두 남아 있었다. canonical memory도 81턴 `1106`, 82턴 `1108`이
+  존재했고, 최종 Explorer 집계는 대화 원문 82개와 기억 요약 82개였다.
+- 따라서 UI 진입 또는 다음 정상 요청 때문에 직전 정상 턴을 자동 rollback하던 현상은
+  81~82턴 실사용 구간에서 재발하지 않았다.
+
+### 화면의 `대화 원문 81 / 기억 요약 80` 해석
+
+- Explorer 탭 오른쪽 숫자는 최신 turn index가 아니라 각 탭의 `total` 항목 수다.
+  82턴 출력·후처리 중 캡처된 `81 / 80`은 이전 조회 시점의 원문·기억 총개수이며,
+  81턴 또는 82턴의 DB 삭제를 뜻하지 않는다.
+- 후처리가 끝난 뒤 같은 실제 API를 다시 조회했을 때 두 집계는 `82 / 82`였고,
+  80~82턴 raw chat과 memory도 각각 존재했다.
+
+### 평론가 재처리와 삭제의 구분
+
+- 81턴에는 critic audit `5871`, `5877`, `5883`, 82턴에는 `5886`, `5895`가 남아
+  평론가 처리가 순차적으로 여러 번 수행된 사실은 확인됐다.
+- 그러나 각 처리 직전 기록은 같은 `logical_turn_id` 안에서 이전 source revision을
+  `superseded`로 바꾸고 새 revision을 `active_final`과 `replacement complete`로
+  확정한 순서였다. 81턴 revision은 `sar_2s0qn2 -> sar_cv8hor -> sar_9lm8e5`,
+  82턴은 `sar_3s8m5u -> sar_xw4p27`로 교체됐다.
+- 이 구간에는 rollback 또는 source invalidation이 없으므로, 삭제 후 평론가를 다시
+  부른 흐름이 아니라 같은 논리 턴의 출력 revision 교체마다 평론가가 처리된 흐름이다.
+
+### 현재 검증 경계
+
+- 비정상 자동 삭제: 81~82턴 실제 RisuAI·DB 구간에서 재발하지 않음을 확인했다.
+- 정상 사용자 삭제: 사용자가 실제 assistant 꼬리를 삭제하고 UI에 들어갔을 때 삭제된
+  턴부터의 꼬리만 정리되는지는 이 후속 확인에서 실행하지 않았다. 전체 삭제 기능을
+  완전 검증으로 표시하지 않는다.
+- 사용자 지시에 따라 테스트는 실행하지 않았고, 이 확인과 문서 갱신에서 runtime,
+  package 또는 DB를 수정하지 않았다.
