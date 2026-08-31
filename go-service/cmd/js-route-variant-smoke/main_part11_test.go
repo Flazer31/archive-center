@@ -755,8 +755,8 @@ async function bridgeFetch(path, options) {
   assert(timelineReads === 2, "timeline UI did not perform exactly two reads");
   assert(backfillCalls === 2, "timeline refresh did not keep its existing non-delete synchronization");
   assert(rollbackReconcileCalls === 2, "opening or refreshing timeline did not reconcile a deleted assistant");
-  assert(rollbackReconcileOptions.every(function(item) { return item.requireUserTail === true; }),
-    "timeline rollback reconciliation did not require the deleted-assistant user tail");
+  assert(rollbackReconcileOptions.every(function(item) { return item.reason === "timeline_open_assistant_deletion_observation"; }),
+    "timeline rollback reconciliation lost its host observation reason");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -6465,9 +6465,6 @@ async function flushMicrotasks() {
 (async function() {
   const contextA = {sessionId:"session-A",hostChatId:"host-A"};
   const contextB = {sessionId:"session-B",hostChatId:"host-B"};
-  assert(await reconcileRollbackFromHostSignal("session-A", contextA, {requireUserTail:true}) === false,
-    "assistant-tail UI observation reached rollback decision");
-  assert(decisionCalls.length === 0, "assistant-tail UI observation called the backend");
   const firstA = reconcileRollbackFromHostSignal("session-A", contextA);
   const duplicateA = reconcileRollbackFromHostSignal("session-A", contextA);
   const firstB = reconcileRollbackFromHostSignal("session-B", contextB);
@@ -6497,7 +6494,7 @@ async function flushMicrotasks() {
     "unchanged session B snapshot triggered another rollback");
   assert(decisionCalls.length === 5 && rollbackCalls.length === 2,
     "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
-  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 4,
+  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
     "session A active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
     "session B active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
@@ -6506,12 +6503,12 @@ async function flushMicrotasks() {
     messagesPreview:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"},{role:"user",content:"uA2"},{role:"assistant",content:"aA2",id:"aA2"}],
     assistantMessagesPreview:[{role:"assistant",content:"aA1",id:"aA1"},{role:"assistant",content:"aA2",id:"aA2"}],turnIndex:12
   });
-  chats.set("session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"},{role:"user",content:"uA2"}]});
+  chats.set("session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"}]});
   const decisionCountBeforeDeletedTail = decisionCalls.length;
-  assert(await reconcileRollbackFromHostSignal("session-A", contextA, {requireUserTail:true}),
-    "user-tail UI observation did not reconcile the deleted assistant");
+  assert(await reconcileRollbackFromHostSignal("session-A", contextA),
+    "assistant-tail UI observation did not reconcile the deleted turn");
   assert(decisionCalls.length === decisionCountBeforeDeletedTail + 1,
-    "user-tail UI observation did not reach the existing Go decision path");
+    "assistant-tail UI observation did not reach the existing Go decision path");
   assert(rollbackCalls.length === 3 && rollbackCalls[rollbackCalls.length - 1] === "session-A|12",
     "UI reconciliation removed a range other than the deleted canonical tail: " + JSON.stringify(rollbackCalls));
   process.stdout.write("ok");

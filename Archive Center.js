@@ -20225,10 +20225,6 @@
       if (!resolvedActiveChat.chat) return false;
       const rawMessages = extractActiveChatMessageList(resolvedActiveChat.chat);
       if (!Array.isArray(rawMessages)) return false;
-      if (options.requireUserTail === true) {
-        const activeTail = getLastNonEmptyComparableMessage(rawMessages);
-        if (!activeTail || activeTail.role !== "user") return false;
-      }
       const reconciled = await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {
         reason: String(options.reason || "worldline_refresh_assistant_observation"),
         hostLifecycleObservation: String(options.hostLifecycleObservation || "worldline_refresh_observed"),
@@ -45734,7 +45730,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         await reconcileRollbackFromHostSignal(requestedSessionId, captureSessionHostContextFromCache(requestedSessionId), {
           reason: "timeline_open_assistant_deletion_observation",
           hostLifecycleObservation: "timeline_open_observed",
-          requireUserTail: true,
         });
         if (_timelineState.requestId !== requestId) return;
         await ensureActiveChatCompletedTurnsBackfilled(requestedSessionId, { reason: "timeline_refresh" });
