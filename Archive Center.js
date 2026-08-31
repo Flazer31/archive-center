@@ -20168,12 +20168,11 @@
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
       if (!Array.isArray(rawMessages)) return false;
-      const currentMessages = extractActiveChatComparableMessages(activeChat);
-      const ledgerDeletion = buildRollbackFromPersistedLedgerFallbackOr1f(sid, currentMessages);
-      if (!ledgerDeletion || Number(ledgerDeletion.rollbackToTurn || 0) < 1) return false;
-      const ledgerDetail = ledgerDeletion.detail && typeof ledgerDeletion.detail === "object"
-        ? ledgerDeletion.detail
-        : {};
+      const currentMessages = extractActiveChatRollbackMessages(activeChat);
+      const deletionObservation = options.deletionObservation && typeof options.deletionObservation === "object"
+        ? options.deletionObservation
+        : null;
+      if (!deletionObservation || deletionObservation.deletionDetected !== true) return false;
       const currentAssistantObservations = buildRollbackAssistantObservations(rawMessages);
       const hostContext = options.hostContext && typeof options.hostContext === "object"
         ? options.hostContext
@@ -20181,12 +20180,8 @@
       const detail = {
         reason: options.reason || "assistant_output_removed_from_active_chat",
         hostContext,
-        tailReconcileVerification: {
-          status: "verified_tail_delete",
-          removedMessageCount: Math.max(0, Number(ledgerDetail.removedMsgCount || 0)),
-          removedAssistantCount: Math.max(0, Number(ledgerDetail.removedAssistantCount || 0)),
-          removedUserCount: Math.max(0, Number(ledgerDetail.removedMsgCount || 0) - Number(ledgerDetail.removedAssistantCount || 0)),
-        },
+        firstRemovedTurnIndex: Math.max(0, Number(deletionObservation.firstRemovedTurnIndex || 0)),
+        removedAssistantCount: Math.max(0, Number(deletionObservation.removedAssistantCount || 0)),
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
         hostLifecycleObservation: String(
@@ -20197,7 +20192,7 @@
       };
       const decision = await requestBackendRollbackDecision(
         sid,
-        Number(ledgerDeletion.rollbackToTurn),
+        Math.max(0, Number(deletionObservation.firstRemovedTurnIndex || 0)),
         "assistant_output_removed_from_active_chat",
         detail,
         "auto"
@@ -20234,12 +20229,23 @@
     const reconcilePromise = (async function reconcileObservedHostRollback() {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, fixedHostContext);
       if (!resolvedActiveChat.chat) return false;
-      const rawMessages = extractActiveChatMessageList(resolvedActiveChat.chat);
-      if (!Array.isArray(rawMessages)) return false;
+      const currentMessages = extractActiveChatRollbackMessages(resolvedActiveChat.chat);
+      if (!Array.isArray(currentMessages)) return false;
+      const previousSnapshot = getSessionSnapshot(fixedSessionId);
+      if (!previousSnapshot) {
+        updateSessionSnapshot(fixedSessionId, currentMessages);
+        return false;
+      }
+      const deletionObservation = buildAssistantOutputDeletionStateOr1f(previousSnapshot, currentMessages);
+      if (!deletionObservation.deletionDetected) {
+        updateSessionSnapshot(fixedSessionId, currentMessages);
+        return false;
+      }
       const reconciled = await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {
         reason: String(options.reason || "worldline_refresh_assistant_observation"),
         hostLifecycleObservation: String(options.hostLifecycleObservation || "worldline_refresh_observed"),
         hostContext: fixedHostContext,
+        deletionObservation,
       });
       return reconciled === true;
     })();

@@ -2204,3 +2204,18 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 사용자 지시에 따라 이 긴급 수정에서는 테스트를 실행하지 않았다. 실제 RisuAI에
   갱신 JS를 다시 등록한 뒤 정상 다음 턴에서 rollback이 발생하지 않고, 실제 tail
   삭제 후 Timeline UI 진입에서만 해당 삭제 턴이 제거되는지 사용자 검증 대기다.
+
+### 후속 정정
+
+- 첫 긴급 수정 뒤에도 실제 DB audit에서 79턴과 80턴이 각각
+  `req_source=auto`로 rollback된 사실을 확인했다. Timeline UI 진입 때마다 Go에
+  assistant 전체 목록을 재판정시키는 호출이 남아 있었고, 저장 ledger보다 짧게
+  관측된 목록을 실제 삭제로 오인했다.
+- Timeline UI 진입 자체는 삭제 신호가 아니다. UI 진입 시 고정된 해당 세션의 직전
+  assistant 스냅샷과 현재 assistant 목록을 먼저 비교하고, 실제 assistant 감소가
+  확인된 경우에만 기존 Go rollback decision을 호출하도록 정정했다.
+- 직전 스냅샷이 없으면 현재 상태를 기준으로 저장할 뿐 삭제하지 않는다. assistant
+  감소가 없거나 새 출력이 추가·교체된 경우에도 snapshot만 갱신하고 rollback API를
+  호출하지 않는다. `beforeRequest` 삭제 재판정은 계속 제거된 상태다.
+- 사용자 지시에 따라 이 후속 정정도 테스트를 실행하지 않았다. 실제 RisuAI 재등록
+  전에는 적용 또는 완료로 판단하지 않는다.
