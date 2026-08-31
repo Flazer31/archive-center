@@ -1562,3 +1562,77 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - ZIP SHA-256:
   `0a514d7effb87df5312aedc617a22a1e3bda817a7e56f6e1b2525ba41d250768`
 - 외부 `SHA256SUMS-4.0.9.txt`와 실제 ZIP hash: 일치
+
+## 2026-08-31 · 요청 시작 컨텍스트 고정 및 75턴 6/12 정지 수정
+
+### 수정 전 보존과 실환경 재현
+
+- 수정 전 활성 작업 상태는 로컬 commit `6ef6134`로 보존했다.
+- 당시 4.0.9 Windows 테스트 패키지를 실제 PocketRisu에 로드한 상태에서
+  `75턴 · 6/12 · 본문 응답 기다리는 중`을 재현했다.
+- 본문은 화면에 표시됐지만 MariaDB의 해당 세션은 74턴까지만 있었고, 75턴
+  `/complete-turn`과 Critic 처리는 시작되지 않았다.
+- 이 재현은 수정 전 패키지 증거다. 아래 수정판의 실사용 성공 증거가 아니다.
+
+### 확인된 원인
+
+- `beforeRequest`는 요청 시작 시 Char/CID, `chat_session_id`, workflow request ID를
+  알고 있었지만 `afterRequest`는 그 요청 객체를 직접 받지 않았다.
+- 대신 전역 `lastOrchResult`, `_sessionCache`, 현재 활성 세션, 세션별 pending map을
+  다시 조회해 저장 소유자를 재구성했다.
+- 재구성 뒤에는 request ID, pending context, orchestration object가 서로 같아야 하는
+  추가 일치 조건도 적용됐다. 화면 이동이나 이전 요청의 비동기 완료로 전역값 하나가
+  바뀌면 실제 본문을 받은 요청도 확정되지 않아 `/complete-turn` 전에 멈출 수 있었다.
+- 원인은 본문 부족이나 Go `/complete-turn`의 추가 인증이 아니라 JavaScript
+  `afterRequest` 소유자 재판정 경로였다.
+
+### 적용한 제한 수정
+
+- `captureFinalConfirmationRequestContext(...)`가 만든 단일 요청 객체에 시작 시점의
+  Char/CID, `chat_session_id`, workflow request ID, host 좌표, raw input 관측,
+  orchestration 결과를 붙였다.
+- 실제 등록된 `onBeforeRequest`가 그 객체를 callback handoff로 설치하고, 실제 등록된
+  `onAfterRequest`는 진입 즉시 같은 객체를 분리해 이후 `/complete-turn`, DB 저장,
+  Critic과 HUD request ID에 그대로 사용한다.
+- `afterRequest`의 `lastOrchResult`, `_sessionCache`, 현재 활성 세션, 전체 pending 세션
+  검색과 request/pending/orchestration 다중 일치 판정을 제거했다.
+- A 요청의 비동기 저장은 분리된 A 객체를 closure로 계속 사용한다. 다음 B 요청이나
+  같은 세션의 다음 요청이 시작돼도 A의 저장 소유자와 B의 HUD request ID를 바꾸지 않는다.
+- 기존 pending 복구는 새 요청 시작 때문에 supersede하거나 삭제하지 않는다.
+- Rescan 계획 함수가 실행 중 활성 세션과 host 좌표를 다시 읽던 경로를 제거했다.
+  콜드 스타트, 활성 챗 Rescan, 최근 턴 재처리, repair replay 호출자는 작업 시작 시 잡은
+  세션 host context를 계획 함수에 직접 전달한다.
+- 실제 `reindexSession`, `rescanSession`, `runTimelineSessionCopy`,
+  `runTimelineSessionMigration`, `attachTimelineSessionToCurrentChat`,
+  `deleteTimelineSessionFromBackend`는 시작 시 받은 source/target session ID와 host
+  context를 이미 각 단계에 전달하고 있어 추가 수정하지 않았다.
+- 새 보호 조건, fallback, watcher, timer, 자동 삭제, 전역 세션 검색, DB schema 또는
+  Go API 계약은 추가하지 않았다.
+
+### 실행 검증
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- 실제 생산 함수와 실제 등록 콜백을 실행한 회귀:
+  - `TestRegisteredRequestCallbacksDetachExactBeforeRequestContext`: 통과.
+  - A/B 세션 이동, 같은 세션 연속 요청, 이전 요청의 늦은 HUD 완료가 다음 HUD를
+    가로채지 않는 경우를 한 fixture에서 확인했다.
+  - `TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan`: 통과.
+  - `TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources`: 통과.
+  - `TestActiveChatRepairFallbackSendsPartialAndConflictCandidatesToBackend`: 통과.
+  - Rescan 생산 함수가 시작 후 활성 세션 또는 session cache를 다시 읽으면 fixture가
+    즉시 실패하도록 구성했다.
+- 실제 Go HTTP API source-acceptance handler 회귀:
+  - `TestCompleteTurnSourceAcceptanceAcceptsCorrelatedAfterRequestFinalResponse`: 통과.
+  - `TestCompleteTurnSourceAcceptanceAfterRequestCorrelationOwnsRevisionAndReplacement`: 통과.
+  - `TestCompleteTurnSourceAcceptanceAfterRequestSameCorrelationIsIdempotent`: 통과.
+- 전체 `js-route-variant-smoke`에는 이번 수정 전부터 존재한 무관한 문자열/레이아웃 기대
+  실패 4건만 남아 있다. 이를 통과시키려고 생산 코드나 기대 문자열을 바꾸지 않았다.
+
+### 현재 완료 경계
+
+- source 수정과 대상 실행 회귀는 통과했다.
+- 기존 4.0.9 Windows 테스트 패키지 갱신과 수정판의 실제 PocketRisu/RisuAI 검증은
+  아직 남아 있다.
+- 갱신 패키지로 HUD가 6/12를 넘어 `/complete-turn`, MariaDB 저장, Critic까지 끝나고,
+  A/B 세션 이동에서도 각각의 세션과 HUD가 유지되는 것을 확인하기 전에는 이 작업을
+  `live_verified` 또는 완료로 기록하지 않는다.

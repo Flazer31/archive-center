@@ -811,6 +811,7 @@ function responseFromLines(lines) {
 }
 ` + "\n" + cancelStream + "\n" + streamFailure + "\n" + openStream + "\n" + consumeLine + "\n" + consumeStream + "\n" + primeHUD + "\n" + startWatch + `
 (async function() {
+  _turnWorkflowHUDActiveRequestId = "registered-request";
   streamResponses = [responseFromLines([
     JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"registered-request",status:"running",revision:1}),
     JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"registered-request",status:"running",revision:2}),
@@ -821,11 +822,12 @@ function responseFromLines(lines) {
   assert(streamPaths.length === 1, "workflow used more than one HTTP connection");
   assert(streamPaths[0].includes("/turn-workflow/events?"), "workflow did not use the event stream endpoint");
   assert(streamPaths[0].includes("after_revision=0"), "new request did not begin after revision zero");
-  assert(consumedStatuses.join(",") === "running,running,running,completed", "host pending state or stream revisions were not rendered sequentially");
+  assert(consumedStatuses.join(",") === "running,running,completed", "stream revisions were not rendered sequentially for the beforeRequest-primed HUD");
   assert(transportErrors.length === 0, "valid stream produced a transport error");
 
   streamPaths = [];
   consumedStatuses = [];
+  _turnWorkflowHUDActiveRequestId = "unsupported-request";
   streamResponses = [{status:200,ok:true,body:null}];
   startTurnWorkflowHUDWatch("unsupported-request");
   await settleWatch("unsupported stream");
@@ -3422,8 +3424,15 @@ func TestActiveChatRepairFallbackSendsPartialAndConflictCandidatesToBackend(t *t
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
 }
-async function getCurrentChatSessionId() { return "session-active"; }
-async function computeActiveChatRescanDryRunPlan() {
+async function getCurrentChatSessionId() { throw new Error("repair fallback re-read the active session"); }
+function captureSessionHostContextFromCache(sid) {
+  if (sid !== "session-active") throw new Error("repair fallback captured another session");
+  return {sessionId:sid,charIdx:4,chatIdx:7,hostChatId:"host-active"};
+}
+async function computeActiveChatRescanDryRunPlan(sid, hostContext) {
+  if (sid !== "session-active" || hostContext.sessionId !== sid || hostContext.charIdx !== 4 || hostContext.chatIdx !== 7) {
+    throw new Error("repair fallback did not keep its start context");
+  }
   return {
     ok: true,
     messages: [{role:"user"},{role:"assistant"}],
@@ -3590,9 +3599,14 @@ func TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan(t *testing.T) {
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
 	script := functionBody + `
 let allInherited = false;
-async function getCurrentChatSessionId() { return "child"; }
-function captureSessionHostContextFromCache() { return {sessionId:"child",charIdx:1,chatIdx:2,hostChatId:"child-chat"}; }
-async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
+async function getCurrentChatSessionId() { throw new Error("rescan plan re-read the active session"); }
+function captureSessionHostContextFromCache() { throw new Error("rescan plan re-captured host context"); }
+async function resolveCurrentActiveChatObject(sid, hostContext) {
+  if (sid !== "child" || hostContext.sessionId !== "child" || hostContext.charIdx !== 1 || hostContext.chatIdx !== 2) {
+    throw new Error("rescan plan did not use its fixed start context");
+  }
+  return {chat:{},source:"fixture"};
+}
 function extractActiveChatComparableMessages() { return allInherited ? [{}] : []; }
 function extractActiveChatMessageList() { return extractActiveChatComparableMessages(); }
 function summarizeActiveChatRawMessageShape() { return {unparsed_count:0,sample_keys:[],reference_keys:[],raw_sample_types:[],primitive_reference_count:0,active_chat_keys:[],risu_db_root_keys:[]}; }
@@ -3623,13 +3637,13 @@ function buildActiveChatRescanDerivedMap() { return new Map(); }
 function buildActiveChatRescanDryRunRows(pairs) { return pairs.map(pair => ({turn_index:pair.turnIndex,raw_status:"missing",derived_status:"missing_suspected"})); }
 function debugLog() {}
 (async function() {
-  const plan = await computeActiveChatRescanDryRunPlan("child");
+  const plan = await computeActiveChatRescanDryRunPlan("child", {sessionId:"child",charIdx:1,chatIdx:2,hostChatId:"child-chat"});
   const pairTurns = plan.pairs.map(pair => pair.turnIndex);
   if (JSON.stringify(pairTurns) !== JSON.stringify([9,10])) throw new Error("inherited pairs survived rebuild plan: "+JSON.stringify(pairTurns));
   if (JSON.stringify(plan.processableTurns) !== JSON.stringify([9,10])) throw new Error("inherited turns survived processable plan: "+JSON.stringify(plan.processableTurns));
   if (plan.pairs.some(pair => pair.turnResolution !== "normal")) throw new Error("backend resolution was not preserved");
   allInherited = true;
-  const inheritedPlan = await computeActiveChatRescanDryRunPlan("child");
+  const inheritedPlan = await computeActiveChatRescanDryRunPlan("child", {sessionId:"child",charIdx:1,chatIdx:2,hostChatId:"child-chat"});
   if (inheritedPlan.pairs.length !== 0 || inheritedPlan.processableTurns.length !== 0) throw new Error("all-inherited plan was repopulated: "+JSON.stringify(inheritedPlan.processableTurns));
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -3656,9 +3670,14 @@ func TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources(t *
 	src := readArchiveCenterJS(t)
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
 	script := functionBody + `
-async function getCurrentChatSessionId() { return "session"; }
-function captureSessionHostContextFromCache() { return {sessionId:"session",charIdx:1,chatIdx:2,hostChatId:"session-chat"}; }
-async function resolveCurrentActiveChatObject() { return {chat:{},source:"fixture"}; }
+async function getCurrentChatSessionId() { throw new Error("rescan plan re-read the active session"); }
+function captureSessionHostContextFromCache() { throw new Error("rescan plan re-captured host context"); }
+async function resolveCurrentActiveChatObject(sid, hostContext) {
+  if (sid !== "session" || hostContext.sessionId !== "session" || hostContext.hostChatId !== "session-chat") {
+    throw new Error("assistant-source rescan lost its fixed start context");
+  }
+  return {chat:{},source:"fixture"};
+}
 let allUsersRemoved = false;
 function extractActiveChatComparableMessages() {
   const full = [
@@ -3707,7 +3726,7 @@ function buildActiveChatRescanDryRunRows(pairs) { return pairs.map(pair => ({tur
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").length; }
 function debugLog() {}
 (async function() {
-  const plan = await computeActiveChatRescanDryRunPlan("session");
+  const plan = await computeActiveChatRescanDryRunPlan("session", {sessionId:"session",charIdx:1,chatIdx:2,hostChatId:"session-chat"});
   if (JSON.stringify(plan.pairs.map(pair => pair.turnIndex)) !== JSON.stringify([1,2])) {
     throw new Error("assistant sources did not preserve turn identities: "+JSON.stringify(plan.pairs));
   }
@@ -3718,7 +3737,7 @@ function debugLog() {}
     throw new Error("source-backed resolution was not applied: "+JSON.stringify(plan.pairs));
   }
   allUsersRemoved = true;
-  const allDeletedPlan = await computeActiveChatRescanDryRunPlan("session");
+  const allDeletedPlan = await computeActiveChatRescanDryRunPlan("session", {sessionId:"session",charIdx:1,chatIdx:2,hostChatId:"session-chat"});
   if (JSON.stringify(allDeletedPlan.pairs.map(pair => pair.turnIndex)) !== JSON.stringify([1,2])) {
     throw new Error("all deleted user inputs erased completed turns: "+JSON.stringify(allDeletedPlan.pairs));
   }
@@ -4294,9 +4313,7 @@ func TestConfirmedPendingFinalQueueFailureBecomesTerminalIncident(t *testing.T) 
 		extractArchiveCenterJSFunction(t, src, "pendingFinalConfirmationRecoveryKey") +
 		extractArchiveCenterJSAsyncFunction(t, src, "queuePendingCompleteTurnPayload")
 	script := functions + `
-const _finalConfirmationRequestBySession=new Map();
 const requestContext={state:"captured"};
-_finalConfirmationRequestBySession.set("session-1",requestContext);
 let queuedCount=0;
 let pending=null;
 let terminalMarked=0;
@@ -4321,7 +4338,7 @@ function updateRuntimeState(name,status,value) {
 (async function() {
   const payload={chat_session_id:"session-1",turn_index:4,assistant_content:"assistant",
     client_meta:{idempotency_key:"key-1"}};
-  if(!await queuePendingCompleteTurnPayload(payload,"pending_confirmation","old-observation")) {
+  if(!await queuePendingCompleteTurnPayload(payload,"pending_confirmation","old-observation",{requestContext})) {
     throw new Error("pending payload was not admitted");
   }
   if(queuedCount!==1 || !pending) throw new Error("initial pending observation was not queued");
@@ -4343,7 +4360,7 @@ function updateRuntimeState(name,status,value) {
 	}
 }
 
-func TestBackendPendingSupersessionRemovesRecoveryBeforeReload(t *testing.T) {
+func TestNewRequestDoesNotSupersedePendingRecovery(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -4371,7 +4388,6 @@ func TestBackendPendingSupersessionRemovesRecoveryBeforeReload(t *testing.T) {
 const PENDING_FINAL_CONFIRMATION_STORAGE_KEY="pending-final";
 const _pendingFinalConfirmationRecoveryEntries=new Map();
 const _pendingFinalConfirmations=new Map();
-const _finalConfirmationRequestBySession=new Map();
 const _failedQueue=[];
 const settings={enabled:true,failedQueueMaxSize:50};
 	let stored="";
@@ -4417,25 +4433,25 @@ async function resolveCurrentActiveChatObject() {
     throw new Error("pending recovery was not persisted");
   }
   const previousContext={state:"captured",requestId:"request-old"};
-  _finalConfirmationRequestBySession.set("session-1",previousContext);
   const recoveryKey=pendingFinalConfirmationRecoveryKey(payload);
   const pending={kind:"backend_observation_retry",sessionId:"session-1",payload,
     requestContext:previousContext,recoveryKey,state:"pending"};
   _pendingFinalConfirmations.set(recoveryKey,pending);
   const next=await captureFinalConfirmationRequestContext("session-1","model","request-new");
-  if(!next || previousContext.state!=="superseded" || pending.state!=="superseded") {
-    throw new Error("backend pending was not superseded with request context");
+  if(!next || previousContext.state!=="captured" || pending.state!=="pending") {
+    throw new Error("new request mutated an existing request or pending recovery");
   }
-  if(_pendingFinalConfirmations.size!==0 || _pendingFinalConfirmationRecoveryEntries.size!==0) {
-    throw new Error("superseded backend pending leaked in memory");
+  if(_pendingFinalConfirmations.size!==1 || _pendingFinalConfirmationRecoveryEntries.size!==1) {
+    throw new Error("existing pending recovery was removed by a new request");
   }
   const persisted=JSON.parse(stored);
-  if(!persisted.items || persisted.items.length!==0) throw new Error("superseded recovery remained durable");
+  if(!persisted.items || persisted.items.length!==1) throw new Error("pending recovery lost durability");
   _pendingFinalConfirmationRecoveryEntries.clear();
+  _pendingFinalConfirmations.clear();
   restoredCalls=0;
   const restored=await loadPendingFinalConfirmationRecoveryFromStorage();
-  if(restored!==0 || restoredCalls!==0 || _pendingFinalConfirmations.size!==0) {
-    throw new Error("superseded recovery returned after reload");
+  if(restored!==1 || restoredCalls!==1) {
+    throw new Error("independent pending recovery was not restored after reload");
   }
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -6777,7 +6793,6 @@ func TestAdapterTimerAndConfigAcknowledgementSourceContract(t *testing.T) {
 		`const runtimeSynced = !!(trace && trace.synced === true);`,
 		`? "config_sync_ok"`,
 		`settings_saved_locally_backend_unsynced`,
-		`String(pendingRawInputObservation.boundRequestId || "") === pendingRequestId`,
 		`setTimeout(function turnWorkflowHUDElapsedFrame()`,
 		`clearTimeout(_turnWorkflowHUDElapsedTimer)`,
 	} {

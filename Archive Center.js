@@ -4599,7 +4599,10 @@
   const _rawInputBySession = new Map(); // input hook에서 잡은 raw user input 캐시
   const RAW_INPUT_CACHE_MAX = 50;
   let _rawInputObservationSeq = 0;
-  const _finalConfirmationRequestBySession = new Map();
+  // RisuAI serializes main chat generation and invokes afterRequest without a
+  // request identifier. Keep the exact beforeRequest context as the callback
+  // handoff, then detach it synchronously when afterRequest starts.
+  let _activeFinalConfirmationRequestContext = null;
   const _pendingFinalConfirmations = new Map();
   const _pendingFinalConfirmationRecoveryEntries = new Map();
   let _pendingFinalConfirmationDrainInFlight = false;
@@ -5036,16 +5039,14 @@
     }
     _pendingFinalConfirmations.clear();
     _pendingFinalConfirmationDrainRequested = false;
-    for (const requestContext of _finalConfirmationRequestBySession.values()) {
-      if (
-        requestContext
-        && requestContext.state !== "accepted"
-        && requestContext.state !== "terminal"
-      ) {
-        requestContext.state = "superseded";
-      }
+    if (
+      _activeFinalConfirmationRequestContext
+      && _activeFinalConfirmationRequestContext.state !== "accepted"
+      && _activeFinalConfirmationRequestContext.state !== "terminal"
+    ) {
+      _activeFinalConfirmationRequestContext.state = "superseded";
     }
-    _finalConfirmationRequestBySession.clear();
+    _activeFinalConfirmationRequestContext = null;
     try {
       await unloadTurnWorkflowHUD();
     } catch (err) {
@@ -14997,9 +14998,10 @@
       return;
     }
     if (_turnWorkflowHUDWatchRunning && _turnWorkflowHUDActiveRequestId === normalizedRequestId) return;
-    if (_turnWorkflowHUDActiveRequestId !== normalizedRequestId) {
-      primeTurnWorkflowHUD(normalizedRequestId);
-    }
+    // A prior request may still be completing after the host has already
+    // started a newer request. Its backend workflow remains request-scoped,
+    // but it must not take over the newer request's visible HUD.
+    if (_turnWorkflowHUDActiveRequestId !== normalizedRequestId) return;
     cancelTurnWorkflowHUDStream();
     _turnWorkflowHUDWatchToken++;
     const token = _turnWorkflowHUDWatchToken;
@@ -18721,25 +18723,6 @@
       const chatIndex = resolved.chatIdx;
       const chat = resolved.chat;
       if (!chat || !Array.isArray(chat.message)) return null;
-      const previousContext = _finalConfirmationRequestBySession.get(sid) || null;
-      if (
-        previousContext
-        && previousContext.state !== "accepted"
-        && previousContext.state !== "terminal"
-        && previousContext.state !== "superseded"
-      ) {
-        previousContext.state = "superseded";
-      }
-      for (const [pendingKey, pending] of _pendingFinalConfirmations.entries()) {
-        if (
-          pending
-          && previousContext
-          && String(pending.sessionId || "") === sid
-          && pending.requestContext === previousContext
-        ) {
-          await supersedePendingFinalConfirmation(pendingKey, pending, "new_request_superseded_pending_final");
-        }
-      }
       const hostChatId = typeof chat.id === "string" ? chat.id.trim() : "";
       const baselineAssistantIndex = chat.message.length - 1;
       const baselineAssistant = baselineAssistantIndex >= 0
@@ -18808,9 +18791,14 @@
           && Number.isFinite(baselineAssistant.time)
           ? Math.trunc(baselineAssistant.time)
           : 0,
+        hostContext: hostContext && typeof hostContext === "object"
+          ? { ...hostContext }
+          : null,
+        pendingContext: null,
+        orchestrationResult: null,
+        nonMainSkip: null,
         state: hostChatId ? "captured" : "unavailable",
       };
-      _finalConfirmationRequestBySession.set(sid, context);
       updateRuntimeState("lastStreamingAfterRequest", "watching", {
         detail: "awaiting official afterRequest response",
         reason_code: "awaiting_official_after_request",
@@ -18996,10 +18984,10 @@
     }
   }
 
-  function acceptRisuAfterRequestFinal(sessionId, type, pendingContext, requestContext, assistantContent) {
-    const sid = String(sessionId || "").trim();
-    const requestType = String(type || "model");
+  function acceptRisuAfterRequestFinal(requestContext, assistantContent) {
     if (!requestContext) return { observed: false, reason: "request_context_missing" };
+    const sid = String(requestContext.sessionId || "").trim();
+    const requestType = String(requestContext.requestType || "model");
     if (requestContext.state === "accepted") {
       return {
         observed: false,
@@ -19016,19 +19004,9 @@
       return { observed: false, reason: "request_context_not_captured" };
     }
     const correlationId = String(requestContext.requestId || "").trim();
-    const pendingCorrelationId = String(pendingContext && pendingContext.requestId || "").trim();
-    const pendingCorrelationMismatch = !!pendingContext
-      && (!pendingCorrelationId || pendingCorrelationId !== correlationId);
-    if (
-      !sid
-      || requestContext.sessionId !== sid
-      || requestContext.requestType !== requestType
-      || !correlationId
-      || pendingCorrelationMismatch
-      || (pendingContext && pendingContext.orchResult && pendingContext.orchResult !== lastOrchResult)
-    ) {
+    if (!sid || !correlationId) {
       requestContext.state = "terminal";
-      return { observed: false, reason: "after_request_correlation_mismatch" };
+      return { observed: false, reason: "after_request_context_incomplete" };
     }
     const finalContent = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
     if (!finalContent) {
@@ -19193,7 +19171,9 @@
   async function queuePendingCompleteTurnPayload(payload, reason, requiredObservationChangeFrom, options = {}) {
     const sid = String(payload && payload.chat_session_id || "").trim();
     if (!sid || !payload) return false;
-    const requestContext = _finalConfirmationRequestBySession.get(sid) || null;
+    const requestContext = options.requestContext && typeof options.requestContext === "object"
+      ? options.requestContext
+      : null;
     const previousRecoveryKey = String(options.previousRecoveryKey || "").trim();
     if (options.persist !== false) {
       const persisted = await persistPendingFinalConfirmationRecovery(
@@ -19339,7 +19319,7 @@
           payload,
           String(result.code || "pending_confirmation"),
           requiredKey,
-          { previousRecoveryKey: pending.recoveryKey }
+          { previousRecoveryKey: pending.recoveryKey, requestContext: pending.requestContext || null }
         );
         if (!requeued) {
           pending.inFlight = false;
@@ -20294,7 +20274,6 @@
 
   // Sprint 4-A-1: session별 pending orchestration context
   const _pendingOrchBySession = new Map();
-  const _nonMainRequestSkipBySession = new Map();
   let _orchRequestSeq = 0;
   function makeOrchRequestId(sessionId) {
     _orchRequestSeq += 1;
@@ -31521,46 +31500,6 @@
     }
   }
 
-  function rememberNonMainRequestSkip(sessionId, decision, stage) {
-    try {
-      const sid = String(sessionId || "");
-      if (!sid) return;
-      if (decision && decision.reason === "post_output_secondary_request") {
-        const originalUser = String((decision.postOutputReplacement && decision.postOutputReplacement.userContent) || "").trim();
-        if (originalUser) cacheRawInputForSession(sid, originalUser);
-      }
-      _nonMainRequestSkipBySession.set(sid, {
-        marker: decision && decision.marker ? String(decision.marker) : "",
-        requestType: decision && decision.requestType ? String(decision.requestType) : "",
-        stage: String(stage || ""),
-        reason: decision && decision.reason ? String(decision.reason) : "non_main_request",
-        postOutputReplacement: decision && decision.postOutputReplacement
-          ? decision.postOutputReplacement
-          : null,
-      });
-    } catch {
-      // non-fatal
-    }
-  }
-
-  function takeNonMainRequestSkip(sessionId, type) {
-    try {
-      const sid = String(sessionId || "");
-      if (!sid) return null;
-      const item = _nonMainRequestSkipBySession.get(sid);
-      if (!item) return null;
-      const requestType = String(type || "model");
-      const incomingAuxType = requestType === "submodel" || requestType === "otherAx";
-      if (!incomingAuxType && item.requestType && item.requestType !== requestType) {
-        return null;
-      }
-      _nonMainRequestSkipBySession.delete(sid);
-      return item;
-    } catch {
-      return null;
-    }
-  }
-
   function markNonMainRequestHookSkipped(stage, sessionId, decision) {
     const marker = (decision && decision.marker) || "";
     const reason = decision && decision.reason ? String(decision.reason) : "non_main_request";
@@ -32120,6 +32059,8 @@
   async function onBeforeRequest(payload, type) {
     let orchSessionId = null;
     let orchHostContext = null;
+    let finalConfirmationRequestContext = null;
+    let requestPendingContext = null;
     let orchestrationDirtySignals = null;
     let orchestrationCacheDescriptor = null;
     try {
@@ -32181,8 +32122,17 @@
       const orchRequestId = makeOrchRequestId(orchSessionId);
       primeTurnWorkflowHUD(orchRequestId);
      await captureAssistantPrefillSeedForSession(orchSessionId, messages, orchHostContext);
-      await captureFinalConfirmationRequestContext(orchSessionId, type, orchRequestId, orchHostContext);
+      finalConfirmationRequestContext = await captureFinalConfirmationRequestContext(
+        orchSessionId,
+        type,
+        orchRequestId,
+        orchHostContext
+      );
+      _activeFinalConfirmationRequestContext = finalConfirmationRequestContext;
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
+      if (finalConfirmationRequestContext) {
+        finalConfirmationRequestContext.rawInputObservation = rawInputObservation || null;
+      }
       const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
       if (postOutputReplacement && !rawInputObservation) {
         postOutputReplacement.hostContext = orchHostContext;
@@ -32200,7 +32150,11 @@
             requestType: String(type || "model"),
             postOutputReplacement,
           };
-          rememberNonMainRequestSkip(orchSessionId, postOutputDecision, "beforeRequest");
+          const originalPostOutputUser = String(postOutputReplacement.userContent || "").trim();
+          if (originalPostOutputUser) cacheRawInputForSession(orchSessionId, originalPostOutputUser);
+          if (finalConfirmationRequestContext) {
+            finalConfirmationRequestContext.nonMainSkip = postOutputDecision;
+          }
           markNonMainRequestHookSkipped("beforeRequest", orchSessionId, postOutputDecision);
           return payload;
         }
@@ -32539,7 +32493,7 @@
         _pendingOrchBySession.delete(orchSessionId);
       }
 
-      _pendingOrchBySession.set(orchSessionId, {
+      requestPendingContext = {
         requestId: orchRequestId,
         startedAt: Date.now(),
         status: "running",
@@ -32547,7 +32501,13 @@
         rawInputObservation,
         recentContext,
         orchResult: null,
-      });
+        hostContext: orchHostContext,
+        cacheDescriptor: orchestrationCacheDescriptor,
+      };
+      if (finalConfirmationRequestContext) {
+        finalConfirmationRequestContext.pendingContext = requestPendingContext;
+      }
+      _pendingOrchBySession.set(orchSessionId, requestPendingContext);
 
       // orchestration 실행 — 결과는 캐시에 보관
       // Phase 1-1: continuityInfo가 있으면 orchestrateTurnHelpers에 전달
@@ -32558,6 +32518,9 @@
           chatSessionId: orchSessionId,
           hostContext: orchHostContext,
         });
+        if (finalConfirmationRequestContext) {
+          finalConfirmationRequestContext.orchestrationResult = lastOrchResult || null;
+        }
       } catch (orchErr) {
         const failedPending = _pendingOrchBySession.get(orchSessionId);
         if (failedPending && failedPending.requestId === orchRequestId) {
@@ -32850,18 +32813,11 @@
       }
 
       // pending context 갱신 — orchestration 완료
-      _pendingOrchBySession.set(orchSessionId, {
-        requestId: orchRequestId,
-        startedAt: Date.now(),
-        status: "ready",
-        userInput,
-        rawInputObservation,
-        recentContext,
-        orchResult: lastOrchResult,
-        hostContext: orchHostContext,
-        cacheDescriptor: orchestrationCacheDescriptor,
-        sourceLineageAmbiguous: !!sourceLineageOverlapAmbiguous,
-      });
+      requestPendingContext.status = "ready";
+      requestPendingContext.orchResult = lastOrchResult;
+      requestPendingContext.cacheDescriptor = orchestrationCacheDescriptor;
+      requestPendingContext.sourceLineageAmbiguous = !!sourceLineageOverlapAmbiguous;
+      _pendingOrchBySession.set(orchSessionId, requestPendingContext);
       if (lastOrchResult && lastOrchResult._trace) {
         lastOrchResult._trace.contextInjectionGate = { ...contextInjectionGate };
       }
@@ -33130,69 +33086,44 @@
       recordRisuHookLifecycle("afterRequest", "callback_observed");
       debugLog("afterRequest hook fired, type:", type);
       if (!isNarrativeType(type) || !settings.enabled) return content;
-      const latestOrchResult = lastOrchResult;
-      // RisuAI applies this replacer's return value as the new response. Reuse
-      // the coordinates captured in beforeRequest; never perform host reads or
-      // backend session routing on the visible-output path.
-      const capturedWriteSessionId = normalizeSessionId(
-        latestOrchResult && latestOrchResult._chatSessionId
-      );
-      const cachedWriteSessionId = normalizeSessionId(
-        _sessionCache && _sessionCache.sessionId
-      );
-      const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;
-      const persistencePendingCtx = _pendingOrchBySession.get(chatSessionId) || null;
-      const persistenceHostContext = persistencePendingCtx && persistencePendingCtx.hostContext
-        || captureSessionHostContextFromCache(chatSessionId);
-      const persistenceOrchResult = persistencePendingCtx
-        && persistencePendingCtx.orchResult === latestOrchResult
-          ? latestOrchResult
-          : null;
-      const pendingRequestId = String(persistencePendingCtx && persistencePendingCtx.requestId || "");
-      const pendingRawInputObservation = persistencePendingCtx && persistencePendingCtx.rawInputObservation || null;
-      const rawInputObservationForRequest = pendingRawInputObservation
-        && pendingRequestId
-        && String(pendingRawInputObservation.boundRequestId || "") === pendingRequestId
-        && (!persistencePendingCtx.orchResult || persistencePendingCtx.orchResult === persistenceOrchResult)
-          ? pendingRawInputObservation
-          : null;
-      let persistenceRequestContext = null;
-      function clearPersistencePendingContext() {
-        if (_pendingOrchBySession.get(chatSessionId) === persistencePendingCtx) {
-          _pendingOrchBySession.delete(chatSessionId);
-        }
+      if (!isSaveType(type)) return content;
+
+      // The official RisuAI afterRequest callback has no request identifier.
+      // Main chat generation is serialized by the host, so atomically detach
+      // the exact context installed by the matching beforeRequest. From this
+      // point onward no active-session, cache, orchestration-global, or pending
+      // lookup participates in write ownership.
+      const persistenceRequestContext = _activeFinalConfirmationRequestContext;
+      _activeFinalConfirmationRequestContext = null;
+      if (!persistenceRequestContext) {
+        updateRuntimeState("lastStreamingAfterRequest", "warn", {
+          detail: "afterRequest request context missing; persistence not started",
+          reason_code: "before_request_context_missing",
+          requestType: String(type || "model"),
+        });
+        return content;
       }
-      function clearEffectiveInputAwaitingForRequest() {
-        if (
-          !persistenceRequestContext
-          || _finalConfirmationRequestBySession.get(chatSessionId) === persistenceRequestContext
-        ) {
-          _effectiveInputAwaitingNewTurn = false;
-        }
-      }
+      const chatSessionId = String(persistenceRequestContext.sessionId || "").trim();
+      const persistenceRequestType = String(persistenceRequestContext.requestType || "model");
+      const persistenceHostContext = persistenceRequestContext.hostContext || null;
+      const persistenceOrchResult = persistenceRequestContext.orchestrationResult || null;
+      const rawInputObservationForRequest = persistenceRequestContext.rawInputObservation || null;
+      _pendingOrchBySession.delete(chatSessionId);
       const rawAfterRequestText = typeof content === "string" ? content : "";
       let responseReturnContent = content;
-      const rememberedNonMainSkip = takeNonMainRequestSkip(chatSessionId, type);
-      const requestType = String(type || "model");
-      const auxiliaryTypedWithoutMainContext = (requestType === "submodel" || requestType === "otherAx")
-        && !latestOrchResult
-        && !_pendingOrchBySession.get(chatSessionId);
-      if (rememberedNonMainSkip && rememberedNonMainSkip.reason === "post_output_secondary_request") {
+      const nonMainSkip = persistenceRequestContext.nonMainSkip || null;
+      if (nonMainSkip && nonMainSkip.reason === "post_output_secondary_request") {
         schedulePostOutputFinalReplacement(
           chatSessionId,
-          rememberedNonMainSkip,
+          nonMainSkip,
           rawAfterRequestText
         );
         debugLog("afterRequest: post-output secondary response scheduled for existing-turn replacement");
         return content;
       }
-      if (rememberedNonMainSkip || auxiliaryTypedWithoutMainContext) {
-        const skipDecision = rememberedNonMainSkip || {
-          requestType: String(type || "model"),
-          reason: auxiliaryTypedWithoutMainContext ? "auxiliary_type_without_main_context" : "remembered_non_main_request",
-        };
-        markNonMainRequestHookSkipped("afterRequest", chatSessionId, skipDecision);
-        debugLog("afterRequest: non-main response skipped:", skipDecision.reason, "type:", type);
+      if (nonMainSkip) {
+        markNonMainRequestHookSkipped("afterRequest", chatSessionId, nonMainSkip);
+        debugLog("afterRequest: non-main response skipped:", nonMainSkip.reason, "type:", persistenceRequestType);
         return content;
       }
       const nativePersistableContent = rawAfterRequestText.trim()
@@ -33205,7 +33136,7 @@
           reason_code: "deferred_until_next_host_signal",
           detail: "deferred_until_next_host_signal",
           sessionId: chatSessionId,
-          requestType: String(type || "model"),
+          requestType: persistenceRequestType,
         });
       }
       const assistantPrefillSeed = takeAssistantPrefillSeedForSession(chatSessionId);
@@ -33220,24 +33151,26 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      if (isSaveType(type)) {
-        const requestContext = _finalConfirmationRequestBySession.get(chatSessionId) || null;
-        persistenceRequestContext = requestContext;
+      {
         const finalContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
-        const finalObservation = acceptRisuAfterRequestFinal(
-          chatSessionId,
-          type,
-          persistencePendingCtx,
-          requestContext,
-          finalContent
-        );
+        const finalObservation = acceptRisuAfterRequestFinal(persistenceRequestContext, finalContent);
         if (finalObservation.accepted === true && finalObservation.duplicate === true) {
           updateRuntimeState("lastStreamingAfterRequest", "ok", {
             detail: "duplicate official afterRequest ignored",
             reason_code: String(finalObservation.reason || "already_accepted_after_request"),
             sessionId: chatSessionId,
-            requestType: String(type || "model"),
+            requestType: persistenceRequestType,
             promptMemoryAvailability: "same_turn",
+          });
+          return responseReturnContent;
+        }
+        if (finalObservation.accepted !== true) {
+          updateRuntimeState("lastStreamingAfterRequest", "warn", {
+            detail: "afterRequest request context was not accepted; persistence not started",
+            reason_code: String(finalObservation.reason || "after_request_context_not_accepted"),
+            sessionId: chatSessionId,
+            requestType: persistenceRequestType,
+            promptMemoryAvailability: "pending_current_turn",
           });
           return responseReturnContent;
         }
@@ -33248,7 +33181,7 @@
           detail: "afterRequest content accepted; persistence scheduled",
           reason_code: "after_request_content_accepted",
           sessionId: chatSessionId,
-          requestType: String(type || "model"),
+          requestType: persistenceRequestType,
           promptMemoryAvailability: "same_turn",
         });
         Promise.resolve().then(function persistAfterRequestContent() {
@@ -33261,7 +33194,6 @@
         });
         return responseReturnContent;
       }
-      return continueAcceptedFinalPersistence(persistenceOrchResult, null);
 
       async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
         const hostFinalityAccepted = !!(
@@ -33283,58 +33215,13 @@
         (typeof displayContent === "string" && normalizeAssistantPersistenceCandidate(displayContent))
       );
       if ((content == null || typeof content !== "string" || !content.trim()) && !hasAfterRequestAssistantCandidate) {
-        clearEffectiveInputAwaitingForRequest();
         return responseReturnContent ?? "";
       }
 
-      // Day 12: model 타입에서만 save — 이중 저장 방지
-      if (!isSaveType(type)) {
-        if (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency) {
-          lastTurnTrace = lastOrchResult._trace;
-        }
-        clearEffectiveInputAwaitingForRequest();
-        if (panelOpen) {
-          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderNonModel");
-        }
-        debugLog("afterRequest: skip save for type:", type);
-        return responseReturnContent;
-      }
-
-      // Sprint 4-A-1: pending context consume
-      const pendingCtx = persistencePendingCtx;
-      const cacheAssessment = assessOrchestrationCacheReuseOr1d(chatSessionId, pendingCtx);
-      const staleProposalState = assessOrchestrationStaleProposalServingOr1j(chatSessionId, pendingCtx, {
-        cacheAssessment,
-      });
-      if (pendingCtx && pendingCtx.status === "ready" && pendingCtx.orchResult) {
-        const selectedAfterRequestOrchResult = selectAfterRequestOrchestrationResultOr1j(lastOrchResult, pendingCtx, staleProposalState);
-        if (!lastOrchResult && selectedAfterRequestOrchResult) {
-          // pending의 결과는 OR-1j stale guard를 통과한 경우에만 afterRequest persistence salvage 용도로 사용한다.
-          lastOrchResult = selectedAfterRequestOrchResult;
-        } else if (!lastOrchResult && staleProposalState.blocked) {
-          debugLog("afterRequest stale pending dropped:", staleProposalState.blockedReasons.join(",") || staleProposalState.cacheReason || "unknown");
-        }
-        const traceTarget = lastOrchResult && lastOrchResult._trace
-          ? lastOrchResult._trace
-          : (pendingCtx.orchResult && pendingCtx.orchResult._trace ? pendingCtx.orchResult._trace : null);
-        applyOrchestrationStaleProposalTraceOr1j(traceTarget, staleProposalState);
-        if (lastOrchResult && lastOrchResult._trace) {
-          const fallbackReason = cacheAssessment.reusable && staleProposalState.cacheReuseAllowed ? "pending_ready" : "direct_result";
-          applyOrchestrationFallbackTraceOr1b(lastOrchResult._trace, resolveOrchestrationFallbackRouteOr1b(fallbackReason, pendingCtx));
-          applyOrchestrationCacheTraceOr1d(lastOrchResult._trace, pendingCtx.cacheDescriptor || lastOrchResult._orchestrationCacheDescriptor || null, cacheAssessment);
-          applyStep13GovernorTraceGv1d(lastOrchResult._trace, {
-            dirtyState: traceTarget ? traceTarget.orchestrationDirtySignals : null,
-            cacheAssessment,
-            staleProposalState,
-            failureBudgetState: peekStep13FailureBudgetStateGv1c(chatSessionId),
-          });
-        }
-      }
       if (lastOrchResult && lastOrchResult._trace) {
         const failureBudgetState = recordStep13GovernorTurnOutcomeGv1c(chatSessionId, lastOrchResult._trace);
         applyStep13GovernorFailureBudgetTraceGv1c(lastOrchResult._trace, failureBudgetState);
       }
-      clearPersistencePendingContext();
 
       // 세션별 turn counter lazy-restore:
       // 플러그인이 재초기화(채팅 전환, 새로고침)되면 localStorage/_mem이 초기화되어
@@ -33453,15 +33340,13 @@
           degradedReason: "user_input_missing",
           assistantContent: recoveredAssistantContent || displayContent || "",
           metadata: {
-            request_type: String(type || "model"),
+            request_type: persistenceRequestType,
             source: "afterRequest_user_input_missing",
             recovery_source: userInputRecoverySource || "",
             raw_cache_hit: !!rawInputObservationForRequest,
           },
           evidence: { capture: "user_input_missing" },
         }).catch(function() {});
-        clearPersistencePendingContext();
-        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         ensureActiveChatCompletedTurnsBackfilled(chatSessionId, {
           reason: "after_request_user_input_missing",
@@ -33646,14 +33531,13 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         recordStep23CaptureVerification(chatSessionId, turnIdx, "afterRequest", "degraded", {
           degradedReason: "assistant_content_missing",
           userInput: safeSavedUserInput,
           assistantContent: displayContent || "",
           metadata: {
-            request_type: String(type || "model"),
+            request_type: persistenceRequestType,
             source: "afterRequest_assistant_missing",
           },
           evidence: { capture: "assistant_content_missing" },
@@ -33703,8 +33587,6 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        clearPersistencePendingContext();
-        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderDuplicatePairReplay");
@@ -33729,8 +33611,6 @@
           detail: routingSkipReason,
           failReasons: [routingSkipReason],
         });
-        clearPersistencePendingContext();
-        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderRoutingOwnershipSkip");
@@ -33762,8 +33642,6 @@
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        clearPersistencePendingContext();
-        clearEffectiveInputAwaitingForRequest();
         lastOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderPersistenceGate");
@@ -33831,7 +33709,7 @@
                 orchestrationResult: lastOrchResult,
                 sourceAcceptanceFinality,
                 hostContext: persistenceHostContext,
-                risuRequestObservation: buildRisuRequestObservation(type, "afterRequest", "assistant"),
+                risuRequestObservation: buildRisuRequestObservation(persistenceRequestType, "afterRequest", "assistant"),
               }
             ),
             null, "buildCompleteTurnRequestBody"
@@ -34026,7 +33904,8 @@
           const pendingPersisted = await queuePendingCompleteTurnPayload(
             _ctQueuedPayload,
             String(_ctResult.code || "pending_confirmation"),
-            sourceAcceptanceFinality && sourceAcceptanceFinality.observationKey
+            sourceAcceptanceFinality && sourceAcceptanceFinality.observationKey,
+            { requestContext: persistenceRequestContext }
           );
           if (pendingPersisted) {
             if (removeQueuedItem("complete_turn", _ctQueuedPayload)) await flushQueueSave();
@@ -34154,7 +34033,7 @@
           assistantContent: persistedAssistantContent,
           userInputPreserved: !payloadRewrittenForCapture,
           metadata: {
-            request_type: String(type || "model"),
+            request_type: persistenceRequestType,
             source: "complete_turn_afterRequest",
             complete_turn_status: _ctResult && _ctResult.status || "not_called",
             save_ok: !!(_ctOk && _ctResult && _ctResult.save_ok),
@@ -34408,14 +34287,6 @@
         logTurnTraceSummary();
       }
 
-      const committedOutputDurable = !!(
-        (_ctOk && _ctResult && _ctResult.save_ok === true)
-        || completeTurnRetryQueued
-      );
-      if (!hostFinalityAccepted || committedOutputDurable) {
-        clearEffectiveInputAwaitingForRequest();
-      }
-
       lastOrchResult = null;
 
       // L-1d: maintenance pass — fire-and-forget (non-blocking)
@@ -34444,7 +34315,6 @@
       return responseReturnContent;
       }
     } catch (err) {
-      _effectiveInputAwaitingNewTurn = false;
       warnLog("onAfterRequest error:", err.message);
       updateRuntimeState("lastError", "error", { detail: "afterRequest: " + err.message });
       return content;
@@ -37033,13 +36903,11 @@
   async function computeActiveChatRescanDryRunPlan(sessionId, hostContext = null) {
     const sid = String(sessionId || "").trim();
     if (!sid) throw new Error("missing session id");
-    let fixedHostContext = hostContext;
+    const fixedHostContext = hostContext && typeof hostContext === "object"
+      ? Object.assign({}, hostContext)
+      : null;
     if (!fixedHostContext) {
-      const activeSid = String(await getCurrentChatSessionId() || "").trim();
-      if (!activeSid || activeSid !== sid) {
-        return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
-      }
-      fixedHostContext = captureSessionHostContextFromCache(sid);
+      return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
     }
 
     const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, fixedHostContext);
@@ -37229,6 +37097,7 @@
       return false;
     }
     if (_activeChatRescanDryRunState.loading) return false;
+    const rescanHostContext = captureSessionHostContextFromCache(sid);
 
     _activeChatRescanDryRunState.loading = true;
     _activeChatRescanDryRunState.error = null;
@@ -37236,7 +37105,7 @@
     refreshExplorerUI();
 
     try {
-      const plan = await computeActiveChatRescanDryRunPlan(sid);
+      const plan = await computeActiveChatRescanDryRunPlan(sid, rescanHostContext);
       if (!plan.ok && plan.notLive) {
         _activeChatRescanDryRunState.loading = false;
         _activeChatRescanDryRunState.error = plan.error || t('explorer.activeRescan.notLive');
@@ -37456,10 +37325,7 @@
     const requestedLimit = parseInt(maxItems, 10);
     const limit = Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : 0;
     const shortId = sid.length > 30 ? sid.slice(0, 15) + "…" + sid.slice(-10) : sid;
-    const startingActiveSid = String(await getCurrentChatSessionId() || "").trim();
-    const normalizeHostContext = startingActiveSid === sid
-      ? captureSessionHostContextFromCache(sid)
-      : null;
+    const normalizeHostContext = captureSessionHostContextFromCache(sid);
     const confirmed = await showConfirmModal(
       "Session Normalize",
       "[Session Normalize]\n\n" +
@@ -37560,6 +37426,7 @@
     const limit = Math.max(1, parseInt(maxTurns, 10) || ACTIVE_CHAT_RECENT_REBUILD_DEFAULT_TURNS);
     const normalizedOrder = String(orderMode || ACTIVE_CHAT_REBUILD_DEFAULT_ORDER).trim().toLowerCase() === "recent" ? "recent" : "oldest";
     const shortId = sid.length > 30 ? sid.slice(0, 15) + "…" + sid.slice(-10) : sid;
+    const rebuildHostContext = captureSessionHostContextFromCache(sid);
     const confirmed = await showConfirmModal(
       "Recent Active Chat Rebuild",
       "[Recent Active Chat Rebuild]\n\n" +
@@ -37578,7 +37445,7 @@
     refreshExplorerUI();
 
     try {
-      const plan = await computeActiveChatRescanDryRunPlan(sid);
+      const plan = await computeActiveChatRescanDryRunPlan(sid, rebuildHostContext);
       if (!plan.ok) {
         _activeChatRecentRebuildState.loading = false;
         _activeChatRecentRebuildState.error = plan.error || "active chat rebuild plan failed";
@@ -37812,18 +37679,15 @@
     };
     if (!sid) return bundle;
 
-    try {
-      bundle.activeSessionId = String(await getCurrentChatSessionId() || "").trim();
-    } catch {
-      bundle.activeSessionId = "";
-    }
-    if (!bundle.activeSessionId || bundle.activeSessionId !== sid) {
+    const repairHostContext = captureSessionHostContextFromCache(sid);
+    if (!repairHostContext) {
       return bundle;
     }
 
+    bundle.activeSessionId = sid;
     bundle.liveSessionMatch = true;
     try {
-      const dryRunPlan = await computeActiveChatRescanDryRunPlan(sid);
+      const dryRunPlan = await computeActiveChatRescanDryRunPlan(sid, repairHostContext);
       if (!dryRunPlan || !dryRunPlan.ok) {
         bundle.blocked = true;
         bundle.blockedReason = "active_chat_dry_run_preflight_failed";
