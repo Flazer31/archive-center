@@ -106,8 +106,6 @@ func (s *Server) handleDashboardViewModel(w http.ResponseWriter, r *http.Request
 			if snapshot, ok := s.TurnWorkflows.snapshot(requestID); ok && snapshot.ChatSessionID == sessionID {
 				req.WorkflowSnapshot = &snapshot
 			}
-		} else if snapshot, ok := s.TurnWorkflows.latestSnapshotForSession(sessionID); ok {
-			req.WorkflowSnapshot = &snapshot
 		}
 	}
 	writeJSON(w, http.StatusOK, buildDashboardViewModel(req))

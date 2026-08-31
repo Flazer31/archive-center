@@ -505,6 +505,7 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 	}
 	if !manualCandidate &&
 		!req.IncompleteTailCandidate &&
+		strings.TrimSpace(req.AssistantObservationScope) != "" &&
 		strings.TrimSpace(req.LifecycleActionObservation) != store.LogicalTurnLifecycleSuperseded {
 		req.AssistantEvidenceRequired = true
 		if strings.TrimSpace(req.AssistantObservationScope) != "full_active_chat" {

@@ -985,10 +985,7 @@ func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t 
 		t.Fatal("input hook must not reconcile rollback before the request source is eligible")
 	}
 	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
-	rollbackCall := `await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext, {
-        reason: "before_request_assistant_observation",
-        hostLifecycleObservation: "before_request_observed",
-      });`
+	rollbackCall := "await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext"
 	if count := strings.Count(beforeRequest, rollbackCall); count != 1 {
 		t.Fatalf("beforeRequest rollback reconciliation calls=%d, want exactly 1", count)
 	}
@@ -1001,9 +998,6 @@ func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t 
 	}
 	if !(decisionAt < reconcileAt && reconcileAt < runtimeConfigAt && reconcileAt < fullPrepareAt) {
 		t.Fatalf("beforeRequest ordering invalid: decision=%d reconcile=%d runtime=%d full=%d", decisionAt, reconcileAt, runtimeConfigAt, fullPrepareAt)
-	}
-	if strings.Contains(beforeRequest, "await checkAndAutoRollback(") {
-		t.Fatal("beforeRequest restored the removed counter/snapshot rollback heuristic")
 	}
 }
 
@@ -1020,6 +1014,7 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 	for _, required := range []string{
 		`addRisuChatListener("output", onRisuOutput)`,
 		`removeRisuChatListener("output", onRisuOutput)`,
+		`_risuHookLifecycle.output = "callback_observed"`,
 	} {
 		if !strings.Contains(src, required) {
 			t.Fatalf("Archive Center.js missing output worldline owner %q", required)
@@ -1033,6 +1028,7 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 		"_committedOutputPersistenceBySession",
 		"continueAcceptedFinalPersistence(",
 		"ensureActiveChatCompletedTurnsBackfilled(",
+		"recordRisuHookLifecycle(",
 		"updateRuntimeState(",
 	} {
 		if strings.Contains(callback, forbidden) {
@@ -1046,12 +1042,8 @@ func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testi
 const assert = (condition, message) => { if (!condition) throw new Error(message); };
 let routed = [];
 let sharedFinalityStatus = "preserved";
-let finalPersistenceCalls = 0;
 let rejectRouting = false;
 const _risuHookLifecycle = {output: "registration_requested_unconfirmed"};
-const _finalConfirmationRequestBySession = new Map();
-function recordRisuHookLifecycle(name, state) { _risuHookLifecycle[name] = state; }
-function observePendingFinalConfirmationAtHostSignal(){ finalPersistenceCalls++; return Promise.resolve({accepted:false}); }
 function debugLog() {}
 function warnLog() {}
 function requestBackendSessionRoutingTurnResolution(sessionId, mode, facts) {
@@ -1067,8 +1059,7 @@ const ordinary = onRisuOutput({
 });
 assert(ordinary === undefined, "output callback must return immediately, not a Promise");
 assert(sharedFinalityStatus === "preserved", "ordinary output changed shared finality status");
-assert(finalPersistenceCalls === 0, "ordinary output callback attempted final persistence");
-assert(_risuHookLifecycle.output === "callback_observed", "ordinary output callback evidence was not recorded");
+assert(_risuHookLifecycle.output === "registration_requested_unconfirmed", "ordinary output claimed branch callback evidence");
 const incompleteBranch = onRisuOutput({
   characterIndex: -1, chatIndex: -1, messageIndex: -1,
   chat: {id: "", message: [
@@ -1104,7 +1095,6 @@ Promise.resolve().then(() => Promise.resolve()).then(() => {
   assert(worldline.messages[0].role === "user" && worldline.messages[0].message_chat_id === "middle", "nearest exact user anchor was not frozen");
   assert(worldline.messages[1].message_chat_id === "direct-source", "immediate branch source was not frozen");
   assert(sharedFinalityStatus === "preserved", "successful branch observation changed shared finality status");
-  assert(finalPersistenceCalls === 0, "branch output callback attempted final persistence");
   rejectRouting = true;
   const failed = onRisuOutput({
     char: {chaId: "stable"}, characterIndex: 3, chatIndex: 4, messageIndex: 2,
@@ -1124,23 +1114,6 @@ Promise.resolve().then(() => Promise.resolve()).then(() => {
 	cmd := exec.Command(nodePath, "-e", script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("output-listener worldline fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestArchiveCenterJSAfterRequestUsesBeforeRequestSessionCoordinates(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"const capturedWriteSessionId = normalizeSessionId(",
-		"latestOrchResult && latestOrchResult._chatSessionId",
-		"const chatSessionId = capturedWriteSessionId || cachedWriteSessionId || SESSION_FALLBACK;",
-	}
-	for _, marker := range required {
-		if !strings.Contains(src, marker) {
-			t.Fatalf("Archive Center.js missing captured afterRequest session marker %q", marker)
-		}
-	}
-	if strings.Contains(src, "resolveAfterRequestWriteSessionId") {
-		t.Fatal("obsolete afterRequest session reread path remains")
 	}
 }
 

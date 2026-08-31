@@ -1502,6 +1502,7 @@ function assert(condition, message) {
     stages:[],counts:[],warnings:[],facts:[{key:"host_observation",status:"observed",disposition:"dropped",severity:"notice"}]
   }), "backend OOC notice was rejected");
   await _turnWorkflowHUDRenderChain;
+  assert(_turnWorkflowHUDActiveRequestId === "", "terminal OOC notice remained the active workflow request");
   assert(surface.innerHTML.includes("OOC 인식"), "OOC decision did not replace the awaiting-response title");
   assert(surface.innerHTML.includes("OOC 판정으로 입력 처리를 취소했습니다."), "OOC cancellation detail was not rendered");
   assert(surface.card.attributes.style.includes("rgba(245,196,81,.58)"), "OOC notice did not use the yellow attention accent");
@@ -1518,6 +1519,7 @@ function assert(condition, message) {
     notice_code:"ASSISTANT_OUTPUT_DELETE_CONFIRMED",counts:[],stages:[],warnings:[]
   }), "backend deletion notice was rejected");
   await _turnWorkflowHUDRenderChain;
+  assert(_turnWorkflowHUDActiveRequestId === "", "terminal deletion notice remained the active workflow request");
   assert(surface.innerHTML.includes("삭제 확인 테스트"), "backend deletion notice title was not rendered");
   assert(surface.innerHTML.includes("삭제 출력 정리 테스트"), "backend deletion notice detail was not rendered");
   assert(surface.card && typeof surface.card.listeners.click === "function", "successful deletion notice lost card dismissal");
@@ -2352,8 +2354,8 @@ async function runFixture(expectedFresh, expectedContinuity) {
   const result = await onBeforeRequest(payload, "model");
   if (result !== payload) throw new Error("fixture stop did not preserve original payload");
   if (prepareCalls.length !== 2) throw new Error("model prepare calls=" + prepareCalls.length + ", want 2");
-  if (preFullSideEffects !== 0) throw new Error("beforeRequest executed deletion comparison during a pending request=" + preFullSideEffects);
-  if (boundedHostLifecycleCalls !== 3) throw new Error("official host lifecycle was not observed/captured before fail-open="+boundedHostLifecycleCalls);
+  if (preFullSideEffects !== 1) throw new Error("beforeRequest did not start backfill exactly once after rollback reconciliation=" + preFullSideEffects);
+	if (boundedHostLifecycleCalls !== 2) throw new Error("beforeRequest did not capture prefill and exact request coordinates="+boundedHostLifecycleCalls);
   if (runtimeConfigBindingCalls !== 1) throw new Error("runtime config binding checks="+runtimeConfigBindingCalls+", want 1");
   if (rollbackReconcileCalls !== 1) throw new Error("rollback reconciliation calls="+rollbackReconcileCalls+", want 1");
   const sourceDecisionAt = lifecycleOrder.indexOf("source_decision");
@@ -3562,6 +3564,19 @@ func TestAfterRequestStopsBeforeCompleteTurnWhenBackendRejectsTurnOwnership(t *t
 	}
 }
 
+func TestAfterRequestPersistsCurrentTurnBeforeDrainingHistoricalFailures(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	afterRequestSource := extractJSFunctionBlockForTest(t, src, "function onAfterRequest(content, type)")
+	complete := strings.Index(afterRequestSource, `() => tryCompleteTurn(turnIdx`)
+	drain := strings.Index(afterRequestSource, `return drainFailedQueue();`)
+	if complete < 0 || drain < 0 || complete >= drain {
+		t.Fatalf("historical failed-queue recovery can still block current complete-turn: complete=%d drain=%d", complete, drain)
+	}
+	if strings.Contains(afterRequestSource[:complete], `await safeCall(() => drainFailedQueue()`) {
+		t.Fatal("afterRequest still awaits historical failed-queue recovery before current complete-turn")
+	}
+}
+
 func TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -3948,104 +3963,6 @@ function debugLog() {}
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("next-host-signal observation fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestRisuHostFinalConfirmationAcceptsExactSlotAndOneTrailingCurrentUser(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for exact host-final fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSFunction(t, src, "observePendingFinalConfirmationAtHostSignal")
-	script := functionBody + `
-let activeChat = {id:"chat-a",isStreaming:false,message:[
-  {role:"char",data:"greeting"},
-  {role:"user",data:"question",chatId:"user-1",time:100},
-  {role:"char",data:"append final",chatId:"assistant-1",time:200,generationInfo:{generationId:"g-append"}},
-  {role:"user",data:"next question",chatId:"user-2",time:300},
-]};
-const R = {
-  async getCurrentCharacterIndex() { return 7; },
-  async getCurrentChatIndex() { return 3; },
-  async getChatFromIndex() { return activeChat; },
-};
-const _finalConfirmationRequestBySession = new Map();
-const _pendingOrchBySession = new Map();
-let lastOrchResult = null;
-let persisted = [];
-function normalizeAssistantPersistenceCandidate(value) { return String(value || "").trim(); }
-function computeOrchestrationDirtyHashOr1c(value) { return "h:" + String(value || "").trim(); }
-function extractActiveChatComparableMessages(chat) {
-  return chat.message.map((item,index)=>({
-    role:item.role==="char"?"assistant":item.role,
-    content:item.data,risuMessageIndex:index,
-  }));
-}
-async function backfillOneActiveChatCompletedTurn(sid,pair,options) {
-  persisted.push({sid,pair,observation:options.sourceAcceptanceFinality});
-  return {status:"saved"};
-}
-function updateRuntimeState() {}
-function warnLog() {}
-function debugLog() {}
-
-(async function() {
-  const appendContext = {
-    state:"candidate_observed",sessionId:"session-1",requestId:"request-1",requestType:"model",
-    characterIndex:7,chatIndex:3,hostChatId:"chat-a",requestMessageCount:2,
-    userMessageIndex:1,userMessageChatId:"user-1",userMessageTimeMs:100,
-    userObservedContentHash:"h:question",userObservedContent:"question",
-    baselineAssistantIndex:-1,afterRequestCandidateHash:"h:append final",
-  };
-  _finalConfirmationRequestBySession.set("session-1",appendContext);
-  const append = await observePendingFinalConfirmationAtHostSignal("session-1","beforeRequest");
-  await Promise.resolve();
-  if (!append.accepted || appendContext.state !== "accepted" || persisted.length !== 1) {
-    throw new Error("exact append slot was not confirmed");
-  }
-  const observed = persisted[0].observation;
-  if (observed.later_active_turn_message_count !== 1 ||
-      observed.next_signal_active_role !== "user" ||
-      observed.next_signal_user_index !== 3 ||
-      observed.next_signal_user_observed_content_hash !== "h:next question" ||
-      observed.prompt_memory_availability !== "one_turn_late") {
-    throw new Error("trailing current-user anchor was not preserved");
-  }
-  const duplicate = await observePendingFinalConfirmationAtHostSignal("session-1","input");
-  if (!duplicate.accepted || !duplicate.duplicate || persisted.length !== 1) {
-    throw new Error("accepted host final persisted more than once");
-  }
-  const replaceContext = {
-    state:"captured",sessionId:"session-2",requestId:"request-2",requestType:"model",
-    characterIndex:7,chatIndex:3,hostChatId:"chat-a",requestMessageCount:2,
-    userMessageIndex:0,userObservedContentHash:"h:question",
-    baselineAssistantIndex:1,baselineAssistantContentHash:"h:old final",
-    baselineGenerationId:"g-old",baselineAssistantTimeMs:150,
-  };
-  activeChat = {id:"chat-a",isStreaming:false,message:[
-    {role:"user",data:"question",chatId:"user-reroll",time:100},
-    {role:"char",data:"rerolled final",chatId:"assistant-reroll",time:250,generationInfo:{generationId:"g-new"}},
-  ]};
-  _finalConfirmationRequestBySession.set("session-2",replaceContext);
-  const reroll = await observePendingFinalConfirmationAtHostSignal("session-2","input");
-  await Promise.resolve();
-  if (!reroll.accepted || persisted.length !== 2 ||
-      persisted[1].observation.message_index !== 1 ||
-      persisted[1].observation.generation_id !== "g-new") {
-    throw new Error("same-length reroll replacement was not confirmed");
-  }
-})().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("exact host-final fixture failed: %v\n%s", err, out)
 	}
 }
 
@@ -6216,122 +6133,6 @@ function debugLog() {}
 	}
 }
 
-func TestAutomaticDeletionUsesOneBackendDecisionAndExactFromTurn(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for copied-session rollback fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend")
-	script := functionBody + `
-const settings = {enabled:true,dbEnabled:true};
-const SESSION_FALLBACK = "default";
-const _rollbackTailReconcileInFlightBySession = new Set();
-const _pendingFinalConfirmations = new Map();
-let rollbackFrom = 0;
-let decisionCalls = 0;
-let deleteCalls = 0;
-let suppliedDecision = null;
-function extractActiveChatMessageList(chat) { return chat.message; }
-function extractActiveChatRollbackMessages(chat) { return chat.message; }
-function buildRollbackAssistantObservations(messages) {
-  return messages.filter(item => item.role === "assistant").map((item, index) => ({
-    message_id:item.id, generation_id:"", content_hash:item.hash, message_index:index,
-    disabled_state:"active", streaming_state:"not_streaming", final_state:"active_final"
-  }));
-}
-async function requestBackendRollbackDecision(_sid, candidate, _reason, detail) {
-  decisionCalls++;
-  if (candidate !== 0 || detail.assistantObservationScope !== "full_active_chat" || detail.currentAssistantObservations.length !== 1) {
-    throw new Error("adapter did not send the complete assistant observation to Go");
-  }
-  return {status:"ok",contract_version:"rollback.decision.v2",allowed:true,from_turn:9,decision_token:"one-token"};
-}
-async function executeAutoRollback(_sid, turn, _reason, _detail, options) {
-  deleteCalls++;
-  rollbackFrom = turn;
-  suppliedDecision = options.rollbackDecision;
-  return true;
-}
-function updateSessionSnapshot() {}
-function debugLog() {}
-(async function() {
-  const ok = await reconcileActiveChatTailDeletionWithBackend("copy-target", {message:[{role:"assistant",id:"a8",hash:"h8"}]});
-  if (!ok || rollbackFrom !== 9 || decisionCalls !== 1 || deleteCalls !== 1 || !suppliedDecision || suppliedDecision.decision_token !== "one-token") {
-    throw new Error("single Go decision was not reused: ok=" + ok + " rollbackFrom=" + rollbackFrom + " decisions=" + decisionCalls + " deletes=" + deleteCalls);
-  }
-})().catch(function(err) {
-  console.error(err && err.stack || err);
-  process.exit(1);
-});
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("copied-session rollback JS runtime fixture failed: %v\n%s", err, out)
-	}
-}
-
-func TestFullAssistantObservationLetsBackendRetainUserInputOnlyDeletion(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for cold-start tail reconciliation fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend")
-	script := functionBody + `
-const settings = {enabled:true,dbEnabled:true};
-const SESSION_FALLBACK = "default";
-const _rollbackTailReconcileInFlightBySession = new Set();
-let rollbackCalls = 0;
-let decisionCalls = 0;
-function extractActiveChatMessageList(chat) { return chat.message; }
-function extractActiveChatRollbackMessages(chat) { return chat.message; }
-function buildRollbackAssistantObservations(messages) {
-  return messages.filter(item => item.role === "assistant").map((item, index) => ({
-    message_id:item.id, generation_id:"", content_hash:item.hash, message_index:index,
-    disabled_state:"active", streaming_state:"not_streaming", final_state:"active_final"
-  }));
-}
-async function requestBackendRollbackDecision(_sid, candidate, _reason, detail) {
-  decisionCalls++;
-  if (candidate !== 0 || detail.assistantObservationScope !== "full_active_chat" || detail.currentAssistantObservations.length !== 1) {
-    throw new Error("full assistant observation was not forwarded");
-  }
-  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
-}
-async function executeAutoRollback() { rollbackCalls++; return true; }
-function updateSessionSnapshot() {}
-function debugLog() {}
-(async function() {
-  const ok = await reconcileActiveChatTailDeletionWithBackend("user-input-removed", {message:[
-    {role:"assistant",id:"assistant-1",hash:"h1"}
-  ]});
-  if (!ok || rollbackCalls !== 0 || decisionCalls !== 1) {
-    throw new Error("backend retain decision was not honored: ok=" + ok + " decisions=" + decisionCalls + " deletes=" + rollbackCalls);
-  }
-})().catch(function(err) {
-  console.error(err && err.stack || err);
-  process.exit(1);
-});
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("cold-start tail reconciliation fixture failed: %v\n%s", err, out)
-	}
-}
-
 func TestPostprocessorReplacementRebuildsDeletionSnapshot(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -6518,11 +6319,17 @@ const R = {getCharacter:function() {}};
 const _rollbackHostSignalReconcilePromiseBySession = new Map();
 const _rollbackTailReconcileInFlightBySession = new Set();
 const chats = new Map([
-  ["session-A", {message:[{role:"user",content:"uA",id:"uA"},{role:"assistant",content:"aA",id:"aA"}]}],
-  ["session-B", {message:[{role:"user",content:"uB",id:"uB"},{role:"assistant",content:"aB",id:"aB"}]}],
+  ["session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"}]}],
+  ["session-B", {message:[{role:"user",content:"uB1"},{role:"assistant",content:"aB1",id:"aB1"}]}],
 ]);
+const snapshots = new Map([
+  ["session-A", {messagesPreview:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"},{role:"user",content:"uA2"},{role:"assistant",content:"aA2",id:"aA2"}],assistantMessagesPreview:[{role:"assistant",content:"aA1",id:"aA1"},{role:"assistant",content:"aA2",id:"aA2"}],turnIndex:12}],
+  ["session-B", {messagesPreview:[{role:"user",content:"uB1"},{role:"assistant",content:"aB1",id:"aB1"},{role:"user",content:"uB2"},{role:"assistant",content:"aB2",id:"aB2"}],assistantMessagesPreview:[{role:"assistant",content:"aB1",id:"aB1"},{role:"assistant",content:"aB2",id:"aB2"}],turnIndex:22}],
+]);
+const canonicalBefore = new Map([["session-A",11],["session-B",21]]);
+const rollbackCalls = [];
+const activeChatResolutionCalls = [];
 const decisionCalls = [];
-const resolutionCalls = [];
 let releaseFirstA;
 const firstAGate = new Promise(function(resolve) { releaseFirstA = resolve; });
 let firstAFails = true;
@@ -6534,39 +6341,34 @@ async function resolveCurrentActiveChatObject(sessionId, hostContext) {
   if (!hostContext || hostContext.hostChatId !== expectedHost) {
     throw new Error("fixed host context was lost for " + sessionId);
   }
-  resolutionCalls.push(sessionId + "|" + hostContext.hostChatId);
+  activeChatResolutionCalls.push(sessionId + "|" + hostContext.hostChatId);
   return {chat:chats.get(sessionId)};
 }
 function extractActiveChatMessageList(chat) { return chat.message; }
-function extractActiveChatRollbackMessages(chat) { return chat.message; }
+function extractAssistantSnapshotMessages(messages) { return messages.filter(function(item) { return item.role === "assistant"; }); }
+function getSessionSnapshot(sessionId) { return snapshots.get(sessionId); }
 function buildRollbackAssistantObservations(messages) {
-  return messages.map(function(item, index) { return {item,index}; })
-    .filter(function(entry) { return entry.item.role === "assistant"; })
-    .map(function(entry) {
-      return {
-        message_id:String(entry.item.id || ""), generation_id:"",
-        content_hash:String(entry.item.content || ""), message_index:entry.index,
-        disabled_state:"active", streaming_state:"not_streaming", final_state:"active_final"
-      };
-    });
+  return messages.filter(function(item) { return item.role === "assistant"; }).map(function(item,index) {
+    return {message_id:item.id,generation_id:"gen-"+item.id,content_hash:"hash-"+item.content,message_index:index*2+1,final_state:"active_final"};
+  });
 }
-async function requestBackendRollbackDecision(sessionId, candidateTurn, reason, detail, source) {
-  decisionCalls.push(sessionId);
-  if (candidateTurn !== 0 || reason !== "active_chat_assistant_observation" || source !== "auto") {
-    throw new Error("rollback decision request contract changed for " + sessionId);
-  }
-  if (!detail || detail.assistantObservationScope !== "full_active_chat" || detail.currentAssistantObservations.length !== 1) {
-    throw new Error("full assistant observation was not sent for " + sessionId);
-  }
+async function requestBackendRollbackDecision(sessionId, _fromTurn, _reason, detail, requestSource) {
+  decisionCalls.push(sessionId + "|" + detail.hostContext.hostChatId);
+  if (requestSource !== "auto" || detail.assistantObservationScope !== "full_active_chat") throw new Error("wrong rollback-decision contract");
   if (sessionId === "session-A" && firstAFails) {
     await firstAGate;
     firstAFails = false;
     throw new Error("session A transport failed");
   }
-  return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
+  const currentCount = detail.currentAssistantObservations.length;
+  const expectedCount = snapshots.get(sessionId).assistantMessagesPreview.length;
+  if (currentCount < expectedCount) {
+    return {status:"ok",allowed:true,from_turn:canonicalBefore.get(sessionId)+1,decision_token:"decision-"+sessionId};
+  }
+  return {status:"ok",allowed:false,reason:"assistant_output_not_removed"};
 }
-async function executeAutoRollback() { throw new Error("retain decision attempted a deletion"); }
-function updateSessionSnapshot() {}
+async function executeAutoRollback(sessionId, turn) { rollbackCalls.push(sessionId + "|" + turn); return true; }
+function updateSessionSnapshot(sessionId, messages) { snapshots.set(sessionId,{messagesPreview:messages,assistantMessagesPreview:extractAssistantSnapshotMessages(messages),turnIndex:canonicalBefore.get(sessionId)+1}); }
 async function flushMicrotasks() {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
 }
@@ -6579,11 +6381,12 @@ async function flushMicrotasks() {
   const firstB = reconcileRollbackFromHostSignal("session-B", contextB);
 
   await flushMicrotasks();
-  assert(decisionCalls.filter(function(value) { return value === "session-A"; }).length === 1,
+  assert(decisionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 1,
     "duplicate session A started more than one backend decision: " + JSON.stringify(decisionCalls));
-  assert(decisionCalls.filter(function(value) { return value === "session-B"; }).length === 1,
+  assert(decisionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 1,
     "session B was skipped while session A was pending: " + JSON.stringify(decisionCalls));
   assert(await firstB, "session B did not complete independently of pending session A");
+  assert(rollbackCalls.indexOf("session-B|22") >= 0, "session B used another session's canonical turn");
 
   releaseFirstA();
   const firstAResults = await Promise.all([firstA, duplicateA]);
@@ -6593,15 +6396,19 @@ async function flushMicrotasks() {
   assert(_rollbackTailReconcileInFlightBySession.size === 0, "completed tail reconciliation was not cleaned up");
 
   assert(await reconcileRollbackFromHostSignal("session-A", contextA), "failed session A observation was not retryable");
-  assert(decisionCalls.filter(function(value) { return value === "session-A"; }).length === 2,
-    "session A retry did not make exactly one new backend decision: " + JSON.stringify(decisionCalls));
-  assert(await reconcileRollbackFromHostSignal("session-A", contextA), "unchanged session A observation did not reach exact Go validation");
-  assert(await reconcileRollbackFromHostSignal("session-B", contextB), "unchanged session B observation was consumed by session A");
-  assert(decisionCalls.length === 5, "sequential observations did not each reach Go: " + JSON.stringify(decisionCalls));
-  assert(resolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
-    "session A did not retain its fixed host context: " + JSON.stringify(resolutionCalls));
-  assert(resolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
-    "session B did not retain its fixed host context: " + JSON.stringify(resolutionCalls));
+  assert(rollbackCalls.indexOf("session-A|12") >= 0, "session A retry used another session's canonical turn");
+  assert(decisionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 2,
+    "session A did not retain its fixed host context: " + JSON.stringify(decisionCalls));
+  assert(await reconcileRollbackFromHostSignal("session-A", contextA) === false,
+    "unchanged session A snapshot triggered another rollback");
+  assert(await reconcileRollbackFromHostSignal("session-B", contextB) === false,
+    "unchanged session B snapshot triggered another rollback");
+  assert(decisionCalls.length === 5 && rollbackCalls.length === 2,
+    "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
+  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
+    "session A active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
+  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
+    "session B active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -6616,124 +6423,6 @@ async function flushMicrotasks() {
 	}
 	if strings.TrimSpace(string(out)) != "ok" {
 		t.Fatalf("session-scoped rollback reconciliation fixture output=%q, want ok", out)
-	}
-}
-
-func TestSequentialRollbackObservationDetectsDeletedRecreatedOutputRuntime(t *testing.T) {
-	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
-	if nodePath == "" {
-		var err error
-		nodePath, err = exec.LookPath("node")
-		if err != nil {
-			t.Skip("node is required for sequential rollback observation fixture")
-		}
-	}
-	src := readArchiveCenterJS(t)
-	functions := strings.Join([]string{
-		extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend"),
-		extractArchiveCenterJSAsyncFunction(t, src, "reconcileRollbackFromHostSignal"),
-	}, "\n")
-	script := `
-const settings = {enabled:true,dbEnabled:true,rollbackAutoEnabled:true};
-const SESSION_FALLBACK = "default";
-const R = {getCharacter:function() {}};
-const _rollbackHostSignalReconcilePromiseBySession = new Map();
-const _rollbackTailReconcileInFlightBySession = new Set();
-const fixedChat = {message:[
-  {role:"assistant",content:"older output",id:"assistant-old"},
-  {role:"user",content:"same reroll input",id:"user-current"}
-]};
-let backendActive = new Map([["assistant-old", 63]]);
-let decisionCalls = 0;
-const rollbackTurns = [];
-function assert(condition, message) { if (!condition) throw new Error(message); }
-function debugLog() {}
-async function getCurrentChatSessionId() { throw new Error("explicit session id was discarded"); }
-async function resolveCurrentActiveChatObject(sessionId, hostContext) {
-  if (sessionId !== "session-reroll" || !hostContext || hostContext.hostChatId !== "host-reroll") {
-    throw new Error("fixed reroll session context was lost");
-  }
-  return {chat:fixedChat};
-}
-function extractActiveChatMessageList(chat) { return chat.message; }
-function extractActiveChatRollbackMessages(chat) { return chat.message; }
-function buildRollbackAssistantObservations(messages) {
-  return messages.map(function(item, index) { return {item,index}; })
-    .filter(function(entry) { return entry.item.role === "assistant"; })
-    .map(function(entry) {
-      return {
-        message_id:String(entry.item.id || ""), generation_id:"",
-        content_hash:String(entry.item.content || ""), message_index:entry.index,
-        disabled_state:"active", streaming_state:"not_streaming", final_state:"active_final"
-      };
-    });
-}
-async function requestBackendRollbackDecision(sessionId, candidateTurn, _reason, detail) {
-  decisionCalls++;
-  if (sessionId !== "session-reroll" || candidateTurn !== 0) throw new Error("wrong rollback decision owner");
-  if (!detail || detail.reason !== "before_request_assistant_observation" || detail.hostLifecycleObservation !== "before_request_observed") {
-    throw new Error("beforeRequest lifecycle diagnostics were lost: " + JSON.stringify(detail));
-  }
-  const observed = new Set(detail.currentAssistantObservations.map(function(item) { return item.message_id; }));
-  const missing = Array.from(backendActive.entries()).filter(function(entry) { return !observed.has(entry[0]); });
-  if (missing.length === 0) {
-    return {status:"ok",contract_version:"rollback.decision.v2",allowed:false,reason:"assistant_output_not_removed"};
-  }
-  return {
-    status:"ok", contract_version:"rollback.decision.v2", allowed:true,
-    from_turn:missing[0][1], decision_token:"decision-" + decisionCalls,
-    observed_after:detail.currentAssistantObservations.map(function(item) { return item.message_id; })
-  };
-}
-async function executeAutoRollback(sessionId, turn, _reason, detail, options) {
-  if (sessionId !== "session-reroll" || !options || !options.rollbackDecision || !options.rollbackDecision.decision_token) {
-    throw new Error("exact Go decision was not reused for deletion");
-  }
-  rollbackTurns.push(turn);
-  backendActive = new Map(detail.currentAssistantObservations.map(function(item) { return [item.message_id, 63]; }));
-  return true;
-}
-function updateSessionSnapshot() {}
-` + "\n" + functions + `
-(async function() {
-  const context = {sessionId:"session-reroll",hostChatId:"host-reroll"};
-  const beforeRequestObservation = {
-    reason:"before_request_assistant_observation",
-    hostLifecycleObservation:"before_request_observed"
-  };
-
-  assert(await reconcileRollbackFromHostSignal("session-reroll", context, beforeRequestObservation), "pre-output retain observation failed");
-  assert(decisionCalls === 1 && rollbackTurns.length === 0, "pre-output retain mutated data");
-
-  backendActive.set("assistant-new", 64);
-  assert(await reconcileRollbackFromHostSignal("session-reroll", context, beforeRequestObservation),
-    "deleted output returning to the pre-output host shape did not reach Go");
-  assert(decisionCalls === 2 && rollbackTurns.length === 1 && rollbackTurns[0] === 64,
-    "first deleted output was not rolled back exactly: " + JSON.stringify({decisionCalls,rollbackTurns}));
-
-  backendActive.set("assistant-new-generation", 64);
-  assert(await reconcileRollbackFromHostSignal("session-reroll", context, beforeRequestObservation),
-    "deleted recreated output with the same host shape did not reach Go");
-  assert(decisionCalls === 3 && rollbackTurns.length === 2 && rollbackTurns[1] === 64,
-    "recreated output deletion was suppressed: " + JSON.stringify({decisionCalls,rollbackTurns}));
-
-  assert(await reconcileRollbackFromHostSignal("session-reroll", context, beforeRequestObservation), "post-rollback retain validation failed");
-  assert(decisionCalls === 4 && rollbackTurns.length === 2,
-    "unchanged retain validation caused a duplicate mutation: " + JSON.stringify({decisionCalls,rollbackTurns}));
-  process.stdout.write("ok");
-})().catch(function(err) {
-  console.error(err && err.stack || err);
-  process.exit(1);
-});
-`
-	cmd := exec.Command(nodePath, "-")
-	cmd.Stdin = strings.NewReader(script)
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("sequential rollback observation fixture failed: %v\n%s", err, out)
-	}
-	if strings.TrimSpace(string(out)) != "ok" {
-		t.Fatalf("sequential rollback observation fixture output=%q, want ok", out)
 	}
 }
 

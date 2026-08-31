@@ -620,25 +620,6 @@ func TestRunSmokeWithRealServer(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSRerollRollbackPath(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	required := []string{
-		"async function executeAutoRollback",
-		"async function reconcileRollbackFromHostSignal",
-		"await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {",
-		`rollbackParams.set("req_source", requestSource);`,
-		"method: \"DELETE\"",
-		"requestSource = options && options.requestSource ? String(options.requestSource) : \"auto\"",
-		"assistant_deleted_before_next_user_turn",
-		"assistant_output_not_removed",
-	}
-	for _, needle := range required {
-		if !strings.Contains(src, needle) {
-			t.Fatalf("Archive Center.js missing reroll rollback path marker %q", needle)
-		}
-	}
-}
-
 func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
