@@ -306,7 +306,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 
 	directEvidenceLines := make([]string, 0, len(artifactHydration.Evidence))
 	for _, ev := range artifactHydration.Evidence {
-		text := compactPrepareTurnLine(ev.EvidenceText, 320)
+		text := compactPrepareTurnLine(ev.EvidenceText, 0)
 		if text == "" {
 			continue
 		}
@@ -336,7 +336,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if desc == "" {
 			desc = strings.TrimSpace(sl.Name)
 		}
-		desc = compactPrepareTurnLine(desc, 170)
+		desc = compactPrepareTurnLine(desc, 0)
 		if desc != "" {
 			if !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
 				storylineIrrelevantDropped++
@@ -629,10 +629,10 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			continue
 		}
 		rawDescription := strings.TrimSpace(pt.Description)
-		desc := compactPrepareTurnLine(rawDescription, 170)
+		desc := compactPrepareTurnLine(rawDescription, 0)
 		status := strings.TrimSpace(pt.Status)
 		if status != "" && desc != "" {
-			desc = compactPrepareTurnLine("status="+status+"; "+desc, 190)
+			desc = compactPrepareTurnLine("status="+status+"; "+desc, 0)
 		}
 		if desc != "" {
 			pinnedActive := pt.Pinned && strings.EqualFold(status, "open")
@@ -654,12 +654,12 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if len(episodeLines) >= recallLimit {
 			break
 		}
-		summary := compactPrepareTurnLine(es.SummaryText, 180)
+		summary := compactPrepareTurnLine(es.SummaryText, 0)
 		if summary == "" {
 			summary = fmt.Sprintf("Episode %d-%d", es.FromTurn, es.ToTurn)
 		}
-		if anchors := episodeDenseAnchorPreview(es, summary, 260); anchors != "" {
-			summary = compactPrepareTurnLine(summary+"; "+anchors, 360)
+		if anchors := episodeDenseAnchorPreview(es, summary, 0); anchors != "" {
+			summary = compactPrepareTurnLine(summary+"; "+anchors, 0)
 		}
 		if !prepareTurnSupportRecallEligible(memoryQuery, summary) {
 			episodeIrrelevantDropped++
@@ -676,7 +676,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, maxChars)
 
 	if latest := latestPrepareTurnEvidence(evidence); latest != nil {
-		out.LatestDirectEvidenceText = compactPrepareTurnLine(latest.EvidenceText, 260)
+		out.LatestDirectEvidenceText = compactPrepareTurnLine(latest.EvidenceText, 0)
 	}
 	out.RecentRawTurnText = recentPrepareTurnRawTurn(chatLogs)
 	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(evidence)
@@ -763,7 +763,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 					return
 				}
 				encoded, _ := json.Marshal(subset)
-				text := compactPrepareTurnLine(string(encoded), 320)
+				text := compactPrepareTurnLine(string(encoded), 0)
 				if text == "" || !prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text) {
 					return
 				}
@@ -1702,17 +1702,21 @@ func prunePrepareTurnEmptySurface(value any) (any, bool) {
 
 func episodeDenseAnchorPreview(es store.EpisodeSummary, summary string, limit int) string {
 	parts := []string{}
-	if key := compactEpisodeJSONPreview(es.KeyEvents, 120); key != "" {
+	componentLimit := 120
+	if limit <= 0 {
+		componentLimit = 0
+	}
+	if key := compactEpisodeJSONPreview(es.KeyEvents, componentLimit); key != "" {
 		summaryKey := collapseTextKey(summary)
 		keyText := collapseTextKey(key)
 		if summaryKey == "" || keyText == "" || (summaryKey != keyText && !strings.Contains(summaryKey, keyText)) {
 			parts = append(parts, "key_event="+key)
 		}
 	}
-	if rel := compactEpisodeJSONPreview(es.RelationshipChangesJSON, 120); rel != "" {
+	if rel := compactEpisodeJSONPreview(es.RelationshipChangesJSON, componentLimit); rel != "" {
 		parts = append(parts, "rel="+rel)
 	}
-	if loop := compactEpisodeJSONPreview(es.OpenLoopsJSON, 120); loop != "" {
+	if loop := compactEpisodeJSONPreview(es.OpenLoopsJSON, componentLimit); loop != "" {
 		parts = append(parts, "open_loop="+loop)
 	}
 	return compactPrepareTurnLine(strings.Join(parts, "; "), limit)

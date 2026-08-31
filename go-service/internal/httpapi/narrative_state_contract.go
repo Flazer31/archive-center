@@ -696,9 +696,9 @@ func buildNarrativeContinuityCorrection(values []store.StatusCurrentValue, rawUs
 			if owner == "" {
 				owner = view.Subject
 			}
-			lines = append(lines, fmt.Sprintf("- Perspective only: %s currently believes about %s / %s: %s (%s).", owner, view.Subject, view.Slot, compactPrepareTurnLine(view.Current, 180), reason))
+			lines = append(lines, fmt.Sprintf("- Perspective only: %s currently believes about %s / %s: %s (%s).", owner, view.Subject, view.Slot, compactPrepareTurnLine(view.Current, 0), reason))
 		} else {
-			lines = append(lines, fmt.Sprintf("- Current continuity: %s / %s: %s (%s).", view.Subject, view.Slot, compactPrepareTurnLine(view.Current, 180), reason))
+			lines = append(lines, fmt.Sprintf("- Current continuity: %s / %s: %s (%s).", view.Subject, view.Slot, compactPrepareTurnLine(view.Current, 0), reason))
 		}
 		selected++
 	}

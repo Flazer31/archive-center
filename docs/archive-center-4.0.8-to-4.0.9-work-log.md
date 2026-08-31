@@ -2065,3 +2065,69 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - package와 의존 runtime은 갱신 뒤 다시 실행하지 않았다. 이 package를 실제 RisuAI에
   다시 등록해 A 삭제/B 선택 상태와 리롤 저장 상태를 확인하기 전에는
   `live_verified`가 아니다.
+
+## 2026-08-31 · 실제 기억 주입 후보의 고정 길이 절단 제거
+
+### 재현된 결함
+
+- 실제 세션 `char_0_cid_125f11ae-b87e-4dad-a0d0-c36ae9574796`의 75턴
+  `entity_state` 원본은 1,295자짜리 유효 JSON이었다. 기존 prepare-turn 조립은
+  characters subset을 320자로 먼저 잘라 `백주상단의 짐꾼 우두머리가 마른`에서
+  끝나는 무효 JSON을 만들었다.
+- 이 절단은 최종 기억 예산이 아니라 후보 조립 단계에 있었다. 따라서 예산이 충분해도
+  뒤 내용은 복구할 수 없었고, HUD와 실제 모델 입력 모두 같은 잘린 후보를 받았다.
+- 같은 방식의 고정 문자 절단이 실제 주입 후보인 직접 근거, storyline, pending thread,
+  episode dense anchor, chapter/arc/saga recall, canonical entity subset, persona/NPC private
+  recollection, continuity correction, scoped verbatim support에도 남아 있었다.
+
+### 최소 수정
+
+- 위 실제 기억 주입 후보에 적용되던 80~720자 사전 절단을 제거했다. JSON과 문장은
+  후보를 만들 때 끝까지 보존한다.
+- 기존 `memory_delivery_plan.v1`의 최종 Go 예산은 유지했다. 충분한 예산이면 완전한
+  항목을 포함하고, 부족하면 그 항목 전체를 보류한다. 중간 문자열을 잘라 끼워 넣는
+  경로는 추가하지 않았다.
+- retrieval 검색문, lorebook 선택 query, Input Context, 진단/미리보기와 UI 표시용 축약은
+  이 수정의 실제 장기기억 payload 대상이 아니므로 변경하지 않았다.
+- 지원 근거의 기존 최대 3개 선택은 유지했다. 내용 160자/전체 720자 절단만 제거했다.
+- `Archive Center.js`는 추가 0줄, 제거 0줄이다. 새 guard, fallback, watcher, queue,
+  자동 삭제, 전역 검색 또는 별도 주입 경로를 추가하지 않았다.
+- Go 생산 코드 변경량은 추가 42줄, 제거 76줄이다. adapter에 남긴 새 business logic은
+  없으며 최종 선택·예산 owner는 계속 Go다.
+- 수정 전 clean 상태는 로컬 commit `6932bde`로 보존했다.
+
+### 행동 기반 회귀와 실제 Go API 검증
+
+- `TestPrepareTurnCanonicalCharacterCandidateRemainsWholeUntilFinalBudget`는 320자를 넘는
+  canonical character candidate의 끝 표식과 JSON 파싱 성공을 확인한다. 충분한 예산에서는
+  끝까지 전달되고 작은 예산에서는 일부가 아니라 항목 전체가 보류된다.
+- `TestPrepareTurnMemoryCandidateRenderersPreserveLongTails`는 episode, chapter, arc, saga,
+  persona, NPC private candidate가 이전 제한 뒤의 끝 표식을 보존하는지 확인한다.
+- `TestPrepareTurnContinuityCorrectionPreservesLongCurrentValue`와
+  `TestBuildScopedVerbatimSupportMatchesVR18Surface`는 현재 연속성 값과 원문 근거의 끝부분이
+  보존되는지 확인한다.
+- 대상 패키지 `./internal/archive ./internal/httpapi`는 통과했다. 번들 Node의
+  `--check Archive Center.js`도 통과했다.
+- 전체 `go test ./...`에서 이번 변경 패키지를 포함한 나머지는 통과했다. 기존
+  `cmd/js-route-variant-smoke`에는 현재 JS 문구/배치를 문자열로 강제하는 4건이 남아
+  실패했다. 금지된 소스 문자열 검사를 맞추기 위해 생산 코드나 기대 문자열을 바꾸지
+  않았다. Node 경로를 지정한 실행형 JS 회귀들은 통과했다.
+- 새 소스에서 빌드한 임시 backend를 실제 MariaDB와 ChromaDB에 연결해 실제
+  `POST /prepare-turn`을 호출했다. 응답 backend instance는
+  `b7ff9c69684bd7e22712fab048fe2fb0`, status는 `ok`였다.
+- 기존 custom class budget을 사용해 상태 lane을 실제 payload에 포함시킨 응답에서
+  `entity_state` JSON 2개는 각각 318자와 1,250자였고 둘 다 구조 파싱에 성공했다.
+  1,250자 항목에는 첫 물품 `보급형 빨래비누`와 마지막 물품
+  `숙성 중인 비누 틀 2개`가 함께 남았으며 `memory_delivery_plan.final_text`와 실제
+  `payload_application_plan.v1`의 `long_term_memory` lane에도 마지막 물품이 존재했다.
+- 기본 자동 예산 호출에서는 잘리지 않은 큰 episode 항목들이 앞 순서의 예산을 사용해
+  뒤 상태 항목 일부가 통째로 보류되는 것도 관측했다. 이는 문자열 절단이 아니라 기존
+  최종 선택 순서의 결과이며 이번 절단 제거 범위에서 새 우회 정책을 넣지 않았다.
+
+### 현재 경계
+
+- 소스 수정, 행동 회귀, 실제 Go API와 실제 MariaDB/ChromaDB payload 검증까지 완료했다.
+- 동일 위치 4.0.9 Windows 테스트 패키지는 이 기록 다음에 갱신한다.
+- 실제 RisuAI에 갱신 package를 등록해 HUD의 기억 입력과 실제 다음 본문을 확인하는 일은
+  사용자 검증 대기다. 그 확인 전에는 이 항목을 `live_verified` 또는 완료로 기록하지
+  않는다.

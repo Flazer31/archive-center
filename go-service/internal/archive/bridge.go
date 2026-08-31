@@ -16,8 +16,6 @@ const (
 	scopedVerbatimSurfaceRoute      = "scoped_verbatim_support"
 	scopedVerbatimPromptStrategy    = "latest_anchor_only"
 	scopedVerbatimMaxItems          = 3
-	scopedVerbatimMaxTotalChars     = 720
-	scopedVerbatimMaxExcerptChars   = 160
 	scopedVerbatimSupportSourceKind = "direct_evidence"
 )
 
@@ -134,7 +132,6 @@ func BuildScopedVerbatimSupport(evidence []store.DirectEvidence) ScopedVerbatimS
 
 	items := make([]ScopedVerbatimItem, 0, scopedVerbatimMaxItems)
 	lines := make([]string, 0, scopedVerbatimMaxItems)
-	totalChars := 0
 	latestTurn := any(nil)
 
 	for _, row := range rows {
@@ -148,7 +145,6 @@ func BuildScopedVerbatimSupport(evidence []store.DirectEvidence) ScopedVerbatimS
 		if excerpt == "" {
 			continue
 		}
-		excerpt = truncateRunes(excerpt, scopedVerbatimMaxExcerptChars)
 		anchor := evidenceAnchorTurn(row)
 		if latestTurn == nil && anchor > 0 {
 			latestTurn = anchor
@@ -165,15 +161,7 @@ func BuildScopedVerbatimSupport(evidence []store.DirectEvidence) ScopedVerbatimS
 		}
 		sourceTag := fmt.Sprintf("[source=%s scope=%s turns=%s anchor=%s kind=%s]", scopedVerbatimSupportSourceKind, scope, turns, anchorLabel, kind)
 		line := strings.TrimSpace(sourceTag + " " + excerpt)
-		projected := totalChars + len(line)
-		if len(lines) > 0 {
-			projected++
-		}
-		if projected > scopedVerbatimMaxTotalChars {
-			break
-		}
 		lines = append(lines, line)
-		totalChars = projected
 		anchorValue := any(nil)
 		if anchor > 0 {
 			anchorValue = anchor
@@ -196,8 +184,8 @@ func BuildScopedVerbatimSupport(evidence []store.DirectEvidence) ScopedVerbatimS
 		PromptInjectionStrategy: scopedVerbatimPromptStrategy,
 		SurfaceRoute:            scopedVerbatimSurfaceRoute,
 		MaxItems:                scopedVerbatimMaxItems,
-		MaxTotalChars:           scopedVerbatimMaxTotalChars,
-		MaxExcerptChars:         scopedVerbatimMaxExcerptChars,
+		MaxTotalChars:           0,
+		MaxExcerptChars:         0,
 		Count:                   len(items),
 		LatestTurnIndex:         latestTurn,
 		Text:                    strings.Join(lines, "\n"),
@@ -241,18 +229,4 @@ func evidenceTurnsLabel(row store.DirectEvidence) string {
 
 func compactSpaces(text string) string {
 	return strings.Join(strings.Fields(strings.TrimSpace(text)), " ")
-}
-
-func truncateRunes(text string, limit int) string {
-	if limit <= 0 {
-		return ""
-	}
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	if limit <= 3 {
-		return string(runes[:limit])
-	}
-	return string(runes[:limit-3]) + "..."
 }
