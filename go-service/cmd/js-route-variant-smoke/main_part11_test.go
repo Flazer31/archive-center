@@ -2329,7 +2329,7 @@ async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn 
 	}
 }
 
-func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) {
+func TestBeforeRequestModelRunsDecisionThenFullWithoutRollbackReclassificationRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -2436,15 +2436,14 @@ async function runFixture(expectedFresh, expectedContinuity) {
   const result = await onBeforeRequest(payload, "model");
   if (result !== payload) throw new Error("fixture stop did not preserve original payload");
   if (prepareCalls.length !== 2) throw new Error("model prepare calls=" + prepareCalls.length + ", want 2");
-  if (preFullSideEffects !== 1) throw new Error("beforeRequest did not start backfill exactly once after rollback reconciliation=" + preFullSideEffects);
+  if (preFullSideEffects !== 1) throw new Error("beforeRequest did not start backfill exactly once=" + preFullSideEffects);
 	if (boundedHostLifecycleCalls !== 2) throw new Error("beforeRequest did not capture prefill and exact request coordinates="+boundedHostLifecycleCalls);
   if (runtimeConfigBindingCalls !== 1) throw new Error("runtime config binding checks="+runtimeConfigBindingCalls+", want 1");
-  if (rollbackReconcileCalls !== 1) throw new Error("rollback reconciliation calls="+rollbackReconcileCalls+", want 1");
+  if (rollbackReconcileCalls !== 0) throw new Error("beforeRequest reclassified rollback without a deletion observation: calls="+rollbackReconcileCalls);
   const sourceDecisionAt = lifecycleOrder.indexOf("source_decision");
-  const rollbackAt = lifecycleOrder.indexOf("rollback_reconcile");
   const runtimeConfigAt = lifecycleOrder.indexOf("runtime_config");
   const fullPrepareAt = lifecycleOrder.indexOf("full_prepare");
-  if (!(sourceDecisionAt >= 0 && sourceDecisionAt < rollbackAt && rollbackAt < runtimeConfigAt && runtimeConfigAt < fullPrepareAt)) {
+  if (!(sourceDecisionAt >= 0 && sourceDecisionAt < runtimeConfigAt && runtimeConfigAt < fullPrepareAt)) {
     throw new Error("beforeRequest lifecycle order=" + JSON.stringify(lifecycleOrder));
   }
   const decision = prepareCalls[0];
@@ -6392,6 +6391,13 @@ func TestRollbackHostSignalReconciliationIsSessionScopedRuntime(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "extractActiveChatRollbackMessages"),
+		extractArchiveCenterJSFunction(t, src, "extractAssistantSnapshotMessages"),
+		extractArchiveCenterJSFunction(t, src, "computeTailHashFromSnapshotMessages"),
+		extractArchiveCenterJSFunction(t, src, "areSnapshotMessagesEqual"),
+		extractArchiveCenterJSFunction(t, src, "computeCommonSnapshotPrefixLength"),
+		extractArchiveCenterJSFunction(t, src, "computeCommonSnapshotSuffixLength"),
+		extractArchiveCenterJSFunction(t, src, "buildAssistantOutputDeletionStateOr1f"),
 		extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend"),
 		extractArchiveCenterJSAsyncFunction(t, src, "reconcileRollbackFromHostSignal"),
 	}, "\n")
@@ -6428,6 +6434,16 @@ async function resolveCurrentActiveChatObject(sessionId, hostContext) {
   return {chat:chats.get(sessionId)};
 }
 function extractActiveChatMessageList(chat) { return chat.message; }
+function compactSnapshotMessages(messages) {
+  return (Array.isArray(messages) ? messages : []).map(function(item) {
+    return {role:String(item && item.role || ""),content:String(item && item.content || "")};
+  });
+}
+function normalizeAssistantPersistenceCandidate(content) { return String(content || "").trim(); }
+function canonicalizeSnapshotMessageForComparison(message) {
+  if (!message || (message.role !== "user" && message.role !== "assistant")) return null;
+  return {role:message.role,content:String(message.content || "")};
+}
 function getLastNonEmptyComparableMessage(messages) {
   for (let index = messages.length - 1; index >= 0; index--) {
     const item = messages[index];
@@ -6435,7 +6451,6 @@ function getLastNonEmptyComparableMessage(messages) {
   }
   return null;
 }
-function extractAssistantSnapshotMessages(messages) { return messages.filter(function(item) { return item.role === "assistant"; }); }
 function getSessionSnapshot(sessionId) { return snapshots.get(sessionId); }
 function buildRollbackAssistantObservations(messages) {
   return messages.filter(function(item) { return item.role === "assistant"; }).map(function(item,index) {
@@ -6493,8 +6508,8 @@ async function flushMicrotasks() {
     "unchanged session A snapshot triggered another rollback");
   assert(await reconcileRollbackFromHostSignal("session-B", contextB) === false,
     "unchanged session B snapshot triggered another rollback");
-  assert(decisionCalls.length === 5 && rollbackCalls.length === 2,
-    "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
+	assert(decisionCalls.length === 3 && rollbackCalls.length === 2,
+	  "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
     "session A active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
@@ -6545,20 +6560,13 @@ func TestAdapterRecurringPathsAreExplicitOneShotRuntime(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "markAdminBackgroundJobStreamUnavailable"),
 		extractArchiveCenterJSFunction(t, src, "applyAdminBackgroundJobSnapshot"),
 		extractArchiveCenterJSAsyncFunction(t, src, "pollAdminBackgroundJob"),
-		extractArchiveCenterJSAsyncFunction(t, src, "reconcileRollbackFromHostSignal"),
 	}, "\n")
 	script := `
 const _referenceLibraryState = {job:null};
 let referenceCalls = 0;
 let adminCalls = 0;
 let explorerRefreshes = 0;
-let rollbackReconcileCalls = 0;
-let rollbackBackendResult = true;
-let activeChatMessages = [{role:"user",content:"u"},{role:"assistant",content:"a"}];
-const _rollbackHostSignalReconcilePromiseBySession = new Map();
 const _adminBackgroundJobStreams = new Map();
-const settings = {enabled:true,dbEnabled:true,rollbackAutoEnabled:true};
-const R = {getCharacter:function() {}};
 function referenceLibraryPath(value) { return encodeURIComponent(String(value || "")); }
 function resolveRequestTimeoutMs() { return 19000; }
 function getRequestTimeoutSettingMs() { return 19000; }
@@ -6585,29 +6593,6 @@ async function referenceLibraryLoadData() {}
 async function referenceLibraryLoadVectorStatus() {}
 async function safeCall(fn) { return await fn(); }
 function refreshExplorerUI() { explorerRefreshes++; }
-async function getCurrentChatSessionId() { return "session"; }
-function captureSessionHostContextFromCache(sessionId) {
-  return {
-    sessionId:String(sessionId || "session"),
-    charIdx:0,
-    chatIdx:0,
-    stableCharacterId:"character",
-    stableCharacterIdState:"observed",
-    hostChatId:"chat",
-    hostChatIdState:"observed",
-  };
-}
-async function resolveCurrentActiveChatObject() {
-  return {chat:{message:activeChatMessages}};
-}
-function extractActiveChatMessageList(chat) { return chat.message; }
-function buildRollbackAssistantObservations(messages) {
-  return messages.filter(item => item.role === "assistant").map((item, index) => ({
-    message_id:String(item.id || ""), generation_id:"", content_hash:String(item.content || ""), message_index:index,
-    disabled_state:"active", streaming_state:"not_streaming", final_state:"active_final"
-  }));
-}
-async function reconcileActiveChatTailDeletionWithBackend() { rollbackReconcileCalls++; return rollbackBackendResult; }
 function debugLog() {}
 function warnLog() {}
 function setTimeout() { throw new Error("one-shot path scheduled a timer"); }
@@ -6629,22 +6614,6 @@ function assert(condition, message) { if (!condition) throw new Error(message); 
   assert(adminCalls === 1, "admin job scheduled recursive polling");
   await pollAdminBackgroundJob("reindex", adminState, "admin-1");
   assert(adminCalls === 2 && adminState.loading === false && adminState.result.done, "explicit admin refresh did not consume terminal status");
-
-  assert(await reconcileRollbackFromHostSignal(), "first host lifecycle signal did not reconcile rollback state");
-  assert(rollbackReconcileCalls === 1, "first worldline load did not send assistant observations to Go");
-  assert(await reconcileRollbackFromHostSignal(), "unchanged host observation did not reach exact Go validation");
-  assert(rollbackReconcileCalls === 2, "unchanged host observation did not make one backend validation");
-
-  activeChatMessages = [{role:"user",content:"u"}];
-  rollbackBackendResult = false;
-  assert(!(await reconcileRollbackFromHostSignal()), "failed rollback reconciliation consumed the host observation");
-  assert(rollbackReconcileCalls === 3, "failed rollback observation did not reach Go exactly once");
-
-  rollbackBackendResult = true;
-  assert(await reconcileRollbackFromHostSignal(), "worldline refresh did not retry the failed rollback observation");
-  assert(rollbackReconcileCalls === 4, "successful retry did not reach Go exactly once");
-  assert(await reconcileRollbackFromHostSignal(), "repeated observation did not remain idempotently verifiable by Go");
-  assert(rollbackReconcileCalls === 5, "repeated observation bypassed exact Go validation");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

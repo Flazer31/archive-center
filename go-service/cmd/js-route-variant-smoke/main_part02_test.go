@@ -978,29 +978,6 @@ func TestArchiveCenterJSImmediateUpdateUsesOneServerAuthoritativeApplyCall(t *te
 	}
 }
 
-func TestArchiveCenterJSReconcilesRollbackAfterInputDecisionBeforeFullPrepare(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	inputHook := extractArchiveCenterJSAsyncFunction(t, src, "onInputHook")
-	if strings.Contains(inputHook, "await reconcileRollbackFromHostSignal(") {
-		t.Fatal("input hook must not reconcile rollback before the request source is eligible")
-	}
-	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
-	rollbackCall := "await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext"
-	if count := strings.Count(beforeRequest, rollbackCall); count != 1 {
-		t.Fatalf("beforeRequest rollback reconciliation calls=%d, want exactly 1", count)
-	}
-	decisionAt := strings.Index(beforeRequest, "let currentInputDecision = sourceDecisionResult && sourceDecisionResult.currentInputDecision;")
-	reconcileAt := strings.Index(beforeRequest, rollbackCall)
-	runtimeConfigAt := strings.Index(beforeRequest, "const runtimeConfigBinding = await ensureBackendRuntimeConfigBinding(")
-	fullPrepareAt := strings.Index(beforeRequest, "const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {")
-	if decisionAt < 0 || reconcileAt < 0 || runtimeConfigAt < 0 || fullPrepareAt < 0 {
-		t.Fatal("beforeRequest is missing source decision, rollback reconciliation, runtime binding, or full prepare")
-	}
-	if !(decisionAt < reconcileAt && reconcileAt < runtimeConfigAt && reconcileAt < fullPrepareAt) {
-		t.Fatalf("beforeRequest ordering invalid: decision=%d reconcile=%d runtime=%d full=%d", decisionAt, reconcileAt, runtimeConfigAt, fullPrepareAt)
-	}
-}
-
 func TestArchiveCenterJSOutputListenerObservesOnlyBoundedWorldlineFacts(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
