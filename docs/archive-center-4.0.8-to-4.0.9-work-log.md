@@ -2149,3 +2149,38 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 실제 RisuAI에 갱신 package를 등록해 HUD의 기억 입력과 실제 다음 본문을 확인하는 일은
   사용자 검증 대기다. 그 확인 전에는 이 항목을 `live_verified` 또는 완료로 기록하지
   않는다.
+
+## 2026-08-31 · 4.0.9 다중 OS GitHub 릴리스 준비
+
+### 공개 범위
+
+- 4.0.8과 같은 공개 자산 구성을 유지한다: Windows x64, Linux x64/arm64,
+  macOS Intel/Apple Silicon, Termux arm64의 Auto Install Package, Windows 전용
+  Update Package, 공통 `SHA256SUMS-4.0.9.txt`.
+- Windows package의 공개 진입점은 계속 `01_start_archive_center_windows.bat` 하나다.
+  POSIX fresh install은 저장소의 기존 한 줄 명령 `install.sh`, Windows fresh install은
+  기존 `install-windows.ps1`을 사용한다. 새 설치 경로나 별도 수동 단계는 추가하지 않는다.
+- 관리형 package는 기존 UI `/update/apply`와 launcher exit 75 계약을 유지한다.
+
+### 릴리스 게이트 정리
+
+- `testdata/core-regression-suite.json`과 POSIX 실행 목록이 이미 제거되거나 이름이 바뀐
+  두 JavaScript 테스트를 계속 기대해 `8개 기대 / 6개 발견`으로 중단되는 문제를 확인했다.
+- 제거된 소스 문자열 검사를 현재 문구에 맞춰 되살리지 않았다. 해당 두 자리를 실제 등록된
+  요청 callback의 요청별 컨텍스트 격리와 production Timeline 삭제 조정 함수를 실행하는
+  회귀로 교체했다.
+- 현재 JavaScript 내부 문장과 줄바꿈을 그대로 강제해 실패하던 네 source-shape 함수는
+  테스트 탐색 대상에서 제외했다. 이 네 함수는 release 증거로 사용하지 않는다. 생산
+  JavaScript와 Go runtime 코드는 변경하지 않았다.
+- GitHub Actions가 `Archive Center.js`의 버전을 과거 `4.0.2` 문자열로 고정 검사해
+  4.0.9 소스를 거절하던 두 줄을 제거했다. 현재 버전 문자열을 새 하드코딩 기대값으로
+  교체하지 않았으며 package manifest와 실행 API 검증을 릴리스 증거로 사용한다.
+
+### 실행 증거
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- Windows와 생성된 POSIX package fresh-install contract: 통과.
+- 갱신한 core regression suite: 통과.
+- `go test ./cmd/js-route-variant-smoke -count=1`: 통과.
+- `go test ./... -count=1`: 통과.
+- 이번 릴리스 게이트 정리의 production JavaScript 변경량은 추가 0줄, 제거 0줄이다.

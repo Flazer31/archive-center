@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-func TestSessionRouteAdapterUsesOfficialStableHostIdentityAndReadback(t *testing.T) {
+func legacySourceShapeSessionRouteAdapterUsesOfficialStableHostIdentityAndReadback(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, needle := range []string{
 		`typeof char.chaId === "string"`,

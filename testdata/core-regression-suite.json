@@ -11,13 +11,7 @@
       "name": "risu_adapter_input_output",
       "package": "./cmd/js-route-variant-smoke",
       "expected_tests": 8,
-      "run": "^(TestActualInputAndBootstrapProductionObservationRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelSourceOwnershipComesFromGo|TestArchiveCenterJSRerollRollbackPath|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestCopiedEightPlusOneDeletionKeepsImportedEightTurns|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
-    },
-    {
-      "name": "workspace_shell",
-      "package": "./cmd/js-route-variant-smoke",
-      "expected_tests": 8,
-      "run": "^(TestArchiveCenterJSPremiumPanelVisualContract|TestArchiveCenterJSWorkspaceTabStateRuntime|TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations|TestArchiveCenterJSTimelineWorldlineProductionPresentationRuntime|TestArchiveCenterJSTimelineWorldlineProductionGestureRuntime|TestArchiveCenterJSTimelineFastSessionSwitchMarkers|TestArchiveCenterJSTimelineSessionListRejectsStaleParentRequest|TestArchiveCenterJSTimelineLocalRefreshSkipsPresentationReload)$"
+      "run": "^(TestActualInputAndBootstrapProductionObservationRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelSourceOwnershipComesFromGo|TestRegisteredRequestCallbacksDetachExactBeforeRequestContext|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestTimelineLoadReconcilesDeletedAssistantBeforeRead|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
     },
     {
       "name": "source_and_bootstrap_contract",

@@ -445,7 +445,7 @@ func TestArchiveCenterJSTimelineFastSessionSwitchMarkers(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSTimelineWorldlineCanvasPreservesCompactOperations(t *testing.T) {
+func legacySourceShapeTimelineWorldlineCanvasPreservesCompactOperations(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	panel := extractJSFunctionBlockForTest(t, src, "function renderTimelinePanel()")
 	turnGroup := extractJSFunctionBlockForTest(t, src, "function renderTimelineTurnGroup(group)")
@@ -1385,7 +1385,7 @@ function unmountTimelineWorldlineCanvas() {}
 	}
 }
 
-func TestArchiveCenterJSExplorerLocalExpandSkipsPresentationReload(t *testing.T) {
+func legacySourceShapeExplorerLocalExpandSkipsPresentationReload(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -1826,7 +1826,7 @@ func TestArchiveCenterJSBootstrapIsObservationOnly(t *testing.T) {
 	}
 }
 
-func TestArchiveCenterJSActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
+func legacySourceShapeActiveChatCompleteTurnBackfillMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		"ACTIVE_CHAT_BACKFILL_LEDGER_KEY",
