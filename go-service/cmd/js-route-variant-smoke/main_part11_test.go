@@ -251,7 +251,7 @@ function normalizeLanguageContextTrace(value) { return value || {}; }
 function buildRisuActiveChatContextMessageObservation(value) { return value; }
 function assert(condition,message) { if(!condition) throw new Error(message); }
 let lastTurnTrace=null;
-let lastOrchResult=null;
+let _latestOrchResultForUI=null;
 let _effectiveInputAwaitingNewTurn=false;
 function plan(auxiliary,input,status) {
   return {
@@ -305,7 +305,7 @@ async function complete(user,it,finalParity) {
   assert(firstParity.status==="ready" && firstParity.payloadContentMatch===true,"first-turn user-only payload was withheld");
   const firstBody=await complete(user,firstInput,firstParity);
   assert(firstBody.client_meta.effective_input_observation.effective_input===user,"first-turn user-only observation was not saved");
-  lastOrchResult={_trace:{_inputTransparency:firstInput,finalPayloadParity:firstParity}};
+  _latestOrchResultForUI={_trace:{_inputTransparency:firstInput,finalPayloadParity:firstParity}};
   const firstTurnHTML=renderEffectiveInputSection();
   assert(firstTurnHTML.includes(user) && !firstTurnHTML.includes("withheld"),"first-turn user-only input was hidden in the UI");
 
@@ -315,8 +315,8 @@ async function complete(user,it,finalParity) {
   const secondInput=transparency(secondUser,secondApplied);
   const secondParity=parity(secondPayload,secondApplied,secondUser,secondInput);
   lastTurnTrace={_inputTransparency:firstInput,finalPayloadParity:firstParity};
-  lastOrchResult={_trace:{_inputTransparency:secondInput,finalPayloadParity:secondParity}};
-  assert(resolveLatestTransparencyTrace()===lastOrchResult._trace,"stale completed trace won over current in-flight trace");
+  _latestOrchResultForUI={_trace:{_inputTransparency:secondInput,finalPayloadParity:secondParity}};
+  assert(resolveLatestTransparencyTrace()===_latestOrchResultForUI._trace,"stale completed trace won over current in-flight trace");
   const firstHTML=renderEffectiveInputSection();
   assert(firstHTML.includes(secondUser) && !firstHTML.includes("withheld"),"current in-flight actual user was hidden in the UI");
   assert(!firstHTML.includes("FIRST TURN USER"),"stale prior turn was rendered");
@@ -349,7 +349,7 @@ async function complete(user,it,finalParity) {
   const saved=longBody.client_meta.effective_input_observation;
   assert(saved && saved.effective_input===longEffective && saved.effective_input.includes(marker),">500 Unicode marker did not survive complete-turn observation");
   longInput.injection.memoryDeliveryPlan={used_chars:memoryLane.length,delivery_cap_chars:4000,global_cap_chars:4000,classes:[{key:"event_recent",title:"Event and Recent Memories",text:"[Event and Recent Memories]\n"+memoryLane}]};
-  lastOrchResult={_trace:{_inputTransparency:longInput,finalPayloadParity:longParity}};
+  _latestOrchResultForUI={_trace:{_inputTransparency:longInput,finalPayloadParity:longParity}};
   const fullLaneHTML=renderEffectiveInputSection();
   [referenceLane,memoryLane,loreLane,guidanceLane,marker].forEach(function(value) {
     assert(fullLaneHTML.includes(value),"full canonical plan lane was not rendered: "+value.slice(0,40));
@@ -365,7 +365,7 @@ async function complete(user,it,finalParity) {
   const loreOnlyApplied=apply(firstPayload,loreOnlyPlan);
   const loreOnlyInput=transparency(user,loreOnlyApplied);
   const loreOnlyParity=parity(firstPayload,loreOnlyApplied,user,loreOnlyInput);
-  lastOrchResult={_trace:{_inputTransparency:loreOnlyInput,finalPayloadParity:loreOnlyParity}};
+  _latestOrchResultForUI={_trace:{_inputTransparency:loreOnlyInput,finalPayloadParity:loreOnlyParity}};
   const loreOnlyHTML=renderEffectiveInputSection();
   assert(loreOnlyHTML.includes(loreLane) && !loreOnlyHTML.includes(referenceLane),"lorebook-only canonical lane was omitted or contaminated");
 
@@ -381,7 +381,7 @@ async function complete(user,it,finalParity) {
   assert(missingParity.status==="mismatch" && missingParity.payloadContentMatch===false,"missing full payload blocks were accepted");
   const missingBody=await complete(user,missingInput,missingParity);
   assert(!missingBody.client_meta.effective_input_observation,"missing payload blocks were persisted");
-  lastOrchResult={_trace:{_inputTransparency:missingInput,finalPayloadParity:missingParity}};
+  _latestOrchResultForUI={_trace:{_inputTransparency:missingInput,finalPayloadParity:missingParity}};
   const missingHTML=renderEffectiveInputSection();
   assert(missingHTML.includes("will not be stored as verified effective input"),"payload mismatch warning was not rendered");
   assert(missingHTML.includes(user) && missingHTML.includes(loreLane) && missingHTML.includes(marker) && !missingHTML.includes(inputContext),"payload mismatch rendered non-delivered host recent chat");
@@ -2340,8 +2340,8 @@ func TestBeforeRequestModelRunsDecisionThenFullWithContextRuntime(t *testing.T) 
 const settings = {enabled: true, debug: false};
 let _sessionCache = null;
 let _effectiveInputAwaitingNewTurn = false;
+let _latestOrchResultForUI = null;
 const _pendingPersistenceSkipBySession = new Map();
-const _pendingOrchBySession = new Map();
 let activePairs = 0;
 let latestBackendTurn = 0;
 let prepareCalls = [];
@@ -5595,7 +5595,6 @@ func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
 		extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c"),
-		extractArchiveCenterJSFunction(t, src, "resolvePendingSourceLineageOwnership"),
 		extractArchiveCenterJSFunction(t, src, "normalizeRollbackMessageRole"),
 		extractArchiveCenterJSFunction(t, src, "extractMessageContentCandidate"),
 		extractArchiveCenterJSFunction(t, src, "extractComparableMessageRoleAndContent"),
@@ -5679,11 +5678,6 @@ if(!applied.injectionResult.payloadApplicationObservation ||
 if(runtimeUpdates.length!==1 || runtimeUpdates[0].key!=="lastInjectionStatus" || runtimeUpdates[0].status!=="skipped") {
   throw new Error("production payload application did not publish one empty runtime state");
 }
-const pending={requestId:"request-1",sourceLineageAmbiguous:true};
-const sticky=resolvePendingSourceLineageOwnership(pending,"request-1",false);
-if(!sticky.ownsPending || !sticky.ambiguous) throw new Error("running-overlap ambiguity was lost");
-const replaced=resolvePendingSourceLineageOwnership({requestId:"request-2"},"request-1",false);
-if(replaced.ownsPending || replaced.ambiguous) throw new Error("replaced pending request retained ownership");
 const orch={_sourceToPayloadLineage:lineage,_payloadApplicationObservation:good};
 const finalReady=buildSourceToFinalLineageObservation({
   generation_id:"generation-1",generation_id_state:"observed",observed_content_hash:"or1c_final",
@@ -5693,13 +5687,6 @@ if(!finalReady || finalReady.status!=="ready" ||
   finalReady.payload_observation_stage!=="archive_center_before_request_return" ||
   finalReady.final_provider_payload_state!=="not_exposed" || finalReady.semantic_outcome!=="unobserved") {
   throw new Error("ready final lineage boundary was not preserved");
-}
-orch._sourceLineageAmbiguous=true;
-const finalOverlap=buildSourceToFinalLineageObservation({
-  generation_id:"generation-1",generation_id_state:"observed"
-},orch);
-if(finalOverlap.status!=="ambiguous" || finalOverlap.reason_code!=="overlapping_main_request_lineage_ambiguous") {
-  throw new Error("overlapping request attached to final output");
 }
 `
 	cmd := exec.Command(nodePath, "-")

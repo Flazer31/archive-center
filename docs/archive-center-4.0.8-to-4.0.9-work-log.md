@@ -1712,3 +1712,70 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   `SHA256SUMS-4.0.9.txt`와 일치한다.
 - 이 패키지는 다시 시작하지 않았다. 실제 RisuAI에서 리롤 저장 뒤 UI 진입 시 삭제
   HUD와 auto rollback audit가 생기지 않는지에 대한 사용자 검증은 아직 남아 있다.
+
+## 2026-08-31 · 요청 컨텍스트 고정 경로 최종 정리
+
+### 이번에 제거한 잘못된 경로
+
+- `beforeRequest`가 만든 요청의 Char/CID, `chat_session_id`, workflow request ID와
+  orchestration 결과는 하나의 요청 컨텍스트에 보존된다.
+- 전역 `_pendingOrchBySession`과 `resolvePendingSourceLineageOwnership(...)`를 제거했다.
+  같은 세션에 다른 요청이 있다는 이유로 이전 요청을 ambiguous로 바꾸거나, pending
+  request ID를 다시 맞춰 본문 저장을 허용하는 경로는 더 이상 없다.
+- 전역 `lastOrchResult`를 요청 처리 소유자로 사용하지 않는다. 전역에는 최신 화면 표시
+  전용 `_latestOrchResultForUI`만 남기고, `beforeRequest` orchestration 결과는 요청 지역
+  변수와 캡처된 요청 컨텍스트에만 둔다.
+- `afterRequest`는 진입 시 캡처 컨텍스트를 분리한 뒤 지역
+  `requestOrchResult`, 고정 `chatSessionId`, 고정 `persistenceHostContext`만 사용해 턴
+  예약, `/complete-turn`, DB 저장, Critic 입력, trace와 HUD request ID를 끝낸다.
+- `reserveAfterRequestPersistenceTurnIndex(...)`가 늦게 끝난 A 요청의 턴 해석 결과를
+  최신 전역 B trace에 쓰던 경로를 제거하고, 인수로 받은 A의 orchestration trace에만
+  쓰도록 수정했다.
+- source-lineage의 `overlapping_main_request_lineage_ambiguous` 재판정도 함께 제거했다.
+- 새 guard, fallback, watcher, queue, timer, 자동 삭제, 전역 세션 검색 또는 Go API는
+  추가하지 않았다.
+
+### 고정 세션 확인
+
+- 콜드 스타트/Normalize와 활성 챗 Rescan은 시작 시 만든 `sid`와 host context를 이후
+  계획 및 backend 요청에 전달한다. 활성 화면을 다시 소유자로 삼지 않는다.
+- Reindex와 일반 Rescan은 함수 시작 인수의 session ID를 확인 대화 이후에도 그대로
+  backend body에 사용한다.
+- 복사, 이동, 연결, 삭제는 시작 시 확정한 source/target session ID와 host 좌표를
+  preview, 실행, reindex, route, refresh 단계까지 유지한다. 이 경로에는 이번 수정으로
+  새 판정이나 fallback을 추가하지 않았다.
+- Normalize의 비활성 세션 plan metadata에서 정의되지 않은 화면 세션 변수
+  `startingActiveSid`를 읽던 한 곳은 빈 active session 관측으로 정정했다. 대상 `sid`와
+  backend 작업 body는 바꾸지 않았다.
+
+### 실제 함수/API 검증
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- 실제 생산 `registerRisuLifecycleHooks()`가 등록한 `onBeforeRequest`와
+  `onAfterRequest`를 호출한 `TestRegisteredRequestCallbacksDetachExactBeforeRequestContext`:
+  통과.
+- 실제 생산 `onAfterRequest`, `acceptRisuAfterRequestFinal`,
+  `registerRisuLifecycleHooks`를 실행해 `/complete-turn` body를 기록한
+  `TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn`: 통과.
+  - A/B 세션은 각자 `chat_session_id`, CID, request ID와 HUD 소유권을 유지했다.
+  - 같은 세션의 연속 request C/D도 서로 다른 request ID와 턴을 유지했다.
+- 실제 생산 턴 예약 함수를 실행한
+  `TestAfterRequestTurnReservationMutatesOnlyCapturedRequestTrace`: 통과. A의 늦은 저장이
+  B의 최신 UI trace를 변경하지 않았다.
+- 실제 생산 complete-turn body 생성 함수를 실행한
+  `TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage`: 통과. 캡처한 session,
+  CID와 source-acceptance request ID가 complete-turn 및 Critic 입력으로 전달됐다.
+- 실제 Go source-acceptance와 `/complete-turn` handler 회귀 7건: 통과. afterRequest
+  correlation 승인, 동일 correlation 멱등성, 새 correlation 교체, 같은 logical turn
+  리롤 교체와 DB tail 유지가 포함된다.
+- 전체 JS smoke에서 남은 4건은 이번 diff가 건드리지 않은 Timeline/Explorer/backfill 및
+  이전 swipe 문자열 기대 실패다. 이번 수정에 맞추려고 생산 코드나 기대값을 변경하지
+  않았다.
+
+### 완료 경계
+
+- 수정 전 상태는 로컬 commit `6ef6134`로 보존돼 있다.
+- 소스와 대상 회귀는 준비됐지만 동일 위치 4.0.9 Windows 테스트 패키지 갱신 및 사용자
+  실제 RisuAI 검증은 아직 남아 있다.
+- 사용자가 실제 RisuAI에서 본문 이후 `/complete-turn`, DB 저장, Critic과 HUD 진행을
+  확인하기 전에는 이 작업을 완료 또는 `live_verified`로 기록하지 않는다.

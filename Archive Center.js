@@ -7804,7 +7804,7 @@
       return null;
     }
   }
-  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent, hostTurnObservation = null, hostContext = null) {
+  async function reserveAfterRequestPersistenceTurnIndex(sessionId, userContent, assistantContent, hostTurnObservation = null, hostContext = null, orchestrationResult = null) {
     try {
       const sid = String(sessionId || "").trim();
       if (!sid) return nextTurnIndex(sessionId);
@@ -7866,8 +7866,8 @@
         const activePairTurnIndex = Number(routingTurnResolution && routingTurnResolution.localTurnIndex || 0);
         const resolvedTurnIndex = routingTurnIndex > 0 ? routingTurnIndex : previousNextTurnIndex;
         setTurnCounterExact(sid, resolvedTurnIndex);
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.turnIndexResolution = {
+        if (orchestrationResult && orchestrationResult._trace) {
+          orchestrationResult._trace.turnIndexResolution = {
             status: routingTurnResolution && routingTurnResolution.status === "rebased"
               ? "session_routing_baseline_rebased"
               : String(routingTurnResolution && routingTurnResolution.status || "backend_fallback"),
@@ -20250,7 +20250,8 @@
   // [ORCHESTRATION STATE]
   // ──────────────────────────────────────────────────────────────
 
-  let lastOrchResult = null;
+  // Read-only dashboard pointer. Request ownership and persistence never read it.
+  let _latestOrchResultForUI = null;
 
   // E-6: Activity Snapshot — 매 턴의 파이프라인 실행 결과
   let _lastActivitySnapshot = null;
@@ -20272,8 +20273,6 @@
   const _assistantPrefillSeedBySession = new Map();
   const ASSISTANT_PREFILL_SEED_CACHE_MAX = 50;
 
-  // Sprint 4-A-1: session별 pending orchestration context
-  const _pendingOrchBySession = new Map();
   let _orchRequestSeq = 0;
   function makeOrchRequestId(sessionId) {
     _orchRequestSeq += 1;
@@ -22371,8 +22370,8 @@
 
   function resolveLatestTransparencyTrace() {
     try {
-      if (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency) {
-        return lastOrchResult._trace;
+      if (_latestOrchResultForUI && _latestOrchResultForUI._trace && _latestOrchResultForUI._trace._inputTransparency) {
+        return _latestOrchResultForUI._trace;
       }
       if (lastTurnTrace && lastTurnTrace._inputTransparency) return lastTurnTrace;
       const latest = getLatestExplorerRuntimeTrace();
@@ -22386,8 +22385,8 @@
   function renderEffectiveInputSection() {
     try {
       if (_effectiveInputAwaitingNewTurn) {
-        const liveTrace = (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace._inputTransparency)
-          ? lastOrchResult._trace
+        const liveTrace = (_latestOrchResultForUI && _latestOrchResultForUI._trace && _latestOrchResultForUI._trace._inputTransparency)
+          ? _latestOrchResultForUI._trace
           : null;
         if (!liveTrace) {
           return '<div class="mo-note">현재 턴 입력 조립 중입니다...</div>';
@@ -28069,10 +28068,7 @@
       const generationState = String(sourceAcceptanceObservation && sourceAcceptanceObservation.generation_id_state || "unobserved");
       let status = "ready";
       let reasonCode = "source_to_final_observation_ready";
-      if (result._sourceLineageAmbiguous) {
-        status = "ambiguous";
-        reasonCode = "overlapping_main_request_lineage_ambiguous";
-      } else if (payloadObservation.status !== "ready" ||
+      if (payloadObservation.status !== "ready" ||
         (payloadObservation.payload_application_status !== "applied" && payloadObservation.payload_application_status !== "empty")) {
         status = "ambiguous";
         reasonCode = payloadObservation.reason_code || "payload_application_not_observed";
@@ -28134,7 +28130,7 @@
       const lineageOrchestrationResult = sourceObservationOptions
         && Object.prototype.hasOwnProperty.call(sourceObservationOptions, "orchestrationResult")
         ? sourceObservationOptions.orchestrationResult
-        : lastOrchResult;
+        : _latestOrchResultForUI;
       const sourceToFinalLineageObservation = buildSourceToFinalLineageObservation(
         sourceAcceptanceObservation,
         lineageOrchestrationResult
@@ -31316,15 +31312,6 @@
     return !type || type === "model";
   }
 
-  function resolvePendingSourceLineageOwnership(pending, requestId, alreadyAmbiguous) {
-    const current = pending && typeof pending === "object" ? pending : null;
-    const ownsPending = !!(current && current.requestId === requestId);
-    return {
-      ownsPending,
-      ambiguous: !!alreadyAmbiguous || !!(ownsPending && current.sourceLineageAmbiguous),
-    };
-  }
-
   const AUXILIARY_MODULE_OUTPUT_MARKERS = Object.freeze([
     "npc-list", "npc_list", "lightboard", "liteboard", "whiteboard",
     "novelai", "nai", "illustration", "image-prompt", "image_prompt",
@@ -32061,6 +32048,7 @@
     let orchHostContext = null;
     let finalConfirmationRequestContext = null;
     let requestPendingContext = null;
+    let lastOrchResult = null;
     let orchestrationDirtySignals = null;
     let orchestrationCacheDescriptor = null;
     try {
@@ -32471,28 +32459,6 @@
 
       const recentContext = getHostContextMessages(messages);
 
-      // Sprint 4-A-1: session별 동시 실행 보호
-      const existingPending = _pendingOrchBySession.get(orchSessionId);
-      let sourceLineageOverlapAmbiguous = false;
-      if (existingPending) {
-        sourceLineageOverlapAmbiguous = true;
-        existingPending.sourceLineageAmbiguous = true;
-        if (existingPending.orchResult && typeof existingPending.orchResult === "object") {
-          existingPending.orchResult._sourceLineageAmbiguous = true;
-        }
-      }
-      if (existingPending && existingPending.status === "running") {
-        const elapsed = Date.now() - existingPending.startedAt;
-        if (elapsed < getOrchestrationTimeoutMs()) {
-          const overlapFallbackRoute = resolveOrchestrationFallbackRouteOr1b("overlap_running", existingPending);
-          debugLog("Orchestration skip: session", orchSessionId, "already running (" + elapsed + "ms)", "route:", overlapFallbackRoute.route);
-          return applyProtectionOnlyInjection(payload, userInput);
-        }
-        // stale pending 정리
-        debugLog("Stale pending cleared for session", orchSessionId, "(" + elapsed + "ms)");
-        _pendingOrchBySession.delete(orchSessionId);
-      }
-
       requestPendingContext = {
         requestId: orchRequestId,
         startedAt: Date.now(),
@@ -32507,34 +32473,22 @@
       if (finalConfirmationRequestContext) {
         finalConfirmationRequestContext.pendingContext = requestPendingContext;
       }
-      _pendingOrchBySession.set(orchSessionId, requestPendingContext);
 
-      // orchestration 실행 — 결과는 캐시에 보관
+      // orchestration 실행 — 결과는 이 요청 컨텍스트에만 보관
       // Phase 1-1: continuityInfo가 있으면 orchestrateTurnHelpers에 전달
-      try {
-        lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext, {
-          freshFirstTurnLightMode,
-          freshFirstTurnLightModeMeta,
-          chatSessionId: orchSessionId,
-          hostContext: orchHostContext,
-        });
-        if (finalConfirmationRequestContext) {
-          finalConfirmationRequestContext.orchestrationResult = lastOrchResult || null;
-        }
-      } catch (orchErr) {
-        const failedPending = _pendingOrchBySession.get(orchSessionId);
-        if (failedPending && failedPending.requestId === orchRequestId) {
-          _pendingOrchBySession.delete(orchSessionId);
-        }
-        throw orchErr;
+      lastOrchResult = await orchestrateTurnHelpers(userInput, recentContext, continuityInfo, _lastPrepareTurnBundle, turnLanguageContext, {
+        freshFirstTurnLightMode,
+        freshFirstTurnLightModeMeta,
+        chatSessionId: orchSessionId,
+        hostContext: orchHostContext,
+      });
+      if (finalConfirmationRequestContext) {
+        finalConfirmationRequestContext.orchestrationResult = lastOrchResult || null;
       }
+      _latestOrchResultForUI = lastOrchResult;
       if (!lastOrchResult) {
         const emptyFallbackRoute = resolveOrchestrationFallbackRouteOr1b("empty_result");
         const orchBlock = buildLlmGateBlock("입력 오케스트레이션", "orchestration returned null", "orchestration_failed");
-        const emptyPending = _pendingOrchBySession.get(orchSessionId);
-        if (emptyPending && emptyPending.requestId === orchRequestId) {
-          _pendingOrchBySession.delete(orchSessionId);
-        }
 
         const orchFailTrace = newTurnTrace();
         orchFailTrace.chatSessionId = orchSessionId;
@@ -32581,19 +32535,6 @@
           failReasons: [orchBlock.code || "orchestration_failed"],
         });
         return payload;
-      }
-      const pendingLineageState = resolvePendingSourceLineageOwnership(
-        _pendingOrchBySession.get(orchSessionId),
-        orchRequestId,
-        sourceLineageOverlapAmbiguous
-      );
-      if (!pendingLineageState.ownsPending) {
-        lastOrchResult._sourceLineageAmbiguous = true;
-        return applyProtectionOnlyInjection(payload, userInput);
-      }
-      sourceLineageOverlapAmbiguous = pendingLineageState.ambiguous;
-      if (sourceLineageOverlapAmbiguous && lastOrchResult && typeof lastOrchResult === "object") {
-        lastOrchResult._sourceLineageAmbiguous = true;
       }
       if (isIntentionalOrchestrationSkipResult(lastOrchResult)) {
         const skipFallbackRoute = resolveOrchestrationFallbackRouteOr1b("intentional_skip");
@@ -32651,10 +32592,6 @@
           syncRuntimeStateFromTurnTrace(lastOrchResult._trace);
         }
         commitOrchestrationDirtySnapshotOr1c(orchSessionId, orchestrationDirtySignals);
-        const skippedPending = _pendingOrchBySession.get(orchSessionId);
-        if (skippedPending && skippedPending.requestId === orchRequestId) {
-          _pendingOrchBySession.delete(orchSessionId);
-        }
         return applyProtectionOnlyInjection(payload, userInput);
       }
       // orchestration이 스킵되었어도 최소 trace를 보장
@@ -32788,10 +32725,6 @@
 
       if (lastOrchResult._deliveryBlocked) {
         const blocked = lastOrchResult._deliveryBlocked;
-        const blockedPending = _pendingOrchBySession.get(orchSessionId);
-        if (blockedPending && blockedPending.requestId === orchRequestId) {
-          _pendingOrchBySession.delete(orchSessionId);
-        }
         if (lastOrchResult._trace) {
           lastOrchResult._trace.deliveryGate = {
             status: "warn",
@@ -32812,12 +32745,10 @@
         return payload;
       }
 
-      // pending context 갱신 — orchestration 완료
+      // 요청 컨텍스트 갱신 — orchestration 완료
       requestPendingContext.status = "ready";
       requestPendingContext.orchResult = lastOrchResult;
       requestPendingContext.cacheDescriptor = orchestrationCacheDescriptor;
-      requestPendingContext.sourceLineageAmbiguous = !!sourceLineageOverlapAmbiguous;
-      _pendingOrchBySession.set(orchSessionId, requestPendingContext);
       if (lastOrchResult && lastOrchResult._trace) {
         lastOrchResult._trace.contextInjectionGate = { ...contextInjectionGate };
       }
@@ -33062,7 +32993,6 @@
       updateRuntimeState("lastError", "error", { detail: "beforeRequest: " + err.message });
       const sid = String(orchSessionId || "").trim() || SESSION_FALLBACK;
       const beforeErrBlock = buildLlmGateBlock("입력 파이프라인", err && err.message ? err.message : "beforeRequest exception", "before_request_exception");
-      _pendingOrchBySession.delete(sid);
 
       const beforeErrTrace = newTurnTrace();
       beforeErrTrace.chatSessionId = sid;
@@ -33108,7 +33038,6 @@
       const persistenceHostContext = persistenceRequestContext.hostContext || null;
       const persistenceOrchResult = persistenceRequestContext.orchestrationResult || null;
       const rawInputObservationForRequest = persistenceRequestContext.rawInputObservation || null;
-      _pendingOrchBySession.delete(chatSessionId);
       const rawAfterRequestText = typeof content === "string" ? content : "";
       let responseReturnContent = content;
       const nonMainSkip = persistenceRequestContext.nonMainSkip || null;
@@ -33195,7 +33124,7 @@
         return responseReturnContent;
       }
 
-      async function continueAcceptedFinalPersistence(lastOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
+      async function continueAcceptedFinalPersistence(requestOrchResult = persistenceOrchResult, sourceAcceptanceFinality = null) {
         const hostFinalityAccepted = !!(
           sourceAcceptanceFinality
           && sourceAcceptanceFinality.accepted === true
@@ -33204,8 +33133,8 @@
             || sourceAcceptanceFinality.finality_source === "risu_afterRequest"
           )
         );
-        if (lastOrchResult && lastOrchResult._trace) {
-          attachSanitizeTrace(lastOrchResult._trace, displaySanitizeTrace);
+        if (requestOrchResult && requestOrchResult._trace) {
+          attachSanitizeTrace(requestOrchResult._trace, displaySanitizeTrace);
         }
 
 
@@ -33218,9 +33147,9 @@
         return responseReturnContent ?? "";
       }
 
-      if (lastOrchResult && lastOrchResult._trace) {
-        const failureBudgetState = recordStep13GovernorTurnOutcomeGv1c(chatSessionId, lastOrchResult._trace);
-        applyStep13GovernorFailureBudgetTraceGv1c(lastOrchResult._trace, failureBudgetState);
+      if (requestOrchResult && requestOrchResult._trace) {
+        const failureBudgetState = recordStep13GovernorTurnOutcomeGv1c(chatSessionId, requestOrchResult._trace);
+        applyStep13GovernorFailureBudgetTraceGv1c(requestOrchResult._trace, failureBudgetState);
       }
 
       // 세션별 turn counter lazy-restore:
@@ -33240,11 +33169,11 @@
         } catch { /* non-fatal */ }
       }
 
-      const recentCtx = (lastOrchResult && Array.isArray(lastOrchResult._recentContext)) ? lastOrchResult._recentContext : [];
-      let userInput = (lastOrchResult && lastOrchResult._userInput) ? String(lastOrchResult._userInput) : "";
+      const recentCtx = (requestOrchResult && Array.isArray(requestOrchResult._recentContext)) ? requestOrchResult._recentContext : [];
+      let userInput = (requestOrchResult && requestOrchResult._userInput) ? String(requestOrchResult._userInput) : "";
       let userInputRecoverySource = "";
       let activeChatLatestSavePair = null;
-      let actualEmptyUserInput = !!(lastOrchResult && lastOrchResult._actualEmptyUserInput);
+      let actualEmptyUserInput = !!(requestOrchResult && requestOrchResult._actualEmptyUserInput);
       const actualEmptyRawInput = rawInputObservationForRequest && rawInputObservationForRequest.actualEmptyInput
         ? rawInputObservationForRequest
         : null;
@@ -33303,8 +33232,8 @@
         userInputRecoverySource = actualEmptyRawInput ? "input_hook_empty" : "before_request_empty_input";
       }
       let safeSavedUserInput = isCanonicalHostUserInputText(userInput) ? userInput : "";
-      if (userInputRecoverySource && lastOrchResult && lastOrchResult._trace) {
-        lastOrchResult._trace.userInputCapture = {
+      if (userInputRecoverySource && requestOrchResult && requestOrchResult._trace) {
+        requestOrchResult._trace.userInputCapture = {
           status: actualEmptyUserInput ? "actual_empty_input" : "recovered",
           source: userInputRecoverySource,
           chars: String(safeSavedUserInput || "").length,
@@ -33324,15 +33253,15 @@
           detail: "user_input_missing",
           failReasons: [],
         });
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.userInputCapture = {
+        if (requestOrchResult && requestOrchResult._trace) {
+          requestOrchResult._trace.userInputCapture = {
             status: "missing",
             safeSaveBlocked: true,
             recentContextCount: recentCtx.length,
             rawCacheHit: !!rawInputObservationForRequest,
           };
-          lastOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = lastOrchResult._trace;
+          requestOrchResult._trace.endedAt = new Date().toISOString();
+          lastTurnTrace = requestOrchResult._trace;
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
@@ -33347,7 +33276,7 @@
           },
           evidence: { capture: "user_input_missing" },
         }).catch(function() {});
-        lastOrchResult = null;
+        requestOrchResult = null;
         ensureActiveChatCompletedTurnsBackfilled(chatSessionId, {
           reason: "after_request_user_input_missing",
           hostContext: persistenceHostContext,
@@ -33366,7 +33295,7 @@
         const beforeOutputCanonical = persistedAssistantContent;
         persistedAssistantContent = canonicalizeAssistantOutputForPersistence(
           persistedAssistantContent,
-          lastOrchResult && lastOrchResult._trace,
+          requestOrchResult && requestOrchResult._trace,
           "assistant_persistence_initial"
         );
         if (persistedAssistantContent !== beforeOutputCanonical) {
@@ -33376,7 +33305,7 @@
           const displayTranslationDecision = extractGigaTransCanonicalAssistantText(displayContent);
           if (displayTranslationDecision && displayTranslationDecision.applied) {
             attachTranslationDisplayCanonicalizationTrace(
-              lastOrchResult && lastOrchResult._trace,
+              requestOrchResult && requestOrchResult._trace,
               displayTranslationDecision,
               "assistant_persistence_initial",
               displayContent,
@@ -33419,12 +33348,12 @@
           const activeChatHasConcreteUser = !!activeUserComparable && !activeUserIsAutoContinue;
           const autoContinueCameFromStaleCapture = activeChatHasConcreteUser && (
             ((actualEmptyUserInput || currentUserIsAutoContinue)
-              && /^(?:input_hook_empty|messages\.assistant_tail_auto_continue)$/.test(String(lastOrchResult && lastOrchResult._userInputSource || "")))
+              && /^(?:input_hook_empty|messages\.assistant_tail_auto_continue)$/.test(String(requestOrchResult && requestOrchResult._userInputSource || "")))
             || (currentUserIsAutoContinue
               && /^(?:input_hook_empty|before_request_empty_input)$/.test(String(userInputRecoverySource || "")))
           );
           let allowActiveChatUserReplace = shouldAllowActiveChatAssistantPairUserReplace(
-            lastOrchResult && lastOrchResult._userInputSource,
+            requestOrchResult && requestOrchResult._userInputSource,
             userInputRecoverySource,
             actualEmptyUserInput,
             safeSavedUserInput
@@ -33439,8 +33368,8 @@
             userInputRecoverySource = autoContinueCameFromStaleCapture
               ? "active_chat_assistant_pair_user_replace_after_stale_auto_continue"
               : "active_chat_assistant_pair_user_replace";
-            if (lastOrchResult && lastOrchResult._trace) {
-              lastOrchResult._trace.userInputCapture = {
+            if (requestOrchResult && requestOrchResult._trace) {
+              requestOrchResult._trace.userInputCapture = {
                 status: "replaced_stale",
                 source: userInputRecoverySource,
                 chars: String(safeSavedUserInput || "").length,
@@ -33450,10 +33379,10 @@
                 rawCacheHit: !!rawInputObservationForRequest,
               };
             }
-          } else if (!allowActiveChatUserReplace && activeUserComparable && activeUserComparable !== currentUserComparable && lastOrchResult && lastOrchResult._trace) {
-            lastOrchResult._trace.userInputCapture = {
+          } else if (!allowActiveChatUserReplace && activeUserComparable && activeUserComparable !== currentUserComparable && requestOrchResult && requestOrchResult._trace) {
+            requestOrchResult._trace.userInputCapture = {
               status: "active_chat_user_replace_blocked",
-              source: String((lastOrchResult && lastOrchResult._userInputSource) || userInputRecoverySource || "unknown"),
+              source: String((requestOrchResult && requestOrchResult._userInputSource) || userInputRecoverySource || "unknown"),
               chars: String(safeSavedUserInput || "").length,
               activeChatTurnIndex: activePairByAssistant.turnIndex,
               activeChatPairCount: activePairByAssistant.pairCount,
@@ -33476,23 +33405,23 @@
           if (activeAssistantComparable && (!currentAssistantComparable || activeAssistantComparable !== currentAssistantComparable)) {
             persistedAssistantContent = canonicalizeAssistantOutputForPersistence(
               activeChatPairAlignment.assistantContent,
-              lastOrchResult && lastOrchResult._trace,
+              requestOrchResult && requestOrchResult._trace,
               "active_chat_pair_assistant"
             );
             recoveredAssistantContent = persistedAssistantContent;
             if (typeof displayContent === "string") {
               displayContent = activeChatPairAlignment.assistantContent;
             }
-            if (lastOrchResult && lastOrchResult._trace) {
-              lastOrchResult._trace.activeChatPairAlignment = {
+            if (requestOrchResult && requestOrchResult._trace) {
+              requestOrchResult._trace.activeChatPairAlignment = {
                 status: "assistant_replaced_from_active_chat",
                 source: activeChatPairAlignment.source,
                 turnIndex: activeChatPairAlignment.turnIndex,
                 pairCount: activeChatPairAlignment.pairCount,
               };
             }
-          } else if (lastOrchResult && lastOrchResult._trace) {
-            lastOrchResult._trace.activeChatPairAlignment = {
+          } else if (requestOrchResult && requestOrchResult._trace) {
+            requestOrchResult._trace.activeChatPairAlignment = {
               status: "matched",
               source: activeChatPairAlignment.source,
               turnIndex: activeChatPairAlignment.turnIndex,
@@ -33501,9 +33430,9 @@
           }
         }
       }
-      if (lastOrchResult && lastOrchResult._trace) {
+      if (requestOrchResult && requestOrchResult._trace) {
         attachSanitizeTrace(
-          lastOrchResult._trace,
+          requestOrchResult._trace,
           typeof displayContent === "string" && typeof persistedAssistantContent === "string"
             ? buildSanitizeTrace("critic_persist_assistant", displayContent, persistedAssistantContent)
             : null
@@ -33518,20 +33447,20 @@
           detail: "assistant_content_missing",
           failReasons: ["assistant_content_missing"],
         });
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.assistantContentCapture = {
+        if (requestOrchResult && requestOrchResult._trace) {
+          requestOrchResult._trace.assistantContentCapture = {
             status: "missing",
             rawContentType: typeof content,
             rawContentChars: typeof content === "string" ? content.length : 0,
             displayContentChars: typeof displayContent === "string" ? displayContent.length : 0,
             activeChatFallback: "miss",
           };
-          lastOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = lastOrchResult._trace;
+          requestOrchResult._trace.endedAt = new Date().toISOString();
+          lastTurnTrace = requestOrchResult._trace;
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        lastOrchResult = null;
+        requestOrchResult = null;
         recordStep23CaptureVerification(chatSessionId, turnIdx, "afterRequest", "degraded", {
           degradedReason: "assistant_content_missing",
           userInput: safeSavedUserInput,
@@ -33573,8 +33502,8 @@
           detail: "idempotent_pair_replay",
           failReasons: [],
         });
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.duplicatePersistenceGuard = {
+        if (requestOrchResult && requestOrchResult._trace) {
+          requestOrchResult._trace.duplicatePersistenceGuard = {
             status: "skipped_duplicate_complete_turn",
             source: recentPersistedDuplicate.source || "recent_backend_pair_duplicate_guard",
             existingTurnIndex: duplicateTurnIndex,
@@ -33582,12 +33511,12 @@
             userChars: String(safeSavedUserInput || "").length,
             assistantChars: String(persistedAssistantContent || "").length,
           };
-          lastOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = lastOrchResult._trace;
+          requestOrchResult._trace.endedAt = new Date().toISOString();
+          lastTurnTrace = requestOrchResult._trace;
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        lastOrchResult = null;
+        requestOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderDuplicatePairReplay");
         }
@@ -33600,6 +33529,7 @@
         persistedAssistantContent,
         sourceAcceptanceFinality,
         persistenceHostContext,
+        requestOrchResult,
       );
       if (!Number.isFinite(Number(turnIdx)) || Number(turnIdx) < 1) {
         const routingSkipReason = "session_routing_turn_ownership_not_admitted";
@@ -33611,7 +33541,7 @@
           detail: routingSkipReason,
           failReasons: [routingSkipReason],
         });
-        lastOrchResult = null;
+        requestOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderRoutingOwnershipSkip");
         }
@@ -33635,14 +33565,14 @@
           detail: gateDetail,
           failReasons: [persistenceGate.reason || "persistence_gate_skipped"],
         });
-        if (lastOrchResult && lastOrchResult._trace) {
-          lastOrchResult._trace.persistenceGate = persistenceGate;
-          lastOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = lastOrchResult._trace;
+        if (requestOrchResult && requestOrchResult._trace) {
+          requestOrchResult._trace.persistenceGate = persistenceGate;
+          requestOrchResult._trace.endedAt = new Date().toISOString();
+          lastTurnTrace = requestOrchResult._trace;
           pushTurnHistory(lastTurnTrace);
           syncRuntimeStateFromTurnTrace(lastTurnTrace);
         }
-        lastOrchResult = null;
+        requestOrchResult = null;
         if (panelOpen) {
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderPersistenceGate");
         }
@@ -33653,7 +33583,7 @@
       try {
         const temporalValidatorState = buildTemporalStateSurfaceStep19(userInput, "", {
           sourceTurn: turnIdx,
-          sessionTemporalState: readSceneTemporalStateFromOrchResultStep19(lastOrchResult),
+          sessionTemporalState: readSceneTemporalStateFromOrchResultStep19(requestOrchResult),
         });
         temporalDeicticValidation = validateResponseTemporalDeicticStep19(displayContent, temporalValidatorState);
         if (temporalDeicticValidation.status === "warn") {
@@ -33664,7 +33594,7 @@
       }
 
       // J-4b: improvement trace handoff — pre-request에서 생성된 ImprovementTraceRecord 읽기
-      const _improvementTrace = (lastOrchResult && lastOrchResult._improvementTrace) || null;
+      const _improvementTrace = (requestOrchResult && requestOrchResult._improvementTrace) || null;
 
       // critic 컨텍스트 / turnContent 조립 (M-4c: tryCompleteTurn에 전달하기 위해 save 전으로 이동)
       const criticCtx = recentCtx.filter(function(m) {
@@ -33675,9 +33605,9 @@
       const realUserMsg = [...criticCtx].reverse().find(m => m.role === "user" && m.content);
       const criticUserInput = realUserMsg ? String(realUserMsg.content) : safeSavedUserInput;
       const safeUser = sanitizeForCritic(typeof criticUserInput === "string" ? criticUserInput : "");
-      if (lastOrchResult && lastOrchResult._trace) {
+      if (requestOrchResult && requestOrchResult._trace) {
         attachSanitizeTrace(
-          lastOrchResult._trace,
+          requestOrchResult._trace,
           typeof criticUserInput === "string" && typeof safeUser === "string"
             ? buildSanitizeTrace("critic_user_input", criticUserInput, safeUser)
           : null
@@ -33706,7 +33636,7 @@
               chatSessionId,
               _improvementTrace,
               {
-                orchestrationResult: lastOrchResult,
+                orchestrationResult: requestOrchResult,
                 sourceAcceptanceFinality,
                 hostContext: persistenceHostContext,
                 risuRequestObservation: buildRisuRequestObservation(persistenceRequestType, "afterRequest", "assistant"),
@@ -33760,8 +33690,8 @@
         finalContentHash: ctSourceToFinal.final_output && ctSourceToFinal.final_output.content_hash || null,
         semanticOutcome: "unobserved",
       } : null;
-      if (ctSourceToFinalRuntime && lastOrchResult && lastOrchResult._trace) {
-        lastOrchResult._trace.sourceToFinalLineage = ctSourceToFinalRuntime;
+      if (ctSourceToFinalRuntime && requestOrchResult && requestOrchResult._trace) {
+        requestOrchResult._trace.sourceToFinalLineage = ctSourceToFinalRuntime;
       }
       // M-4d: runtimeState 업데이트 — complete-turn 결과 기록
       {
@@ -34189,7 +34119,7 @@
       }
 
       // E2E trace 완성 — model(save) 타입에서만 lastTurnTrace를 갱신
-      const trace = lastOrchResult?._trace;
+      const trace = requestOrchResult?._trace;
       if (trace) {
         trace.turnIndex = persistedTurnIdx;
         trace.save = { status: runtimeState.lastSaveStatus?.status || "unknown" };
@@ -34287,7 +34217,7 @@
         logTurnTraceSummary();
       }
 
-      lastOrchResult = null;
+      requestOrchResult = null;
 
       // L-1d: maintenance pass — fire-and-forget (non-blocking)
       // turn 저장 + trace 완성 이후에 실행하므로 이번 턴 응답을 절대 막지 않는다.
@@ -37368,7 +37298,7 @@
           };
         }
       } else {
-        planMeta = { active_chat_plan_status: "skipped_not_active_session", active_session_id: startingActiveSid || "" };
+        planMeta = { active_chat_plan_status: "skipped_not_active_session", active_session_id: "" };
       }
     } catch (err) {
       _sessionNormalizeState.planWarning = err && err.message ? err.message : String(err || "active chat plan failed");
@@ -40088,11 +40018,11 @@
 
   function getExplorerRuntimeTokenProfileInfo() {
     const trace = getLatestExplorerRuntimeTrace();
-    const rt = (lastOrchResult && lastOrchResult._runtimeTokenInfo && typeof lastOrchResult._runtimeTokenInfo === "object")
-      ? lastOrchResult._runtimeTokenInfo
+    const rt = (_latestOrchResultForUI && _latestOrchResultForUI._runtimeTokenInfo && typeof _latestOrchResultForUI._runtimeTokenInfo === "object")
+      ? _latestOrchResultForUI._runtimeTokenInfo
       : { currentChatTokens: null, source: "none" };
-    const inj = (lastOrchResult && lastOrchResult._trace && lastOrchResult._trace.injection && typeof lastOrchResult._trace.injection === "object")
-      ? lastOrchResult._trace.injection
+    const inj = (_latestOrchResultForUI && _latestOrchResultForUI._trace && _latestOrchResultForUI._trace.injection && typeof _latestOrchResultForUI._trace.injection === "object")
+      ? _latestOrchResultForUI._trace.injection
       : null;
     const bp = (inj && inj.budgetPolicy && typeof inj.budgetPolicy === "object") ? inj.budgetPolicy : null;
     const traceInj = (trace && trace.injection && typeof trace.injection === "object") ? trace.injection : null;
@@ -40107,8 +40037,8 @@
         ? Math.max(1, Math.floor(fromTracePolicy))
         : (Number.isFinite(fromRuntime) && fromRuntime > 0 ? Math.max(1, Math.floor(fromRuntime)) : null));
 
-    const runtimeSessionId = (lastOrchResult && lastOrchResult._chatSessionId)
-      ? String(lastOrchResult._chatSessionId)
+    const runtimeSessionId = (_latestOrchResultForUI && _latestOrchResultForUI._chatSessionId)
+      ? String(_latestOrchResultForUI._chatSessionId)
       : ((trace && trace.chatSessionId)
         ? String(trace.chatSessionId)
         : String(_explorer.activeChatSessionId || _explorer.selectedSessionId || ""));

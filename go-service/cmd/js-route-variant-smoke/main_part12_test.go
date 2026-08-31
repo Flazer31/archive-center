@@ -58,24 +58,64 @@ func TestPluginStartupDoesNotRequireOpeningArchiveCenterAndHUDIsPrimed(t *testin
 }
 
 func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.T) {
-	src := readArchiveCenterJS(t)
-	bodySource := extractJSFunctionBlockForTest(t, src, "async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions)")
-	if !strings.Contains(bodySource, `turn_workflow_request_id: sourceAcceptanceObservation.archive_center_request_correlation_id || ""`) {
-		t.Fatal("complete-turn HUD correlation still depends on optional Publisher lineage")
-	}
-	if !strings.Contains(src, `ARCHIVE CENTER · ${BUILD_ID}`) ||
-		!strings.Contains(src, `const BUILD_ID = "4.0.9"`) ||
-		!strings.Contains(src, `const BUILD_CHANNEL = "release"`) {
-		t.Fatal("4.0.9 release build identity is not visible in the HUD")
-	}
-	for _, expected := range []string{
-		`critic_input_budget_observation: {`,
-		`contract_version: "critic_input_budget_observation.v1"`,
-		`max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars)))`,
-	} {
-		if !strings.Contains(bodySource, expected) {
-			t.Fatalf("complete-turn does not forward the Critic input budget observation %q", expected)
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for complete-turn request-context fixture")
 		}
+	}
+	src := readArchiveCenterJS(t)
+	bodyFunction := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody")
+	script := bodyFunction + `
+const AUTO_CONTINUE_USER_INPUT_MARKER="[auto-continue]";
+const DEFAULT_SETTINGS={episodeIntervalTurns:20,chapterIntervalEpisodes:5,arcIntervalChapters:5,sagaIntervalArcs:3};
+const settings={...DEFAULT_SETTINGS,maxInputContextChars:4321};
+let _latestOrchResultForUI={_chatSessionId:"wrong-session"};
+async function resolveRuntimeOutputLanguageOverride(){return "ko";}
+async function buildLanguageContextTrace(){return {output_language_override:"ko"};}
+async function buildCompleteTurnSourceAcceptanceObservation(sid,assistant,options){
+  if(sid!=="session-a" || assistant!=="assistant-a") throw new Error("complete-turn input owner changed");
+  return options.sourceAcceptanceFinality;
+}
+async function observeRisuPersona(sid,hostContext){
+  if(sid!=="session-a" || hostContext.hostChatId!=="cid-a") throw new Error("persona observation lost captured host context");
+  return {persona_id:"persona-a"};
+}
+function buildSourceToFinalLineageObservation(){return null;}
+function buildRisuRequestObservation(){return {contract_version:"risu_request_observation.v1"};}
+function computeOrchestrationDirtyHashOr1c(value){return "hash:"+String(value||"");}
+function buildRisuActiveChatContextMessageObservation(value){return value;}
+function normalizeLanguageContextTrace(value){return value;}
+function composeEffectiveInputFromTransparency(){return "";}
+function debugLog(...args){throw new Error("unexpected build failure: "+args.join(" "));}
+(async()=>{
+  const sourceAcceptanceFinality={
+    accepted:true,
+    finality_source:"risu_afterRequest",
+    archive_center_request_correlation_id:"request-a",
+    generation_id_state:"not_exposed_by_risu_afterRequest",
+  };
+  const body=await buildCompleteTurnRequestBody(75,"user-a","assistant-a",[],"session-a",null,{
+    orchestrationResult:{_chatSessionId:"session-a",_trace:{}},
+    sourceAcceptanceFinality,
+    hostContext:{sessionId:"session-a",charIdx:1,chatIdx:2,hostChatId:"cid-a"},
+  });
+  if(!body || body.chat_session_id!=="session-a" || body.turn_index!==75) throw new Error("complete-turn body lost fixed session");
+  if(body.client_meta.turn_workflow_request_id!=="request-a" || body.client_meta.archive_center_request_correlation_id!=="request-a") {
+    throw new Error("workflow request id was not forwarded from the accepted beforeRequest context");
+  }
+  const budget=body.client_meta.critic_input_budget_observation;
+  if(!budget || budget.contract_version!=="critic_input_budget_observation.v1" || budget.max_input_context_chars!==4321) {
+    throw new Error("critic budget observation mismatch: "+JSON.stringify(budget));
+  }
+})().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("complete-turn request-context runtime fixture failed: %v\n%s", err, output)
 	}
 }
 
@@ -781,7 +821,7 @@ func TestBeforeRequestSessionRouteFailureKeepsRisuPayloadRuntime(t *testing.T) {
 	script := beforeRequest + `
 const SESSION_FALLBACK = "default";
 const settings = {enabled:true};
-const _pendingOrchBySession = new Map([[SESSION_FALLBACK, {pending:true}]]);
+let _latestOrchResultForUI = null;
 let _effectiveInputAwaitingNewTurn = true;
 let _lastPrepareTurnSource = "backend-off";
 let _lastPrepareTurnBundle = null;
@@ -811,7 +851,6 @@ function pushTurnHistory() {}
   const result = await onBeforeRequest(payload,"model");
   if (result !== payload) throw new Error("Risu payload identity changed");
   if (sessionCalls !== 1) throw new Error("failed session route was called again: "+sessionCalls);
-  if (_pendingOrchBySession.has(SESSION_FALLBACK)) throw new Error("fallback pending state was not cleared");
   if (!lastTurnTrace || !lastTurnTrace.deliveryGate || lastTurnTrace.deliveryGate.failOpenMainPayload !== true) {
     throw new Error("Risu fail-open trace was not retained");
   }
@@ -1614,10 +1653,9 @@ let current={sessionId:"session-a",charIdx:1,chatIdx:2,hostChatId:"cid-a",user:"
 let requestSeq=0;
 let _activeFinalConfirmationRequestContext=null;
 let _sessionCache={};
-let lastOrchResult={_chatSessionId:"wrong-global-session"};
+let _latestOrchResultForUI={_chatSessionId:"wrong-global-session"};
 let lastTurnTrace=null;
 let _effectiveInputAwaitingNewTurn=false;
-const _pendingOrchBySession=new Map();
 let _turnWorkflowHUDWatchRunning=false;
 let _turnWorkflowHUDActiveRequestId="";
 const console={log(){},warn(){},error(...args){globalThis.__errors=(globalThis.__errors||[]).concat([args.join(" ")]);}};
@@ -1703,13 +1741,10 @@ async function runRequest(expectedSession,expectedCID,expectedChar,expectedChat,
   }
 
   const first=await runRequest("session-a","cid-a",1,2,"user-a");
-  _pendingOrchBySession.set("session-a",{requestId:"wrong-a"});
-  _pendingOrchBySession.set("session-b",{requestId:"keep-b"});
   _sessionCache={sessionId:"session-b",charIdx:9,chatIdx:9,observedChatUniqueId:"cid-b"};
-  lastOrchResult={_chatSessionId:"session-b",_userInput:"wrong-user"};
+  _latestOrchResultForUI={_chatSessionId:"session-b",_userInput:"wrong-user"};
   const firstOutput=registered.afterRequest("assistant-cid-a","model");
   if(firstOutput!=="assistant-cid-a" || _activeFinalConfirmationRequestContext!==null) throw new Error("afterRequest did not detach first context");
-  if(_pendingOrchBySession.has("session-a") || !_pendingOrchBySession.has("session-b")) throw new Error("afterRequest cleared another session pending context");
   const firstUpdate=runtimeUpdates.filter(item=>item.name==="lastStreamingAfterRequest").at(-1);
   if(!firstUpdate || firstUpdate.value.sessionId!=="session-a" || firstUpdate.value.requestType!=="model") {
     throw new Error("afterRequest re-decided owner from globals: "+JSON.stringify(firstUpdate));
@@ -1735,6 +1770,198 @@ async function runRequest(expectedSession,expectedCID,expectedChar,expectedChat,
 	cmd.Stdin = strings.NewReader(script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("registered request-context runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestAfterRequestTurnReservationMutatesOnlyCapturedRequestTrace(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for request-scoped turn reservation fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	reserve := extractArchiveCenterJSAsyncFunction(t, src, "reserveAfterRequestPersistenceTurnIndex")
+	script := reserve + `
+const capturedHostContext={sessionId:"session-a",charIdx:1,chatIdx:2,hostChatId:"cid-a"};
+const capturedOrchestration={_chatSessionId:"session-a",_trace:{owner:"request-a"}};
+const newerUIRequest={_chatSessionId:"session-b",_trace:{owner:"request-b"}};
+let _latestOrchResultForUI=newerUIRequest;
+let observedHostContext=null;
+function peekNextTurnIndex(){return 75;}
+async function safeCall(fn){return await fn();}
+async function fetchBackendLatestTurnIndexForSession(sid){if(sid!=="session-a") throw new Error("latest-turn session changed");return 74;}
+function setTurnCounterAtLeast(){}
+async function findActiveChatCompletedTurnPairForContent(sid,user,assistant,hostContext){
+  if(sid!=="session-a" || user!=="user-a" || assistant!=="assistant-a") throw new Error("pair lookup owner changed");
+  observedHostContext=hostContext;
+  return {source:"captured_active_chat",risuUserMessageIndex:10,risuAssistantMessageIndex:11,pairCount:75};
+}
+function normalizeTurnPairCompareText(value){return String(value||"").trim();}
+function normalizeAssistantPersistenceCandidate(value){return String(value||"").trim();}
+async function findActiveChatCompletedTurnPairForUserContent(){throw new Error("unexpected secondary pair lookup");}
+async function findLatestActiveChatCompletedTurnPair(){throw new Error("unexpected latest active-chat lookup");}
+async function requestBackendSessionRoutingTurnResolution(sid,mode,pair){
+  if(sid!=="session-a" || mode!=="pair" || pair.source!=="captured_active_chat") throw new Error("routing owner changed");
+  return {status:"normal",turnIndex:75,localTurnIndex:75,baseline:{reason:"captured"}};
+}
+function setTurnCounterExact(){}
+function nextTurnIndex(){return 999;}
+function debugLog(...args){throw new Error("unexpected reservation failure: "+args.join(" "));}
+(async()=>{
+  const turn=await reserveAfterRequestPersistenceTurnIndex(
+    "session-a","user-a","assistant-a",null,capturedHostContext,capturedOrchestration
+  );
+  if(turn!==75) throw new Error("reserved wrong turn: "+turn);
+  if(observedHostContext!==capturedHostContext) throw new Error("captured host context was replaced");
+  if(!capturedOrchestration._trace.turnIndexResolution || capturedOrchestration._trace.turnIndexResolution.turnIndex!==75) {
+    throw new Error("captured request trace did not receive turn resolution");
+  }
+  if(newerUIRequest._trace.turnIndexResolution) throw new Error("older persistence mutated newer request trace");
+})().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("request-scoped turn reservation fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for registered afterRequest persistence fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
+		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
+		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
+	}, "\n")
+	script := functions + `
+const settings={enabled:true,debug:false};
+const registered={};
+const completeCalls=[];
+const warnings=[];
+const AUTO_CONTINUE_USER_INPUT_MARKER="[auto-continue]";
+let _activeFinalConfirmationRequestContext=null;
+let lastTurnTrace=null;
+let panelOpen=false;
+const runtimeState={lastCompleteTurnStatus:{}};
+const R={
+  async addRisuScriptHandler(name,fn){registered[name]=fn;},
+  async addRisuReplacer(name,fn){registered[name]=fn;},
+  async addRisuChatListener(name,fn){registered[name]=fn;},
+  async onUnload(fn){registered.unload=fn;},
+};
+async function onInputHook(value){return value;}
+async function onBeforeRequest(value){return value;}
+function onRisuOutput(){}
+async function removeRegisteredRisuHooksOnUnload(){}
+function recordRisuHookLifecycle(){}
+function debugLog(){}
+function warnLog(...args){warnings.push(args.join(" "));}
+function isNarrativeType(type){return !type||type==="model";}
+function isSaveType(type){return !type||type==="model";}
+function updateRuntimeState(){}
+function normalizeAssistantPersistenceCandidate(value){return String(value||"").trim();}
+function takeAssistantPrefillSeedForSession(){return "";}
+function sanitizeNarrativeOutputForDisplay(value){return value;}
+function buildSanitizeTrace(){return null;}
+function stripAssistantPrefillFromResponse(value){return value;}
+function schedulePostOutputFinalReplacement(){throw new Error("unexpected secondary replacement");}
+function markNonMainRequestHookSkipped(){throw new Error("unexpected non-main skip");}
+function computeOrchestrationDirtyHashOr1c(value){return "hash:"+String(value||"");}
+function attachSanitizeTrace(){}
+function recordStep13GovernorTurnOutcomeGv1c(){return {};}
+function applyStep13GovernorFailureBudgetTraceGv1c(){}
+function loadTurnCounter(){return 1;}
+function shouldSkipUserInputPersistence(value){return !String(value||"").trim();}
+function isCanonicalHostUserInputText(value){return !!String(value||"").trim();}
+function peekNextTurnIndex(sid){return sid==="session-a"?75:12;}
+function canonicalizeAssistantOutputForPersistence(value){return value;}
+function normalizeTurnPairCompareText(value){return String(value||"").trim();}
+async function findRecentPersistedCompleteTurnPairForContent(){return null;}
+async function reserveAfterRequestPersistenceTurnIndex(sid,user,assistant,observation,hostContext,orchestrationResult){
+  if(hostContext.sessionId!==sid || orchestrationResult._chatSessionId!==sid) throw new Error("reservation lost captured owner");
+  if(observation.archive_center_request_correlation_id!==orchestrationResult.requestId) throw new Error("reservation lost workflow request id");
+  return ({"request-a":75,"request-b":12,"request-c":76,"request-d":77})[orchestrationResult.requestId] || 1;
+}
+function buildMainNarrativePersistenceGateDecision(){return {allowed:true};}
+function buildTemporalStateSurfaceStep19(){return {};}
+function readSceneTemporalStateFromOrchResultStep19(){return {};}
+function validateResponseTemporalDeicticStep19(){return {status:"ok"};}
+function isMetaUserMessage(){return false;}
+function sanitizeForCritic(value){return value;}
+async function safeCall(fn,fallback){try{return await fn();}catch{return fallback;}}
+function buildRisuRequestObservation(){return {contract_version:"risu_request_observation.v1"};}
+async function buildCompleteTurnRequestBody(turn,user,assistant,context,sid,improvement,options){
+  return {
+    chat_session_id:sid,turn_index:turn,user_input:user,assistant_content:assistant,
+    client_meta:{
+      turn_workflow_request_id:options.sourceAcceptanceFinality.archive_center_request_correlation_id,
+      captured_host_context:options.hostContext,
+      captured_orchestration:options.orchestrationResult,
+    },
+  };
+}
+function buildCompleteTurnQueuePayload(body){return body;}
+async function tryCompleteTurn(turn,user,assistant,context,sid,improvement,body){
+  completeCalls.push({turn,user,assistant,sid,body});
+  return {status:"ok",save_ok:true,raw_committed:true,critic_triggered:true,turn_index:turn};
+}
+function context(sid,cid,requestId,user,turn){
+  return {
+    sessionId:sid,requestId,requestType:"model",characterIndex:turn,chatIndex:turn+1,hostChatId:cid,
+    hostContext:{sessionId:sid,charIdx:turn,chatIdx:turn+1,hostChatId:cid},
+    rawInputObservation:{text:user,actualEmptyInput:false,boundRequestId:requestId},
+    orchestrationResult:{_chatSessionId:sid,_userInput:user,_recentContext:[],requestId,_trace:{owner:requestId}},
+    state:"captured",
+  };
+}
+(async()=>{
+  await registerRisuLifecycleHooks();
+  if(registered.afterRequest!==onAfterRequest) throw new Error("production afterRequest was not registered");
+  const a=context("session-a","cid-a","request-a","user-a",1);
+  _activeFinalConfirmationRequestContext=a;
+  if(registered.afterRequest("assistant-a","model")!=="assistant-a") throw new Error("A response changed");
+  const b=context("session-b","cid-b","request-b","user-b",4);
+  _activeFinalConfirmationRequestContext=b;
+  if(registered.afterRequest("assistant-b","model")!=="assistant-b") throw new Error("B response changed");
+  const c=context("session-a","cid-a","request-c","user-c",1);
+  _activeFinalConfirmationRequestContext=c;
+  if(registered.afterRequest("assistant-c","model")!=="assistant-c") throw new Error("C response changed");
+  const d=context("session-a","cid-a","request-d","user-d",1);
+  _activeFinalConfirmationRequestContext=d;
+  if(registered.afterRequest("assistant-d","model")!=="assistant-d") throw new Error("D response changed");
+  for(let i=0;i<100 && completeCalls.length<4;i++) await new Promise(resolve=>setTimeout(resolve,1));
+  if(completeCalls.length!==4) throw new Error("complete-turn calls="+completeCalls.length+" warnings="+warnings.join(" | "));
+  const byRequest=Object.fromEntries(completeCalls.map(call=>[call.body.client_meta.turn_workflow_request_id,call]));
+  for(const [sid,requestId,cid,user,assistant,turn] of [
+    ["session-a","request-a","cid-a","user-a","assistant-a",75],
+    ["session-b","request-b","cid-b","user-b","assistant-b",12],
+    ["session-a","request-c","cid-a","user-c","assistant-c",76],
+    ["session-a","request-d","cid-a","user-d","assistant-d",77],
+  ]){
+    const call=byRequest[requestId];
+    if(!call || call.turn!==turn || call.user!==user || call.assistant!==assistant) throw new Error("complete-turn owner mismatch: "+JSON.stringify(call));
+    if(call.body.client_meta.turn_workflow_request_id!==requestId) throw new Error("workflow id mismatch: "+JSON.stringify(call.body));
+    if(call.body.client_meta.captured_host_context.hostChatId!==cid || call.body.client_meta.captured_orchestration._chatSessionId!==sid) {
+      throw new Error("captured Char/CID/session mismatch: "+JSON.stringify(call.body));
+    }
+  }
+})().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("registered afterRequest persistence fixture failed: %v\n%s", err, output)
 	}
 }
 
