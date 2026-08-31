@@ -695,7 +695,7 @@ func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string 
 	return strings.TrimSpace(src[start:end])
 }
 
-func TestTimelineLoadDoesNotInvokeRollbackRuntime(t *testing.T) {
+func TestTimelineLoadReconcilesDeletedAssistantBeforeRead(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -715,6 +715,7 @@ const _timelineState = {
 };
 let _timelineSelectedDetail = null;
 let rollbackReconcileCalls = 0;
+let rollbackReconcileOptions = [];
 let timelineReads = 0;
 let backfillCalls = 0;
 function assert(condition, message) { if (!condition) throw new Error(message); }
@@ -732,10 +733,13 @@ async function ensureActiveChatCompletedTurnsBackfilled(sessionId) {
   if (sessionId !== "session-reroll") throw new Error("timeline backfill used another session");
   backfillCalls++;
 }
-async function reconcileRollbackFromHostSignal() {
+async function reconcileRollbackFromHostSignal(sessionId, hostContext, options) {
+  if (sessionId !== "session-reroll") throw new Error("timeline rollback used another session");
   rollbackReconcileCalls++;
+  rollbackReconcileOptions.push(options || {});
   return true;
 }
+function captureSessionHostContextFromCache(sessionId) { return {sessionId:sessionId,hostChatId:"chat-reroll"}; }
 async function safeCall(fn) { return await fn(); }
 async function bridgeFetch(path, options) {
   if (!String(path).startsWith("/timeline?")) throw new Error("timeline load reached mutation path " + path);
@@ -750,7 +754,9 @@ async function bridgeFetch(path, options) {
   await loadTimelineData(true, options);
   assert(timelineReads === 2, "timeline UI did not perform exactly two reads");
   assert(backfillCalls === 2, "timeline refresh did not keep its existing non-delete synchronization");
-  assert(rollbackReconcileCalls === 0, "opening or refreshing timeline requested automatic rollback");
+  assert(rollbackReconcileCalls === 2, "opening or refreshing timeline did not reconcile a deleted assistant");
+  assert(rollbackReconcileOptions.every(function(item) { return item.requireUserTail === true; }),
+    "timeline rollback reconciliation did not require the deleted-assistant user tail");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);
@@ -6421,6 +6427,13 @@ async function resolveCurrentActiveChatObject(sessionId, hostContext) {
   return {chat:chats.get(sessionId)};
 }
 function extractActiveChatMessageList(chat) { return chat.message; }
+function getLastNonEmptyComparableMessage(messages) {
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const item = messages[index];
+    if (item && String(item.content || "").trim()) return {role:item.role,content:item.content};
+  }
+  return null;
+}
 function extractAssistantSnapshotMessages(messages) { return messages.filter(function(item) { return item.role === "assistant"; }); }
 function getSessionSnapshot(sessionId) { return snapshots.get(sessionId); }
 function buildRollbackAssistantObservations(messages) {
@@ -6452,6 +6465,9 @@ async function flushMicrotasks() {
 (async function() {
   const contextA = {sessionId:"session-A",hostChatId:"host-A"};
   const contextB = {sessionId:"session-B",hostChatId:"host-B"};
+  assert(await reconcileRollbackFromHostSignal("session-A", contextA, {requireUserTail:true}) === false,
+    "assistant-tail UI observation reached rollback decision");
+  assert(decisionCalls.length === 0, "assistant-tail UI observation called the backend");
   const firstA = reconcileRollbackFromHostSignal("session-A", contextA);
   const duplicateA = reconcileRollbackFromHostSignal("session-A", contextA);
   const firstB = reconcileRollbackFromHostSignal("session-B", contextB);
@@ -6481,10 +6497,23 @@ async function flushMicrotasks() {
     "unchanged session B snapshot triggered another rollback");
   assert(decisionCalls.length === 5 && rollbackCalls.length === 2,
     "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
-  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
+  assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 4,
     "session A active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
     "session B active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
+
+  snapshots.set("session-A", {
+    messagesPreview:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"},{role:"user",content:"uA2"},{role:"assistant",content:"aA2",id:"aA2"}],
+    assistantMessagesPreview:[{role:"assistant",content:"aA1",id:"aA1"},{role:"assistant",content:"aA2",id:"aA2"}],turnIndex:12
+  });
+  chats.set("session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"},{role:"user",content:"uA2"}]});
+  const decisionCountBeforeDeletedTail = decisionCalls.length;
+  assert(await reconcileRollbackFromHostSignal("session-A", contextA, {requireUserTail:true}),
+    "user-tail UI observation did not reconcile the deleted assistant");
+  assert(decisionCalls.length === decisionCountBeforeDeletedTail + 1,
+    "user-tail UI observation did not reach the existing Go decision path");
+  assert(rollbackCalls.length === 3 && rollbackCalls[rollbackCalls.length - 1] === "session-A|12",
+    "UI reconciliation removed a range other than the deleted canonical tail: " + JSON.stringify(rollbackCalls));
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

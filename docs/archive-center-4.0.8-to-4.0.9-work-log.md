@@ -1881,3 +1881,48 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 사용자는 실제 RisuAI의 RSS/live heap 항목을 직접 검증할 수 없다고 확인했다. 이
   항목은 사용자 확인 대기가 아니라 `live_unverified`로 계속 남기며, 미보고 또는
   패키지 빌드·무결성 검증을 성공 증거로 대체하지 않는다.
+
+## 2026-08-31 · 삭제 후 UI 진입 감지 복원
+
+### 확인된 회귀
+
+- 리롤 저장본을 UI 진입이 잘못 삭제하던 문제를 막을 때 `loadTimelineData()`의 rollback
+  관측 호출을 전부 제거해, assistant 턴을 삭제하고 리롤하기 전에 UI를 연 정상
+  삭제도 더 이상 감지되지 않았다.
+- 현재 소스에서 삭제 관측은 `beforeRequest`에만 남아 있었으므로 UI 진입만으로는 기존
+  Go `/rollback/decision`과 DB rollback 경로가 시작되지 않았다.
+
+### 적용한 제한 복원
+
+- 현재 활성 세션의 Timeline을 처음 열거나 새로고침할 때만 기존
+  `reconcileRollbackFromHostSignal(...)`을 다시 호출한다.
+- 활성 채팅의 마지막 유효 메시지가 user인 삭제 직후 상태만 UI 삭제 관측으로 전달한다.
+  리롤 출력이 존재하는 assistant-tail에서는 rollback decision을 호출하지 않는다.
+- 삭제 턴 번호나 범위를 JavaScript에서 계산하지 않는다. 기존 Go
+  `/rollback/decision`이 active source revision과 전체 assistant 관측으로 결정한
+  canonical `from_turn`을 기존 `/rollback/{turn}`에 그대로 사용한다. 따라서 UI는
+  삭제된 꼬리 턴만 제거하고 앞선 정상 턴으로 범위를 넓히지 않는다.
+- 비활성 세션 조회, append pagination, DB schema, Go API, Reindex, worker, 요청 수명주기,
+  HUD에는 변경이 없다. 새 watcher, fallback, timer, 전역 검색 또는 별도 삭제 경로를
+  추가하지 않았다.
+- JavaScript 생산 코드 변경량은 추가 10줄, 제거 0줄이다.
+
+### 실제 함수/API 회귀
+
+- 실제 production `loadTimelineData()` 실행 회귀에서 UI 진입·새로고침이 고정된 현재
+  session과 host context를 사용해 삭제 관측을 호출한 뒤 기존 backfill과 Timeline GET을
+  계속 수행하는 것을 확인했다.
+- 실제 production `reconcileRollbackFromHostSignal(...)` 실행 회귀에서 assistant-tail은
+  Go decision을 호출하지 않고, user-tail에서 누락 assistant가 있을 때만 기존 decision과
+  rollback을 실행하는 것을 확인했다.
+- 실제 Go rollback decision 및 canonical rollback 회귀에서 누락된 마지막 canonical
+  turn만 `from_turn`으로 결정되고 그 턴의 DB 자료만 삭제되는 것을 확인했다.
+- 번들 Node `--check Archive Center.js`, 대상 JS runtime 회귀 2건, Go rollback decision
+  회귀 묶음이 통과했다.
+
+### 현재 경계
+
+- 소스 수정과 대상 회귀는 통과했다. 동일 위치 4.0.9 Windows 테스트 패키지 갱신과
+  실제 RisuAI에서 `삭제 → 리롤 전 UI 진입` 확인은 아직 남아 있다.
+- HTML 피드백 문서 업데이트는 이 실사용 회귀 확인 때문에 중단된 상태이며 이번 수정에
+  포함하지 않았다.
