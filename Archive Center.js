@@ -45505,7 +45505,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const selectedSid = String(_timelineState.selectedSessionId || _timelineState.sessionId || _timelineState.currentSessionId || "");
           if (selectedSid && selectedSid !== sid) return;
           debugLog("complete_turn_targeted_refresh", sid, turn);
-          loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true, preserveExpandedTurnKey: true, skipRollbackPreflight: true });
+          loadTimelineData(true, { sessionId: sid, skipRuntimeSessionResolve: true, skipSessionListRefresh: true, preserveExpandedTurnKey: true });
         } catch (err) {
           debugLog("complete_turn_targeted_refresh failed:", err && err.message);
         }
@@ -45768,10 +45768,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     if (!append) _timelineState.error = "";
     refreshTimelineUI({ reloadPresentation: false });
     try {
-      if (!append && !options.skipRollbackPreflight) {
-        await safeCall(() => reconcileRollbackFromHostSignal(), false, "timelineRollbackPreflight");
-        if (_timelineState.requestId !== requestId) return;
-      }
       const sid = skipRuntimeSessionResolve
         ? String(_timelineState.currentSessionId || "")
         : await getCurrentChatSessionId();

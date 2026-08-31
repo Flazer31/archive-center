@@ -1636,3 +1636,57 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - 갱신 패키지로 HUD가 6/12를 넘어 `/complete-turn`, MariaDB 저장, Critic까지 끝나고,
   A/B 세션 이동에서도 각각의 세션과 HUD가 유지되는 것을 확인하기 전에는 이 작업을
   `live_verified` 또는 완료로 기록하지 않는다.
+
+## 2026-08-31 · UI 진입 후 저장된 리롤 턴 자동 삭제 수정
+
+### 실환경 증거와 원인
+
+- 사용자가 75턴 출력을 삭제하고 리롤한 뒤 새 75턴 저장 완료를 확인했지만, Archive
+  Center UI에 들어가자 삭제 감지 HUD가 나타나 새 75턴을 다시 삭제했다.
+- MariaDB 감사 기록에서 `2026-08-31 04:55:42.534 UTC`의 audit `5702`가
+  `rollback from turn 75`, `req_source=auto`를 기록했고, 직후 audit `5703`이
+  `source acceptance invalidated from turn 75`를 기록했다.
+- 삭제 뒤 해당 세션의 `chat_logs` 최대 턴은 74였고 75턴 raw chat, memory,
+  Effective Input, Critic 행은 남지 않았다. 이 확인 과정에서 삭제된 행을 복구하거나
+  사용자 DB를 수정하지 않았다.
+- `loadTimelineData()`가 UI 조회보다 먼저 `reconcileRollbackFromHostSignal()`을 호출했다.
+  현재 4.0.9 경로는 UI를 열 때마다 활성 assistant 관측 전체를 Go
+  `/rollback/decision`에 보내며 lifecycle action을 `deleted`로 지정했다. 이미 저장된
+  리롤 출력이 관측 대조에서 빠지거나 식별값이 맞지 않으면 Go가 해당 active source
+  revision을 삭제된 출력으로 판정하고 `/rollback/{turn}`을 실행할 수 있었다.
+- 숫자 RisuAI message index를 backend turn으로 직접 환산한 오류가 아니라, 삭제와
+  무관한 UI 조회가 삭제 판정을 다시 시작한 것이 직접 원인이었다.
+
+### 4.0.2 대조
+
+- 정식 태그 `v4.0.2`도 UI `loadTimelineData()`에서 rollback preflight를 호출했다.
+- 4.0.2는 DB 최신 턴이 현재 완료 턴보다 클 때만 다음 단계로 진행하고, persisted
+  ledger와 현재 메시지가 정확한 tail 삭제인지 확인했다. 단일 활성 세션에서는 저장된
+  리롤과 backend 턴 수가 같아 이번 재삭제를 막을 수 있었다.
+- 해당 전역 ledger, in-flight flag, signature를 되살리면 A/B 세션과 중첩 요청이 서로
+  막거나 덮어쓸 수 있고, UI가 계속 삭제 판정 함수를 호출하는 구조도 남는다. 따라서
+  4.0.2의 다중 보호 조건을 복원하지 않았다.
+
+### 적용한 제한 수정
+
+- `loadTimelineData()`의 `timelineRollbackPreflight` 블록을 제거했다.
+- 해당 블록만을 위한 `skipRollbackPreflight` 호출 옵션도 제거했다.
+- UI 열기와 새로고침은 기존 `/timeline` GET과 비삭제 동기화만 실행한다.
+- 실제 요청 수명주기의 삭제·리롤 관측, Go rollback decision·mutation API, session별
+  요청 컨텍스트, DB schema는 변경하지 않았다.
+- 새 보호 조건, fallback, watcher, timer, 자동 삭제, 전역 검색을 추가하지 않았다.
+- JavaScript 변경량은 추가 1줄, 제거 5줄이다.
+
+### 실행 검증과 경계
+
+- 번들 Node `--check Archive Center.js`: 통과.
+- 실제 production `loadTimelineData()`를 두 번 실행하는
+  `TestTimelineLoadDoesNotInvokeRollbackRuntime`: 통과.
+  - `/timeline` GET 2회
+  - 기존 비삭제 backfill 2회
+  - `reconcileRollbackFromHostSignal` 0회
+- 등록된 request callback, afterRequest 확정, session별 rollback 관측 회귀 6건: 통과.
+- 실제 Go rollback decision 및 afterRequest source-acceptance 회귀: 통과.
+- 수정판의 실제 RisuAI 검증은 사용자가 수행한다. 패키지 무결성과 회귀가 통과해도
+  실제 리롤 후 UI 진입에서 삭제 HUD와 auto rollback audit가 다시 생기지 않는 것을
+  확인하기 전에는 `live_verified` 또는 완료로 기록하지 않는다.

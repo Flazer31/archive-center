@@ -695,6 +695,79 @@ func extractArchiveCenterJSAsyncFunction(t *testing.T, src, name string) string 
 	return strings.TrimSpace(src[start:end])
 }
 
+func TestTimelineLoadDoesNotInvokeRollbackRuntime(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for timeline read-only runtime fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	loadTimeline := extractArchiveCenterJSAsyncFunction(t, src, "loadTimelineData")
+	script := `
+const _timelineState = {
+  loading:false, loadingMore:false, hasMore:false, nextBeforeTurn:0, error:"", requestId:0,
+  currentSessionId:"session-reroll", selectedSessionId:"session-reroll", sessionId:"session-reroll",
+  sessions:[{chat_session_id:"session-reroll"}], items:[], meta:null, expandedTurnKey:"",
+  detailItem:null, detailLoading:false, detailError:""
+};
+let _timelineSelectedDetail = null;
+let rollbackReconcileCalls = 0;
+let timelineReads = 0;
+let backfillCalls = 0;
+function assert(condition, message) { if (!condition) throw new Error(message); }
+function refreshTimelineUI() {}
+function timelineIsPlaceholderSessionId() { return false; }
+function timelineSessionId(session) { return String(session && session.chat_session_id || ""); }
+function syncSessionScopedInspectionSelection() {}
+function timelineResetEditState() {}
+function pruneTimelinePendingArtifacts() {}
+function t(key) { return key; }
+function getRequestTimeoutSettingMs() { return 19000; }
+async function getCurrentChatSessionId() { throw new Error("fixed timeline session was discarded"); }
+async function loadTimelineSessions() { throw new Error("existing session list was needlessly reloaded"); }
+async function ensureActiveChatCompletedTurnsBackfilled(sessionId) {
+  if (sessionId !== "session-reroll") throw new Error("timeline backfill used another session");
+  backfillCalls++;
+}
+async function reconcileRollbackFromHostSignal() {
+  rollbackReconcileCalls++;
+  return true;
+}
+async function safeCall(fn) { return await fn(); }
+async function bridgeFetch(path, options) {
+  if (!String(path).startsWith("/timeline?")) throw new Error("timeline load reached mutation path " + path);
+  if (!options || options.method !== "GET") throw new Error("timeline load did not use GET");
+  timelineReads++;
+  return {status:"ok",items:[],meta:{next_before_turn:0}};
+}
+` + "\n" + loadTimeline + `
+(async function() {
+  const options = {sessionId:"session-reroll",skipRuntimeSessionResolve:true,skipSessionListRefresh:true};
+  await loadTimelineData(true, options);
+  await loadTimelineData(true, options);
+  assert(timelineReads === 2, "timeline UI did not perform exactly two reads");
+  assert(backfillCalls === 2, "timeline refresh did not keep its existing non-delete synchronization");
+  assert(rollbackReconcileCalls === 0, "opening or refreshing timeline requested automatic rollback");
+  process.stdout.write("ok");
+})().catch(function(err) {
+  console.error(err && err.stack || err);
+  process.exit(1);
+});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("timeline read-only JS runtime fixture failed: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "ok" {
+		t.Fatalf("timeline read-only JS runtime fixture output=%q, want ok", out)
+	}
+}
+
 func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
