@@ -507,16 +507,108 @@ func TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup(
 		t.Fatalf("chunks=%d vectors=%d precise=%d", len(capturedChunks), len(admission.Vectors), len(admission.PreciseUnits))
 	}
 	for i, item := range admission.Vectors {
-		if len(item.Embedding) == 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != len(capturedChunks) {
-			t.Fatalf("vector[%d] not materialized with stable group: %+v", i, item)
+		if len(item.Embedding) == 0 || item.ContextChunkIndex != 0 || len(item.ContextChunks) != 0 {
+			t.Fatalf("vector[%d] retained contextual retry input after embedding success: %+v", i, item)
 		}
 	}
 	precise := admission.PreciseUnits[0]
-	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != len(capturedChunks) {
-		t.Fatalf("precise vector not materialized in source group: %+v", precise)
+	if len(precise.VectorEmbedding) == 0 || precise.VectorContextChunkIndex != 0 || len(precise.VectorContextChunks) != 0 {
+		t.Fatalf("precise vector retained contextual retry input after embedding success: %+v", precise)
 	}
 	if admission.Memory == nil || admission.Memory.EmbeddingModel != "voyage-context-4" || len(parseFloat32JSONList(admission.Memory.Embedding)) == 0 {
 		t.Fatalf("memory provenance/embedding missing: %+v", admission.Memory)
+	}
+}
+
+func TestCurrentTurnVoyageContextRetainsRetryInputWhenEmbeddingFails(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Status:     "503 Service Unavailable",
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader(`{"error":"temporarily unavailable"}`)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	fake := &memoryAdmissionWorkerStore{source: &store.MemorySourceRevision{
+		SourceRevision:   "revision-context-retry",
+		UserContent:      "RAW PRIVATE USER SOURCE",
+		AssistantContent: "RAW PRIVATE ASSISTANT SOURCE",
+	}}
+	srv := &Server{Store: fake}
+	srv.Cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	ctx := context.WithValue(context.Background(), entityIdentitySourceContextKey{}, entityIdentitySourceContext{
+		ContractVersion: completeTurnSourceAcceptanceContract,
+		Revision:        "revision-context-retry",
+		LogicalTurnID:   "logical-context-retry",
+	})
+	extraction := map[string]any{
+		"turn_summary":     "A bell rang and the gate opened.",
+		"importance_score": 6,
+		"evidence_excerpts": []any{
+			"A bell rang.",
+			"The gate opened.",
+		},
+		"narrative_events": []any{map[string]any{
+			"summary":          "The bell rang.",
+			"evidence_excerpt": "A bell rang.",
+			"confidence":       0.9,
+		}},
+	}
+	result := artifactSaveResult{}
+	handled, _, _ := srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-retry", 10, extraction, "A bell rang. The gate opened.",
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", APIKey: "key", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(1000, 0), &result,
+	)
+	if !handled || result.Errors != 0 || len(fake.admissions) != 1 {
+		t.Fatalf("handled=%t result=%+v admissions=%d", handled, result, len(fake.admissions))
+	}
+	if calls != 1 || !strings.HasPrefix(result.EmbeddingStatus, "error: ") {
+		t.Fatalf("embedding calls=%d status=%q", calls, result.EmbeddingStatus)
+	}
+	admission := fake.admissions[0]
+	if len(admission.Vectors) != 3 || len(admission.PreciseUnits) != 1 {
+		t.Fatalf("vectors=%d precise=%d", len(admission.Vectors), len(admission.PreciseUnits))
+	}
+	wantChunkCount := len(admission.Vectors) + len(admission.PreciseUnits)
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) != 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != wantChunkCount {
+			t.Fatalf("vector[%d] lost contextual retry input after embedding failure: %+v", i, item)
+		}
+	}
+	precise := admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) != 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != wantChunkCount {
+		t.Fatalf("precise vector lost contextual retry input after embedding failure: %+v", precise)
+	}
+
+	fake.admissions = nil
+	missingConfigResult := artifactSaveResult{}
+	handled, _, _ = srv.commitAcceptedMemoryAdmission(
+		ctx, "session-context-retry", 11, extraction, "A bell rang. The gate opened.",
+		"A bell rang and the gate opened.", "A bell rang and the gate opened.",
+		memorySearchTextBuild{Text: "A bell rang and the gate opened."},
+		completeTurnEmbeddingConfig{Provider: "voyageai", Endpoint: "https://api.voyageai.com/v1/embeddings", Model: "voyage-context-4", TimeoutMs: 5000},
+		"[]", "not_configured", nil, nil, nil, nil, time.Unix(1100, 0), &missingConfigResult,
+	)
+	if !handled || missingConfigResult.Errors != 0 || len(fake.admissions) != 1 || calls != 1 {
+		t.Fatalf("missing config handled=%t result=%+v admissions=%d calls=%d", handled, missingConfigResult, len(fake.admissions), calls)
+	}
+	admission = fake.admissions[0]
+	for i, item := range admission.Vectors {
+		if len(item.Embedding) != 0 || item.ContextChunkIndex != i || len(item.ContextChunks) != wantChunkCount {
+			t.Fatalf("vector[%d] lost contextual retry input without provider config: %+v", i, item)
+		}
+	}
+	precise = admission.PreciseUnits[0]
+	if len(precise.VectorEmbedding) != 0 || precise.VectorContextChunkIndex != len(admission.Vectors) || len(precise.VectorContextChunks) != wantChunkCount {
+		t.Fatalf("precise vector lost contextual retry input without provider config: %+v", precise)
 	}
 }
 

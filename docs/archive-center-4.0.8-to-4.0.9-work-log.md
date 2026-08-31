@@ -1804,3 +1804,56 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   `E325D1491CD248AD87434B0CFB41880A6D3A52F3C6FF733091AEA9EA1526238A`이며 외부
   `SHA256SUMS-4.0.9.txt`와 일치한다.
 - 갱신 패키지는 다시 실행하지 않았다. 실제 RisuAI 검증은 사용자 확인 대기 상태다.
+
+## 2026-08-31 · 성공한 contextual embedding의 outbox 문맥 복사 제거
+
+### 범위와 보존 기준
+
+- 사용자가 지정한 메모리 증폭 대응 1번만 적용했다. Cold Start 직후 reindex 중복,
+  Session Normalize, worker 배치, HUD, JavaScript 요청 수명주기는 변경하지 않았다.
+- 수정 전 clean 상태는 로컬 commit
+  `34b62714e8dbb9063a86a870ad2ed4ab4d9fcbd4`로 보존돼 있다.
+- 새 guard, fallback, watcher, queue, fixed limit, 자동 삭제 또는 전역 검색을 추가하지
+  않았다.
+
+### 적용 내용
+
+- 실제 `commitAcceptedMemoryAdmission(...)`의 기존 Voyage contextual embedding 성공
+  분기에서 각 vector와 public precise unit의 embedding을 파싱한 직후, embedding이
+  실제로 존재하는 항목만 재시도용 context chunks와 context index를 비운다.
+- provider 호출에는 기존처럼 source revision 단위 전체 contextual group이 한 번
+  전달된다. 기억·evidence·precise 생성, embedding 값, embedding model 및 canonical
+  memory 저장은 유지한다.
+- provider 오류나 설정 누락으로 embedding이 만들어지지 않은 항목은 기존
+  `contextualized_embedding_inputs`와 stable index를 그대로 보존한다. 기존 worker가
+  재시도하는 데 필요한 정보는 삭제하지 않았다.
+- `Archive Center.js`는 추가 0줄, 제거 0줄이다. Go 생산 코드는 추가 12줄, 제거 2줄이다.
+
+### 실제 생산 경로 검증
+
+- `TestCurrentTurnVoyageContextEmbedsMemoryEvidenceAndPublicPreciseAsOneGroup`:
+  실제 admission 함수와 Voyage transport를 실행해 provider에는 한 contextual group이
+  전달되고, 성공한 vector/precise admission에는 embedding과 model만 남으며 context
+  chunks/index는 제거되는 것을 확인했다.
+- `TestCurrentTurnVoyageContextRetainsRetryInputWhenEmbeddingFails`:
+  같은 admission 함수에서 provider 503과 API key 미설정을 각각 실행해 embedding은
+  비어 있고 context chunks/index는 stable 순서 그대로 남는 것을 확인했다.
+- `TestMariaDBMemoryAdmissionCommitsCoreProjectionsAndOutboxAtomically`:
+  실제 `CommitMemoryAdmission(...)`과 outbox INSERT 경로가 만든 `document_json`을
+  구조적으로 decode했다. `embedding_ready=true`인 memory와 precise 행 모두 embedding
+  및 model이 있고 `contextualized_embedding_inputs`와
+  `contextualized_embedding_index`가 없음을 확인했다. 소스 문자열 검사는 사용하지
+  않았다.
+- 위 대상 테스트는 모두 통과했고 번들 Node의 `--check Archive Center.js`도 통과했다.
+- 전체 Go 실행에서 이번 변경 패키지를 포함한 나머지는 통과했으나 기존
+  `cmd/js-route-variant-smoke`의 Archive Center.js 문자열/레이아웃 기대 4건은 실패했다.
+  이들은 이번 diff가 건드리지 않은 기존 소스 문자열 검사이며, 사용자가 금지한
+  하드코딩 검사를 통과시키기 위해 생산 코드나 기대 문자열을 변경하지 않았다.
+
+### 현재 완료 경계
+
+- 동일 위치 4.0.9 Windows 테스트 패키지 갱신과 실제 RisuAI 관찰은 아직 남아 있다.
+- 실제 RisuAI에서 Cold Start 후 백그라운드 처리와 다음 턴을 겹쳐 보낸 RSS/live heap
+  관찰 전에는 이 작업을 완료 또는 `live_verified`로 기록하지 않는다.
+- Cold Start/reindex 중복 직렬화 대응인 2번은 이번 작업에 포함하지 않았으며, 1번의
+  효과를 먼저 관찰한다.
