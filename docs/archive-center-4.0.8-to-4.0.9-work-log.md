@@ -1785,9 +1785,12 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
 - source commit `5ae842002f118f7f0cd7ad239af2b4d2a187b844`에서 기존
   `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존
   `Archive Center 4.0.9 Windows Auto Install Package` 이름으로 다시 만들었다.
-- 패키지를 점유하던 backend PID `21332`와 launcher cmd PID `24120`만 실제 경로와
-  command line을 확인한 뒤 종료했다. 외부 per-user MariaDB와 ChromaDB 프로세스 및
-  사용자 DB는 종료하거나 변경하지 않았다.
+- 패키지를 점유하던 backend PID `21332`와 launcher cmd PID `24120`은 실제 경로와
+  command line을 확인한 뒤 종료했다. launcher 종료 정리 과정에서 이 launcher가
+  사용하던 MariaDB PID `18708`, Chroma Python PID `3500`, managed Python PID
+  `23124`도 함께 종료됐고, 최종적으로 `28080`, `3307`, `8000` listener가 모두 없는
+  것을 확인했다. 사용자 DB 파일을 삭제하거나 수정하지 않았으며 패키지는 재실행하지
+  않았다.
 - 기존 `.env.full.local`을 package 밖에 보존하고 새 package에 복구했다. 복구 전후
   SHA-256은 모두
   `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`다. 임시 보존
