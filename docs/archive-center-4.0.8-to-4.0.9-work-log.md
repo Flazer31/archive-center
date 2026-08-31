@@ -1779,3 +1779,25 @@ Go 백엔드 실제 회귀로 추가 확인한 결과:
   실제 RisuAI 검증은 아직 남아 있다.
 - 사용자가 실제 RisuAI에서 본문 이후 `/complete-turn`, DB 저장, Critic과 HUD 진행을
   확인하기 전에는 이 작업을 완료 또는 `live_verified`로 기록하지 않는다.
+
+### 4.0.9 동일 위치 패키지 갱신 결과
+
+- source commit `5ae842002f118f7f0cd7ad239af2b4d2a187b844`에서 기존
+  `_test-builds/Archive-Center-4.0.9-web-risu-direct-windows-test` 위치와 기존
+  `Archive Center 4.0.9 Windows Auto Install Package` 이름으로 다시 만들었다.
+- 패키지를 점유하던 backend PID `21332`와 launcher cmd PID `24120`만 실제 경로와
+  command line을 확인한 뒤 종료했다. 외부 per-user MariaDB와 ChromaDB 프로세스 및
+  사용자 DB는 종료하거나 변경하지 않았다.
+- 기존 `.env.full.local`을 package 밖에 보존하고 새 package에 복구했다. 복구 전후
+  SHA-256은 모두
+  `EC1E29C260549B2FF7475D23C32AF9406DEB22CCB370CCB40D671B32BB920CC2`다. 임시 보존
+  사본은 복구 hash 확인 후 삭제했다.
+- package `release_ready=true`, `automatic_update_apply=true`, full manifest
+  `status=green`, source dirty `false`다.
+- managed files `46`, missing/hash mismatch `0/0`이다.
+- source/package/ZIP의 `Archive Center.js`는 개행 정규화 SHA-256
+  `7A18635A20AB09D68B34EE076CE2596F838B5DAB1FF9958796C3C8AC3D48A888`로 모두 일치한다.
+- ZIP size는 `12,248,149 bytes`, SHA-256은
+  `E325D1491CD248AD87434B0CFB41880A6D3A52F3C6FF733091AEA9EA1526238A`이며 외부
+  `SHA256SUMS-4.0.9.txt`와 일치한다.
+- 갱신 패키지는 다시 실행하지 않았다. 실제 RisuAI 검증은 사용자 확인 대기 상태다.
