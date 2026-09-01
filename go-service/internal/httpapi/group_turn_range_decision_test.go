@@ -2527,7 +2527,7 @@ func TestRollbackDecisionTreatsDisabledObservedAssistantAsPresent(t *testing.T) 
 	}
 }
 
-func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testing.T) {
+func TestRollbackDecisionHandlerBlocksMiddleAssistantGap(t *testing.T) {
 	const sid = "char_1_cid_middle_assistant_removed"
 	decisionStore := &rollbackDecisionChatLogStore{
 		Store:                       store.NewNoopStore(),
@@ -2569,8 +2569,57 @@ func TestRollbackDecisionHandlerUsesMiddleAssistantGapAsRollbackAnchor(t *testin
 	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if !response.Allowed || response.FromTurn != 2 || response.DecisionToken == "" {
-		t.Fatalf("middle assistant gap did not anchor tail rollback at turn 2: %+v", response)
+	if response.Allowed || response.FromTurn != 0 || response.DecisionToken != "" || response.Reason != "historical_revision_conflict" {
+		t.Fatalf("middle assistant gap authorized a non-tail rollback: %+v", response)
+	}
+}
+
+func TestRollbackDecisionHandlerBlocksHistoricalConflictBeforeMissingTail(t *testing.T) {
+	const sid = "char_1_cid_historical_conflict_before_tail"
+	decisionStore := &rollbackDecisionChatLogStore{
+		Store:                       store.NewNoopStore(),
+		rollbackRouteBindingFixture: newRollbackRouteBindingFixture(sid),
+		logs: []store.ChatLog{
+			{ChatSessionID: sid, TurnIndex: 87, Role: "assistant", Content: "old-87"},
+			{ChatSessionID: sid, TurnIndex: 88, Role: "assistant", Content: "a88"},
+			{ChatSessionID: sid, TurnIndex: 89, Role: "assistant", Content: "a89"},
+			{ChatSessionID: sid, TurnIndex: 90, Role: "assistant", Content: "a90"},
+		},
+		activeSources: []store.MemorySourceRevision{
+			{ChatSessionID: sid, TurnIndex: 87, SourceMessageID: "assistant-old-87", AssistantContent: "old-87", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 88, SourceMessageID: "assistant-88", AssistantContent: "a88", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 89, SourceMessageID: "assistant-89", AssistantContent: "a89", LifecycleState: "active"},
+			{ChatSessionID: sid, TurnIndex: 90, SourceMessageID: "assistant-90", AssistantContent: "a90", LifecycleState: "active"},
+		},
+	}
+	server := &Server{Store: decisionStore}
+	mux := http.NewServeMux()
+	server.RegisterRoutes(mux)
+
+	req := httptest.NewRequest(http.MethodPost, "/rollback/decision", strings.NewReader(`{
+		"chat_session_id":"`+sid+`",
+		"stable_character_id":"`+rollbackTestStableCharacterID+`",
+		"stable_character_id_state":"observed",
+		"host_chat_id":"`+rollbackTestHostChatID+`",
+		"host_chat_id_state":"observed",
+		"request_source":"auto",
+		"candidate_from_turn":90,
+		"deletion_observed":true,
+		"assistant_observation_scope":"full_active_chat",
+		"assistant_observations":[
+			{"message_id":"assistant-new-87","content_hash":"`+prepareOR1CHash("new-87")+`","message_index":173},
+			{"message_id":"assistant-88","content_hash":"`+prepareOR1CHash("a88")+`","message_index":175},
+			{"message_id":"assistant-89","content_hash":"`+prepareOR1CHash("a89")+`","message_index":177}
+		]
+	}`))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	var response rollbackDecisionResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Allowed || response.FromTurn != 0 || response.DecisionToken != "" || response.Reason != "historical_revision_conflict" {
+		t.Fatalf("historical conflict widened a missing-tail rollback: %+v", response)
 	}
 }
 

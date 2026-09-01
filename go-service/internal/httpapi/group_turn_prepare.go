@@ -1321,7 +1321,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 						proposalStatus,
 					)
 					if s.TurnWorkflows != nil && workflowRequestID != "" {
-						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "succeeded", supervisorCallReason)
+						s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStagePublisherLLM, "failed", supervisorCallReason)
 						s.TurnWorkflows.addWarning(workflowRequestID, "PUBLISHER_LLM_MALFORMED_FAILED_OPEN", "turn_hud.warning.publisher_llm_malformed_failed_open", turnWorkflowStagePublisherLLM)
 					}
 				case "valid_empty":
@@ -1474,10 +1474,19 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		responseExecutionContract,
 		boundedMemoryDeliveryLineage,
 	)
+	memoryInjectionBaseline := buildMemoryInjectionBaseline41(
+		sid, requestCorrelationID, rawUserInput,
+		memories, evidence, kgTriples, worldRules, charStates, activeStates, canonicalLayers,
+		personaEntries, characterPrivateMemories, storylines, pendingThreads, episodeSums, chatLogs,
+		reversibleStateText, injectionAssembly, boundedMemoryDeliveryLineage,
+	)
+	sourceToPayloadLineage["memory_injection_baseline_id"] = memoryInjectionBaseline["baseline_id"]
+	sourceToPayloadLineage["memory_injection_baseline"] = memoryInjectionBaseline
 	injectionPack["payload_application_plan"] = payloadApplicationPlan
 	injectionPack["memory_recall_plan"] = memoryRecallPlan
 	injectionPack["memory_delivery_lineage"] = boundedMemoryDeliveryLineage
 	injectionPack["source_to_payload_lineage"] = sourceToPayloadLineage
+	injectionPack["memory_injection_baseline"] = memoryInjectionBaseline
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
 	injectionPack["lorebook_reference_recall"] = lorebookReference
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
@@ -1598,6 +1607,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"memory_delivery_plan":            injectionPack["memory_delivery_plan"],
 			"memory_delivery_lineage":         boundedMemoryDeliveryLineage,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
+			"memory_injection_baseline":       memoryInjectionBaseline,
 			"temporal_packet":                 injectionPack["temporal_packet"],
 			"temporal_packet_text":            injectionPack["temporal_packet_text"],
 			"character_perspective_packet":    injectionPack["character_perspective_packet"],
@@ -1623,6 +1633,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"injection_pack":                  compactInjectionPack,
 			"payload_application_plan":        payloadApplicationPlan,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
+			"memory_injection_baseline":       memoryInjectionBaseline,
 			"memory_budget_resolution":        memoryBudgetResolution,
 			"language_context":                languageContext,
 			"input_transparency_model":        inputTransparencyModel,
@@ -1664,6 +1675,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"injection_pack":                  injectionPack,
 		"payload_application_plan":        payloadApplicationPlan,
 		"source_to_payload_lineage":       sourceToPayloadLineage,
+		"memory_injection_baseline":       memoryInjectionBaseline,
 		"supervisor_result":               supervisorResult,
 		"publisher_call_budget_ledger":    publisherCallBudgetLedger,
 		"memory_budget_resolution":        memoryBudgetResolution,

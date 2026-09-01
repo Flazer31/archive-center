@@ -87,7 +87,7 @@ if (Test-Path -LiteralPath $managedManifestPath -PathType Leaf) {
             [void]$failures.Add("managed_manifest_build_descriptor_invalid")
         }
         $managedPaths = @($managedManifest.files | ForEach-Object { ([string]$_.path).Replace('\', '/') })
-        foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "scripts/start-full-windows.ps1", "01_start_archive_center_windows.bat", "tools/install-windows.ps1", "PACKAGE_MIGRATION_UPDATE.json", "PACKAGE_RELEASE_STATUS.json", "Archive Center.js")) {
+        foreach ($requiredManagedPath in @("bin/archive-center-go.exe", "bin/archive-center-updater.exe", "bin/mariadb-schema.exe", "scripts/start-full-windows.ps1", "scripts/windows-console-control.ps1", "01_start_archive_center_windows.bat", "tools/install-windows.ps1", "PACKAGE_MIGRATION_UPDATE.json", "PACKAGE_RELEASE_STATUS.json", "Archive Center.js")) {
             if ($managedPaths -notcontains $requiredManagedPath) {
                 [void]$failures.Add("managed_manifest_missing:$requiredManagedPath")
             }
@@ -133,6 +133,13 @@ if (Test-Path -LiteralPath $standardLauncherPath -PathType Leaf) {
     if ($standardLauncherText -notmatch '(?im)powershell[^\r\n]*-RuntimeProfile\s+"full_local"[^\r\n]*-VectorMode\s+"bundled"') {
         [void]$failures.Add("standard_launcher_full_local_vector_contract_missing")
     }
+    if ($standardLauncherText -notmatch '(?im)^set\s+"ARCHIVE_CENTER_EXIT_CODE=%ERRORLEVEL%"\s*$' -or
+        $standardLauncherText -notmatch '(?im)^exit\s+/b\s+%ARCHIVE_CENTER_EXIT_CODE%\s*$') {
+        [void]$failures.Add("standard_launcher_exit_code_contract_missing")
+    }
+    if ($standardLauncherText -match '(?im)^powershell[^\r\n]*\r?\n\s*pause\s*$') {
+        [void]$failures.Add("standard_launcher_unconditional_pause_after_runtime")
+    }
 }
 
 $fullEnvExamplePath = Join-Path $packRoot ".env.full.example"
@@ -147,6 +154,23 @@ if (Test-Path -LiteralPath $fullEnvExamplePath -PathType Leaf) {
 }
 
 $launcherScriptPath = Join-Path $packRoot "scripts\start-full-windows.ps1"
+$consoleControlScriptPath = Join-Path $packRoot "scripts\windows-console-control.ps1"
+if (-not (Test-Path -LiteralPath $consoleControlScriptPath -PathType Leaf)) {
+    [void]$failures.Add("launcher_console_control_helper_missing")
+} else {
+    $consoleControlScriptText = Get-Content -LiteralPath $consoleControlScriptPath -Raw -Encoding UTF8
+    foreach ($marker in @("ConsoleCtrlCIsolation", "SetIgnored", "ConsoleCancelGate", "ConsumeCancelRequested", "Start-ArchiveCtrlCIsolatedProcess", "Wait-ArchiveProcessWithCtrlCConfirmation", "Stop Archive Center and all managed services? (Y/N)", "Shutdown canceled. Archive Center is still running.")) {
+        if (-not $consoleControlScriptText.Contains($marker)) {
+            [void]$failures.Add("launcher_console_control_marker_missing:$marker")
+        }
+    }
+    if ($consoleControlScriptText -notmatch '(?s)Start-ArchiveCtrlCIsolatedProcess.*?SetIgnored\(\$true\).*?Process\]::Start\(\$StartInfo\).*?finally\s*\{\s*\[ArchiveCenter\.ConsoleCtrlCIsolation\]::SetIgnored\(\$false\)') {
+        [void]$failures.Add("launcher_child_ctrl_c_isolation_missing")
+    }
+    if ($consoleControlScriptText -notmatch '(?s)Wait-ArchiveProcessWithCtrlCConfirmation.*?ConsoleCancelGate.*?Read-Host.*?\^\(\?i:y\|yes\)\$.*?return \$true.*?\^\(\?i:n\|no\)\$.*?break confirmation') {
+        [void]$failures.Add("launcher_ctrl_c_confirmation_flow_missing")
+    }
+}
 if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     $launcherScriptText = Get-Content -LiteralPath $launcherScriptPath -Raw -Encoding UTF8
     $unstampedVersionToken = "__ARCHIVE_CENTER_" + "PACKAGE_VERSION__"
@@ -202,7 +226,7 @@ if (Test-Path -LiteralPath $launcherScriptPath -PathType Leaf) {
     if ($launcherScriptText -notmatch '(?s)JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.*?AssignProcessToJobObject.*?ExitWhenProcessEnds.*?\$script:archiveProcessJob\.AddProcess\(\$proc\.Handle\).*?\$archiveProcessJob\.ExitWhenProcessEnds\(\[ArchiveCenter\.ManagedProcessJob\]::GetCurrentParentProcessId\(\)\)') {
         [void]$failures.Add("launcher_job_object_lifetime_binding_missing")
     }
-    if ($launcherScriptText -notmatch '(?s)Wait-Process -InputObject \$Process.*?finally \{.*?Stop-ArchiveChildProcess -Process @\(\s*\$backendProcess,\s*\$candidateBackend,\s*\$restoredBackend,\s*\$startedChroma,\s*\$startedMariaDB\s*\).*?\$archiveProcessJob\.Dispose\(\)') {
+    if ($launcherScriptText -notmatch '(?s)\. \$consoleControlScript.*?Start-ArchiveCtrlCIsolatedProcess -StartInfo \$psi.*?Wait-ArchiveProcessWithCtrlCConfirmation -Process \$Process.*?if \(\$shutdownConfirmed\) \{\s*return 0\s*\}.*?finally \{.*?Stop-ArchiveChildProcess -Process @\(\s*\$backendProcess,\s*\$candidateBackend,\s*\$restoredBackend,\s*\$startedChroma,\s*\$startedMariaDB\s*\).*?\$archiveProcessJob\.Dispose\(\)') {
         [void]$failures.Add("launcher_ctrl_c_full_process_cleanup_missing")
     }
     if ($launcherScriptText.Contains('KeepServices')) {

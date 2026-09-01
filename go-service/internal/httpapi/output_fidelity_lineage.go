@@ -117,6 +117,333 @@ func outputFidelityLineageSlice(value any) []any {
 	return []any{}
 }
 
+type memoryInjectionBaselineCandidate struct {
+	Surface     string
+	SourceRef   string
+	Fingerprint string
+}
+
+func memoryInjectionBaselineFingerprint(text string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(text)), " "))
+	if normalized == "" {
+		return ""
+	}
+	return prepareTurnTextHash(normalized)
+}
+
+func memoryInjectionBaselineSurface(
+	name string,
+	candidateCount, selectedCount, renderedCount, payloadChars int,
+	provenance []string,
+	orderingPositions []int,
+) map[string]any {
+	if selectedCount < 0 {
+		selectedCount = 0
+	}
+	if renderedCount < 0 {
+		renderedCount = 0
+	}
+	if payloadChars < 0 {
+		payloadChars = 0
+	}
+	excluded := candidateCount - selectedCount
+	if excluded < 0 {
+		excluded = 0
+	}
+	renderExcluded := selectedCount - renderedCount
+	if renderExcluded < 0 {
+		renderExcluded = 0
+	}
+	candidateReason := "none"
+	switch {
+	case candidateCount == 0:
+		candidateReason = "no_candidates"
+	case selectedCount == 0:
+		candidateReason = "not_selected_by_current_policy"
+	case excluded > 0:
+		candidateReason = "current_retrieval_or_surface_policy_exclusion"
+	}
+	renderReason := "none"
+	switch {
+	case selectedCount == 0:
+		renderReason = "no_selected_items"
+	case renderedCount == 0:
+		renderReason = "not_rendered_by_current_delivery_policy"
+	case renderExcluded > 0:
+		renderReason = "current_delivery_budget_or_exact_line_dedupe"
+	}
+	return map[string]any{
+		"surface":                       name,
+		"candidate_count":               candidateCount,
+		"selected_count":                selectedCount,
+		"rendered_count":                renderedCount,
+		"payload_character_count":       payloadChars,
+		"payload_character_count_state": "matched_rendered_source_item_chars_non_additive_across_surfaces",
+		"token_estimate":                (payloadChars + 3) / 4,
+		"token_count_state":             "estimated_chars_div_4",
+		"excluded_count":                excluded,
+		"exclusion_reason":              candidateReason,
+		"render_excluded_count":         renderExcluded,
+		"render_exclusion_reason":       renderReason,
+		"count_units": map[string]any{
+			"candidate": "store_or_prepare_record",
+			"selected":  "surface_source_item",
+			"rendered":  "matched_final_lane_item",
+		},
+		"provenance":         provenance,
+		"ordering_positions": orderingPositions,
+		"stages": map[string]any{
+			"candidate":        map[string]any{"status": "observed", "count": candidateCount},
+			"selected":         map[string]any{"status": "observed", "count": selectedCount},
+			"rendered":         map[string]any{"status": "observed", "count": renderedCount, "chars": payloadChars},
+			"payload_applied":  map[string]any{"status": "planned_unobserved"},
+			"displayed_effect": map[string]any{"status": "unobserved"},
+		},
+	}
+}
+
+type memoryInjectionBaselineRenderMatch struct {
+	SelectedCount int
+	RenderedCount int
+	PayloadChars  int
+	Positions     []int
+}
+
+func memoryInjectionBaselineFinalLaneItems(deliveryPlan map[string]any) []string {
+	items := []string{}
+	for _, raw := range outputFidelityLineageSlice(deliveryPlan["classes"]) {
+		items = append(items, prepareTurnDeliveryItems(extractionStringFromAny(mapFromAny(raw)["text"]))...)
+	}
+	return items
+}
+
+func memoryInjectionBaselineMatch(finalItems []string, sourceTexts ...string) memoryInjectionBaselineRenderMatch {
+	sourceItems := prepareTurnDeliveryItems(sourceTexts...)
+	positions := map[string][]int{}
+	for index, item := range finalItems {
+		positions[item] = append(positions[item], index)
+	}
+	used := map[string]int{}
+	match := memoryInjectionBaselineRenderMatch{SelectedCount: len(sourceItems), Positions: []int{}}
+	for _, item := range sourceItems {
+		itemPositions := positions[item]
+		usedIndex := used[item]
+		if usedIndex >= len(itemPositions) {
+			continue
+		}
+		used[item] = usedIndex + 1
+		match.RenderedCount++
+		match.PayloadChars += len([]rune(item))
+		match.Positions = append(match.Positions, itemPositions[usedIndex])
+	}
+	return match
+}
+
+func buildMemoryInjectionBaseline41(
+	sessionID, requestCorrelationID, rawUserInput string,
+	memories []store.Memory,
+	evidence []store.DirectEvidence,
+	kgTriples []store.KGTriple,
+	worldRules []store.WorldRule,
+	charStates []store.CharacterState,
+	activeStates []store.ActiveState,
+	canonicalLayers []store.CanonicalStateLayer,
+	personaEntries []store.PersonaMemoryEntry,
+	characterPrivateMemories []store.ProtagonistEntityMemory,
+	storylines []store.Storyline,
+	pendingThreads []store.PendingThread,
+	episodeSums []store.EpisodeSummary,
+	chatLogs []store.ChatLog,
+	reversibleStateText string,
+	assembly prepareTurnInjectionAssembly,
+	memoryLineage map[string]any,
+) map[string]any {
+	relationshipCandidates := 0
+	for _, item := range charStates {
+		if strings.TrimSpace(item.RelationshipsJSON) != "" {
+			relationshipCandidates++
+		}
+	}
+	stateCandidates := len(worldRules) + len(charStates) + len(activeStates) + len(canonicalLayers)
+	personaCandidates := len(personaEntries) + len(characterPrivateMemories)
+	finalLaneItems := memoryInjectionBaselineFinalLaneItems(assembly.MemoryDeliveryPlan)
+	memoryMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.ActualMemoryText, assembly.ProtectedMemoryText)
+	directEvidenceMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.LatestDirectEvidenceText, assembly.DirectEvidenceText)
+	kgMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.KGText)
+	stateMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.WorldRulesText, assembly.CharacterObjectiveText, assembly.CanonCharacterText, assembly.CanonWorldText, assembly.ContinuityCorrectionText)
+	reversibleStateItems := prepareTurnDeliveryItems(reversibleStateText)
+	stateMatch.SelectedCount += len(reversibleStateItems)
+	for index, item := range reversibleStateItems {
+		stateMatch.RenderedCount++
+		stateMatch.PayloadChars += len([]rune(item))
+		stateMatch.Positions = append(stateMatch.Positions, len(finalLaneItems)+index)
+	}
+	personaMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.PersonaText, assembly.CharacterPrivateText)
+	relationshipMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.CharacterRelationshipText, assembly.CanonRelationshipText)
+	storylineMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.StorylineText)
+	pendingThreadMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.PendingThreadText)
+	hierarchyMatch := memoryInjectionBaselineMatch(finalLaneItems, assembly.EpisodeText, assembly.ChapterText, assembly.ArcText, assembly.SagaText, assembly.CanonEventText)
+
+	surfaces := []any{
+		memoryInjectionBaselineSurface("memory", len(memories), memoryMatch.SelectedCount, memoryMatch.RenderedCount, memoryMatch.PayloadChars, []string{"store.memories", "memory_delivery_lineage.v1"}, memoryMatch.Positions),
+		memoryInjectionBaselineSurface("direct_evidence", len(evidence), directEvidenceMatch.SelectedCount, directEvidenceMatch.RenderedCount, directEvidenceMatch.PayloadChars, []string{"store.direct_evidence_records"}, directEvidenceMatch.Positions),
+		memoryInjectionBaselineSurface("kg", len(kgTriples), kgMatch.SelectedCount, kgMatch.RenderedCount, kgMatch.PayloadChars, []string{"store.kg_triples"}, kgMatch.Positions),
+		memoryInjectionBaselineSurface("state", stateCandidates, stateMatch.SelectedCount, stateMatch.RenderedCount, stateMatch.PayloadChars, []string{"store.world_rules", "store.character_states", "store.active_states", "store.canonical_state_layers", "store.status_current_values"}, stateMatch.Positions),
+		memoryInjectionBaselineSurface("persona", personaCandidates, personaMatch.SelectedCount, personaMatch.RenderedCount, personaMatch.PayloadChars, []string{"store.persona_memory_entries", "store.protagonist_entity_memories"}, personaMatch.Positions),
+		memoryInjectionBaselineSurface("relationship", relationshipCandidates, relationshipMatch.SelectedCount, relationshipMatch.RenderedCount, relationshipMatch.PayloadChars, []string{"store.character_states.relationships_json", "store.canonical_state_layers.relationships"}, relationshipMatch.Positions),
+		memoryInjectionBaselineSurface("storyline", len(storylines), storylineMatch.SelectedCount, storylineMatch.RenderedCount, storylineMatch.PayloadChars, []string{"store.storylines"}, storylineMatch.Positions),
+		memoryInjectionBaselineSurface("pending_thread", len(pendingThreads), pendingThreadMatch.SelectedCount, pendingThreadMatch.RenderedCount, pendingThreadMatch.PayloadChars, []string{"store.pending_threads"}, pendingThreadMatch.Positions),
+		memoryInjectionBaselineSurface("hierarchy_summary", len(episodeSums), hierarchyMatch.SelectedCount, hierarchyMatch.RenderedCount, hierarchyMatch.PayloadChars, []string{"store.episode_summaries", "store.chapter_summaries", "store.arc_summaries", "store.saga_digests"}, hierarchyMatch.Positions),
+	}
+
+	candidates := make([]memoryInjectionBaselineCandidate, 0)
+	appendCandidate := func(surface, ref, text string) {
+		if fingerprint := memoryInjectionBaselineFingerprint(text); fingerprint != "" {
+			candidates = append(candidates, memoryInjectionBaselineCandidate{Surface: surface, SourceRef: ref, Fingerprint: fingerprint})
+		}
+	}
+	for _, item := range memories {
+		appendCandidate("memory", prepareTurnMemoryLineageSourceRef(sessionID, item.ID), prepareTurnMemorySummary(item))
+	}
+	for _, item := range evidence {
+		appendCandidate("direct_evidence", fmt.Sprintf("direct_evidence:%s:%d", sessionID, item.ID), item.EvidenceText)
+	}
+	for _, item := range kgTriples {
+		appendCandidate("kg", fmt.Sprintf("kg:%s:%d", sessionID, item.ID), strings.Join([]string{item.Subject, item.Predicate, item.Object}, " "))
+	}
+	for _, item := range worldRules {
+		appendCandidate("state", fmt.Sprintf("world_rule:%s:%d", sessionID, item.ID), strings.Join([]string{item.Key, item.ValueJSON}, " "))
+	}
+	for _, item := range charStates {
+		appendCandidate("state", fmt.Sprintf("character_state:%s:%d", sessionID, item.ID), strings.Join([]string{item.CharacterName, item.StatusJSON, item.AppearanceJSON, item.PersonalityJSON}, " "))
+		appendCandidate("relationship", fmt.Sprintf("character_relationship:%s:%d", sessionID, item.ID), item.RelationshipsJSON)
+	}
+	for _, item := range activeStates {
+		appendCandidate("state", fmt.Sprintf("active_state:%s:%d", sessionID, item.ID), item.Content)
+	}
+	for _, item := range canonicalLayers {
+		appendCandidate("state", fmt.Sprintf("canonical_state:%s:%d", sessionID, item.ID), item.Content)
+	}
+	for _, item := range personaEntries {
+		appendCandidate("persona", fmt.Sprintf("persona_memory:%s:%d", sessionID, item.ID), item.MemoryText)
+	}
+	for _, item := range characterPrivateMemories {
+		appendCandidate("persona", fmt.Sprintf("protagonist_memory:%s:%d", sessionID, item.ID), item.MemoryText)
+	}
+	for _, item := range storylines {
+		appendCandidate("storyline", fmt.Sprintf("storyline:%s:%d", sessionID, item.ID), strings.Join([]string{item.Name, item.CurrentContext}, " "))
+	}
+	for _, item := range pendingThreads {
+		appendCandidate("pending_thread", fmt.Sprintf("pending_thread:%s:%d", sessionID, item.ID), strings.Join([]string{item.Title, item.Description}, " "))
+	}
+	for _, item := range episodeSums {
+		appendCandidate("hierarchy_summary", fmt.Sprintf("episode_summary:%s:%d", sessionID, item.ID), item.SummaryText)
+	}
+
+	byFingerprint := map[string][]memoryInjectionBaselineCandidate{}
+	for _, candidate := range candidates {
+		byFingerprint[candidate.Fingerprint] = append(byFingerprint[candidate.Fingerprint], candidate)
+	}
+	semanticDuplicates := make([]any, 0)
+	for fingerprint, group := range byFingerprint {
+		surfaceSet := map[string]bool{}
+		refs := make([]string, 0, len(group))
+		for _, candidate := range group {
+			surfaceSet[candidate.Surface] = true
+			refs = append(refs, candidate.SourceRef)
+		}
+		if len(surfaceSet) < 2 {
+			continue
+		}
+		surfaceNames := make([]string, 0, len(surfaceSet))
+		for surface := range surfaceSet {
+			surfaceNames = append(surfaceNames, surface)
+		}
+		sort.Strings(surfaceNames)
+		sort.Strings(refs)
+		semanticDuplicates = append(semanticDuplicates, map[string]any{"fingerprint": fingerprint, "surfaces": surfaceNames, "source_refs": refs})
+	}
+	sort.Slice(semanticDuplicates, func(i, j int) bool {
+		return extractionStringFromAny(mapFromAny(semanticDuplicates[i])["fingerprint"]) < extractionStringFromAny(mapFromAny(semanticDuplicates[j])["fingerprint"])
+	})
+
+	sameRowLanes := make([]any, 0)
+	rowLanes := map[string][]string{}
+	for _, raw := range outputFidelityLineageSlice(memoryLineage["items"]) {
+		item := mapFromAny(raw)
+		ref := extractionStringFromAny(item["source_ref"])
+		if ref == "" {
+			ref = prepareTurnMemoryLineageSourceRef(sessionID, item["source_row_id"])
+		}
+		if ref != "" {
+			rowLanes[ref] = append(rowLanes[ref], extractionStringFromAny(item["selection_lane"]))
+		}
+	}
+	for ref, lanes := range rowLanes {
+		if len(lanes) > 1 {
+			sort.Strings(lanes)
+			sameRowLanes = append(sameRowLanes, map[string]any{"source_ref": ref, "lanes": lanes, "occurrence_count": len(lanes)})
+		}
+	}
+	sort.Slice(sameRowLanes, func(i, j int) bool {
+		return extractionStringFromAny(mapFromAny(sameRowLanes[i])["source_ref"]) < extractionStringFromAny(mapFromAny(sameRowLanes[j])["source_ref"])
+	})
+
+	inputFingerprint := memoryInjectionBaselineFingerprint(rawUserInput)
+	recentFingerprints := map[string][]string{}
+	for _, item := range chatLogs {
+		if fingerprint := memoryInjectionBaselineFingerprint(item.Content); fingerprint != "" {
+			recentFingerprints[fingerprint] = append(recentFingerprints[fingerprint], fmt.Sprintf("chat_log:%s:%d", sessionID, item.ID))
+		}
+	}
+	contextDuplicates := make([]any, 0)
+	for _, candidate := range candidates {
+		if candidate.Surface != "memory" {
+			continue
+		}
+		if inputFingerprint != "" && candidate.Fingerprint == inputFingerprint {
+			contextDuplicates = append(contextDuplicates, map[string]any{"source_ref": candidate.SourceRef, "duplicate_of": "current_user_input", "fingerprint": candidate.Fingerprint})
+		}
+		if refs := recentFingerprints[candidate.Fingerprint]; len(refs) > 0 {
+			contextDuplicates = append(contextDuplicates, map[string]any{"source_ref": candidate.SourceRef, "duplicate_of": "recent_risu_context", "recent_source_refs": refs, "fingerprint": candidate.Fingerprint})
+		}
+	}
+	sort.Slice(contextDuplicates, func(i, j int) bool {
+		left := mapFromAny(contextDuplicates[i])
+		right := mapFromAny(contextDuplicates[j])
+		leftKey := extractionStringFromAny(left["source_ref"]) + "\x1f" + extractionStringFromAny(left["duplicate_of"])
+		rightKey := extractionStringFromAny(right["source_ref"]) + "\x1f" + extractionStringFromAny(right["duplicate_of"])
+		return leftKey < rightKey
+	})
+
+	baselineSeed := strings.Join([]string{
+		sessionID,
+		requestCorrelationID,
+		mustCompactJSON(surfaces),
+		mustCompactJSON(sameRowLanes),
+		mustCompactJSON(semanticDuplicates),
+		mustCompactJSON(contextDuplicates),
+	}, "\x1f")
+	return map[string]any{
+		"contract_version":               "memory_injection_baseline.v1",
+		"baseline_id":                    "mib_" + strings.TrimPrefix(prepareTurnTextHash(baselineSeed), "sha256:"),
+		"status":                         "observed_pre_payload",
+		"owner":                          "go",
+		"policy_mode":                    "observation_only_4_1",
+		"selection_policy_changed":       false,
+		"canonical_mutation":             false,
+		"vector_mutation":                false,
+		"surface_order":                  []string{"memory", "direct_evidence", "kg", "state", "persona", "relationship", "storyline", "pending_thread", "hierarchy_summary"},
+		"surfaces":                       surfaces,
+		"exact_same_row_lane_duplicates": sameRowLanes,
+		"semantic_duplicate_candidates":  semanticDuplicates,
+		"current_input_or_recent_context_duplicate_candidates": contextDuplicates,
+		"duplicate_detection": map[string]any{"method": "normalized_casefolded_text_fingerprint.v1", "automatic_suppression": false, "semantic_claim": "candidate_only"},
+		"payload_application": map[string]any{"status": "planned_unobserved", "observation_owner": "risu_adapter"},
+		"displayed_effect":    map[string]any{"status": "unobserved", "automatic_text_judgement": false},
+	}
+}
+
 func deliveredPrepareTurnMemorySourceRefs(sessionID string, lineage map[string]any) []string {
 	refs := make([]string, 0)
 	for _, raw := range outputFidelityLineageSlice(lineage["items"]) {
@@ -311,9 +638,37 @@ func boundedLineageStringSlice(value any, limit int) []string {
 	return out
 }
 
+func boundedMemoryInjectionSurfacePayloadApplication(value any) []any {
+	allowed := map[string]bool{
+		"memory": true, "direct_evidence": true, "kg": true, "state": true,
+		"persona": true, "relationship": true, "storyline": true,
+		"pending_thread": true, "hierarchy_summary": true,
+	}
+	out := make([]any, 0, 9)
+	seen := map[string]bool{}
+	for _, raw := range outputFidelityLineageSlice(value) {
+		item := mapFromAny(raw)
+		surface := strings.TrimSpace(extractionStringFromAny(item["surface"]))
+		status := strings.TrimSpace(extractionStringFromAny(item["status"]))
+		if !allowed[surface] || seen[surface] || (status != "applied" && status != "empty" && status != "missing" && status != "ambiguous") {
+			continue
+		}
+		seen[surface] = true
+		out = append(out, map[string]any{
+			"surface":                 surface,
+			"status":                  status,
+			"rendered_count":          maxInt(0, intFromAny(item["rendered_count"], 0)),
+			"payload_character_count": maxInt(0, intFromAny(item["payload_character_count"], 0)),
+			"displayed_effect":        "unobserved",
+		})
+	}
+	return out
+}
+
 func buildSourceToFinalLineage(req dto.M4CompleteTurnRequest, decision completeTurnSourceAcceptanceDecision) map[string]any {
 	rawObservation := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])
 	refs := boundedLineageStringSlice(rawObservation["source_refs"], 128)
+	surfacePayloadApplication := boundedMemoryInjectionSurfacePayloadApplication(rawObservation["surface_payload_application"])
 	itemResults := make([]any, 0, len(refs))
 	for _, ref := range refs {
 		itemResults = append(itemResults, map[string]any{
@@ -376,6 +731,8 @@ func buildSourceToFinalLineage(req dto.M4CompleteTurnRequest, decision completeT
 		"payload_observation_stage":      nilIfEmpty(extractionStringFromAny(rawObservation["payload_observation_stage"])),
 		"final_provider_payload_state":   nilIfEmpty(extractionStringFromAny(rawObservation["final_provider_payload_state"])),
 		"payload_guidance_hash":          nilIfEmpty(extractionStringFromAny(rawObservation["payload_guidance_hash"])),
+		"memory_injection_baseline_id":   nilIfEmpty(extractionStringFromAny(rawObservation["memory_injection_baseline_id"])),
+		"surface_payload_application":    surfacePayloadApplication,
 		"generation_id":                  nilIfEmpty(decision.Observation.GenerationID),
 		"generation_id_state":            decision.Observation.GenerationIDState,
 		"source_refs":                    refs,
@@ -388,6 +745,7 @@ func buildSourceToFinalLineage(req dto.M4CompleteTurnRequest, decision completeT
 			"semantic_outcome": "unobserved",
 		},
 		"item_results":     itemResults,
+		"displayed_effect": map[string]any{"status": "unobserved", "automatic_text_judgement": false},
 		"semantic_outcome": "unobserved",
 		"guide_efficacy_evaluation": map[string]any{
 			"contract_version":                     "guide_efficacy_evaluation.v1",

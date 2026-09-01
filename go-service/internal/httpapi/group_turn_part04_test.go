@@ -622,6 +622,13 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if injectionPack["would_inject"] != true {
 		t.Errorf("injection_pack.would_inject = %v, want true", injectionPack["would_inject"])
 	}
+	baseline := mapFromAny(resp["memory_injection_baseline"])
+	if baseline["contract_version"] != "memory_injection_baseline.v1" || baseline["policy_mode"] != "observation_only_4_1" || len(outputFidelityLineageSlice(baseline["surfaces"])) != 9 {
+		t.Fatalf("4.1 memory injection baseline missing: %#v", baseline)
+	}
+	if mapFromAny(injectionPack["memory_injection_baseline"])["baseline_id"] != baseline["baseline_id"] || mapFromAny(resp["source_to_payload_lineage"])["memory_injection_baseline_id"] != baseline["baseline_id"] {
+		t.Fatalf("4.1 baseline was not linked to payload lineage: baseline=%#v pack=%#v lineage=%#v", baseline, injectionPack["memory_injection_baseline"], resp["source_to_payload_lineage"])
+	}
 	if injectionPack["would_write"] != false {
 		t.Errorf("injection_pack.would_write = %v, want false", injectionPack["would_write"])
 	}

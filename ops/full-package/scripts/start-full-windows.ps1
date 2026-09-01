@@ -187,6 +187,12 @@ namespace ArchiveCenter {
 "@
 }
 
+$consoleControlScript = Join-Path $PSScriptRoot "windows-console-control.ps1"
+if (-not (Test-Path -LiteralPath $consoleControlScript -PathType Leaf)) {
+    throw "Windows console control helper not found: $consoleControlScript"
+}
+. $consoleControlScript
+
 $launcherParameters = @{}
 foreach ($entry in $PSBoundParameters.GetEnumerator()) {
     $launcherParameters[$entry.Key] = $entry.Value
@@ -316,7 +322,7 @@ function Start-ArchiveChildProcess {
     $psi.CreateNoWindow = $true
 
     try {
-        $proc = [System.Diagnostics.Process]::Start($psi)
+        $proc = Start-ArchiveCtrlCIsolatedProcess -StartInfo $psi
         if ($null -eq $proc) {
             throw "Process.Start returned null."
         }
@@ -775,7 +781,10 @@ function Wait-ArchiveBackendLifetime {
         }
         Write-Host "Restored backend passed /ready and exact /version verification."
     }
-    Wait-Process -InputObject $Process
+    $shutdownConfirmed = Wait-ArchiveProcessWithCtrlCConfirmation -Process $Process
+    if ($shutdownConfirmed) {
+        return 0
+    }
     $Process.Refresh()
     return [int]$Process.ExitCode
 }
@@ -1379,7 +1388,7 @@ Write-Host "Starting Archive Center 2.1 full package"
     Write-Host "  Profile: $($env:AC_RUNTIME_PROFILE)"
     Write-Host "  Vector:  $($env:AC_VECTOR_MODE)"
     Write-Host ""
-    Write-Host "Stop with Ctrl+C."
+    Write-Host "Press Ctrl+C to request shutdown. Choose N to keep every service running."
     if ($pendingApplyStatus -eq "applied_pending_health") {
         $candidateBackend = Start-ArchiveBackendProcess -BackendPath $backendExe -PackageRoot $packRoot
         $health = Wait-BackendMainReady -Process $candidateBackend -Port $backendPort -ExpectedVersion $pendingTargetVersion -TimeoutSeconds 60

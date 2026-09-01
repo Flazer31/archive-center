@@ -1415,6 +1415,7 @@
       "turn_hud.notice.duplicate_conflict_preserved": "같은 턴에 서로 다른 값이 확인되어 새 값을 저장하지 않고 기존 값을 유지했습니다.",
       "turn_hud.notice.ooc_recognized": "OOC 인식",
       "turn_hud.notice.ooc_recognized_detail": "OOC 판정으로 입력 처리를 취소했습니다.",
+      "turn_hud.notice.risu_request_retry_observed": "Risu 요청 재시도 감지 · {n}회째",
       "turn_hud.error.logical_turn_replace_failed": "리롤 턴 교체에 실패했습니다.",
       "turn_hud.error.user_input_missing": "저장할 사용자 원문이 없습니다.",
       "sessionNormalize.title": "세션 정상화 / 콜드 스타트",
@@ -2620,6 +2621,7 @@
       "turn_hud.notice.duplicate_conflict_preserved": "Different values were found for the same turn, so the existing value was kept and the new value was not saved.",
       "turn_hud.notice.ooc_recognized": "OOC recognized",
       "turn_hud.notice.ooc_recognized_detail": "Input processing was cancelled after the OOC decision.",
+      "turn_hud.notice.risu_request_retry_observed": "Risu request retry detected · attempt {n}",
       "turn_hud.error.logical_turn_replace_failed": "Failed to replace the rerolled turn.",
       "turn_hud.error.user_input_missing": "The user source required for saving is missing.",
       "sessionNormalize.title": "Session Normalize / Cold Start",
@@ -3823,6 +3825,7 @@
       "turn_hud.notice.duplicate_conflict_preserved": "同じターンに異なる値が確認されたため、新規保存せず既存値を維持しました。",
       "turn_hud.notice.ooc_recognized": "OOCを認識",
       "turn_hud.notice.ooc_recognized_detail": "OOC判定により入力処理をキャンセルしました。",
+      "turn_hud.notice.risu_request_retry_observed": "Risuリクエストの再試行を検出 · {n}回目",
       "turn_hud.error.logical_turn_replace_failed": "再生成ターンの置換に失敗しました。",
       "turn_hud.error.user_input_missing": "保存するユーザー原文がありません。",
       "sessionNormalize.title": "セッション正規化 / コールドスタート",
@@ -5003,9 +5006,27 @@
     });
   }
 
+  function terminalizeActiveFinalConfirmationRequestContext(reasonCode) {
+    const active = _activeFinalConfirmationRequestContext;
+    if (!finalConfirmationRequestContextOwnsPendingResponse(active)) return false;
+    const reason = String(reasonCode || "host_lifecycle_superseded_pending_request");
+    active.state = "terminal";
+    active.terminalReason = reason;
+    _activeFinalConfirmationRequestContext = null;
+    updateRuntimeState("lastStreamingAfterRequest", "warn", {
+      detail: "pending Archive request context ended by a confirmed Host lifecycle signal",
+      reason_code: reason,
+      sessionId: String(active.sessionId || ""),
+      requestId: String(active.requestId || ""),
+      requestType: String(active.requestType || "model"),
+    });
+    return true;
+  }
+
   async function onInputHook(rawInput) {
     try {
       recordRisuHookLifecycle("input", "callback_observed");
+      terminalizeActiveFinalConfirmationRequestContext("new_host_input_observed");
       const sessionId = await getCurrentChatSessionId();
       cacheRawInputForSession(sessionId, rawInput);
       if (isRisuHistoryTrimCommandText(rawInput)) {
@@ -13932,6 +13953,7 @@
   let _turnWorkflowHUDWatchRunning = false;
   let _turnWorkflowHUDLastRevision = 0;
   let _turnWorkflowHUDTerminalRequestId = "";
+  let _turnWorkflowHUDLastView = null;
   let _turnWorkflowHUDStreamAbortController = null;
   let _turnWorkflowHUDStreamReader = null;
   let _turnWorkflowHUDElapsedTimer = null;
@@ -14063,6 +14085,7 @@
     _turnWorkflowHUDActiveRequestId = "";
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
+    _turnWorkflowHUDLastView = null;
     _turnWorkflowHUDHostWarningsByRequestId.clear();
     clearTurnWorkflowHUDTimer();
     await _turnWorkflowHUDRenderChain;
@@ -14305,6 +14328,7 @@
     _turnWorkflowHUDActiveRequestId = "";
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
+    _turnWorkflowHUDLastView = null;
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("dismiss", async function() {
       await removeTurnWorkflowHUDDismissListeners(listenerIds);
@@ -14796,6 +14820,7 @@
     if (!requestId || (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId)) return false;
     const revision = Number(view.revision || 0);
     if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return false;
+    _turnWorkflowHUDLastView = view;
     renderTurnWorkflowHUD(view);
     return true;
   }
@@ -14967,6 +14992,7 @@
     if (previousRequestId) _turnWorkflowHUDHostWarningsByRequestId.delete(previousRequestId);
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
+    _turnWorkflowHUDLastView = null;
     clearTurnWorkflowHUDTimer();
     consumeTurnWorkflowHUD({
       contract_version: TURN_WORKFLOW_HUD_CONTRACT,
@@ -14984,6 +15010,27 @@
       },
     });
     return normalizedRequestId;
+  }
+
+  function renderTurnWorkflowHUDSameRequestRetry(requestId, attemptCount) {
+    if (_turnWorkflowHUDUnloaded || !turnWorkflowHUDIsEnabled()) return false;
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId || normalizedRequestId !== _turnWorkflowHUDActiveRequestId) return false;
+    const normalizedAttempt = Math.max(2, Math.trunc(Number(attemptCount || 2)));
+    rememberTurnWorkflowHUDHostWarning(normalizedRequestId, {
+      code: "",
+      message: tf("turn_hud.notice.risu_request_retry_observed", { n: normalizedAttempt }),
+      details: [],
+      path: "risu_beforeRequest",
+      status: 0,
+    });
+    if (
+      _turnWorkflowHUDLastView
+      && String(_turnWorkflowHUDLastView.request_id || "") === normalizedRequestId
+    ) {
+      renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+    }
+    return true;
   }
 
   function startTurnWorkflowHUDWatch(requestId) {
@@ -18797,6 +18844,10 @@
         pendingContext: null,
         orchestrationResult: null,
         nonMainSkip: null,
+        beforeRequestAttemptCount: 1,
+        lastBeforeRequestAt: new Date().toISOString(),
+        retryPayloadReady: false,
+        payloadRewriteApplied: false,
         state: hostChatId ? "captured" : "unavailable",
       };
       updateRuntimeState("lastStreamingAfterRequest", "watching", {
@@ -18811,6 +18862,182 @@
       debugLog("[final-confirmation] request context unavailable:", err && err.message);
       return null;
     }
+  }
+
+  function finalConfirmationRequestContextOwnsPendingResponse(context) {
+    return !!(
+      context
+      && typeof context === "object"
+      && context.state !== "accepted"
+      && context.state !== "terminal"
+      && context.state !== "unavailable"
+    );
+  }
+
+  function finalConfirmationRequestContextRetryIdentityMatches(active, candidate) {
+    if (!active || !candidate || typeof active !== "object" || typeof candidate !== "object") return false;
+    const requiredStrings = [
+      "sessionId",
+      "requestType",
+      "hostChatId",
+      "userObservedContentHash",
+      "userObservedContent",
+      "userMessageChatId",
+      "baselineAssistantContentHash",
+      "baselineGenerationId",
+    ];
+    const requiredNumbers = [
+      "characterIndex",
+      "chatIndex",
+      "requestMessageCount",
+      "userMessageIndex",
+      "userObservedPairOrdinal",
+      "userMessageTimeMs",
+      "baselineAssistantIndex",
+      "baselineAssistantTimeMs",
+    ];
+    if (!String(active.sessionId || "").trim()
+        || !String(active.hostChatId || "").trim()
+        || !String(active.userObservedContentHash || "").trim()
+        || Number(active.userMessageIndex) < 0
+        || Number(active.userObservedPairOrdinal) < 1) {
+      return false;
+    }
+    for (const key of requiredStrings) {
+      if (String(active[key] || "") !== String(candidate[key] || "")) return false;
+    }
+    for (const key of requiredNumbers) {
+      if (!Number.isFinite(Number(active[key]))
+          || Number(active[key]) !== Number(candidate[key])) return false;
+    }
+    return true;
+  }
+
+  function finalConfirmationRequestContextHasReusablePayloadPlan(context) {
+    const orchResult = context && context.orchestrationResult;
+    const injectionPack = orchResult && orchResult._injectionPack;
+    const plan = injectionPack && injectionPack.payload_application_plan;
+    return !!(
+      plan
+      && plan.contract_version === "payload_application_plan.v1"
+      && plan.owner === "go"
+      && plan.apply_rule === "apply_exact_text_without_reassembly"
+      && (plan.status === "ready" || plan.status === "empty")
+    );
+  }
+
+  function reapplyFinalConfirmationRetryPayload(payload, context) {
+    if (!finalConfirmationRequestContextHasReusablePayloadPlan(context)) {
+      return { payload, reused: false, reason: "retry_payload_plan_unavailable" };
+    }
+    let outgoingPayload = payload;
+    if (
+      context.payloadRewriteApplied === true
+      && typeof context.payloadRewriteText === "string"
+      && context.payloadRewriteText.trim()
+    ) {
+      const rewriteResult = rewriteLastUserMessage(outgoingPayload, context.payloadRewriteText);
+      if (rewriteResult && rewriteResult.rewritten) outgoingPayload = rewriteResult.payload;
+    }
+    const applied = context.payloadInjectionReplayAllowed === true
+      ? applyContextInjection(outgoingPayload, context.orchestrationResult)
+      : { payload: outgoingPayload, injectionResult: null };
+    return {
+      payload: applied && Object.prototype.hasOwnProperty.call(applied, "payload") ? applied.payload : outgoingPayload,
+      reused: true,
+      reason: "same_logical_request_retry_reused",
+      injectionResult: applied && applied.injectionResult || null,
+    };
+  }
+
+  function markFinalConfirmationRetryPayloadReady(context, orchestrationResult, options = null) {
+    if (!context || typeof context !== "object") return false;
+    const opts = options && typeof options === "object" ? options : {};
+    const injectionRequested = opts.injectionRequested === true;
+    const observation = orchestrationResult && orchestrationResult._payloadApplicationObservation;
+    const applicationStatus = String(observation && observation.payload_application_status || "");
+    const injectionReplayAllowed = injectionRequested
+      && (applicationStatus === "applied" || applicationStatus === "empty");
+    context.payloadRewriteApplied = opts.payloadRewriteApplied === true;
+    context.payloadRewriteText = context.payloadRewriteApplied
+      ? String(opts.payloadRewriteText || "")
+      : "";
+    context.payloadInjectionReplayAllowed = injectionReplayAllowed;
+    context.retryPayloadReady = !!(
+      context.pendingContext
+      && context.pendingContext.status === "ready"
+      && finalConfirmationRequestContextHasReusablePayloadPlan(context)
+      && (!injectionRequested || injectionReplayAllowed)
+    );
+    context.retryPayloadReadyAt = context.retryPayloadReady ? new Date().toISOString() : "";
+    return context.retryPayloadReady;
+  }
+
+  function installFinalConfirmationRequestContext(context) {
+    const next = context && typeof context === "object" ? context : null;
+    const active = _activeFinalConfirmationRequestContext;
+    const activeOwnsPendingResponse = finalConfirmationRequestContextOwnsPendingResponse(active);
+    if (activeOwnsPendingResponse) {
+      const sameLogicalRequestRetry = finalConfirmationRequestContextRetryIdentityMatches(active, next);
+      const activePayloadReady = !!(
+        sameLogicalRequestRetry
+        && String(active.requestId || "").trim()
+        && active.retryPayloadReady === true
+        && active.pendingContext
+        && active.pendingContext.status === "ready"
+        && finalConfirmationRequestContextHasReusablePayloadPlan(active)
+      );
+      if (activePayloadReady) {
+        active.beforeRequestAttemptCount = Math.max(1, Math.trunc(Number(active.beforeRequestAttemptCount || 1))) + 1;
+        active.lastBeforeRequestAt = new Date().toISOString();
+        active.retryState = "same_logical_request_retry_reused";
+        if (next) {
+          next.state = "superseded";
+          next.terminalReason = "same_logical_request_retry_reused";
+          next.reusedRequestId = String(active.requestId || "");
+        }
+        updateRuntimeState("lastStreamingAfterRequest", "watching", {
+          detail: "same logical Risu request retry observed; prepared Archive request reused",
+          reason_code: "same_logical_request_retry_reused",
+          sessionId: String(active.sessionId || ""),
+          requestId: String(active.requestId || ""),
+          requestType: String(active.requestType || "model"),
+          attemptCount: active.beforeRequestAttemptCount,
+          promptMemoryAvailability: "same_request",
+        });
+        return {
+          status: "retry_reused",
+          context: active,
+          attemptCount: active.beforeRequestAttemptCount,
+        };
+      }
+      active.state = "terminal";
+      active.terminalReason = sameLogicalRequestRetry
+        ? "same_logical_request_retry_context_not_ready"
+        : "overlapping_before_request_without_host_correlation";
+      if (next) {
+        next.state = "terminal";
+        next.terminalReason = active.terminalReason;
+      }
+      // RisuAI's replacer callback exposes no request ID. Only an exact Host
+      // turn identity may reuse a ready context; every ambiguous overlap
+      // detaches both owners so completion order fails closed for persistence.
+      _activeFinalConfirmationRequestContext = null;
+      updateRuntimeState("lastStreamingAfterRequest", "warn", {
+        detail: sameLogicalRequestRetry
+          ? "same logical Risu request retried before its Archive payload became reusable; persistence not started"
+          : "overlapping beforeRequest contexts rejected; persistence not started",
+        reason_code: active.terminalReason,
+        sessionId: String(next && next.sessionId || active.sessionId || ""),
+        requestType: String(next && next.requestType || active.requestType || "model"),
+      });
+      return { status: "rejected", context: null, reason: active.terminalReason };
+    }
+    _activeFinalConfirmationRequestContext = next;
+    if (!next) return { status: "unavailable", context: null };
+    next.beforeRequestAttemptCount = Math.max(1, Math.trunc(Number(next.beforeRequestAttemptCount || 1)));
+    next.lastBeforeRequestAt = next.lastBeforeRequestAt || new Date().toISOString();
+    return { status: "installed", context: next, attemptCount: next.beforeRequestAttemptCount };
   }
 
   // RisuAI is the only owner that can observe which stored assistant messages
@@ -19010,6 +19237,8 @@
     }
     const finalContent = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
     if (!finalContent) {
+      requestContext.state = "terminal";
+      requestContext.terminalReason = "after_request_final_unavailable";
       return { observed: false, reason: "after_request_final_unavailable" };
     }
     const finalHash = computeOrchestrationDirtyHashOr1c(finalContent);
@@ -28111,6 +28340,12 @@
         payload_observation_stage: payloadObservation.observation_stage || "unobserved",
         final_provider_payload_state: payloadObservation.final_provider_payload_state || "not_exposed",
         payload_guidance_hash: payloadObservation.payload_guidance_hash || null,
+        memory_injection_baseline_id: payloadObservation.memory_injection_baseline_id
+          || lineage.memory_injection_baseline_id
+          || null,
+        surface_payload_application: Array.isArray(payloadObservation.surface_payload_application)
+          ? payloadObservation.surface_payload_application.slice(0, 32)
+          : [],
         hash_algorithm: "sha256_utf8.v1",
         final_observed_content_hash: sourceAcceptanceObservation && sourceAcceptanceObservation.observed_content_hash || null,
         final_hash_algorithm: sourceAcceptanceObservation && sourceAcceptanceObservation.hash_algorithm || null,
@@ -28305,6 +28540,10 @@
           payload_observation_stage: lineage.payload_observation_stage || "unobserved",
           final_provider_payload_state: lineage.final_provider_payload_state || "not_exposed",
           payload_guidance_hash: lineage.payload_guidance_hash || null,
+          memory_injection_baseline_id: lineage.memory_injection_baseline_id || null,
+          surface_payload_application: Array.isArray(lineage.surface_payload_application)
+            ? lineage.surface_payload_application.slice(0, 32)
+            : [],
           hash_algorithm: lineage.hash_algorithm || "sha256_utf8.v1",
           final_observed_content_hash: lineage.final_observed_content_hash || null,
           final_hash_algorithm: lineage.final_hash_algorithm || null,
@@ -30910,9 +31149,61 @@
       const { messages, rebuild } = extractMessages(payload);
       if (!messages || messages.length === 0) return { payload, injected: false };
 
+      const auxiliaryPrefix = "[Archive Center — Auxiliary Context]";
+      const auxiliaryContent = auxiliaryPrefix + "\n\n" + auxiliaryText;
+      const exactIndexes = [];
+      const conflictingIndexes = [];
+      messages.forEach(function(message, index) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        if (parsed.role !== "system" || !String(parsed.text || "").startsWith(auxiliaryPrefix)) return;
+        if (String(parsed.text || "") === auxiliaryContent) exactIndexes.push(index);
+        else conflictingIndexes.push(index);
+      });
+      if (conflictingIndexes.length > 0) {
+        return {
+          payload,
+          injected: false,
+          ambiguous: true,
+          reason: "archive_auxiliary_context_conflict",
+          exactCount: exactIndexes.length,
+          conflictingCount: conflictingIndexes.length,
+        };
+      }
+      if (exactIndexes.length === 1) {
+        return {
+          payload,
+          injected: true,
+          reused: true,
+          duplicateCollapsedCount: 0,
+          placement: {
+            insertIndex: exactIndexes[0],
+            resolvedMode: "existing_exact_block",
+            fallbackUsed: false,
+          },
+        };
+      }
+      if (exactIndexes.length > 1) {
+        const keepIndex = exactIndexes[0];
+        const exactSet = new Set(exactIndexes.slice(1));
+        const deduplicatedMessages = messages.filter(function(_message, index) {
+          return !exactSet.has(index);
+        });
+        return {
+          payload: rebuild(deduplicatedMessages),
+          injected: true,
+          reused: true,
+          duplicateCollapsedCount: exactIndexes.length - 1,
+          placement: {
+            insertIndex: keepIndex,
+            resolvedMode: "existing_exact_block_deduplicated",
+            fallbackUsed: false,
+          },
+        };
+      }
+
       const auxMessage = {
         role: "system",
-        content: "[Archive Center — Auxiliary Context]" + "\n\n" + auxiliaryText,
+        content: auxiliaryContent,
       };
 
       // system 메시지 바로 뒤에 삽입 (첫 번째 system 이후)
@@ -31070,6 +31361,17 @@
       const messages = Array.isArray(extracted.messages) ? extracted.messages : [];
       const expected = [];
       const auxiliaryText = String(plan && plan.auxiliary_text || "");
+      const auxiliaryPrefix = "[Archive Center — Auxiliary Context]";
+      let archiveAuxiliaryBlockCount = 0;
+      let archiveAuxiliaryConflictCount = 0;
+      messages.forEach(function(message) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        if (parsed.role !== "system" || !String(parsed.text || "").startsWith(auxiliaryPrefix)) return;
+        archiveAuxiliaryBlockCount++;
+        if (auxiliaryText && String(parsed.text || "") !== auxiliaryPrefix + "\n\n" + auxiliaryText) {
+          archiveAuxiliaryConflictCount++;
+        }
+      });
       if (auxiliaryText) {
         expected.push({
           key: "auxiliary_context",
@@ -31104,7 +31406,13 @@
       });
       let payloadStatus = "empty";
       let reasonCode = "no_planned_injection_blocks";
-      if (blocks.some(function(block) { return block.match_count === 1 && block.hash_match !== true; })) {
+      if (auxiliaryText && archiveAuxiliaryConflictCount > 0) {
+        payloadStatus = "ambiguous";
+        reasonCode = "archive_auxiliary_context_conflict";
+      } else if (auxiliaryText && archiveAuxiliaryBlockCount > 1) {
+        payloadStatus = "ambiguous";
+        reasonCode = "archive_auxiliary_context_duplicate";
+      } else if (blocks.some(function(block) { return block.match_count === 1 && block.hash_match !== true; })) {
         payloadStatus = "ambiguous";
         reasonCode = "injected_block_hash_mismatch";
       } else if (blocks.some(function(block) { return block.status === "ambiguous"; })) {
@@ -31136,7 +31444,25 @@
           ? plan.guidance_application_trace.final_hash || null
           : null,
         blocks,
+        memory_injection_baseline_id: lineage.memory_injection_baseline_id
+          || (lineage.memory_injection_baseline && lineage.memory_injection_baseline.baseline_id)
+          || null,
+        surface_payload_application: lineage.memory_injection_baseline
+          && Array.isArray(lineage.memory_injection_baseline.surfaces)
+          ? lineage.memory_injection_baseline.surfaces.map(function(surface) {
+              const renderedCount = Number(surface && surface.rendered_count || 0);
+              return {
+                surface: String(surface && surface.surface || ""),
+                status: renderedCount <= 0 ? "empty" : payloadStatus,
+                rendered_count: renderedCount,
+                payload_character_count: Number(surface && surface.payload_character_count || 0),
+                displayed_effect: "unobserved",
+              };
+            })
+          : [],
         semantic_outcome: "unobserved",
+        archive_auxiliary_block_count: archiveAuxiliaryBlockCount,
+        archive_auxiliary_conflict_count: archiveAuxiliaryConflictCount,
       };
       return observation;
     } catch (err) {
@@ -31190,7 +31516,8 @@
       );
       const observedBlocks = Array.isArray(payloadApplicationObservation.blocks) ? payloadApplicationObservation.blocks : [];
       injected = auxiliaryText
-        ? observedBlocks.some(function(block) { return block && block.key === "auxiliary_context" && block.status === "applied"; })
+        ? payloadApplicationObservation.payload_application_status === "applied"
+          && observedBlocks.some(function(block) { return block && block.key === "auxiliary_context" && block.status === "applied"; })
         : false;
       if (orchResult && typeof orchResult === "object") {
         orchResult._payloadApplicationObservation = payloadApplicationObservation;
@@ -32062,6 +32389,7 @@
 
   async function onBeforeRequest(payload, type) {
     let orchSessionId = null;
+    let orchRequestId = "";
     let orchHostContext = null;
     let finalConfirmationRequestContext = null;
     let requestPendingContext = null;
@@ -32118,22 +32446,46 @@
       if (!orchHostContext) {
         orchHostContext = captureSessionHostContextFromCache(orchSessionId);
       }
-      let mainRequestActiveMessages = [];
-      try {
-        mainRequestActiveMessages = await getCurrentActiveChatSourceObservationMessages(orchSessionId, orchHostContext);
-      } catch {
-        mainRequestActiveMessages = [];
-      }
-      const orchRequestId = makeOrchRequestId(orchSessionId);
-      primeTurnWorkflowHUD(orchRequestId);
-     await captureAssistantPrefillSeedForSession(orchSessionId, messages, orchHostContext);
+      const pendingResponseContext = finalConfirmationRequestContextOwnsPendingResponse(
+        _activeFinalConfirmationRequestContext
+      ) ? _activeFinalConfirmationRequestContext : null;
+      orchRequestId = pendingResponseContext && String(pendingResponseContext.requestId || "").trim()
+        ? String(pendingResponseContext.requestId).trim()
+        : makeOrchRequestId(orchSessionId);
       finalConfirmationRequestContext = await captureFinalConfirmationRequestContext(
         orchSessionId,
         type,
         orchRequestId,
         orchHostContext
       );
-      _activeFinalConfirmationRequestContext = finalConfirmationRequestContext;
+      const requestContextInstall = installFinalConfirmationRequestContext(finalConfirmationRequestContext);
+      if (requestContextInstall && requestContextInstall.status === "retry_reused") {
+        const reusedContext = requestContextInstall.context;
+        renderTurnWorkflowHUDSameRequestRetry(
+          String(reusedContext && reusedContext.requestId || orchRequestId),
+          requestContextInstall.attemptCount
+        );
+        const replay = reapplyFinalConfirmationRetryPayload(payload, reusedContext);
+        if (replay && replay.reused === true) return replay.payload;
+        updateRuntimeState("lastStreamingAfterRequest", "warn", {
+          detail: "same logical request retry payload replay became unavailable; persistence not started",
+          reason_code: "same_logical_request_retry_payload_replay_unavailable",
+          sessionId: orchSessionId,
+          requestId: orchRequestId,
+          requestType: String(type || "model"),
+        });
+        return payload;
+      }
+      if (requestContextInstall && requestContextInstall.status === "rejected") return payload;
+
+      primeTurnWorkflowHUD(orchRequestId);
+      await captureAssistantPrefillSeedForSession(orchSessionId, messages, orchHostContext);
+      let mainRequestActiveMessages = [];
+      try {
+        mainRequestActiveMessages = await getCurrentActiveChatSourceObservationMessages(orchSessionId, orchHostContext);
+      } catch {
+        mainRequestActiveMessages = [];
+      }
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       if (finalConfirmationRequestContext) {
         finalConfirmationRequestContext.rawInputObservation = rawInputObservation || null;
@@ -32667,6 +33019,7 @@
 
       let outgoingPayload = payload;
       let payloadMutated = false;
+      let payloadRewriteApplied = false;
       if (beforeRequestRecoveredForRead && payloadComparableMessageCountBeforeRecovery === 0 && extractedMessages && extractedMessages.hasMessageSlot && typeof extractedMessages.rebuild === "function" && Array.isArray(messages) && messages.length > 0) {
         outgoingPayload = extractedMessages.rebuild(messages);
       }
@@ -32680,6 +33033,7 @@
         if (rewriteResult.rewritten) {
           outgoingPayload = rewriteResult.payload;
           payloadMutated = true;
+          payloadRewriteApplied = true;
           lastOrchResult._userInput = effectiveUserInput;
           lastOrchResult._userInputSource = "input_improvement";
           if (lastOrchResult._trace) {
@@ -32954,6 +33308,11 @@
       const _finalPayloadParityEffectiveInput = _finalPayloadTransparency
         ? composeEffectiveInputFromTransparency(_finalPayloadTransparency)
         : "";
+      markFinalConfirmationRetryPayloadReady(finalConfirmationRequestContext, lastOrchResult, {
+        injectionRequested: contextInjectionAllowedForRequest,
+        payloadRewriteApplied,
+        payloadRewriteText: payloadRewriteApplied ? effectiveUserInput : "",
+      });
       if (payloadMutated) {
         attachFinalPayloadParityTrace(lastOrchResult && lastOrchResult._trace, payload, outgoingPayload, {
           chatSessionId: orchSessionId,

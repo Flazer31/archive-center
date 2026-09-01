@@ -2346,6 +2346,7 @@ func TestBeforeRequestModelRunsDecisionThenFullWithoutRollbackReclassificationRu
 	script := classifyFn + "\n" + gateFn + "\n" + traceFn + "\n" + fn + `
 const settings = {enabled: true, debug: false};
 let _sessionCache = null;
+let _activeFinalConfirmationRequestContext = null;
 let _effectiveInputAwaitingNewTurn = false;
 let _latestOrchResultForUI = null;
 const _pendingPersistenceSkipBySession = new Map();
@@ -2405,6 +2406,8 @@ async function preflightActiveChatBackfillIdentity() { return {status:"ok"}; }
 async function observePendingFinalConfirmationAtHostSignal() { boundedHostLifecycleCalls++; return {accepted:true}; }
 async function captureAssistantPrefillSeedForSession() { boundedHostLifecycleCalls++; }
 async function captureFinalConfirmationRequestContext() { boundedHostLifecycleCalls++; }
+function finalConfirmationRequestContextOwnsPendingResponse() { return false; }
+function installFinalConfirmationRequestContext() { return {status:"unavailable",context:null}; }
 function scrubOocDirectivesFromUserInput(text) { return {fullyOoc: false, changed: false, text}; }
 function detectCurrentTurnOocInfo() { return {isOoc: false}; }
 async function buildLanguageContextTrace() { return languageContextFixture; }
@@ -5627,7 +5630,11 @@ const plan={auxiliary_text:"memory guidance",input_context_text:"",
   auxiliary_observation_hash:computeOrchestrationDirtyHashOr1c(exact),payload_plan_id:"stp_1",
   guidance_application_trace:{final_hash:"sha256:guidance"}};
 const lineage={archive_center_request_correlation_id:"correlation-1",lineage_id:"stl_1",payload_plan_id:"stp_1",
-  source_refs:["memory:session-1:41"],execution_items:[{item_id:"ei_1"}]};
+  source_refs:["memory:session-1:41"],execution_items:[{item_id:"ei_1"}],
+  memory_injection_baseline_id:"mib_1",memory_injection_baseline:{baseline_id:"mib_1",surfaces:[
+    {surface:"memory",rendered_count:1,payload_character_count:15},
+    {surface:"kg",rendered_count:0,payload_character_count:0}
+  ]}};
 const activeChatAlias=getPayloadMessageRoleAndText({role:"char",content:"active chat assistant"});
 if(activeChatAlias.role!=="assistant" || activeChatAlias.text!=="active chat assistant") {
   throw new Error("active-chat role normalization was bypassed by official payload parsing");
@@ -5637,6 +5644,11 @@ if(good.status!=="ready" || good.payload_application_status!=="applied" || good.
   throw new Error("exact returned message block was not observed");
 }
 if(good.final_provider_payload_state!=="not_exposed") throw new Error("provider payload boundary was overstated");
+if(good.memory_injection_baseline_id!=="mib_1" || good.surface_payload_application.length!==2 ||
+  good.surface_payload_application[0].status!=="applied" || good.surface_payload_application[1].status!=="empty" ||
+  good.surface_payload_application[0].displayed_effect!=="unobserved") {
+  throw new Error("per-surface payload application was not observed separately");
+}
 if(JSON.stringify(good).includes("memory guidance")) throw new Error("raw injected text leaked into lineage observation");
 const mismatch=observeGoPayloadApplication([{role:"system",content:exact}],
   Object.assign({},plan,{auxiliary_observation_hash:"or1c_wrong"}),lineage);
@@ -5644,7 +5656,7 @@ if(mismatch.status!=="ambiguous" || mismatch.reason_code!=="injected_block_hash_
   throw new Error("payload hash mismatch was not left ambiguous");
 }
 const duplicate=observeGoPayloadApplication([{role:"system",content:exact},{role:"system",content:exact}],plan,lineage);
-if(duplicate.status!=="ambiguous" || duplicate.reason_code!=="injected_block_position_ambiguous") {
+if(duplicate.status!=="ambiguous" || duplicate.reason_code!=="archive_auxiliary_context_duplicate") {
   throw new Error("duplicate injected blocks were not left ambiguous");
 }
 const inputText="current scene continuity";
@@ -5691,7 +5703,8 @@ const finalReady=buildSourceToFinalLineageObservation({
 },orch);
 if(!finalReady || finalReady.status!=="ready" ||
   finalReady.payload_observation_stage!=="archive_center_before_request_return" ||
-  finalReady.final_provider_payload_state!=="not_exposed" || finalReady.semantic_outcome!=="unobserved") {
+  finalReady.final_provider_payload_state!=="not_exposed" || finalReady.semantic_outcome!=="unobserved" ||
+  finalReady.memory_injection_baseline_id!=="mib_1" || finalReady.surface_payload_application.length!==2) {
   throw new Error("ready final lineage boundary was not preserved");
 }
 `

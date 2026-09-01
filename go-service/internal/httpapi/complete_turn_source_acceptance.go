@@ -22,6 +22,7 @@ const (
 	completeTurnSourceLifecycleContract          = "source_acceptance_lifecycle.v1"
 	sourceAcceptanceTransitionEvent              = "source_acceptance_transition"
 	sourceAcceptanceInvalidationEvent            = "source_acceptance_invalidation"
+	sourceAcceptanceReplacementFailureEvent      = "source_acceptance_replacement_failure"
 )
 
 var completeTurnSourceWorkerStopTimeout = 5 * time.Second
@@ -57,6 +58,7 @@ type completeTurnSourceObservation struct {
 	MessageTimeMS                 int64  `json:"message_time_ms"`
 	MessageTimeState              string `json:"message_time_state"`
 	UserMessageIndex              int    `json:"user_message_index"`
+	UserObservedPairOrdinal       int    `json:"user_observed_pair_ordinal"`
 	UserMessageChatID             string `json:"user_message_chat_id"`
 	UserMessageChatIDState        string `json:"user_message_chat_id_state"`
 	UserMessageTimeMS             int64  `json:"user_message_time_ms"`
@@ -97,19 +99,35 @@ type completeTurnSourceAcceptanceState struct {
 }
 
 type completeTurnSourceAcceptanceDecision struct {
-	Enabled         bool
-	Accepted        bool
-	Status          string
-	Reason          string
-	Retryable       bool
-	QueueAction     string
-	Revision        string
-	Previous        string
-	BoundTurn       int
-	LogicalTurnID   string
-	ReplaceExisting bool
-	ReplacementKind string
-	Observation     completeTurnSourceObservation
+	Enabled           bool
+	Accepted          bool
+	Status            string
+	Reason            string
+	Retryable         bool
+	QueueAction       string
+	Revision          string
+	Previous          string
+	BoundTurn         int
+	LogicalTurnID     string
+	ReplaceExisting   bool
+	ReplacementKind   string
+	ReplacementStatus string
+	Observation       completeTurnSourceObservation
+	previousState     completeTurnSourceAcceptanceState
+	hasPreviousState  bool
+}
+
+type completeTurnSourceReplacementFailure struct {
+	SessionID     string                            `json:"session_id"`
+	TurnIndex     int                               `json:"turn_index"`
+	Revision      string                            `json:"revision"`
+	LogicalTurnID string                            `json:"logical_turn_id"`
+	Code          string                            `json:"code"`
+	CommitState   string                            `json:"commit_state"`
+	Terminal      bool                              `json:"terminal"`
+	HadPrevious   bool                              `json:"had_previous"`
+	PreviousState completeTurnSourceAcceptanceState `json:"previous_state"`
+	ObservedAtMS  int64                             `json:"observed_at_ms"`
 }
 
 type sourceAcceptanceInvalidation struct {
@@ -136,6 +154,7 @@ type completeTurnSourceAcceptanceLedger struct {
 	invalidations       map[string]sourceAcceptanceInvalidation
 	workers             map[string]completeTurnSourceAcceptanceWorker
 	reprocessingWorkers map[string]*completeTurnSourceReprocessingWorker
+	replacementFailures map[string]completeTurnSourceReplacementFailure
 }
 
 func newCompleteTurnSourceAcceptanceLedger() *completeTurnSourceAcceptanceLedger {
@@ -144,6 +163,7 @@ func newCompleteTurnSourceAcceptanceLedger() *completeTurnSourceAcceptanceLedger
 		invalidations:       map[string]sourceAcceptanceInvalidation{},
 		workers:             map[string]completeTurnSourceAcceptanceWorker{},
 		reprocessingWorkers: map[string]*completeTurnSourceReprocessingWorker{},
+		replacementFailures: map[string]completeTurnSourceReplacementFailure{},
 	}
 }
 
@@ -181,6 +201,7 @@ func completeTurnSourceRevision(sid string, turnIndex int, observation completeT
 			observation.RequestCorrelationState,
 			observation.HostChatID,
 			strconv.Itoa(observation.UserMessageIndex),
+			strconv.Itoa(observation.UserObservedPairOrdinal),
 			observation.UserMessageChatID,
 			strconv.FormatInt(observation.UserMessageTimeMS, 10),
 			observation.UserObservedContentHash,
@@ -201,6 +222,7 @@ func completeTurnSourceRevision(sid string, turnIndex int, observation completeT
 			observation.RequestCorrelationState,
 			observation.HostChatID,
 			strconv.Itoa(observation.UserMessageIndex),
+			strconv.Itoa(observation.UserObservedPairOrdinal),
 			observation.UserMessageChatID,
 			strconv.FormatInt(observation.UserMessageTimeMS, 10),
 			observation.UserObservedContentHash,
@@ -427,6 +449,7 @@ func validateCompleteTurnAfterRequestObservation(req dto.M4CompleteTurnRequest, 
 	if observation.RequestMessageCount <= 0 ||
 		observation.UserMessageIndex < 0 ||
 		observation.UserMessageIndex >= observation.RequestMessageCount ||
+		observation.UserObservedPairOrdinal <= 0 ||
 		(!userMessageChatIDObserved && !userMessageChatIDUnobserved) ||
 		(!userMessageTimeObserved && !userMessageTimeUnobserved) ||
 		strings.TrimSpace(observation.UserObservedContentHash) == "" ||
@@ -577,6 +600,7 @@ func validateCompleteTurnNextHostSignalObservation(req dto.M4CompleteTurnRequest
 	if userAnchorReported {
 		if observation.UserMessageIndex < 0 ||
 			observation.UserMessageIndex >= observation.RequestMessageCount ||
+			observation.UserObservedPairOrdinal <= 0 ||
 			observation.UserObservedContentHash == "" ||
 			observation.UserPersistenceContentHash == "" {
 			return rejectedCompleteTurnSourceAcceptance("source_acceptance_user_anchor_missing", false, observation)
@@ -681,6 +705,17 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	key := sourceAcceptanceStateKey(sid, turnIndex)
 	previous := ledger.current[key]
 	decision.Previous = previous.Revision
+	decision.previousState = previous
+	decision.hasPreviousState = previous.Revision != ""
+	if failure, failed := ledger.replacementFailures[decision.Revision]; failed && failure.Terminal {
+		terminal := rejectedCompleteTurnSourceAcceptance(failure.Code, false, observation)
+		terminal.Revision = decision.Revision
+		terminal.Previous = previous.Revision
+		terminal.BoundTurn = turnIndex
+		terminal.LogicalTurnID = decision.LogicalTurnID
+		terminal.ReplacementStatus = "terminal_failure"
+		return terminal
+	}
 	if invalidation := ledger.invalidations[sid]; invalidation.FromTurn > 0 && turnIndex >= invalidation.FromTurn && observation.ObservedAtMS <= invalidation.ObservedAtMS {
 		return rejectedCompleteTurnSourceAcceptance("source_acceptance_deleted_or_rolled_back", false, observation)
 	}
@@ -959,6 +994,9 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 	if st == nil {
 		return
 	}
+	if l.replacementFailures == nil {
+		l.replacementFailures = map[string]completeTurnSourceReplacementFailure{}
+	}
 	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceTransitionEvent, 0); err == nil {
 		for _, event := range events {
 			var state completeTurnSourceAcceptanceState
@@ -983,6 +1021,29 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 			}
 			if invalidation.ObservedAtMS > l.invalidations[sid].ObservedAtMS {
 				l.invalidations[sid] = invalidation
+			}
+		}
+	}
+	if events, err := st.ListAuditLogs(ctx, sid, sourceAcceptanceReplacementFailureEvent, 0); err == nil {
+		for _, event := range events {
+			var failure completeTurnSourceReplacementFailure
+			if json.Unmarshal([]byte(event.DetailsJSON), &failure) != nil || failure.Revision == "" {
+				continue
+			}
+			key := sourceAcceptanceStateKey(sid, failure.TurnIndex)
+			active := l.current[key]
+			if failure.CommitState == "not_committed" && active.Revision == failure.Revision && active.ReplacementStatus == "pending" {
+				if failure.HadPrevious && failure.PreviousState.Revision != "" {
+					l.current[key] = failure.PreviousState
+				} else {
+					delete(l.current, key)
+				}
+			}
+			if failure.Terminal {
+				current := l.replacementFailures[failure.Revision]
+				if failure.ObservedAtMS >= current.ObservedAtMS {
+					l.replacementFailures[failure.Revision] = failure
+				}
 			}
 		}
 	}
@@ -1045,6 +1106,60 @@ func (s *Server) completeTurnSourceReplacementCompleted(ctx context.Context, dec
 			Source: s.storeWriteSource(), CreatedAt: time.Now().UTC(),
 		})
 	}
+}
+
+func (s *Server) completeTurnSourceReplacementFailed(
+	ctx context.Context,
+	decision completeTurnSourceAcceptanceDecision,
+	sid string,
+	turnIndex int,
+	replacementErr *logicalTurnReplacementError,
+) completeTurnSourceAcceptanceDecision {
+	if !decision.Enabled || !decision.ReplaceExisting || s.SourceAcceptances == nil || replacementErr == nil || replacementErr.CommitState != "not_committed" {
+		return decision
+	}
+	terminal := !replacementErr.Retryable
+	failure := completeTurnSourceReplacementFailure{
+		SessionID: sid, TurnIndex: turnIndex, Revision: decision.Revision,
+		LogicalTurnID: decision.LogicalTurnID, Code: replacementErr.Code,
+		CommitState: replacementErr.CommitState, Terminal: terminal,
+		HadPrevious: decision.hasPreviousState, PreviousState: decision.previousState,
+		ObservedAtMS: decision.Observation.ObservedAtMS,
+	}
+	key := sourceAcceptanceStateKey(sid, turnIndex)
+	s.SourceAcceptances.mu.Lock()
+	state := s.SourceAcceptances.current[key]
+	if state.Revision == decision.Revision && state.ReplacementStatus == "pending" {
+		if decision.hasPreviousState {
+			s.SourceAcceptances.current[key] = decision.previousState
+		} else {
+			delete(s.SourceAcceptances.current, key)
+		}
+	}
+	if terminal {
+		if s.SourceAcceptances.replacementFailures == nil {
+			s.SourceAcceptances.replacementFailures = map[string]completeTurnSourceReplacementFailure{}
+		}
+		s.SourceAcceptances.replacementFailures[decision.Revision] = failure
+	}
+	s.SourceAcceptances.mu.Unlock()
+
+	if s.Store != nil && s.usesShadowWriteStore() {
+		_ = s.Store.SaveAuditLog(context.WithoutCancel(ctx), &store.AuditLog{
+			ChatSessionID: sid, EventType: sourceAcceptanceReplacementFailureEvent, TargetType: "turn", TargetID: int64(turnIndex),
+			Summary: fmt.Sprintf("source acceptance replacement failed turn %d", turnIndex), DetailsJSON: mustCompactJSON(failure),
+			Source: s.storeWriteSource(), CreatedAt: time.Now().UTC(),
+		})
+	}
+	failed := decision
+	failed.Accepted = false
+	failed.Status = "rejected"
+	failed.Reason = replacementErr.Code
+	failed.Retryable = replacementErr.Retryable
+	failed.QueueAction = map[bool]string{true: "retry_after_new_observation", false: "discard"}[replacementErr.Retryable]
+	failed.ReplaceExisting = false
+	failed.ReplacementStatus = map[bool]string{true: "reverted", false: "terminal_failure"}[replacementErr.Retryable]
+	return failed
 }
 
 func (s *Server) invalidateCompleteTurnSourceAcceptances(ctx context.Context, sid string, fromTurn int, source string, hostObservedAtMS int64) {
@@ -1129,12 +1244,16 @@ func completeTurnSourceAcceptancePayload(decision completeTurnSourceAcceptanceDe
 	if decision.Enabled {
 		lifecycle = map[bool]string{true: "active_final", false: "candidate_or_inactive"}[decision.Accepted]
 	}
+	if decision.ReplacementStatus == "terminal_failure" {
+		lifecycle = "replacement_failed"
+	}
 	return map[string]any{
 		"contract_version": completeTurnSourceLifecycleContract, "status": decision.Status, "reason": decision.Reason,
 		"accepted": decision.Accepted, "retryable": decision.Retryable, "queue_action": decision.QueueAction,
 		"revision": decision.Revision, "previous_revision": decision.Previous,
 		"logical_turn_id": decision.LogicalTurnID, "replace_existing": decision.ReplaceExisting,
 		"replacement_kind":                      nilIfEmpty(decision.ReplacementKind),
+		"replacement_status":                    nilIfEmpty(decision.ReplacementStatus),
 		"observation_contract_version":          decision.Observation.ContractVersion,
 		"host_lifecycle_contract_version":       nilIfEmpty(decision.Observation.HostLifecycleContractVersion),
 		"finality_source":                       nilIfEmpty(decision.Observation.FinalitySource),
@@ -1149,6 +1268,7 @@ func completeTurnSourceAcceptancePayload(decision completeTurnSourceAcceptanceDe
 		"message_swipe_id":                      decision.Observation.MessageSwipeID,
 		"message_swipe_id_state":                firstNonEmpty(decision.Observation.MessageSwipeIDState, "unobserved"),
 		"message_index":                         decision.Observation.MessageIndex,
+		"user_observed_pair_ordinal":            decision.Observation.UserObservedPairOrdinal,
 		"observed_content_hash":                 nilIfEmpty(decision.Observation.ObservedContentHash),
 		"persistence_content_hash":              nilIfEmpty(decision.Observation.PersistenceContentHash),
 		"hash_algorithm":                        nilIfEmpty(decision.Observation.HashAlgorithm),

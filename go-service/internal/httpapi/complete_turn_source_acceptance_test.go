@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,7 @@ func completeTurnAnchoredAcceptanceTestRequest(sid string, turn int, user, assis
 	req.UserInput = &user
 	observation := req.ClientMeta["source_acceptance_observation"].(map[string]any)
 	observation["user_message_index"] = userIndex
+	observation["user_observed_pair_ordinal"] = (userIndex / 2) + 1
 	observation["user_message_time_ms"] = int64(500)
 	observation["user_message_time_state"] = "observed"
 	observation["user_observed_content_hash"] = prepareOR1CHash(user)
@@ -109,6 +111,7 @@ func completeTurnNextHostSignalAcceptanceTestRequest(sid string, turn int, user,
 				"message_time_state":                     "observed",
 				"request_message_count":                  2,
 				"user_message_index":                     1,
+				"user_observed_pair_ordinal":             1,
 				"user_message_chat_id":                   "",
 				"user_message_chat_id_state":             "unobserved",
 				"user_message_time_ms":                   int64(0),
@@ -173,6 +176,7 @@ func completeTurnAfterRequestAcceptanceTestRequest(sid string, turn int, user, a
 				"message_time_state":                    "not_exposed_by_risu_afterRequest",
 				"request_message_count":                 2,
 				"user_message_index":                    1,
+				"user_observed_pair_ordinal":            1,
 				"user_message_chat_id":                  "user-message-1",
 				"user_message_chat_id_state":            "observed_before_request",
 				"user_message_time_ms":                  int64(500),
@@ -199,6 +203,29 @@ func newCompleteTurnAcceptanceTestServer() *Server {
 		Store:             store.NewNoopStore(),
 		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(),
 	}
+}
+
+type logicalTurnTailRejectingStore struct {
+	*turnRecordingStore
+	replacementCalls int
+}
+
+func (s *logicalTurnTailRejectingStore) ReplaceLogicalTurn(_ context.Context, replacement store.LogicalTurnReplacement) error {
+	s.replacementCalls++
+	s.logicalTurnReplacements = append(s.logicalTurnReplacements, replacement)
+	return &store.LogicalTurnReplacementError{
+		Code:        "logical_turn_not_current_tail",
+		Stage:       "canonical_tail_check",
+		Retryable:   false,
+		CommitState: "not_committed",
+		Cause:       fmt.Errorf("latest turn changed"),
+	}
+}
+
+func (s *logicalTurnTailRejectingStore) SaveAuditLog(_ context.Context, audit *store.AuditLog) error {
+	s.savedAuditLogs = append(s.savedAuditLogs, audit)
+	s.auditLogs = append([]store.AuditLog{*audit}, s.auditLogs...)
+	return nil
 }
 
 func TestCompleteTurnSourceAcceptanceAcceptsCorrelatedAfterRequestFinalResponse(t *testing.T) {
@@ -852,6 +879,155 @@ func TestCompleteTurnSourceAcceptanceNewUserCreatesNextLogicalTurn(t *testing.T)
 	nextDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), next)
 	if !nextDecision.Accepted || nextDecision.BoundTurn != 2 || nextDecision.ReplaceExisting || nextDecision.LogicalTurnID == firstDecision.LogicalTurnID {
 		t.Fatalf("next decision=%+v first=%+v", nextDecision, firstDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceEditedSameUserMessageReplacesLogicalTurn(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAfterRequestAcceptanceTestRequest("session-1", 1, "original user", "first", 1000, "request-1")
+	firstObservation := first.ClientMeta["source_acceptance_observation"].(map[string]any)
+	firstObservation["user_message_chat_id"] = "stable-user-message-id"
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted || firstDecision.ReplaceExisting {
+		t.Fatalf("first decision=%+v", firstDecision)
+	}
+
+	edited := completeTurnAfterRequestAcceptanceTestRequest("session-1", 2, "original user with added instruction", "regenerated", 2000, "request-2")
+	editedObservation := edited.ClientMeta["source_acceptance_observation"].(map[string]any)
+	editedObservation["user_message_chat_id"] = "stable-user-message-id"
+	editedDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), edited)
+	if !editedDecision.Accepted || !editedDecision.ReplaceExisting || editedDecision.BoundTurn != 1 || editedDecision.LogicalTurnID != firstDecision.LogicalTurnID {
+		t.Fatalf("edited same Host user row appended instead of replacing: first=%+v edited=%+v", firstDecision, editedDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceNewUserMessageWithIdenticalTextAppends(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAfterRequestAcceptanceTestRequest("session-1", 1, "identical user text", "first", 1000, "request-1")
+	firstObservation := first.ClientMeta["source_acceptance_observation"].(map[string]any)
+	firstObservation["user_message_chat_id"] = "user-message-1"
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+	if !firstDecision.Accepted || firstDecision.ReplaceExisting {
+		t.Fatalf("first decision=%+v", firstDecision)
+	}
+
+	next := completeTurnAfterRequestAcceptanceTestRequest("session-1", 2, "identical user text", "next", 2000, "request-2")
+	nextObservation := next.ClientMeta["source_acceptance_observation"].(map[string]any)
+	nextObservation["request_message_count"] = 4
+	nextObservation["user_message_index"] = 3
+	nextObservation["user_observed_pair_ordinal"] = 2
+	nextObservation["user_message_chat_id"] = "user-message-2"
+	nextObservation["user_message_time_ms"] = int64(1500)
+	nextDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), next)
+	if !nextDecision.Accepted || nextDecision.ReplaceExisting || nextDecision.BoundTurn != 2 || nextDecision.LogicalTurnID == firstDecision.LogicalTurnID {
+		t.Fatalf("new Host user row with identical text did not append: first=%+v next=%+v", firstDecision, nextDecision)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceAfterRequestReceivesObservedPairOrdinal(t *testing.T) {
+	req := completeTurnAfterRequestAcceptanceTestRequest("session-1", 1, "user", "answer", 1000, "request-1")
+	observation, err := completeTurnSourceObservationFromMeta(req.ClientMeta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.UserObservedPairOrdinal != 1 {
+		t.Fatalf("user_observed_pair_ordinal was not decoded: %+v", observation)
+	}
+}
+
+func TestCompleteTurnSourceAcceptanceWithoutChatIDUsesObservedAnchorCoordinates(t *testing.T) {
+	server := newCompleteTurnAcceptanceTestServer()
+	first := completeTurnAfterRequestAcceptanceTestRequest("session-1", 1, "same user", "first", 1000, "request-1")
+	firstObservation := first.ClientMeta["source_acceptance_observation"].(map[string]any)
+	firstObservation["user_message_chat_id"] = ""
+	firstObservation["user_message_chat_id_state"] = "unobserved"
+	firstDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), first)
+
+	reroll := completeTurnAfterRequestAcceptanceTestRequest("session-1", 2, "same user", "rerolled", 2000, "request-2")
+	rerollObservation := reroll.ClientMeta["source_acceptance_observation"].(map[string]any)
+	rerollObservation["user_message_chat_id"] = ""
+	rerollObservation["user_message_chat_id_state"] = "unobserved"
+	rerollDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), reroll)
+	if !firstDecision.Accepted || !rerollDecision.Accepted || !rerollDecision.ReplaceExisting || rerollDecision.BoundTurn != 1 || rerollDecision.LogicalTurnID != firstDecision.LogicalTurnID {
+		t.Fatalf("unobserved chatId anchor mismatch: first=%+v reroll=%+v", firstDecision, rerollDecision)
+	}
+}
+
+func TestCompleteTurnNonCommittedReplacementFailureIsTerminalAndDoesNotReenter(t *testing.T) {
+	base := &turnRecordingStore{returnChatLogs: []store.ChatLog{
+		{ChatSessionID: "session-1", TurnIndex: 1, Role: "user", Content: "same user"},
+		{ChatSessionID: "session-1", TurnIndex: 1, Role: "assistant", Content: "first"},
+	}}
+	storage := &logicalTurnTailRejectingStore{turnRecordingStore: base}
+	server := &Server{
+		Cfg: config.Config{StoreMode: config.StoreModeMariaDBAuthority}, Store: storage,
+		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(), CompleteTurns: newCompleteTurnRequestLedger(),
+		TurnWorkflows: newTurnWorkflowHUDLedger(),
+	}
+	original := completeTurnAfterRequestAcceptanceTestRequest("session-1", 1, "same user", "first", 1000, "request-1")
+	originalDecision := server.beginCompleteTurnSourceAcceptance(context.Background(), original)
+	if !originalDecision.Accepted {
+		t.Fatalf("original decision=%+v", originalDecision)
+	}
+
+	reroll := completeTurnAfterRequestAcceptanceTestRequest("session-1", 2, "same user", "rerolled", 2000, "request-2")
+	reroll.ClientMeta["idempotency_key"] = "reroll-attempt-1"
+	body, err := json.Marshal(reroll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstResponse := httptest.NewRecorder()
+	server.handleCompleteTurn(firstResponse, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(body)))
+	if firstResponse.Code != http.StatusOK || storage.replacementCalls != 1 {
+		t.Fatalf("first failure status=%d calls=%d body=%s", firstResponse.Code, storage.replacementCalls, firstResponse.Body.String())
+	}
+	var firstPayload map[string]any
+	if err := json.Unmarshal(firstResponse.Body.Bytes(), &firstPayload); err != nil {
+		t.Fatal(err)
+	}
+	if firstPayload["code"] != "logical_turn_not_current_tail" || firstPayload["retryable"] != false || firstPayload["commit_state"] != "not_committed" || firstPayload["queue_action"] != "discard" {
+		t.Fatalf("terminal failure payload=%#v", firstPayload)
+	}
+	failureAcceptance := mapFromAny(firstPayload["source_acceptance"])
+	if failureAcceptance["lifecycle"] != "replacement_failed" || failureAcceptance["replacement_status"] != "terminal_failure" || failureAcceptance["accepted"] != false {
+		t.Fatalf("terminal source acceptance payload=%#v", failureAcceptance)
+	}
+	if len(base.savedChatLogs) != 0 || len(base.savedMemories) != 0 || len(base.savedEvidence) != 0 || len(base.savedKGTriples) != 0 {
+		t.Fatalf("rejected replacement mutated canonical/derived state: chats=%d memories=%d evidence=%d kg=%d", len(base.savedChatLogs), len(base.savedMemories), len(base.savedEvidence), len(base.savedKGTriples))
+	}
+
+	reroll.ClientMeta["idempotency_key"] = "reroll-attempt-2"
+	body, err = json.Marshal(reroll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondResponse := httptest.NewRecorder()
+	server.handleCompleteTurn(secondResponse, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(body)))
+	if secondResponse.Code != http.StatusOK || storage.replacementCalls != 1 {
+		t.Fatalf("terminal revision re-entered replacement: status=%d calls=%d body=%s", secondResponse.Code, storage.replacementCalls, secondResponse.Body.String())
+	}
+	if len(base.savedChatLogs) != 0 || len(base.savedMemories) != 0 {
+		t.Fatalf("terminal replay mutated state: chats=%d memories=%d", len(base.savedChatLogs), len(base.savedMemories))
+	}
+
+	restarted := &Server{
+		Cfg: config.Config{StoreMode: config.StoreModeMariaDBAuthority}, Store: storage,
+		SourceAcceptances: newCompleteTurnSourceAcceptanceLedger(), CompleteTurns: newCompleteTurnRequestLedger(),
+		TurnWorkflows: newTurnWorkflowHUDLedger(),
+	}
+	reroll.ClientMeta["idempotency_key"] = "reroll-attempt-after-restart"
+	body, err = json.Marshal(reroll)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restartResponse := httptest.NewRecorder()
+	restarted.handleCompleteTurn(restartResponse, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(body)))
+	if restartResponse.Code != http.StatusOK || storage.replacementCalls != 1 {
+		t.Fatalf("durable terminal revision re-entered replacement: status=%d calls=%d body=%s", restartResponse.Code, storage.replacementCalls, restartResponse.Body.String())
+	}
+	state := restarted.SourceAcceptances.current[sourceAcceptanceStateKey("session-1", 1)]
+	if state.Revision != originalDecision.Revision || state.ReplacementStatus == "pending" {
+		t.Fatalf("previous active state was not restored after restart: original=%+v restored=%+v", originalDecision, state)
 	}
 }
 

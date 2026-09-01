@@ -745,6 +745,24 @@ func TestTurnWorkflowHUDCountsIncludeAllZerosAndTerminalSeverity(t *testing.T) {
 	}
 }
 
+func TestTurnWorkflowHUDPublisherMalformedIsFailedWhileTurnCompletesWithWarning(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("request-publisher-malformed", "session-publisher-malformed", 3)
+	ledger.startStage("request-publisher-malformed", turnWorkflowStagePublisherLLM)
+	ledger.finishStage("request-publisher-malformed", turnWorkflowStagePublisherLLM, "failed", "publisher_json_malformed")
+	ledger.addWarning("request-publisher-malformed", "PUBLISHER_LLM_MALFORMED_FAILED_OPEN", "turn_hud.warning.publisher_llm_malformed_failed_open", turnWorkflowStagePublisherLLM)
+	ledger.complete("request-publisher-malformed")
+
+	view, ok := ledger.snapshot("request-publisher-malformed")
+	if !ok || view.Status != "completed_with_warning" || view.Severity != turnWorkflowHUDSeverityWarning || view.Error != nil {
+		t.Fatalf("malformed publisher terminal view=%#v found=%t", view, ok)
+	}
+	index := turnWorkflowHUDStageIndex(view.Stages, turnWorkflowStagePublisherLLM)
+	if index < 0 || view.Stages[index].Status != "failed" || view.Stages[index].ReasonCode != "publisher_json_malformed" {
+		t.Fatalf("malformed publisher stage=%#v", view.Stages)
+	}
+}
+
 func TestTurnWorkflowHUDSeparatesKnowledgeGraphFromDirectionalRelationshipState(t *testing.T) {
 	counts := turnWorkflowHUDCountsFromComplete(
 		true, true,
