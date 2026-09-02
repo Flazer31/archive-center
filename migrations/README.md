@@ -2,10 +2,11 @@
 
 Status: active source-controlled MariaDB schema and compatibility tooling.
 
-`001_schema.sql` is the canonical fresh-install schema used by the
-`mariadb-schema` command. Existing installations receive additive compatibility
-statements from the same command. Archive Center 3.0 reference-library tables
-are additive and do not rewrite existing session rows.
+`mariadb-schema` treats this directory as one ordered migration inventory. When
+it receives either the directory path or `001_schema.sql`, it loads every
+sibling `.sql` file in sorted order. Fresh and existing installations therefore
+use the same complete set; `001_schema.sql` does not have to repeat tables or
+columns that are owned by later files.
 
 `002_canon_pack_storage.sql` is the reviewed Archive Center 3.1 additive
 Canon Pack storage migration. Its statements are also registered in the
@@ -13,15 +14,15 @@ canonical fresh-install schema and the production `mariadb-schema`
 compatibility pass. The registration is for a full 3.1 package install or
 upgrade only.
 
-Archive Center 3.6-E adds a schema-aware automatic-update lane. Historical
-numbered migrations remain immutable. An update may add only a higher-numbered
-SQL migration made entirely of rerunnable
-`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` statements, and it must update the
-fresh schema in the same package. Destructive/data-changing SQL and a fresh
-schema change without its additive migration are rejected before package
-application. The launcher runs the authenticated `mariadb-schema` tool before
-backend health commit; package files are recovered if schema execution or
-health verification fails.
+Archive Center 3.6-E adds automatic update support for managed program files.
+The updater does not reject a package because a migration file was added,
+changed, or removed, and it does not impose filename, fingerprint, SQL-shape,
+or migration-policy metadata gates. The launcher applies the complete installed
+migration inventory before backend health commit. Managed program files are
+recovered if schema execution or health verification fails; existing database
+data, Chroma data, runtime directories, local environment files, and secrets
+are not part of managed-file replacement. Database changes already applied by
+the schema tool are not rolled back by the file rollback.
 
 The registration decision is backed by a local disposable MariaDB 11.4.12
 run: `002` was applied twice through the production loader, all ten tables and
