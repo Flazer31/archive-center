@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
+	"github.com/risulongmemory/archive-center-go/internal/pdfmemory"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -353,6 +354,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	// Resolve settings from the request/default DTO contract.
 	defaultSettings := dto.PrepareTurnSettings{}
 	defaultSettings.ApplyDefaults()
+	memoryTransportMode := normalizePrepareTurnMemoryTransportMode(stringPtrValue(
+		req.Settings.MemoryTransportMode,
+		stringPtrValue(defaultSettings.MemoryTransportMode, prepareTurnMemoryTransportModeText),
+	))
 	manualMaxInjectionChars := 0
 	if req.Settings.MaxInjectionChars != nil {
 		manualMaxInjectionChars = *req.Settings.MaxInjectionChars
@@ -1455,6 +1460,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(requestCorrelationID) == "" {
 		requestCorrelationID = extractionStringFromAny(req.ClientMeta["archive_center_request_correlation_id"])
 	}
+	memoryTransportPlan, memoryTransportPayload := buildPrepareTurnMemoryTransport(
+		memoryTransportMode,
+		payloadApplicationPlan,
+		requestCorrelationID,
+		pdfmemory.Generate,
+	)
 	memoryRecallBindings := map[string]any{
 		"chat_session_id": sid,
 	}
@@ -1487,6 +1498,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	injectionPack["memory_delivery_lineage"] = boundedMemoryDeliveryLineage
 	injectionPack["source_to_payload_lineage"] = sourceToPayloadLineage
 	injectionPack["memory_injection_baseline"] = memoryInjectionBaseline
+	injectionPack["memory_transport_plan"] = memoryTransportPlan
 	injectionPack["memory_budget_resolution"] = memoryBudgetResolution
 	injectionPack["lorebook_reference_recall"] = lorebookReference
 	injectionText = extractionStringFromAny(payloadApplicationPlan["auxiliary_text"])
@@ -1571,6 +1583,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	shadowCompareRecord := buildGenerationPacketShadowCompareRecord(injectionAssembly, inputContextText)
 	inputTransparencyModel := buildPrepareTurnInputTransparencyRenderModel(sid, turnIndex, rawUserInput, inputContextText, injectionEnabled, inputContextEnabled, inputContextTruncated, degraded, fallbackReason, injectionAssembly)
 	inputTransparencyModel["payload_application_plan"] = payloadApplicationPlan
+	inputTransparencyModel["memory_transport_plan"] = memoryTransportPlan
 	if counts := mapFromAny(inputTransparencyModel["counts"]); len(counts) > 0 {
 		counts["auxiliary_context_chars"] = intFromAny(payloadApplicationPlan["auxiliary_chars"], 0)
 		counts["input_context_chars"] = intFromAny(payloadApplicationPlan["input_context_chars"], 0)
@@ -1580,6 +1593,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	effectiveInputPreview["post_generation_data_included"] = false
 	effectiveInputPreview["input_context_source"] = inputContextSource
 	effectiveInputPreview["payload_application_plan"] = payloadApplicationPlan
+	effectiveInputPreview["memory_transport_plan"] = memoryTransportPlan
 	effectiveInputPreview["auxiliary_context_chars"] = len([]rune(injectionText))
 	effectiveInputPreview["input_context_chars"] = len([]rune(inputContextText))
 	timing.addElapsed("response_assembly", responseAssemblyStartedAt)
@@ -1608,6 +1622,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"memory_delivery_lineage":         boundedMemoryDeliveryLineage,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_injection_baseline":       memoryInjectionBaseline,
+			"memory_transport_plan":           memoryTransportPlan,
 			"temporal_packet":                 injectionPack["temporal_packet"],
 			"temporal_packet_text":            injectionPack["temporal_packet_text"],
 			"character_perspective_packet":    injectionPack["character_perspective_packet"],
@@ -1634,6 +1649,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"payload_application_plan":        payloadApplicationPlan,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_injection_baseline":       memoryInjectionBaseline,
+			"memory_transport_plan":           memoryTransportPlan,
+			"memory_transport_payload":        memoryTransportPayload,
 			"memory_budget_resolution":        memoryBudgetResolution,
 			"language_context":                languageContext,
 			"input_transparency_model":        inputTransparencyModel,
@@ -1676,6 +1693,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"payload_application_plan":        payloadApplicationPlan,
 		"source_to_payload_lineage":       sourceToPayloadLineage,
 		"memory_injection_baseline":       memoryInjectionBaseline,
+		"memory_transport_plan":           memoryTransportPlan,
+		"memory_transport_payload":        memoryTransportPayload,
 		"supervisor_result":               supervisorResult,
 		"publisher_call_budget_ledger":    publisherCallBudgetLedger,
 		"memory_budget_resolution":        memoryBudgetResolution,

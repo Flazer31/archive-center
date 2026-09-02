@@ -99,13 +99,13 @@ RisuAI draft_zero
 작업 PC에 설치된 번들 Node를 사용한다.
 
 ```powershell
-& 'C:\Users\com12\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' --check 'source\Risu Recomposer.js'
+& '<node.exe>' --check 'source\Risu Recomposer.js'
 ```
 
 인메모리 테스트:
 
 ```powershell
-& 'C:\Users\com12\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe' -e "require('./source/Risu Recomposer.js'); setTimeout(async()=>{const r=await globalThis.__recomposer.runInMemoryTests(); if(r.failed){process.exitCode=1;}},100);"
+& '<node.exe>' -e "require('./source/Risu Recomposer.js'); setTimeout(async()=>{const r=await globalThis.__recomposer.runInMemoryTests(); if(r.failed){process.exitCode=1;}},100);"
 ```
 
 각 단계 완료 보고에 반드시 포함할 것:

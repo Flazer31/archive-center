@@ -1,6 +1,6 @@
 # Archive Center 4.1 PDF 기억 전달 작업 계획
 
-상태: `VERSION_ASSIGNED_PLAN` · `IMPLEMENTATION_NOT_STARTED`
+상태: `IMPLEMENTED_UNVERIFIED` · source/regression/package/backend-live verified · loaded RisuAI/provider A/B pending
 
 기준일: 2026-09-02 KST
 
@@ -39,8 +39,11 @@ PDF로 만들고, 본문 모델이 그 PDF 안의 텍스트를 문서 입력으�
 
 - Go의 `payload_application_plan.v1`은 `original_work`, `long_term_memory`,
   `lorebook_reference`, `output_guidance` lane의 text·hash·budget·source ref를 구분한다.
-- `Archive Center.js`는 Go가 만든 전체 `auxiliary_text`를 RisuAI 보조 시스템 메시지로 적용한다.
-- 활성 `Archive Center.js`에는 PDF body interceptor가 아직 없다.
+- `Archive Center.js`는 Go가 만든 전체 `auxiliary_text`를 RisuAI 보조 시스템 메시지로 적용하며,
+  opt-in PDF mode에서는 등록된 body interceptor가 정확한 `long_term_memory` Text만 PDF로
+  교체한다.
+- Go는 `memory_transport_plan.v1`과 현재 응답 전용 `memory_transport_payload.v1`을 만든다.
+  JavaScript는 Google `inlineData`와 LLM Gateway OpenAI 호환 `file` block만 적용한다.
 - 현재 기억 검색, 선택, 예산, 저장, 리롤, 분기, MariaDB와 Chroma 동작은 PDF 계획과 별개로
   이미 존재하는 owner가 계속 소유한다.
 
@@ -73,6 +76,7 @@ usage와 장기기억 회수 품질은 확인되지 않았다.
 | 기존 Text | 현재 `payload_application_plan.v1` 보조 텍스트 | 기존 기본 동작 유지 |
 | Google Gemini PDF | Gemini `inlineData` + `application/pdf` | Google AI Studio·Google Vertex |
 | LLM Gateway Gemini PDF | OpenAI 호환 `type: file` + base64 `file_data` | LLM Gateway의 document-capable Gemini |
+| Yumi Provider Manager PDF (실험) | 선택된 기억을 `<pm-pdf>` 한 구간으로 표시; Provider Manager가 PDF 생성·첨부 | Yumi Provider Manager v1.15.3의 Gemini PDF 수동 지정 경로 |
 
 전송 방식은 사용자가 하나를 선택한다. Archive Center는 모델 표시 이름, prompt 문구나 응답
 문구로 provider를 추측하지 않는다. Google AI Studio와 Vertex는 동일한 Gemini body 형식을
@@ -80,10 +84,17 @@ usage와 장기기억 회수 품질은 확인되지 않았다.
 LLM Gateway의 현재 공식 document route는 Google AI Studio의 document-capable Gemini를
 대상으로 하므로, gateway 경로를 Vertex 직접 경로와 같은 usage·과금으로 간주하지 않는다.
 
+Provider Manager 실험 모드는 외부 플러그인을 수정하거나 IPC 권한을 추가하지 않는다. Archive
+Center는 Go가 선택한 장기기억만 정확히 한 쌍의 `<pm-pdf>` 표식으로 전달하고, PDF bytes를
+중복 생성하지 않는다. 사용자는 해당 Provider Manager 모델에서 `텍스트 변환: Gemini PDF`와
+변환 설정의 `수동 지정 기능 사용`을 모두 직접 켜야 한다. Archive Center는 플러그인 이름,
+모델명이나 외부 설정 상태를 추측하지 않는다.
+
 ### 2.3 수명과 재시도
 
-- PDF bytes와 base64는 현재 요청의 transient 자료이며 MariaDB, ChromaDB와 plugin 영구
-  storage에 저장하지 않는다.
+- 직접 Google/Gateway 경로의 PDF bytes와 base64는 현재 요청의 transient 자료이며 MariaDB,
+  ChromaDB와 plugin 영구 storage에 저장하지 않는다. Provider Manager 실험 경로는 Archive
+  Center PDF bytes를 만들지 않고 현재 요청의 표식만 전달한다.
 - 현재 4.1의 request-owned provider retry 문맥이 같은 논리 요청에서 같은 Go plan과 PDF를
   재사용한다.
 - PDF 전송은 새 `/prepare-turn`, 새 기억 검색, 새 Publisher, 새 request ID, 별도 provider
@@ -116,9 +127,16 @@ LLM Gateway의 현재 공식 document route는 Google AI Studio의 document-capa
 JavaScript는 기억을 다시 선택하거나 PDF에 넣을 문장을 재조립하지 않는다. PDF 전송 여부는
 완료 턴 저장, 리롤 교체, 출력 수락이나 canonical 판정의 추가 조건이 아니다.
 
+Provider Manager 실험 경로에서는 `applyGoPayloadApplicationPlan()`이 기존 Text 기준선을 먼저
+적용·관찰한 다음, 그 기준선의 `long_term_memory`만 한 표식 블록으로 바꾼다. 같은 요청이 다시
+`beforeRequest`에 들어오면 기존 Archive Center 표식 표현을 기준선으로 되돌리고 동일 표식을
+한 번만 재적용한다. 이 과정은 새 준비·검색·저장·리롤 판정을 만들지 않는다.
+
 ## 4. 작업 순서
 
 ### `4.1-PDF-A` — 현재 소스 호환성 대조
+
+상태: `COMPLETED`
 
 - 과거 `pdfmemory` generator·DTO·plan·interceptor를 현재 4.1 owner에 symbol 단위로 대조
 - 현재 RisuAI 공식 body interceptor signature와 실제 Google/OpenAI-compatible body 확인
@@ -128,6 +146,8 @@ JavaScript는 기억을 다시 선택하거나 PDF에 넣을 문장을 재조립
 산출물: 호환성 표와 정확한 변경 파일 목록. 이 단계는 runtime 동작을 바꾸지 않는다.
 
 ### `4.1-PDF-B` — Go PDF 생성기 복원
+
+상태: `COMPLETED` — Noto Sans KR 내장, `油`·`菜`·`種` 포함 검색·추출 회귀 통과
 
 - 한글 폰트를 내장한 searchable/copyable PDF 생성
 - 선택된 장기기억 문장과 순서를 바꾸지 않는 페이지·열 배치
@@ -139,6 +159,8 @@ JavaScript는 기억을 다시 선택하거나 PDF에 넣을 문장을 재조립
 
 ### `4.1-PDF-C` — Go 전송 계획 연결
 
+상태: `COMPLETED`
+
 - 현재 `payload_application_plan.v1`의 선택 결과를 소비하는 PDF transport plan 생성
 - PDF 논리 내용과 `long_term_memory` lane의 source/hash/문자 수 계보 연결
 - 다른 auxiliary lane이 그대로 남는 text projection 제공
@@ -146,28 +168,56 @@ JavaScript는 기억을 다시 선택하거나 PDF에 넣을 문장을 재조립
 
 ### `4.1-PDF-D` — RisuAI provider body 적용
 
+상태: `SOURCE_AND_REGRESSION_COMPLETED` · loaded RisuAI callback pending
+
 - Google AI Studio·Vertex용 `inlineData` PDF 적용
 - LLM Gateway용 OpenAI `file` block 적용
 - 최종 body에서 `long_term_memory` 텍스트를 PDF로 교체하고 다른 lane·사용자 입력 보존
 - 현재 4.1 retry context에서 같은 PDF plan 재사용
 - unload·요청 종료에서 interceptor와 transient 자료 정리
 
+추가 실험 경로 상태: `SOURCE_AND_REGRESSION_COMPLETED` · loaded Provider Manager conversion pending
+
+- Yumi Provider Manager v1.15.3의 공개 수동 `<pm-pdf>` 구간을 명시적으로 선택하는 전송 모드 추가
+- 외부 플러그인 파일·권한·설정을 수정하지 않고 선택된 장기기억 한 구간만 표시
+- 기존 auxiliary의 원작·lorebook·출력 안내와 현재 사용자 입력을 Text로 유지
+- 재시도 시 기존 표식 표현을 기준선으로 복원한 뒤 표식/PDF 후보가 한 번만 존재하도록 재적용
+- Provider Manager가 실제 PDF를 만들었는지, 최종 provider가 받았는지와 usage는 loaded test 전까지 UNKNOWN
+
 ### `4.1-PDF-E` — production 회귀와 진단
+
+상태: `COMPLETED` — actual provider usage/displayed-final 제외
 
 - 기존 text mode의 payload, retry, reroll, branch, Say Nothing, complete-turn 비퇴행
 - Google body와 LLM Gateway body 각각 PDF 1개 및 장기기억 text 중복 0 확인
+- Provider Manager 후보 payload에 `<pm-pdf>` 한 쌍, 장기기억 한 번, 나머지 lane·사용자 입력 보존 확인
+- 같은 요청 재적용 뒤 Provider Manager 표식과 장기기억이 한 번만 남는지 확인
 - PDF가 없는 요청, 빈 장기기억, provider retry와 중복 `afterRequest` 확인
 - HUD/진단에 logical chars, PDF pages/bytes, 실제 전송 방식과 적용 상태 표시
 - PDF base64와 사용자 원문은 로그·진단·support bundle에 출력하지 않음
 
 ### `4.1-PDF-F` — loaded RisuAI·provider·Windows 검증
 
+상태: `PARTIAL`
+
 - 실제 RisuAI에서 body interceptor 등록과 callback 실행 확인
+- 실제 RisuAI에서 Provider Manager v1.15.3의 Gemini PDF·수동 지정 기능으로 표식이 PDF 한 개로 변환되는지 확인
 - Google AI Studio, Vertex, LLM Gateway 요청 본문을 각각 확인
 - Gemini 3.1 Pro와 사용 중인 Gemini 3.x Flash에서 한국어 기억 회수 비교
 - 동일 기억의 text/PDF A/B로 처음·중간·끝, 숫자, 부정, 소유·관계 방향, 지연과 usage 비교
 - provider가 받은 최종 body에 PDF 1개, 장기기억 text 중복 0, 다른 lane 보존 확인
 - 검증된 소스로 4.1 Windows 테스트 패키지 갱신 후 한 벌만 기동해 runtime readiness 확인
+
+완료된 부분은 Windows 4.1 패키지 재생성, 기존 로컬 runtime 복원, Go·MariaDB·ChromaDB 단일
+스택 기동, readiness, 그리고 복원된 실제 세션에 대한 Text/Google PDF/Gateway PDF
+`/prepare-turn` 비교다. 세 모드가 동일한 17,979자·동일 논리 hash·동일
+`payload_application_plan.v1`을 유지했고, 두 PDF는 각각 1 page·99,514 bytes·`%PDF-` header로
+생성됐다. loaded RisuAI와 세 provider final body·수락·회수·usage·displayed final은 남아 있다.
+
+Provider Manager 실험 경로도 같은 Windows 4.1 패키지에 포함했고 source/production-function
+회귀와 package 기동/readiness를 통과했다. 이 경로는 Archive Center PDF bytes를 만들지 않으므로
+실제 Provider Manager v1.15.3이 표식 한 구간을 PDF 한 개로 바꾸는지와 메인 provider의
+회수·usage·displayed final은 loaded RisuAI 검증으로 남아 있다.
 
 ## 5. 증거 수준과 완료 판정
 
@@ -193,6 +243,7 @@ Gateway의 실제 요청 및 회수 A/B가 끝나기 전에는 PDF token 절감�
 - PDF 내용을 Publisher·Critic용 별도 기억으로 복제
 - 모델명 whitelist와 자동 provider 추측
 - Archive Center 자체 provider retry·fallback·모델 전환
+- Yumi Provider Manager 파일, IPC 권한과 내부 설정의 자동 변경
 - PDF 지원을 정상 출력·저장·리롤 수락의 조건으로 사용
 - PocketRisu 지원을 실제 Host capability 확인 없이 완료로 선언
 
@@ -202,7 +253,9 @@ Gateway의 실제 요청 및 회수 A/B가 끝나기 전에는 PDF token 절감�
 transport 관찰이 실제로 바뀌는 구현 change에서는 `STRUCTURE.md`, `AI_GUARDRAILS.md`, 4.1
 작업 기록과 Windows 테스트 빌드 기록을 같은 변경에서 갱신한다.
 
-현재 이 문서는 범위와 작업 순서를 확정한 계획 문서이며 runtime 구현 완료 증거가 아니다.
+현재 이 문서는 범위와 작업 순서에 더해 구현·검증 진행 상태를 기록한다. Source/regression,
+Windows package와 실제 backend `/prepare-turn` 증거는 확보됐지만 loaded RisuAI/provider 증거를
+대신하지 않으므로 완료 상태는 `IMPLEMENTED_UNVERIFIED`다.
 
 ## 8. 공식 외부 계약 기준
 
@@ -216,6 +269,10 @@ transport 관찰이 실제로 바뀌는 구현 change에서는 `STRUCTURE.md`, `
   <https://docs.llmgateway.io/features/documents>
 - RisuAI Plugin API v3 guide:
   <https://github.com/kwaroran/RisuAI/blob/main/plugins.md>
+- Yumi Provider Manager release page:
+  <https://update.rsyumi.workers.dev/provider-manager>
+- Embedded Noto Sans KR source and OFL:
+  <https://github.com/google/fonts/tree/main/ofl/notosanskr>
 
 모델과 provider 문서는 바뀔 수 있으므로 구현 시작과 live 검증 시점에 다시 확인한다. 공식
 문서의 지원 표는 Archive Center가 실제 RisuAI body에 PDF를 적용했다는 증거를 대신하지 않는다.

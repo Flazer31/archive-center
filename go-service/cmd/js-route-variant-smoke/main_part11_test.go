@@ -219,6 +219,9 @@ func TestEffectiveInputUsesCompletePayloadPlanAndCurrentTurnRuntime(t *testing.T
 		extractArchiveCenterJSFunction(t, src, "resolveAuxiliaryInjectionPlacement"),
 		extractArchiveCenterJSFunction(t, src, "injectAuxiliaryBlock"),
 		extractArchiveCenterJSFunction(t, src, "observeGoPayloadApplication"),
+		extractArchiveCenterJSFunction(t, src, "providerManagerMemoryPDFMarkerContent"),
+		extractArchiveCenterJSFunction(t, src, "normalizeProviderManagerMemoryPDFPayload"),
+		extractArchiveCenterJSFunction(t, src, "applyProviderManagerMemoryPDFPayload"),
 		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
 		extractArchiveCenterJSFunction(t, src, "isBackendEffectiveInputPreview"),
 		extractArchiveCenterJSFunction(t, src, "composeEffectiveInputFromTransparency"),
@@ -2374,7 +2377,13 @@ function extractRuntimeCurrentChatTokenInfo() { return {}; }
 async function getCurrentChatSessionId() { return "session-runtime"; }
 async function resolveCanonicalWriteSessionId(value) { return value; }
 function captureSessionHostContextFromCache() { return {sessionId:"session-runtime",charIdx:1,chatIdx:2,hostChatId:"host-runtime"}; }
-async function getCurrentActiveChatSourceObservationMessages() { return [{role: "user", content: "actual input", risuMessageIndex: 1}]; }
+async function getCurrentActiveChatSourceObservationMessages(_sessionId, _hostContext, includeChat) {
+  const messages = [{role: "user", content: "actual input", risuMessageIndex: 1}];
+  return includeChat ? {messages, chat:{scriptstate:{}}} : messages;
+}
+async function buildYumiV1ArchiveReadContext(payloadMessages, activeMessages) {
+  return {payloadMessages, activeMessages, stats:{markerBlocks:0, modelSourceBlocks:0, displayFallbackBlocks:0}};
+}
 function bindRawInputObservationToRequest(_sessionId, requestId) {
   return {text: "actual input", actualEmptyInput: false, observationId: 1, boundRequestId: requestId};
 }
@@ -2484,7 +2493,7 @@ func TestBeforeRequestBuildsObservationOnlySourceEnvelope(t *testing.T) {
 	for _, required := range []string{
 		`if (!settings.enabled || !isSaveType(type)) return payload;`,
 		`sourceDecisionOnly: true`,
-		`const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {`,
+		`const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, archiveReadMessages, continuityInfo, type, turnLanguageContext, {`,
 		`freshFirstTurnLightMode,`,
 		`freshFirstTurnLightModeMeta,`,
 		`const prepareSourceObservations = buildPrepareTurnSourceObservations(`,
@@ -5616,6 +5625,9 @@ func TestOutputFidelity35BProductionJSLineageBoundaries(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "findPayloadMessagesPath"),
 		extractArchiveCenterJSFunction(t, src, "extractMessages"),
 		extractArchiveCenterJSFunction(t, src, "observeGoPayloadApplication"),
+		extractArchiveCenterJSFunction(t, src, "providerManagerMemoryPDFMarkerContent"),
+		extractArchiveCenterJSFunction(t, src, "normalizeProviderManagerMemoryPDFPayload"),
+		extractArchiveCenterJSFunction(t, src, "applyProviderManagerMemoryPDFPayload"),
 		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
 		extractArchiveCenterJSFunction(t, src, "buildSourceToFinalLineageObservation"),
 	}, "\n")

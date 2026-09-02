@@ -435,6 +435,9 @@ func TestArchiveCenterJSGoPayloadPlanPreservesLanePreviewsForTransparency(t *tes
 		extractJSFunctionBlockForTest(t, src, "function resolveAuxiliaryInjectionPlacement("),
 		extractJSFunctionBlockForTest(t, src, "function injectAuxiliaryBlock("),
 		extractJSFunctionBlockForTest(t, src, "function observeGoPayloadApplication("),
+		extractJSFunctionBlockForTest(t, src, "function providerManagerMemoryPDFMarkerContent("),
+		extractJSFunctionBlockForTest(t, src, "function normalizeProviderManagerMemoryPDFPayload("),
+		extractJSFunctionBlockForTest(t, src, "function applyProviderManagerMemoryPDFPayload("),
 		extractJSFunctionBlockForTest(t, src, "function applyGoPayloadApplicationPlan("),
 	}, "\n")
 	script := functions + `
@@ -719,7 +722,7 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.0.9 Web Risu direct bridge test"`,
+		`const BUILD_NOTES = "Archive Center 4.1.0 request retry, reroll identity, PDF memory transport, and Yumi translation compatibility"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {

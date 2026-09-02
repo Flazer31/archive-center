@@ -891,10 +891,12 @@ const onAfterRequest = ()=>{};
 const _pendingFinalConfirmations = new Map();
 let _activeFinalConfirmationRequestContext = null;
 let _pendingFinalConfirmationDrainRequested = false;
+let _memoryTransportBodyInterceptorRegistration = null;
 const lifecycleStates = {};
 function recordRisuHookLifecycle(name,state){ lifecycleStates[name]=state; }
 function warnLog(){}
 function debugLog(){}
+async function registerMemoryTransportBodyInterceptor(){ calls.push("add:body"); }
 function cancelTurnWorkflowHUDStream(){}
 function cancelAllAdminBackgroundJobStreams(){}
 function clearArchiveCenterRecomposerBridge(){ calls.push("clear:recomposer"); }
@@ -1674,6 +1676,7 @@ const R={
   }
 };
 function recordRisuHookLifecycle(){}
+async function registerMemoryTransportBodyInterceptor(){}
 function warnLog(...args){throw new Error("unexpected warning: "+args.join(" "));}
 function debugLog(){}
 function clearArchiveCenterRecomposerBridge(){}
@@ -1688,7 +1691,13 @@ function captureSessionHostContextFromCache(sid){
   if(sid!==current.sessionId) throw new Error("session recaptured from wrong owner");
   return {sessionId:sid,charIdx:current.charIdx,chatIdx:current.chatIdx,hostChatId:current.hostChatId,stableCharacterId:"char-"+current.charIdx};
 }
-async function getCurrentActiveChatSourceObservationMessages(){return [{role:"user",raw_content:current.user,message_index:0}];}
+async function getCurrentActiveChatSourceObservationMessages(_sid,_hostContext,includeChat){
+  const messages=[{role:"user",raw_content:current.user,message_index:0}];
+  return includeChat ? {messages,chat:{scriptstate:{}}} : messages;
+}
+async function buildYumiV1ArchiveReadContext(payloadMessages,activeMessages){
+  return {payloadMessages,activeMessages,stats:{markerBlocks:0,modelSourceBlocks:0,displayFallbackBlocks:0}};
+}
 function makeOrchRequestId(sid){requestSeq++; return sid+":request:"+requestSeq;}
 function primeTurnWorkflowHUD(requestId){_turnWorkflowHUDActiveRequestId=requestId; return requestId;}
 async function captureAssistantPrefillSeedForSession(){}
@@ -2193,6 +2202,7 @@ async function onInputHook(value){return value;}
 async function onBeforeRequest(value){return value;}
 function onRisuOutput(){}
 async function removeRegisteredRisuHooksOnUnload(){}
+async function registerMemoryTransportBodyInterceptor(){}
 function recordRisuHookLifecycle(){}
 function debugLog(){}
 function warnLog(...args){warnings.push(args.join(" "));}

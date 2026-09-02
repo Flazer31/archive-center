@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.0.9
+//@display-name Archive Center 4.1.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.0.9
+//@version 4.1.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.0.9";
-  const BUILD_ID = "4.0.9";
+  const VERSION = "4.1.0";
+  const BUILD_ID = "4.1.0";
   const BUILD_CHANNEL = "release";
   const BUILD_TIME = "2026-08-28 KST";
-  const BUILD_NOTES = "Archive Center 4.0.9 Web Risu direct bridge test";
+  const BUILD_NOTES = "Archive Center 4.1.0 request retry, reroll identity, PDF memory transport, and Yumi translation compatibility";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -68,6 +68,7 @@
   const PUBLISHER_GUIDANCE_FORMAT_OPTIONS = Object.freeze(["compact", "standard", "explicit"]);
   const COMPLETION_TOKEN_PROFILE_VERSION = "p409_30000_v1";
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
+  const MEMORY_TRANSPORT_MODE_OPTIONS = Object.freeze(["text", "google_pdf", "llm_gateway_pdf", "provider_manager_pdf"]);
   const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
   const PLUGIN_MAIN_APPLY_MODES = Object.freeze(["off", "shadow", "reviewed_apply"]);
@@ -164,6 +165,7 @@
     injectionBudgetProfileVersion: "p409_18000_base_v1",
     injectionBudgetExtraChars: 0,    // 자동 산정 예산 위에 허용할 추가 상한
     memoryDeliveryBudgetMode: "auto",
+    memoryTransportMode: "text",
     memoryDeliveryBudgets: Object.freeze({
       event_recent: 3500,
       character_objective: 2500,
@@ -1143,6 +1145,12 @@
       "settings.label.llmRetryCount": "LLM 재시도 횟수",
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
       "settings.label.maxInjectionChars": "일반 기억 예산 (chars)",
+      "settings.label.memoryTransportMode": "장기 기억 전달 방식",
+      "settings.memoryTransportMode.text": "기존 Text",
+      "settings.memoryTransportMode.google_pdf": "Google AI Studio·Vertex PDF",
+      "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
+      "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (실험)",
+      "settings.hint.memoryTransportMode": "Go가 이미 선택한 장기 기억만 전송 형식으로 바꿉니다. Yumi 실험 모드는 Provider Manager의 Gemini PDF와 수동 지정 기능을 모두 켜야 합니다.",
       "settings.label.referenceInjectionMaxChars": "원작 DB 예산 (chars)",
       "settings.label.lorebookReferenceMaxChars": "로어북 예산 (chars)",
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
@@ -1556,6 +1564,12 @@
       "settings.label.llmRetryCount.hint": "0 = no retry (1 attempt only), 3 = 3 additional attempts on failure",
       "settings.label.maxInjectionChars": "Memory Context Budget (chars)",
       "settings.hint.maxInjectionChars": "Independent limit for memory, world, and relationship context. Original-work and lorebook budgets are excluded.",
+      "settings.label.memoryTransportMode": "Long-term Memory Transport",
+      "settings.memoryTransportMode.text": "Existing Text",
+      "settings.memoryTransportMode.google_pdf": "Google AI Studio / Vertex PDF",
+      "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
+      "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (experimental)",
+      "settings.hint.memoryTransportMode": "Changes only the representation of long-term memory already selected by Go. The Yumi experiment requires both Gemini PDF and manual selection in Provider Manager.",
       "settings.label.referenceInjectionMaxChars": "Original-work DB Budget (chars)",
       "settings.hint.referenceInjectionMaxChars": "Independent original-work reference limit. It does not borrow unused memory or lorebook capacity.",
       "settings.label.lorebookReferenceMaxChars": "Lorebook Budget (chars)",
@@ -2762,6 +2776,12 @@
       "settings.label.llmRetryCount.hint": "0 = リトライなし（1回のみ）、3 = 失敗時3回追加試行",
       "settings.label.maxInjectionChars": "一般記憶予算（chars）",
       "settings.hint.maxInjectionChars": "記憶・世界・関係コンテキスト専用の上限です。原作DBとロアブックの予算は含みません。",
+      "settings.label.memoryTransportMode": "長期記憶の転送方式",
+      "settings.memoryTransportMode.text": "既存 Text",
+      "settings.memoryTransportMode.google_pdf": "Google AI Studio・Vertex PDF",
+      "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
+      "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF（実験）",
+      "settings.hint.memoryTransportMode": "Go が選択済みの長期記憶だけ転送形式を変更します。Yumi 実験モードでは Provider Manager の Gemini PDF と手動指定を両方有効にしてください。",
       "settings.label.referenceInjectionMaxChars": "原作DB予算（chars）",
       "settings.hint.referenceInjectionMaxChars": "原作参照専用の独立上限です。記憶やロアブックの未使用分を借用しません。",
       "settings.label.lorebookReferenceMaxChars": "ロアブック予算（chars）",
@@ -4606,6 +4626,7 @@
   // request identifier. Keep the exact beforeRequest context as the callback
   // handoff, then detach it synchronously when afterRequest starts.
   let _activeFinalConfirmationRequestContext = null;
+  let _memoryTransportBodyInterceptorRegistration = null;
   const _pendingFinalConfirmations = new Map();
   const _pendingFinalConfirmationRecoveryEntries = new Map();
   let _pendingFinalConfirmationDrainInFlight = false;
@@ -5069,6 +5090,17 @@
     }
     _activeFinalConfirmationRequestContext = null;
     try {
+      const registrationId = _memoryTransportBodyInterceptorRegistration && typeof _memoryTransportBodyInterceptorRegistration === "object"
+        ? _memoryTransportBodyInterceptorRegistration.id
+        : _memoryTransportBodyInterceptorRegistration;
+      if (registrationId && R && typeof R.unregisterBodyIntercepter === "function") {
+        await R.unregisterBodyIntercepter(registrationId);
+      }
+    } catch (err) {
+      debugLog("[unload] memory transport body interceptor cleanup failed:", err && err.message);
+    }
+    _memoryTransportBodyInterceptorRegistration = null;
+    try {
       await unloadTurnWorkflowHUD();
     } catch (err) {
       debugLog("[unload] turn workflow HUD cleanup failed:", err && err.message);
@@ -5106,6 +5138,7 @@
 
   async function registerRisuLifecycleHooks() {
     if (!R) return;
+    await registerMemoryTransportBodyInterceptor();
     try {
       if (typeof R.addRisuScriptHandler === "function") {
         recordRisuHookLifecycle("input", "registration_requested_unconfirmed");
@@ -10588,11 +10621,12 @@
     return sanitizeEnumValue(value, fallback, EMBEDDING_PROVIDER_OPTIONS);
   }
 
-  async function getCurrentActiveChatSourceObservationMessages(sessionId, hostContext = null) {
+  async function getCurrentActiveChatSourceObservationMessages(sessionId, hostContext = null, includeChat = false) {
     try {
       const resolved = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
-      const rawMessages = resolved && resolved.chat ? extractActiveChatMessageList(resolved.chat) : [];
-      return rawMessages.map(function(raw, messageIndex) {
+      const chat = resolved && resolved.chat ? resolved.chat : null;
+      const rawMessages = chat ? extractActiveChatMessageList(chat) : [];
+      const messages = rawMessages.map(function(raw, messageIndex) {
         if (!raw || typeof raw !== "object") return null;
         const risuRole = String(raw.role || "").trim().toLowerCase();
         const role = risuRole === "user" ? "user" : (risuRole === "char" ? "assistant" : "");
@@ -10604,9 +10638,94 @@
           risuMessageIndex: messageIndex,
         };
       }).filter(Boolean);
+      return includeChat ? { chat, messages } : messages;
     } catch {
-      return [];
+      return includeChat ? { chat: null, messages: [] } : [];
     }
+  }
+
+  async function buildYumiV1ArchiveReadContext(payloadMessages, activeMessages, activeChat) {
+    const markerPattern = /<!--\s*yumi-tr:v1:([A-Za-z0-9_-]+):start\s*-->([\s\S]*?)<!--\s*yumi-tr:v1:\1:end\s*-->/gi;
+    const payloadSource = Array.isArray(payloadMessages) ? payloadMessages : [];
+    const activeSource = Array.isArray(activeMessages) ? activeMessages : [];
+    const scriptstate = activeChat && activeChat.scriptstate && typeof activeChat.scriptstate === "object"
+      ? activeChat.scriptstate
+      : null;
+    const modelTextById = new Map();
+    const markerIds = new Set();
+    const stats = {
+      markerBlocks: 0,
+      modelSourceBlocks: 0,
+      displayFallbackBlocks: 0,
+    };
+
+    function collectMarkerIds(messages) {
+      messages.forEach(function(message) {
+        if (!message || message.role !== "assistant" || typeof message.content !== "string") return;
+        markerPattern.lastIndex = 0;
+        let match;
+        while ((match = markerPattern.exec(message.content)) !== null) markerIds.add(String(match[1] || ""));
+      });
+    }
+
+    async function decodeRecord(rawRecord) {
+      if (typeof rawRecord !== "string" || !rawRecord) return null;
+      let jsonText = rawRecord;
+      if (rawRecord.startsWith("u:")) {
+        jsonText = rawRecord.slice(2);
+      } else if (rawRecord.startsWith("z:")) {
+        if (typeof atob !== "function" || typeof DecompressionStream !== "function"
+            || typeof Blob !== "function" || typeof Response !== "function") return null;
+        const binary = atob(rawRecord.slice(2));
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        const stream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream("gzip"));
+        jsonText = await new Response(stream).text();
+      }
+      const parsed = JSON.parse(jsonText);
+      return parsed && typeof parsed === "object" && typeof parsed.model === "string"
+        ? parsed.model
+        : null;
+    }
+
+    collectMarkerIds(payloadSource);
+    collectMarkerIds(activeSource);
+    if (scriptstate) {
+      for (const id of markerIds) {
+        try {
+          const modelText = await decodeRecord(scriptstate["$__yumi_tr." + id]);
+          if (typeof modelText === "string" && modelText.trim()) modelTextById.set(id, modelText);
+        } catch {
+          // Missing or malformed Yumi metadata must not block the main request.
+        }
+      }
+    }
+
+    function canonicalizeMessages(messages) {
+      return messages.map(function(message) {
+        if (!message || message.role !== "assistant" || typeof message.content !== "string") return message;
+        markerPattern.lastIndex = 0;
+        let changed = false;
+        const content = message.content.replace(markerPattern, function(_whole, id, translatedText) {
+          changed = true;
+          stats.markerBlocks += 1;
+          const modelText = modelTextById.get(String(id || ""));
+          if (typeof modelText === "string" && modelText.trim()) {
+            stats.modelSourceBlocks += 1;
+            return modelText;
+          }
+          stats.displayFallbackBlocks += 1;
+          return String(translatedText || "");
+        });
+        return changed ? { ...message, content } : message;
+      });
+    }
+
+    return {
+      payloadMessages: canonicalizeMessages(payloadSource),
+      activeMessages: canonicalizeMessages(activeSource),
+      stats,
+    };
   }
 
   function normalizeSourceSearchLlmProvider(value, defaultVal = DEFAULT_SETTINGS.sourceSearchPlannerProvider) {
@@ -11301,6 +11420,11 @@
     merged.lorebookReferenceMaxChars = sanitizeNumber(merged.lorebookReferenceMaxChars, DEFAULT_SETTINGS.lorebookReferenceMaxChars, 0, 30000);
     merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, 0, 0, 15000);
     merged.memoryDeliveryBudgetMode = String(merged.memoryDeliveryBudgetMode || "auto") === "custom" ? "custom" : "auto";
+    merged.memoryTransportMode = sanitizeEnumValue(
+      merged.memoryTransportMode,
+      DEFAULT_SETTINGS.memoryTransportMode,
+      MEMORY_TRANSPORT_MODE_OPTIONS,
+    );
     const rawMemoryDeliveryBudgets = merged.memoryDeliveryBudgets && typeof merged.memoryDeliveryBudgets === "object"
       ? merged.memoryDeliveryBudgets
       : DEFAULT_SETTINGS.memoryDeliveryBudgets;
@@ -15813,6 +15937,7 @@
           takeover_mode: "off",  // 사용자 경로 단순화: takeover 비활성 고정
           injection_enabled: settings.injectionEnabled !== false,
           max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars,
+          memory_transport_mode: settings.memoryTransportMode || DEFAULT_SETTINGS.memoryTransportMode,
           memory_delivery_budget_mode: settings.memoryDeliveryBudgetMode || "auto",
           memory_delivery_budgets: { ...(settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets) },
           reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),
@@ -15967,6 +16092,8 @@
           // + Plugin Main 계약 placeholder: effective_user_input / apply_verdict (M-3b에서 채워짐)
           injectionPack:      result.injection_pack       || null,
           payloadApplicationPlan: result.payload_application_plan || (result.injection_pack && result.injection_pack.payload_application_plan) || null,
+          memoryTransportPlan: result.memory_transport_plan || (result.injection_pack && result.injection_pack.memory_transport_plan) || null,
+          memoryTransportPayload: result.memory_transport_payload || null,
           sourceToPayloadLineage: result.source_to_payload_lineage || (result.injection_pack && result.injection_pack.source_to_payload_lineage) || null,
           supervisorResult:   result.supervisor_result    || null,
           memoryBudgetResolution: result.memory_budget_resolution || null,
@@ -18971,6 +19098,297 @@
     );
     context.retryPayloadReadyAt = context.retryPayloadReady ? new Date().toISOString() : "";
     return context.retryPayloadReady;
+  }
+
+  function attachFinalConfirmationMemoryTransport(context, orchestrationResult, prepareBundle) {
+    if (!context || typeof context !== "object") return;
+    const injectionPack = orchestrationResult && orchestrationResult._injectionPack && typeof orchestrationResult._injectionPack === "object"
+      ? orchestrationResult._injectionPack
+      : null;
+    const bundle = prepareBundle && typeof prepareBundle === "object" ? prepareBundle : null;
+    const plan = (bundle && bundle.memoryTransportPlan)
+      || (injectionPack && injectionPack.memory_transport_plan)
+      || null;
+    const transient = bundle && bundle.memoryTransportPayload || null;
+    const selectedMode = String(plan && plan.selected_mode || "text");
+    if (
+      context.payloadInjectionReplayAllowed === true
+      && selectedMode === "provider_manager_pdf"
+      && plan
+    ) {
+      context.memoryTransportEnvelope = null;
+      context.memoryTransportObservation = orchestrationResult && orchestrationResult._memoryTransportObservation || null;
+      debugLog("memory Provider Manager PDF marker context attached:", {
+        selectedMode,
+        transportStatus: String(plan.transport_status || ""),
+        hasPlanId: !!String(plan.plan_id || ""),
+        markerApplied: !!(context.memoryTransportObservation && context.memoryTransportObservation.applied),
+        attemptCount: Number(context.beforeRequestAttemptCount || 1),
+      });
+      return;
+    }
+    if (
+      context.payloadInjectionReplayAllowed === true
+      && selectedMode !== "text"
+      && plan
+      && transient
+    ) {
+      context.memoryTransportEnvelope = { plan, transient };
+      debugLog("memory PDF transport context attached:", {
+        selectedMode,
+        transportStatus: String(plan.transport_status || ""),
+        hasPlanId: !!String(plan.plan_id || ""),
+        hasTransientPlanId: !!String(transient.plan_id || ""),
+        pdfBytes: Number(plan.pdf_bytes || 0),
+        attemptCount: Number(context.beforeRequestAttemptCount || 1),
+      });
+      return;
+    }
+    context.memoryTransportEnvelope = null;
+    debugLog("memory PDF transport context not attached:", {
+      selectedMode,
+      payloadInjectionReplayAllowed: context.payloadInjectionReplayAllowed === true,
+      hasPlan: !!plan,
+      hasTransient: !!transient,
+    });
+  }
+
+  function cloneMemoryTransportProviderBody(body) {
+    try {
+      const serialized = typeof body === "string";
+      const parsed = serialized ? JSON.parse(body) : body;
+      if (!parsed || typeof parsed !== "object") return null;
+      return {
+        value: JSON.parse(JSON.stringify(parsed)),
+        serialized,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  function restoreMemoryTransportProviderBody(decoded) {
+    return decoded.serialized ? JSON.stringify(decoded.value) : decoded.value;
+  }
+
+  function replaceSelectedMemoryText(text, selectedMemoryText) {
+    const source = String(text || "");
+    const selected = String(selectedMemoryText || "");
+    if (!selected || source.indexOf(selected) < 0) return { text: source, count: 0 };
+    const parts = source.split(selected);
+    return { text: parts.join(""), count: parts.length - 1 };
+  }
+
+  function applyGoogleMemoryPDFBody(body, plan, transient) {
+    let removedTextCount = 0;
+    const selectedMemoryText = String(plan.long_term_memory_text || "");
+    const replaceParts = function(parts) {
+      if (!Array.isArray(parts)) return;
+      parts.forEach(function(part) {
+        if (!part || typeof part.text !== "string") return;
+        const replaced = replaceSelectedMemoryText(part.text, selectedMemoryText);
+        part.text = replaced.text;
+        removedTextCount += replaced.count;
+      });
+    };
+    if (body.systemInstruction && typeof body.systemInstruction === "object") {
+      replaceParts(body.systemInstruction.parts);
+    }
+    const contents = Array.isArray(body.contents) ? body.contents : [];
+    contents.forEach(function(content) {
+      replaceParts(content && content.parts);
+    });
+    if (removedTextCount === 0) {
+      return { applied: false, removedTextCount, reason: "google_selected_memory_text_unavailable" };
+    }
+    let currentUserContent = null;
+    for (let index = contents.length - 1; index >= 0; index--) {
+      if (contents[index] && String(contents[index].role || "").toLowerCase() === "user") {
+        currentUserContent = contents[index];
+        break;
+      }
+    }
+    if (!currentUserContent) return { applied: false, removedTextCount, reason: "google_current_user_content_unavailable" };
+    const pdfBase64 = String(transient.pdf_base64 || "");
+    const mimeType = String(plan.mime_type || "application/pdf");
+    const parts = Array.isArray(currentUserContent.parts) ? currentUserContent.parts.slice() : [];
+    currentUserContent.parts = parts.filter(function(part) {
+      return !(part && part.inlineData && part.inlineData.mimeType === mimeType && part.inlineData.data === pdfBase64);
+    });
+    currentUserContent.parts.push({
+      inlineData: {
+        mimeType,
+        data: pdfBase64,
+      },
+    });
+    return { applied: true, removedTextCount, fileBlockCount: 1 };
+  }
+
+  function applyLLMGatewayMemoryPDFBody(body, plan, transient) {
+    let removedTextCount = 0;
+    const selectedMemoryText = String(plan.long_term_memory_text || "");
+    const messages = Array.isArray(body.messages) ? body.messages : [];
+    messages.forEach(function(message) {
+      if (!message) return;
+      if (typeof message.content === "string") {
+        const replaced = replaceSelectedMemoryText(message.content, selectedMemoryText);
+        message.content = replaced.text;
+        removedTextCount += replaced.count;
+        return;
+      }
+      if (!Array.isArray(message.content)) return;
+      message.content.forEach(function(part) {
+        if (!part || typeof part.text !== "string") return;
+        const replaced = replaceSelectedMemoryText(part.text, selectedMemoryText);
+        part.text = replaced.text;
+        removedTextCount += replaced.count;
+      });
+    });
+    if (removedTextCount === 0) {
+      return { applied: false, removedTextCount, reason: "gateway_selected_memory_text_unavailable" };
+    }
+    let currentUserMessage = null;
+    for (let index = messages.length - 1; index >= 0; index--) {
+      if (messages[index] && String(messages[index].role || "").toLowerCase() === "user") {
+        currentUserMessage = messages[index];
+        break;
+      }
+    }
+    if (!currentUserMessage) return { applied: false, removedTextCount, reason: "gateway_current_user_message_unavailable" };
+    const filename = String(plan.filename || "archive-center-long-term-memory.pdf");
+    const fileData = "data:" + String(plan.mime_type || "application/pdf") + ";base64," + String(transient.pdf_base64 || "");
+    let contentParts;
+    if (Array.isArray(currentUserMessage.content)) {
+      contentParts = currentUserMessage.content.slice();
+    } else if (typeof currentUserMessage.content === "string") {
+      contentParts = [{ type: "text", text: currentUserMessage.content }];
+    } else {
+      contentParts = [];
+    }
+    contentParts = contentParts.filter(function(part) {
+      return !(part && part.type === "file" && part.file && part.file.filename === filename && part.file.file_data === fileData);
+    });
+    contentParts.push({
+      type: "file",
+      file: {
+        filename,
+        file_data: fileData,
+      },
+    });
+    currentUserMessage.content = contentParts;
+    return { applied: true, removedTextCount, fileBlockCount: 1 };
+  }
+
+  async function onMemoryTransportBodyInterceptor(body, type) {
+    const active = _activeFinalConfirmationRequestContext;
+    const envelope = active && active.memoryTransportEnvelope;
+    const requestType = String(type || "");
+    debugLog("memory transport body interceptor entered:", {
+      requestType,
+      bodyEncoding: typeof body === "string" ? "json_string" : typeof body,
+      hasActiveContext: !!active,
+      hasEnvelope: !!envelope,
+      selectedMode: String(envelope && envelope.plan && envelope.plan.selected_mode || ""),
+    });
+    if (requestType === "meta_gemini") {
+      if (active && envelope) {
+        active.memoryTransportObservation = active.memoryTransportObservation || {};
+        active.memoryTransportObservation.usageMetadata = body && body.usageMetadata || null;
+        active.memoryTransportObservation.modelStatus = body && body.modelStatus || null;
+      }
+      debugLog("memory transport Gemini metadata observed:", {
+        hasActiveContext: !!active,
+        hasEnvelope: !!envelope,
+        hasUsageMetadata: !!(body && body.usageMetadata),
+        hasModelStatus: !!(body && body.modelStatus),
+      });
+      return body;
+    }
+    if (!active || !envelope || !envelope.plan || !envelope.transient) {
+      debugLog("memory PDF transport skipped before body application:", {
+        requestType,
+        reason: !active
+          ? "active_context_unavailable"
+          : !envelope
+            ? "memory_transport_envelope_unavailable"
+            : !envelope.plan
+              ? "memory_transport_plan_unavailable"
+              : "memory_transport_payload_unavailable",
+      });
+      return body;
+    }
+    const plan = envelope.plan;
+    const transient = envelope.transient;
+    if (String(transient.plan_id || "") !== String(plan.plan_id || "")) {
+      debugLog("memory PDF transport skipped before body application:", {
+        requestType,
+        reason: "memory_transport_plan_id_mismatch",
+      });
+      return body;
+    }
+    const mode = String(plan.selected_mode || "text");
+    const googleBody = mode === "google_pdf" && (requestType === "gemini_base" || requestType === "gemini_base_stream");
+    const gatewayBody = mode === "llm_gateway_pdf" && (requestType === "openai_basic" || requestType === "openai_streaming");
+    if (!googleBody && !gatewayBody) {
+      debugLog("memory PDF transport skipped before body application:", {
+        requestType,
+        selectedMode: mode,
+        reason: "memory_transport_request_type_not_selected_route",
+      });
+      return body;
+    }
+    const decoded = cloneMemoryTransportProviderBody(body);
+    if (!decoded) {
+      debugLog("memory PDF transport skipped before body application:", {
+        requestType,
+        selectedMode: mode,
+        reason: "memory_transport_body_decode_failed",
+      });
+      return body;
+    }
+    const application = googleBody
+      ? applyGoogleMemoryPDFBody(decoded.value, plan, transient)
+      : applyLLMGatewayMemoryPDFBody(decoded.value, plan, transient);
+    active.memoryTransportObservation = {
+      planId: String(plan.plan_id || ""),
+      selectedMode: mode,
+      interceptorType: requestType,
+      applied: application.applied === true,
+      removedTextCount: Number(application.removedTextCount || 0),
+      fileBlockCount: Number(application.fileBlockCount || 0),
+      reason: String(application.reason || ""),
+      attemptCount: Number(active.beforeRequestAttemptCount || 1),
+      logicalMemoryChars: Number(plan.logical_memory_chars || 0),
+      pdfBytes: Number(plan.pdf_bytes || 0),
+      pageCount: Number(plan.page_count || 0),
+      estimatedTextTokens: Number(plan.estimated_text_tokens || 0),
+      estimatedPdfTokens: Number(plan.estimated_pdf_tokens || 0),
+      observedAt: new Date().toISOString(),
+    };
+    if (!application.applied) {
+      debugLog("memory PDF transport body application failed open:", {
+        selectedMode: mode,
+        requestType,
+        removedTextCount: Number(application.removedTextCount || 0),
+        reason: String(application.reason || "memory_transport_body_application_unavailable"),
+      });
+      return body;
+    }
+    debugLog("memory PDF transport applied:", mode, requestType, "text blocks removed:", application.removedTextCount);
+    return restoreMemoryTransportProviderBody(decoded);
+  }
+
+  async function registerMemoryTransportBodyInterceptor() {
+    if (!R || typeof R.registerBodyIntercepter !== "function") return;
+    try {
+      _memoryTransportBodyInterceptorRegistration = await R.registerBodyIntercepter(onMemoryTransportBodyInterceptor);
+      if (_memoryTransportBodyInterceptorRegistration) {
+        console.log(LOG_PREFIX, "memory transport body interceptor registered");
+      }
+    } catch (err) {
+      _memoryTransportBodyInterceptorRegistration = null;
+      warnLog("memory transport body interceptor registration failed:", err && err.message);
+    }
   }
 
   function installFinalConfirmationRequestContext(context) {
@@ -28476,6 +28894,14 @@
       if (sourceToFinalLineageObservation) {
         body.client_meta.source_to_final_lineage_observation = sourceToFinalLineageObservation;
       }
+      const memoryTransportObservation = sourceObservationOptions
+        && sourceObservationOptions.memoryTransportObservation
+        && typeof sourceObservationOptions.memoryTransportObservation === "object"
+        ? sourceObservationOptions.memoryTransportObservation
+        : null;
+      if (memoryTransportObservation) {
+        body.client_meta.memory_transport_observation = JSON.parse(JSON.stringify(memoryTransportObservation));
+      }
       return body;
     } catch (err) {
       debugLog("[M-4c] buildCompleteTurnRequestBody error:", err.message);
@@ -28549,6 +28975,9 @@
           final_hash_algorithm: lineage.final_hash_algorithm || null,
           semantic_outcome: "unobserved",
         };
+      }
+      if (meta.memory_transport_observation && typeof meta.memory_transport_observation === "object") {
+        safeClientMeta.memory_transport_observation = JSON.parse(JSON.stringify(meta.memory_transport_observation));
       }
       if (meta.risu_persona_observation && typeof meta.risu_persona_observation === "object") {
         safeClientMeta.risu_persona_observation = Object.assign({}, meta.risu_persona_observation);
@@ -31477,6 +31906,136 @@
     }
   }
 
+  function providerManagerMemoryPDFMarkerContent(transportPlan) {
+    const selectedMemoryText = String(transportPlan && transportPlan.long_term_memory_text || "");
+    if (!selectedMemoryText) return "";
+    return "<pm-pdf>\n" + selectedMemoryText + "\n</pm-pdf>";
+  }
+
+  function normalizeProviderManagerMemoryPDFPayload(payload, transportPlan) {
+    try {
+      if (String(transportPlan && transportPlan.selected_mode || "") !== "provider_manager_pdf") {
+        return { payload, normalized: false };
+      }
+      const markerContent = providerManagerMemoryPDFMarkerContent(transportPlan);
+      const auxiliaryText = String(transportPlan && transportPlan.auxiliary_text || "");
+      if (!markerContent || !auxiliaryText) return { payload, normalized: false };
+
+      const extracted = extractMessages(payload);
+      const messages = Array.isArray(extracted.messages) ? extracted.messages : [];
+      if (!extracted.hasMessageSlot || messages.length === 0) return { payload, normalized: false };
+
+      const auxiliaryPrefix = "[Archive Center — Auxiliary Context]";
+      const fullAuxiliaryContent = auxiliaryPrefix + "\n\n" + auxiliaryText;
+      const remainingAuxiliaryText = String(transportPlan.auxiliary_without_long_term_memory || "");
+      const remainingAuxiliaryContent = remainingAuxiliaryText
+        ? auxiliaryPrefix + "\n\n" + remainingAuxiliaryText
+        : "";
+      const markerIndexes = [];
+      const remainingIndexes = [];
+      messages.forEach(function(message, index) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        if (parsed.role !== "system") return;
+        if (parsed.text === markerContent) markerIndexes.push(index);
+        if (remainingAuxiliaryContent && parsed.text === remainingAuxiliaryContent) remainingIndexes.push(index);
+      });
+      if (markerIndexes.length === 0) return { payload, normalized: false };
+
+      if (!remainingAuxiliaryContent) {
+        let restored = false;
+        const restoredMessages = messages.flatMap(function(message, index) {
+          if (markerIndexes.indexOf(index) < 0) return [message];
+          if (restored) return [];
+          restored = true;
+          return [{ ...message, role: "system", content: fullAuxiliaryContent }];
+        });
+        return {
+          payload: extracted.rebuild(restoredMessages),
+          normalized: true,
+          removedMarkerBlocks: markerIndexes.length,
+        };
+      }
+      if (remainingIndexes.length === 0) return { payload, normalized: false };
+
+      const keepRemainingIndex = remainingIndexes[0];
+      const restoredMessages = messages.flatMap(function(message, index) {
+        if (markerIndexes.indexOf(index) >= 0) return [];
+        if (remainingIndexes.indexOf(index) >= 0) {
+          if (index !== keepRemainingIndex) return [];
+          return [{ ...message, role: "system", content: fullAuxiliaryContent }];
+        }
+        return [message];
+      });
+      return {
+        payload: extracted.rebuild(restoredMessages),
+        normalized: true,
+        removedMarkerBlocks: markerIndexes.length,
+      };
+    } catch (err) {
+      debugLog("memory Provider Manager PDF marker normalization failed open:", err && err.message);
+      return { payload, normalized: false };
+    }
+  }
+
+  function applyProviderManagerMemoryPDFPayload(payload, transportPlan) {
+    try {
+      if (String(transportPlan && transportPlan.selected_mode || "") !== "provider_manager_pdf") {
+        return { payload, applied: false, reason: "provider_manager_mode_not_selected" };
+      }
+      const markerContent = providerManagerMemoryPDFMarkerContent(transportPlan);
+      const auxiliaryText = String(transportPlan && transportPlan.auxiliary_text || "");
+      if (!markerContent || !auxiliaryText) {
+        return { payload, applied: false, reason: "provider_manager_memory_text_empty" };
+      }
+
+      const extracted = extractMessages(payload);
+      const messages = Array.isArray(extracted.messages) ? extracted.messages : [];
+      if (!extracted.hasMessageSlot || messages.length === 0) {
+        return { payload, applied: false, reason: "provider_manager_payload_messages_unavailable" };
+      }
+
+      const auxiliaryPrefix = "[Archive Center — Auxiliary Context]";
+      const fullAuxiliaryContent = auxiliaryPrefix + "\n\n" + auxiliaryText;
+      const remainingAuxiliaryText = String(transportPlan.auxiliary_without_long_term_memory || "");
+      const remainingAuxiliaryContent = remainingAuxiliaryText
+        ? auxiliaryPrefix + "\n\n" + remainingAuxiliaryText
+        : "";
+      const withoutOldMarker = messages.filter(function(message) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        return !(parsed.role === "system" && parsed.text === markerContent);
+      });
+      const auxiliaryIndex = withoutOldMarker.findIndex(function(message) {
+        const parsed = getPayloadMessageRoleAndText(message);
+        return parsed.role === "system" && parsed.text === fullAuxiliaryContent;
+      });
+      if (auxiliaryIndex < 0) {
+        return { payload, applied: false, reason: "provider_manager_text_baseline_unavailable" };
+      }
+
+      const outgoingMessages = withoutOldMarker.slice();
+      const markerMessage = { role: "system", content: markerContent };
+      if (remainingAuxiliaryContent) {
+        outgoingMessages[auxiliaryIndex] = {
+          ...outgoingMessages[auxiliaryIndex],
+          role: "system",
+          content: remainingAuxiliaryContent,
+        };
+        outgoingMessages.splice(auxiliaryIndex + 1, 0, markerMessage);
+      } else {
+        outgoingMessages[auxiliaryIndex] = markerMessage;
+      }
+      return {
+        payload: extracted.rebuild(outgoingMessages),
+        applied: true,
+        markerBlockCount: 1,
+        logicalMemoryChars: Number(transportPlan.logical_memory_chars || 0),
+      };
+    } catch (err) {
+      debugLog("memory Provider Manager PDF marker application failed open:", err && err.message);
+      return { payload, applied: false, reason: "provider_manager_marker_application_failed" };
+    }
+  }
+
   function applyGoPayloadApplicationPlan(payload, orchResult, emptyResult) {
     try {
       const injectionPack = orchResult && orchResult._injectionPack && typeof orchResult._injectionPack === "object"
@@ -31484,6 +32043,9 @@
         : null;
       const plan = injectionPack && injectionPack.payload_application_plan && typeof injectionPack.payload_application_plan === "object"
         ? injectionPack.payload_application_plan
+        : null;
+      const memoryTransportPlan = injectionPack && injectionPack.memory_transport_plan && typeof injectionPack.memory_transport_plan === "object"
+        ? injectionPack.memory_transport_plan
         : null;
       const planReady = !!(plan
         && plan.contract_version === "payload_application_plan.v1"
@@ -31500,7 +32062,8 @@
       }
 
       const auxiliaryText = String(plan.auxiliary_text || "");
-      let finalPayload = payload;
+      const normalizedTransportPayload = normalizeProviderManagerMemoryPDFPayload(payload, memoryTransportPlan);
+      let finalPayload = normalizedTransportPayload.payload;
       let injected = false;
       let placement = null;
       if (auxiliaryText) {
@@ -31533,6 +32096,36 @@
             blocks: observedBlocks,
           };
         }
+      }
+
+      const memoryTransportApplication = applyProviderManagerMemoryPDFPayload(finalPayload, memoryTransportPlan);
+      if (memoryTransportApplication.applied) finalPayload = memoryTransportApplication.payload;
+      const memoryTransportObservation = memoryTransportPlan
+        && String(memoryTransportPlan.selected_mode || "") === "provider_manager_pdf"
+        ? {
+            planId: String(memoryTransportPlan.plan_id || ""),
+            selectedMode: "provider_manager_pdf",
+            bodyFormat: String(memoryTransportPlan.body_format || ""),
+            applied: memoryTransportApplication.applied === true,
+            markerBlockCount: Number(memoryTransportApplication.markerBlockCount || 0),
+            logicalMemoryChars: Number(memoryTransportPlan.logical_memory_chars || 0),
+            reason: String(memoryTransportApplication.reason || ""),
+            providerPDFCreation: "provider_manager_runtime_pending",
+            observedAt: new Date().toISOString(),
+          }
+        : null;
+      if (orchResult && typeof orchResult === "object") {
+        orchResult._memoryTransportObservation = memoryTransportObservation;
+      }
+      if (memoryTransportObservation) {
+        debugLog("memory Provider Manager PDF marker transport applied:", {
+          planId: memoryTransportObservation.planId,
+          markerApplied: memoryTransportObservation.applied,
+          markerBlockCount: memoryTransportObservation.markerBlockCount,
+          logicalMemoryChars: memoryTransportObservation.logicalMemoryChars,
+          providerPDFCreation: memoryTransportObservation.providerPDFCreation,
+          reason: memoryTransportObservation.reason,
+        });
       }
 
       const lanes = Array.isArray(plan.lanes) ? plan.lanes : [];
@@ -31601,6 +32194,7 @@
         payloadApplicationPlan: plan,
         guidanceApplicationTrace: guidanceTrace,
         payloadApplicationObservation,
+        memoryTransport: memoryTransportObservation,
         budgetPolicy: {
           owner: "go",
           contractVersion: plan.contract_version,
@@ -32481,10 +33075,24 @@
       primeTurnWorkflowHUD(orchRequestId);
       await captureAssistantPrefillSeedForSession(orchSessionId, messages, orchHostContext);
       let mainRequestActiveMessages = [];
+      let mainRequestActiveChat = null;
       try {
-        mainRequestActiveMessages = await getCurrentActiveChatSourceObservationMessages(orchSessionId, orchHostContext);
+        const activeSourceObservation = await getCurrentActiveChatSourceObservationMessages(orchSessionId, orchHostContext, true);
+        mainRequestActiveMessages = activeSourceObservation.messages;
+        mainRequestActiveChat = activeSourceObservation.chat;
       } catch {
         mainRequestActiveMessages = [];
+        mainRequestActiveChat = null;
+      }
+      const yumiArchiveReadContext = await buildYumiV1ArchiveReadContext(
+        messages,
+        mainRequestActiveMessages,
+        mainRequestActiveChat,
+      );
+      const archiveReadMessages = yumiArchiveReadContext.payloadMessages;
+      const archiveReadActiveMessages = yumiArchiveReadContext.activeMessages;
+      if (settings.debug && yumiArchiveReadContext.stats.markerBlocks > 0) {
+        debugLog("Yumi Translator original-source read context:", JSON.stringify(yumiArchiveReadContext.stats));
       }
       const rawInputObservation = bindRawInputObservationToRequest(orchSessionId, orchRequestId);
       if (finalConfirmationRequestContext) {
@@ -32562,7 +33170,7 @@
         observedChatId,
         activeTailIsUser,
       );
-      const sourceDecisionResult = await tryPrepareTurn(orchSessionId, "", messages, null, type, null, {
+      const sourceDecisionResult = await tryPrepareTurn(orchSessionId, "", archiveReadMessages, null, type, null, {
         hostContext: orchHostContext,
         sourceDecisionOnly: true,
         sourceObservation: prepareSourceObservations.sourceObservation,
@@ -32673,13 +33281,13 @@
 
       const turnLanguageContext = await buildLanguageContextTrace({
         userInput,
-        messages: mainRequestActiveMessages,
+        messages: archiveReadActiveMessages,
         sessionId: orchSessionId,
         hostContext: orchHostContext,
         stage: "beforeRequest",
       });
 
-      let continuityInfo = await resolveContinuityTriggerInfo(userInput, messages, orchSessionId, {
+      let continuityInfo = await resolveContinuityTriggerInfo(userInput, archiveReadMessages, orchSessionId, {
         metaOnlyInput: !!userInputInfo.metaOnly,
       });
       if (continuityInfo && continuityInfo.query) {
@@ -32717,7 +33325,7 @@
         debugLog("fresh-first-turn light mode:", freshFirstTurnLightMode ? "on" : "off", JSON.stringify(freshFirstTurnLightModeMeta));
       }
 
-      const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, messages, continuityInfo, type, turnLanguageContext, {
+      const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, archiveReadMessages, continuityInfo, type, turnLanguageContext, {
         hostContext: orchHostContext,
         freshFirstTurnLightMode,
         freshFirstTurnLightModeMeta,
@@ -32788,7 +33396,7 @@
                 original_payload_preserved: !!ptLaneStatus.original_payload_preserved,
               } : null,
             });
-            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.supervisorResult || b.injectionPack || b.payloadApplicationPlan || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.responseExecutionContract || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
+            _lastPrepareTurnBundle = (b && (b.sessionState || b.narrativeControl || b.progressionLedger || b.generationPacket || b.continuityPack || b.recallResult || b.supervisorInputPack || b.supervisorResult || b.injectionPack || b.payloadApplicationPlan || b.memoryTransportPlan || b.memoryTransportPayload || b.referenceInjection || b.inputTransparencyModel || b.effectiveInputPreview || b.responseExecutionContract || b.writebackPreview || b.tracePreview || b.sourceContract)) ? b : null;
           } else {
             _lastPrepareTurnSource = "backend-off";
             _lastPrepareTurnFallbackReason = "backend_off";
@@ -32822,7 +33430,7 @@
         }
       }
 
-      const recentContext = getHostContextMessages(messages);
+      const recentContext = getHostContextMessages(archiveReadMessages);
 
       requestPendingContext = {
         requestId: orchRequestId,
@@ -33313,6 +33921,7 @@
         payloadRewriteApplied,
         payloadRewriteText: payloadRewriteApplied ? effectiveUserInput : "",
       });
+      attachFinalConfirmationMemoryTransport(finalConfirmationRequestContext, lastOrchResult, _lastPrepareTurnBundle);
       if (payloadMutated) {
         attachFinalPayloadParityTrace(lastOrchResult && lastOrchResult._trace, payload, outgoingPayload, {
           chatSessionId: orchSessionId,
@@ -34012,6 +34621,7 @@
                 sourceAcceptanceFinality,
                 hostContext: persistenceHostContext,
                 risuRequestObservation: buildRisuRequestObservation(persistenceRequestType, "afterRequest", "assistant"),
+                memoryTransportObservation: persistenceRequestContext.memoryTransportObservation || null,
               }
             ),
             null, "buildCompleteTurnRequestBody"
@@ -50584,6 +51194,16 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <small style="color:#888;font-size:11px;">${t('settings.hint.maxInjectionChars')}</small>
         </div>
         <div class="mo-row">
+          <label>${t('settings.label.memoryTransportMode')}</label>
+          <select id="mo-memoryTransportMode">
+            <option value="text"${s.memoryTransportMode === "text" ? " selected" : ""}>${t('settings.memoryTransportMode.text')}</option>
+            <option value="google_pdf"${s.memoryTransportMode === "google_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.google_pdf')}</option>
+            <option value="llm_gateway_pdf"${s.memoryTransportMode === "llm_gateway_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.llm_gateway_pdf')}</option>
+            <option value="provider_manager_pdf"${s.memoryTransportMode === "provider_manager_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.provider_manager_pdf')}</option>
+          </select>
+          <small>${t('settings.hint.memoryTransportMode')}</small>
+        </div>
+        <div class="mo-row">
           <label>${t('settings.label.maxInputContextChars')}</label>
           <input type="number" id="mo-maxInputContextChars" value="${s.maxInputContextChars}" min="1" step="100">
           <small style="color:#888;font-size:11px;">${t('settings.hint.maxInputContextChars')}</small>
@@ -51705,6 +52325,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             referenceInjectionMaxChars: readValue("mo-referenceInjectionMaxChars", settings.referenceInjectionMaxChars),
             lorebookReferenceMaxChars: readValue("mo-lorebookReferenceMaxChars", settings.lorebookReferenceMaxChars),
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
+            memoryTransportMode: readValue("mo-memoryTransportMode", settings.memoryTransportMode, true),
             memoryDeliveryBudgets: {
               event_recent: readValue("mo-memoryBudgetEventRecent", settings.memoryDeliveryBudgets.event_recent),
               character_objective: readValue("mo-memoryBudgetCharacterObjective", settings.memoryDeliveryBudgets.character_objective),
@@ -51842,6 +52463,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
+          setValueIfPresent("mo-memoryTransportMode", settings.memoryTransportMode || "text");
           setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only");
           const refreshedMemoryBudgets = settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
           setValueIfPresent("mo-memoryBudgetEventRecent", refreshedMemoryBudgets.event_recent);

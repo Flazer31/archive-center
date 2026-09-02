@@ -232,8 +232,54 @@ PY
 )
 [ -n "$asset_url" ] || die "selected asset has no download URL"
 
+checksum_name=$(python3 - "$release_json" <<'PY'
+import json, re, sys
+data=json.load(open(sys.argv[1], encoding="utf-8"))
+for asset in data.get("assets", []):
+    name=(asset.get("name") or "").strip()
+    if re.fullmatch(r"SHA256SUMS(?:-[A-Za-z0-9_.-]+)?\.txt", name):
+        print(name)
+        break
+PY
+)
+[ -n "$checksum_name" ] || die "the latest release has no SHA256SUMS checksum asset"
+
+checksum_url=$(python3 - "$release_json" "$checksum_name" <<'PY'
+import json, sys
+data=json.load(open(sys.argv[1], encoding="utf-8"))
+want=sys.argv[2]
+for asset in data.get("assets", []):
+    if asset.get("name") == want:
+        print(asset.get("browser_download_url") or "")
+        break
+PY
+)
+[ -n "$checksum_url" ] || die "selected checksum asset has no download URL"
+
 zip_path="$WORK_DIR/$asset_name"
+checksum_path="$WORK_DIR/$checksum_name"
+curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fL -H "User-Agent: Archive-Center-Installer" "$checksum_url" -o "$checksum_path"
 curl --connect-timeout "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" --max-time "$EXTERNAL_OPERATION_TIMEOUT_SECONDS" -fL -H "User-Agent: Archive-Center-Installer" "$asset_url" -o "$zip_path"
+python3 - "$checksum_path" "$asset_name" "$zip_path" <<'PY'
+import hashlib, re, sys
+sums_path, asset_name, zip_path = sys.argv[1:]
+expected = ""
+with open(sums_path, "r", encoding="ascii") as handle:
+    for raw in handle:
+        line = raw.rstrip("\r\n")
+        parts = line.split("  ", 1)
+        if len(parts) == 2 and parts[1] == asset_name and re.fullmatch(r"[0-9A-Fa-f]{64}", parts[0]):
+            expected = parts[0].lower()
+            break
+if not expected:
+    raise SystemExit("ERROR: release checksum list has no exact SHA-256 record for " + asset_name)
+digest = hashlib.sha256()
+with open(zip_path, "rb") as handle:
+    for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+        digest.update(chunk)
+if digest.hexdigest() != expected:
+    raise SystemExit("ERROR: release package SHA-256 mismatch for " + asset_name)
+PY
 
 version_dir=$(printf '%s' "$release_tag" | tr -c 'A-Za-z0-9_.-' '_')
 target_dir="$INSTALL_DIR/releases/$version_dir"

@@ -7,7 +7,7 @@
 
 활성 소스:
 
-`C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`
+`<archive-center-root>\source`
 
 이 문서는 사용자가 제공한 `Archive Center 4.0 — Gemini 3 계열용 PDF 장기기억 전달 실험` 작업안을 당시 Archive Center 소스, RisuAI 공식 소스, 각 제공자의 공식 문서와 대조한 역사적 감사 결과다. 이 감사에서는 런타임 구현을 변경하지 않았다.
 
@@ -469,4 +469,4 @@ OpenAI와 Claude는 별도 실험 작업으로 분리한다.
 
 다음 요청을 새 세션에 그대로 전달할 수 있다.
 
-> 활성 소스 `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`에서 `AGENTS.md`, `docs/permanent-risu-host-backend-boundary.md`, `docs/4.0-memory-restoration-work-contract.md`, `docs/gemini3-pdf-memory-transport-experiment-audit-and-handoff.md`를 전부 읽어라. 이번 세션에서는 인계 문서의 단계 1인 독립 Go PDF 생성기와 동일성 시험만 구현하라. Archive Center.js, provider 요청, 기억 선택·예산·저장 정책, DB schema를 변경하지 마라. 합성 한국어 장문으로 PDF text 추출의 처음·중간·끝, 검색·복사 가능성, bytes/base64 chars, 생성 시간과 메모리 비용을 검증하고 결과를 보고하라. 기존 dirty 변경을 보존하고 작업 전후 diff 범위를 증명하라.
+> 활성 소스 `<archive-center-root>\source`에서 `AGENTS.md`, `docs/permanent-risu-host-backend-boundary.md`, `docs/4.0-memory-restoration-work-contract.md`, `docs/gemini3-pdf-memory-transport-experiment-audit-and-handoff.md`를 전부 읽어라. 이번 세션에서는 인계 문서의 단계 1인 독립 Go PDF 생성기와 동일성 시험만 구현하라. Archive Center.js, provider 요청, 기억 선택·예산·저장 정책, DB schema를 변경하지 마라. 합성 한국어 장문으로 PDF text 추출의 처음·중간·끝, 검색·복사 가능성, bytes/base64 chars, 생성 시간과 메모리 비용을 검증하고 결과를 보고하라. 기존 dirty 변경을 보존하고 작업 전후 diff 범위를 증명하라.

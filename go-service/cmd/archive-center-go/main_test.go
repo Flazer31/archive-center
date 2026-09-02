@@ -14,9 +14,9 @@ func TestManagedUpdateLauncherAuthorizationRequiresAndConsumesSession(t *testing
 	cfg := config.Default()
 	cfg.UpdateStagingDir = staging
 	t.Setenv("AC_UPDATE_APPLY_MODE", httpapi.UpdateApplyManagedLauncherMode)
-	t.Setenv("AC_UPDATE_LAUNCHER_TOKEN", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AC_UPDATE_LAUNCHER_TOKEN", "0123456789abcdef0123456789abcdef") // gitleaks:allow -- deterministic test fixture
 	path := filepath.Join(staging, "launcher-session.json")
-	if err := os.WriteFile(path, []byte(`{"contract_version":"archive-center.update-launcher-session.v1","token":"0123456789abcdef0123456789abcdef"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"contract_version":"archive-center.update-launcher-session.v1","token":"0123456789abcdef0123456789abcdef"}`), 0o600); err != nil { // gitleaks:allow -- deterministic test fixture
 		t.Fatal(err)
 	}
 	if !managedUpdateLauncherAuthorized(cfg) {
@@ -34,7 +34,7 @@ func TestManagedUpdateLauncherAuthorizationRejectsEnvironmentOnly(t *testing.T) 
 	cfg := config.Default()
 	cfg.UpdateStagingDir = t.TempDir()
 	t.Setenv("AC_UPDATE_APPLY_MODE", httpapi.UpdateApplyManagedLauncherMode)
-	t.Setenv("AC_UPDATE_LAUNCHER_TOKEN", "0123456789abcdef0123456789abcdef")
+	t.Setenv("AC_UPDATE_LAUNCHER_TOKEN", "0123456789abcdef0123456789abcdef") // gitleaks:allow -- deterministic test fixture
 	if managedUpdateLauncherAuthorized(cfg) {
 		t.Fatal("environment-only launcher claim was accepted")
 	}

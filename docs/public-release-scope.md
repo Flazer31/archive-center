@@ -19,8 +19,7 @@ secret, personal-path, provenance, and license audits pass:
 - `.github/workflows/`
 - `.env.example` and versioned `*.env*.example` templates containing no real
   credentials or private endpoints
-- `README.md`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, and the future project
-  `LICENSE`
+- `README.md`, `NOTICE`, `THIRD_PARTY_NOTICES.md`, and the project `LICENSE`
 
 Archive Center release binaries must be reproducible from the public source
 and versioned build scripts. Release ZIP files, runtime downloads, local DBs,
@@ -32,6 +31,8 @@ The following tracked files are not part of Archive Center and must be removed
 from the public Git index before publication:
 
 - `Risu Recomposer.js`
+- `AC Recomposer Agent.js`
+- `Archive Center 3.4-C.js`
 - `AGENTS.md`
 - `.github/copilot-instructions.md`
 - non-canonical prompt copies; only `prompts/critic_system.txt` and

@@ -39,7 +39,7 @@
 
 ### 2.1 소스와 Git
 
-- 활성 소스: `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`
+- 활성 소스: `<archive-center-root>\source`
 - 단계 0–7 보존 체크포인트: `eed62ae` (2026-08-21 19:35:40 KST)
 - 현재 HEAD: `eae0b3fba828df70c10ac9aad0ddef31fa040fdb`
 - HEAD 의미: reversible status lock failure 진단을 고정한 로컬 checkpoint

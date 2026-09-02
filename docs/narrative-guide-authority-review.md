@@ -2901,7 +2901,7 @@ trace를 분리한다. trace에는 `commit_attempt`, 교체 후 검증 실패, r
 | `character_objective` | 객관적 인물 상태 | established facts, character/plot |
 | `subjective_relationship` | 특정 인물 관점의 주관 기억 | relationship state, character/plot |
 | `world_state` | 객관적 세계 상태 | established facts, plot/world continuity |
-| `protected_secret` | 작가만 아는 비밀 | writer-only secret, knowledge/POV guard |
+| `protected_secret` | 작가만 아는 비밀 | writer-only secret, knowledge/POV guard | <!-- gitleaks:allow -- documentation term, not a credential -->
 | `unresolved_goal` | 미해결 목표·실마리 | unresolved hooks, scene direction |
 | `direct_evidence` | 이전에 수용·검증된 직접 근거 | grounded facts, continuity |
 | guidance trace / future `publisher_plan.v1` | 현재 턴의 Go 승인 출판 제안 | response directives, plot/style |

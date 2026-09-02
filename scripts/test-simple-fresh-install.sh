@@ -215,11 +215,16 @@ done
 case "$url" in
 	*/releases/latest)
 		cat > "$out" <<'JSON'
-{"tag_name":"v3.9.0-feedback","assets":[{"name":"Archive Center 3.9.0 macOS Intel Auto Install Package.zip","browser_download_url":"https://fixture.invalid/package.zip"},{"name":"SHA256SUMS.txt","browser_download_url":"https://fixture.invalid/SHA256SUMS.txt"}]}
+{"tag_name":"v3.9.0-feedback","assets":[{"name":"Archive.Center.3.9.0.macOS.Intel.Auto.Install.Package.zip","browser_download_url":"https://fixture.invalid/package.zip"},{"name":"SHA256SUMS.txt","browser_download_url":"https://fixture.invalid/SHA256SUMS.txt"}]}
 JSON
 		;;
 	*/SHA256SUMS.txt)
-		printf '%s  Archive Center 3.9.0 macOS Intel Auto Install Package.zip\n' 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' > "$out"
+		if [ "${AC_TEST_BAD_CHECKSUM:-0}" = "1" ]; then
+			digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+		else
+			digest=04cefd0f262e78c9bfd4b749f45eb11aedb0944cd4756edc352ff0893d550fc4
+		fi
+		printf '%s  Archive.Center.3.9.0.macOS.Intel.Auto.Install.Package.zip\n' "$digest" > "$out"
 		;;
 	*/package.zip)
 		printf 'fixture-package\n' > "$out"
@@ -266,6 +271,17 @@ grep -Fxq "data_root=$PRODUCTION_INSTALL/data" "$PRODUCTION_START_LOG" || fail "
 grep -Fxq 'args=--profile full_local --vector-mode local_native' "$PRODUCTION_START_LOG" || fail "production helper bypassed the public macOS full_local launcher"
 [ -x "$PRODUCTION_INSTALL/start-archive-center.sh" ] || fail "production helper did not create the stable installed launcher"
 grep -Fxq "$PRODUCTION_INSTALL/data" "$PRODUCTION_INSTALL/data-root.txt" || fail "production helper did not persist the install-level data root"
+
+TAMPERED_INSTALL="$TEST_ROOT/tampered-install"
+if PATH="$PRODUCTION_BIN:$PATH" \
+	AC_TEST_BAD_CHECKSUM=1 \
+	AC_EXTERNAL_OPERATION_TIMEOUT_SECONDS=1800 \
+	sh "$REPO_ROOT/scripts/install-github-release.sh" --install-dir "$TAMPERED_INSTALL" \
+	>"$TEST_ROOT/tampered.out" 2>"$TEST_ROOT/tampered.err"; then
+	fail "tampered POSIX release package was accepted"
+fi
+grep -q 'SHA-256 mismatch' "$TEST_ROOT/tampered.err" || fail "tampered POSIX failure did not report checksum mismatch"
+[ ! -e "$TAMPERED_INSTALL/current" ] || fail "tampered POSIX package changed the current pointer"
 
 cat > "$PRODUCTION_INSTALL/current/scripts/start-full-macos.sh" <<'EOF'
 #!/usr/bin/env sh

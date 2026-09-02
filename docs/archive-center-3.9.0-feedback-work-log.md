@@ -3,7 +3,7 @@
 상태: `release_candidate_work_in_progress / source_mostly_implemented / automated_regression_partial / 3.9.9_package_pending`
 
 기준일: 2026-08-09
-기준 source: `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`  
+기준 source: `<archive-center-root>\source`
 과거 checkpoint: `b8a912d`, `c2aae3c`
 현재 배포 목표: `3.9.9`
 현재 패키지: `3.9.5-1st-test`는 중간 테스트 기록이며 3.9.9 완성판이 아님
@@ -1022,7 +1022,7 @@ production source에서 제거했다. polling, 상시 watcher, timer, DOM select
 ### 19.1 결과 경로
 
 ```text
-C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source\_test-builds\3.9.5-1st-test
+<archive-center-root>\source\_test-builds\3.9.5-1st-test
 ```
 
 현재 source로 다음 6개 폴더와 ZIP을 다시 만들었다.
@@ -1267,7 +1267,7 @@ provider 입력 token과 지연 감소는 ZDR 환경의 사용자 측 provider �
 다음 기존 폴더를 새 이름으로 늘리지 않고 그대로 갱신했다.
 
 ```text
-C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source\_test-builds\3.9.5-1st-test
+<archive-center-root>\source\_test-builds\3.9.5-1st-test
 ```
 
 - Linux x64/arm64, macOS Intel/Apple Silicon, Termux arm64 ZIP: `2026-08-07T12:17:57Z`부터
