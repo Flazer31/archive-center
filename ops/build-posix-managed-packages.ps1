@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "4.0.9",
+    [string]$PackageVersion = "4.1.0",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -60,7 +60,7 @@ function Normalize-POSIXPackageLineEndings([string]$Root) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.0.9" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.1.0" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -390,7 +390,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.0.9" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.1.0" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
@@ -429,7 +429,7 @@ foreach ($target in $targets) {
         throw "Target already exists: $targetRoot. Re-run with -ForceRefresh."
     }
     if (Test-Path -LiteralPath $targetRoot) {
-        [System.IO.Directory]::Delete($targetRoot, $true)
+        Remove-Item -LiteralPath $targetRoot -Recurse -Force
     }
 
     New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot "bin") | Out-Null

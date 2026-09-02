@@ -891,10 +891,12 @@ const onAfterRequest = ()=>{};
 const _pendingFinalConfirmations = new Map();
 let _activeFinalConfirmationRequestContext = null;
 let _pendingFinalConfirmationDrainRequested = false;
+let _memoryTransportBodyInterceptorRegistration = null;
 const lifecycleStates = {};
 function recordRisuHookLifecycle(name,state){ lifecycleStates[name]=state; }
 function warnLog(){}
 function debugLog(){}
+async function registerMemoryTransportBodyInterceptor(){ calls.push("add:body"); }
 function cancelTurnWorkflowHUDStream(){}
 function cancelAllAdminBackgroundJobStreams(){}
 function clearArchiveCenterRecomposerBridge(){ calls.push("clear:recomposer"); }
@@ -1392,6 +1394,9 @@ func TestRecomposerLifecycleEnvelopeSurvivesLongGenerationWithoutTTL(t *testing.
 	}
 	data, err := os.ReadFile(filepath.Join(archiveCenterRoot(t), "AC Recomposer Agent.js"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("optional AC Recomposer Agent.js is not part of the public repository")
+		}
 		t.Fatalf("read AC Recomposer Agent.js: %v", err)
 	}
 	src := string(data)
@@ -1638,6 +1643,10 @@ func TestRegisteredRequestCallbacksDetachExactBeforeRequestContext(t *testing.T)
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
 		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
+		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
 		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
 		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
@@ -1670,6 +1679,7 @@ const R={
   }
 };
 function recordRisuHookLifecycle(){}
+async function registerMemoryTransportBodyInterceptor(){}
 function warnLog(...args){throw new Error("unexpected warning: "+args.join(" "));}
 function debugLog(){}
 function clearArchiveCenterRecomposerBridge(){}
@@ -1684,7 +1694,13 @@ function captureSessionHostContextFromCache(sid){
   if(sid!==current.sessionId) throw new Error("session recaptured from wrong owner");
   return {sessionId:sid,charIdx:current.charIdx,chatIdx:current.chatIdx,hostChatId:current.hostChatId,stableCharacterId:"char-"+current.charIdx};
 }
-async function getCurrentActiveChatSourceObservationMessages(){return [{role:"user",raw_content:current.user,message_index:0}];}
+async function getCurrentActiveChatSourceObservationMessages(_sid,_hostContext,includeChat){
+  const messages=[{role:"user",raw_content:current.user,message_index:0}];
+  return includeChat ? {messages,chat:{scriptstate:{}}} : messages;
+}
+async function buildYumiV1ArchiveReadContext(payloadMessages,activeMessages){
+  return {payloadMessages,activeMessages,stats:{markerBlocks:0,modelSourceBlocks:0,displayFallbackBlocks:0}};
+}
 function makeOrchRequestId(sid){requestSeq++; return sid+":request:"+requestSeq;}
 function primeTurnWorkflowHUD(requestId){_turnWorkflowHUDActiveRequestId=requestId; return requestId;}
 async function captureAssistantPrefillSeedForSession(){}
@@ -1829,6 +1845,331 @@ function debugLog(...args){throw new Error("unexpected reservation failure: "+ar
 	}
 }
 
+func TestOverlappingBeforeRequestContextsFailClosedWithoutOwnershipMixing(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for request overlap fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
+		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
+	}, "\n")
+	script := functions + `
+let _activeFinalConfirmationRequestContext=null;
+const updates=[];
+const settings={enabled:true};
+function recordRisuHookLifecycle(){}
+function debugLog(){}
+function isNarrativeType(){return true;}
+function isSaveType(){return true;}
+function updateRuntimeState(name,status,value){updates.push({name,status,value});}
+const a={sessionId:"session-a",requestId:"request-a",requestType:"model",state:"captured"};
+const b={sessionId:"session-b",requestId:"request-b",requestType:"model",state:"captured"};
+const firstInstall=installFinalConfirmationRequestContext(a);
+if(!firstInstall || firstInstall.status!=="installed" || _activeFinalConfirmationRequestContext!==a) throw new Error("A context was not installed");
+const overlapInstall=installFinalConfirmationRequestContext(b);
+if(!overlapInstall || overlapInstall.status!=="rejected") throw new Error("overlap was incorrectly installed");
+if(_activeFinalConfirmationRequestContext!==null) throw new Error("overlap retained an ambiguous owner");
+if(a.state!=="terminal" || b.state!=="terminal") throw new Error("overlap was not terminalized: "+JSON.stringify({a,b}));
+if(a.terminalReason!=="overlapping_before_request_without_host_correlation" || b.terminalReason!==a.terminalReason) throw new Error("overlap reason mismatch");
+if(onAfterRequest("A response","model")!=="A response") throw new Error("A completion changed display content");
+if(onAfterRequest("B response","model")!=="B response") throw new Error("B completion changed display content");
+if(updates.length!==3 || updates[0].value.reason_code!=="overlapping_before_request_without_host_correlation") throw new Error("overlap warning missing");
+if(updates[1].value.reason_code!=="before_request_context_missing" || updates[2].value.reason_code!=="before_request_context_missing") throw new Error("completion was assigned to an ambiguous context");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("overlapping request context fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestSameLogicalRequestRetryReusesPreparedContextAndAppliesAuxiliaryOnce(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for same-request retry fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
+		extractArchiveCenterJSFunction(t, src, "markFinalConfirmationRetryPayloadReady"),
+		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "injectAuxiliaryBlock"),
+	}, "\n")
+	script := functions + `
+let _activeFinalConfirmationRequestContext=null;
+const updates=[];
+const settings={auxiliaryInjectionPlacement:"after_first_system",auxiliaryInjectionAnchorMarker:""};
+function updateRuntimeState(name,status,value){updates.push({name,status,value});}
+function warnLog(...args){throw new Error("unexpected warning: "+args.join(" "));}
+function getPayloadMessageRoleAndText(message){return {role:String(message&&message.role||""),text:String(message&&message.content||"")};}
+function extractMessages(payload){return {messages:payload,rebuild(messages){return messages;}};}
+function resolveAuxiliaryInjectionPlacement(messages){return {insertIndex:1,resolvedMode:"after_first_system"};}
+
+const identity={
+  sessionId:"session-a",requestType:"model",characterIndex:1,chatIndex:2,hostChatId:"cid-a",
+  requestMessageCount:3,userMessageIndex:2,userObservedPairOrdinal:2,userMessageChatId:"user-cid-a",
+  userMessageTimeMs:2000,userObservedContentHash:"hash:user-a",userObservedContent:"user-a",baselineAssistantIndex:1,
+  baselineAssistantContentHash:"hash:assistant-prev",baselineGenerationId:"generation-prev",
+  baselineAssistantTimeMs:1500,
+};
+const prepared={...identity,requestId:"request-a",state:"captured",beforeRequestAttemptCount:1,
+  pendingContext:{status:"ready"},orchestrationResult:{
+    _chatSessionId:"session-a",
+    _payloadApplicationObservation:{payload_application_status:"applied"},
+    _injectionPack:{payload_application_plan:{
+      contract_version:"payload_application_plan.v1",owner:"go",
+      apply_rule:"apply_exact_text_without_reassembly",status:"ready",auxiliary_text:"memory-a"
+    }}
+  }};
+const retry={...identity,requestId:"request-b",state:"captured",beforeRequestAttemptCount:1,
+  pendingContext:null,orchestrationResult:null};
+
+if(!markFinalConfirmationRetryPayloadReady(prepared,prepared.orchestrationResult,{injectionRequested:true})) {
+  throw new Error("prepared payload was not marked reusable: "+JSON.stringify(prepared));
+}
+
+const firstInstall=installFinalConfirmationRequestContext(prepared);
+if(!firstInstall || firstInstall.status!=="installed" || _activeFinalConfirmationRequestContext!==prepared) {
+  throw new Error("first beforeRequest context was not installed: "+JSON.stringify(firstInstall));
+}
+
+const firstPayload=injectAuxiliaryBlock([
+  {role:"system",content:"base"},
+  {role:"user",content:"user-a"},
+],"memory-a").payload;
+
+// The provider's first attempt fails retryably. RisuAI then invokes the same
+// production beforeRequest replacer again for the unchanged Host turn.
+const retryInstall=installFinalConfirmationRequestContext(retry);
+if(!retryInstall || retryInstall.status!=="retry_reused") {
+  throw new Error("same logical request was not reused: "+JSON.stringify(retryInstall));
+}
+if(_activeFinalConfirmationRequestContext!==prepared || prepared.state!=="captured") {
+  throw new Error("retry replaced or terminalized the prepared owner: "+JSON.stringify({prepared,retry}));
+}
+if(prepared.beforeRequestAttemptCount!==2 || retry.state!=="superseded") {
+  throw new Error("retry attempt lifecycle mismatch: "+JSON.stringify({prepared,retry}));
+}
+
+const secondPayload=injectAuxiliaryBlock(firstPayload,"memory-a").payload;
+const auxiliary=secondPayload.filter(message=>message.role==="system" && message.content==="[Archive Center — Auxiliary Context]\n\nmemory-a");
+if(auxiliary.length!==1) throw new Error("retry duplicated auxiliary context: "+JSON.stringify(secondPayload));
+const duplicatePayload=injectAuxiliaryBlock(firstPayload.concat([{role:"system",content:"[Archive Center — Auxiliary Context]\n\nmemory-a"}]),"memory-a");
+if(duplicatePayload.payload.filter(message=>message.content==="[Archive Center — Auxiliary Context]\n\nmemory-a").length!==1 || duplicatePayload.duplicateCollapsedCount!==1) {
+  throw new Error("exact duplicate Archive blocks were not collapsed");
+}
+const conflictingInput=[{role:"system",content:"base"},{role:"system",content:"[Archive Center — Auxiliary Context]\n\nother-memory"}];
+const conflicting=injectAuxiliaryBlock(conflictingInput,"memory-a");
+if(conflicting.payload!==conflictingInput || conflicting.ambiguous!==true || conflicting.reason!=="archive_auxiliary_context_conflict") {
+  throw new Error("conflicting Archive block was overwritten: "+JSON.stringify(conflicting));
+}
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("same-request retry fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestFailOnceProviderRetryUsesProductionBeforeRequestFastPath(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for fail-once beforeRequest retry fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
+		extractArchiveCenterJSFunction(t, src, "reapplyFinalConfirmationRetryPayload"),
+		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
+		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
+	}, "\n")
+	script := functions + `
+const settings={enabled:true,debug:false};
+const updates=[];
+let heavyCalls=0;
+let replayCalls=0;
+let retryHUDCalls=0;
+const chat={id:"cid-a",message:[{role:"user",data:"same user",chatId:"user-cid-a",time:2000}]};
+const R={getChatFromIndex(){return chat;}};
+const identity={
+  sessionId:"session-a",requestType:"model",characterIndex:1,chatIndex:2,hostChatId:"cid-a",
+  requestMessageCount:1,userMessageIndex:0,userObservedPairOrdinal:1,userMessageChatId:"user-cid-a",
+  userMessageTimeMs:2000,userObservedContentHash:"hash:same user",userObservedContent:"same user",
+  baselineAssistantIndex:-1,baselineAssistantContentHash:"",baselineGenerationId:"",baselineAssistantTimeMs:0,
+};
+const prepared={...identity,requestId:"session-a:request:prepared",state:"captured",beforeRequestAttemptCount:1,
+  retryPayloadReady:true,payloadInjectionReplayAllowed:true,payloadRewriteApplied:false,
+  pendingContext:{status:"ready"},orchestrationResult:{
+    _chatSessionId:"session-a",
+    _injectionPack:{payload_application_plan:{contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly",status:"ready",auxiliary_text:"memory-a"}}
+  }};
+let _activeFinalConfirmationRequestContext=prepared;
+function recordRisuHookLifecycle(){}
+function debugLog(){}
+function clearArchiveCenterRecomposerBridge(){}
+function isSaveType(){return true;}
+function extractMessages(payload){return {messages:payload,hasMessageSlot:true};}
+function normalizeMessagesForOrchestration(messages){return messages;}
+function extractRuntimeCurrentChatTokenInfo(){return {};}
+async function getCurrentChatSessionId(){return "session-a";}
+async function resolveCanonicalWriteSessionId(value){return value;}
+function captureSessionHostContextFromCache(){return {sessionId:"session-a",charIdx:1,chatIdx:2,hostChatId:"cid-a"};}
+async function resolveCurrentActiveChatObject(){return {charIdx:1,chatIdx:2,chat};}
+function computeOrchestrationDirtyHashOr1c(value){return "hash:"+String(value);}
+function updateRuntimeState(name,status,value){updates.push({name,status,value});}
+function renderTurnWorkflowHUDSameRequestRetry(requestId,attemptCount){
+  retryHUDCalls++;
+  if(requestId!==prepared.requestId || attemptCount!==2) throw new Error("retry HUD lost request ownership");
+}
+function applyContextInjection(payload,orchResult){
+  replayCalls++;
+  if(orchResult!==prepared.orchestrationResult) throw new Error("prepared Go plan was replaced");
+  return {payload:payload.concat([{role:"system",content:"[Archive Center — Auxiliary Context]\\n\\nmemory-a"}]),injectionResult:{applied:true}};
+}
+function rewriteLastUserMessage(){throw new Error("unexpected input rewrite");}
+function makeOrchRequestId(){throw new Error("retry created a new request ID");}
+function primeTurnWorkflowHUD(){heavyCalls++;throw new Error("retry primed a new HUD");}
+async function captureAssistantPrefillSeedForSession(){heavyCalls++;throw new Error("retry recaptured prefill");}
+async function getCurrentActiveChatSourceObservationMessages(){heavyCalls++;throw new Error("retry re-read active chat preparation inputs");}
+function bindRawInputObservationToRequest(){heavyCalls++;throw new Error("retry rebound raw input");}
+async function tryPrepareTurn(){heavyCalls++;throw new Error("retry called prepare-turn");}
+
+(async function(){
+  let providerAttempts=1;
+  let outgoing=[{role:"user",content:"same user"}];
+  const firstFailure={retryable:true,code:"fixture_fail_once"};
+  if(!firstFailure.retryable) throw new Error("fixture did not fail retryably");
+  outgoing=await onBeforeRequest(outgoing,"model");
+  providerAttempts++;
+  if(providerAttempts!==2) throw new Error("provider retry count mismatch");
+  if(prepared.beforeRequestAttemptCount!==2 || _activeFinalConfirmationRequestContext!==prepared) throw new Error("prepared request was not reused");
+  if(replayCalls!==1 || retryHUDCalls!==1 || heavyCalls!==0) throw new Error("retry fast path side effects mismatch: "+JSON.stringify({replayCalls,retryHUDCalls,heavyCalls}));
+  if(outgoing.filter(message=>String(message.content||"").startsWith("[Archive Center — Auxiliary Context]")).length!==1) throw new Error("replayed payload missing exact Archive block");
+})().catch(err=>{console.error(err&&err.stack||err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("fail-once beforeRequest retry fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestNewInputEndsStaleRetryContextAndSameTextStartsNewTurn(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for new-input request lifecycle fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
+		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
+		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "terminalizeActiveFinalConfirmationRequestContext"),
+		extractArchiveCenterJSAsyncFunction(t, src, "onInputHook"),
+	}, "\n")
+	script := functions + `
+let _activeFinalConfirmationRequestContext={sessionId:"session-a",requestId:"request-old",requestType:"model",state:"captured"};
+const stale=_activeFinalConfirmationRequestContext;
+const updates=[];
+const cached=[];
+const _rollbackHistoryTrimGuardBySession=new Map();
+function recordRisuHookLifecycle(){}
+function updateRuntimeState(name,status,value){updates.push({name,status,value});}
+async function getCurrentChatSessionId(){return "session-a";}
+function cacheRawInputForSession(sessionId,text){cached.push({sessionId,text});}
+function isRisuHistoryTrimCommandText(){return false;}
+function warnLog(...args){throw new Error("unexpected warning: "+args.join(" "));}
+const next={sessionId:"session-a",requestId:"request-next",requestType:"model",state:"captured"};
+(async function(){
+  const text=await onInputHook("same sentence");
+  if(text!=="same sentence" || cached.length!==1) throw new Error("new input observation was lost");
+  if(_activeFinalConfirmationRequestContext!==null || stale.state!=="terminal" || stale.terminalReason!=="new_host_input_observed") throw new Error("stale request survived new input");
+  const installed=installFinalConfirmationRequestContext(next);
+  if(!installed || installed.status!=="installed" || _activeFinalConfirmationRequestContext!==next) throw new Error("identical text on the next turn was mistaken for a retry");
+})().catch(err=>{console.error(err&&err.stack||err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("new-input request lifecycle fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestSameRequestRetryHUDKeepsStageSixUntilStageSevenArrives(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Skip("node is required for retry HUD lifecycle fixture")
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "rememberTurnWorkflowHUDHostWarning"),
+		extractArchiveCenterJSFunction(t, src, "consumeTurnWorkflowHUD"),
+		extractArchiveCenterJSFunction(t, src, "renderTurnWorkflowHUDSameRequestRetry"),
+	}, "\n")
+	script := functions + `
+const TURN_WORKFLOW_HUD_CONTRACT="turn_workflow_hud.v3";
+const settings={turnWorkflowHUDEnabled:true};
+let _turnWorkflowHUDUnloaded=false;
+let _turnWorkflowHUDActiveRequestId="request-a";
+let _turnWorkflowHUDLastRevision=6;
+let _turnWorkflowHUDLastView={
+  contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"request-a",revision:6,status:"awaiting_final_output",
+  current_stage:{key:"awaiting_final_output",ordinal:6,total:12}
+};
+const _turnWorkflowHUDHostWarningsByRequestId=new Map();
+const rendered=[];
+function turnWorkflowHUDIsEnabled(){return true;}
+function tf(_key,values){return "Risu retry · "+String(values.n);}
+function renderTurnWorkflowHUD(view){rendered.push({ordinal:Number(view.current_stage.ordinal),status:String(view.status)});}
+
+if(!renderTurnWorkflowHUDSameRequestRetry("request-a",2)) throw new Error("retry HUD observation was rejected");
+const warning=(_turnWorkflowHUDHostWarningsByRequestId.get("request-a")||[])[0];
+if(!warning || warning.message!=="Risu retry · 2") throw new Error("retry attempt notice missing");
+if(rendered.length!==1 || rendered[0].ordinal!==6 || rendered[0].status!=="awaiting_final_output") throw new Error("retry reset or advanced the 6/12 HUD stage");
+if(!consumeTurnWorkflowHUD({
+  contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"request-a",revision:7,status:"running",
+  current_stage:{key:"final_output_accepted",ordinal:7,total:12}
+})) throw new Error("stage-seven backend view was rejected");
+if(rendered.length!==2 || rendered[1].ordinal!==7) throw new Error("accepted output did not advance HUD to 7/12");
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("retry HUD lifecycle fixture failed: %v\n%s", err, output)
+	}
+}
+
 func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
@@ -1864,6 +2205,7 @@ async function onInputHook(value){return value;}
 async function onBeforeRequest(value){return value;}
 function onRisuOutput(){}
 async function removeRegisteredRisuHooksOnUnload(){}
+async function registerMemoryTransportBodyInterceptor(){}
 function recordRisuHookLifecycle(){}
 function debugLog(){}
 function warnLog(...args){warnings.push(args.join(" "));}
@@ -1940,6 +2282,13 @@ function context(sid,cid,requestId,user,turn){
   const d=context("session-a","cid-a","request-d","user-d",1);
   _activeFinalConfirmationRequestContext=d;
   if(registered.afterRequest("assistant-d","model")!=="assistant-d") throw new Error("D response changed");
+  if(registered.afterRequest("assistant-d","model")!=="assistant-d") throw new Error("duplicate D response changed");
+  const sayNothing=context("session-a","cid-a","request-e","user-e",1);
+  _activeFinalConfirmationRequestContext=sayNothing;
+  if(registered.afterRequest("","model")!=="") throw new Error("Say Nothing response changed");
+  if(_activeFinalConfirmationRequestContext!==null || sayNothing.state!=="terminal" || sayNothing.terminalReason!=="after_request_final_unavailable") {
+    throw new Error("Say Nothing did not close its request context: "+JSON.stringify(sayNothing));
+  }
   for(let i=0;i<100 && completeCalls.length<4;i++) await new Promise(resolve=>setTimeout(resolve,1));
   if(completeCalls.length!==4) throw new Error("complete-turn calls="+completeCalls.length+" warnings="+warnings.join(" | "));
   const byRequest=Object.fromEntries(completeCalls.map(call=>[call.body.client_meta.turn_workflow_request_id,call]));

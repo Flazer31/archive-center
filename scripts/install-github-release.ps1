@@ -67,6 +67,25 @@ function Find-ReleaseAsset($Release, [string]$Needle) {
     return $null
 }
 
+function Find-ReleaseChecksumAsset($Release) {
+    foreach ($asset in $Release.assets) {
+        $name = ([string]$asset.name).Trim()
+        if ($name -match '^SHA256SUMS(?:-[A-Za-z0-9_.-]+)?\.txt$') {
+            return $asset
+        }
+    }
+    return $null
+}
+
+function Get-ExpectedReleaseAssetSHA256([string]$ChecksumPath, [string]$AssetName) {
+    foreach ($line in @(Get-Content -LiteralPath $ChecksumPath -Encoding ASCII)) {
+        if ($line -match '^([0-9A-Fa-f]{64})  (.+)$' -and $Matches[2] -ceq $AssetName) {
+            return $Matches[1].ToLowerInvariant()
+        }
+    }
+    throw "Release checksum list has no exact SHA-256 record for $AssetName."
+}
+
 function Test-LocalPortOpen([int]$Port, [string]$ConnectHost = "127.0.0.1") {
     try {
         $addresses = [System.Net.Dns]::GetHostAddresses($ConnectHost)
@@ -301,11 +320,22 @@ $asset = Find-ReleaseAsset $release $needle
 if ($null -eq $asset) {
     throw "No release package asset matched platform $platform."
 }
+$checksumAsset = Find-ReleaseChecksumAsset $release
+if ($null -eq $checksumAsset -or [string]::IsNullOrWhiteSpace([string]$checksumAsset.browser_download_url)) {
+    throw "The latest release has no SHA256SUMS checksum asset."
+}
 $workDir = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-update-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $workDir | Out-Null
 try {
     $zipPath = Join-Path $workDir ([string]$asset.name)
+    $checksumPath = Join-Path $workDir ([string]$checksumAsset.name)
+    Invoke-WebRequest -Uri ([string]$checksumAsset.browser_download_url) -Headers $headers -OutFile $checksumPath -TimeoutSec $ExternalOperationTimeoutSeconds
     Invoke-WebRequest -Uri ([string]$asset.browser_download_url) -Headers $headers -OutFile $zipPath -TimeoutSec $ExternalOperationTimeoutSeconds
+    $expectedSHA256 = Get-ExpectedReleaseAssetSHA256 -ChecksumPath $checksumPath -AssetName ([string]$asset.name)
+    $actualSHA256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualSHA256 -cne $expectedSHA256) {
+        throw "Release package SHA-256 mismatch for $($asset.name)."
+    }
 
     $versionDirName = ([string]$release.tag_name) -replace '[^A-Za-z0-9_.-]', '_'
     if ([string]::IsNullOrWhiteSpace($versionDirName)) {

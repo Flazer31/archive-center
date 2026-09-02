@@ -1,7 +1,7 @@
 # Archive Center 4.0.7 현재 작업 상태 인계서
 
 기준 시각: 2026-08-26 KST  
-활성 소스: `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`  
+활성 소스: `<archive-center-root>\source`
 활성 브랜치: `agent/fix-voyage-context-batching`
 
 이 문서는 4.0.7 리롤·삭제·Vector 정리 작업과 실사용 후속 수정을 다른 작업과 섞지 않고 이어가기 위한 현재 상태 기록이다. `replacement_pending` 보호와 콜드 스타트 자동 rollback 결함은 제거·수정됐고 소스 회귀와 Windows 테스트 패키지가 갱신됐다.
@@ -140,7 +140,7 @@
 
 Windows managed 테스트 패키지:
 
-`C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source\_test-builds\Archive-Center-4.0.7-reroll-worker-windows-test\Archive Center 4.0.7 Windows Auto Install Package.zip`
+`<archive-center-root>\source\_test-builds\Archive-Center-4.0.7-reroll-worker-windows-test\Archive Center 4.0.7 Windows Auto Install Package.zip`
 
 현재 검증 결과:
 

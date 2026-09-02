@@ -376,10 +376,15 @@ func TestOutputFidelity35BCompleteTurnCorrelatesMatchingActiveFinal(t *testing.T
 		41,
 		42,
 	)
-	request.ClientMeta["source_to_final_lineage_observation"] = outputFidelity35BCompleteObservation(
+	lineageObservation := outputFidelity35BCompleteObservation(
 		generationID,
 		prepareTurnTextHash("[Output Guidance]\nlinked guidance"),
 	)
+	lineageObservation["memory_injection_baseline_id"] = "mib_test"
+	lineageObservation["surface_payload_application"] = []any{
+		map[string]any{"surface": "memory", "status": "applied", "rendered_count": 2, "payload_character_count": 42, "displayed_effect": "unobserved"},
+	}
+	request.ClientMeta["source_to_final_lineage_observation"] = lineageObservation
 	response := serveOutputFidelity35BCompleteTurn(t, newCompleteTurnAcceptanceTestServer(), request)
 	acceptance := mapFromAny(response["source_acceptance"])
 	if !boolFromAny(acceptance["accepted"]) || acceptance["lifecycle"] != "active_final" {
@@ -403,6 +408,10 @@ func TestOutputFidelity35BCompleteTurnCorrelatesMatchingActiveFinal(t *testing.T
 	}
 	if outputFidelity35BContainsSourceRef(lineage, "") {
 		t.Fatal("lineage contains an empty source reference")
+	}
+	surfacePayload := outputFidelityLineageSlice(lineage["surface_payload_application"])
+	if lineage["memory_injection_baseline_id"] != "mib_test" || len(surfacePayload) != 1 || mapFromAny(surfacePayload[0])["status"] != "applied" || mapFromAny(lineage["displayed_effect"])["status"] != "unobserved" {
+		t.Fatalf("payload-applied/displayed-effect stages were conflated: %#v", lineage)
 	}
 }
 
@@ -522,4 +531,80 @@ func TestOutputFidelity35BDoesNotAttachAmbiguousFinal(t *testing.T) {
 		response := serveOutputFidelity35BCompleteTurn(t, newCompleteTurnAcceptanceTestServer(), request)
 		requireOutputFidelity35BUnattached(t, response, "source_to_final_payload_stage_unobserved")
 	})
+}
+
+func TestMemoryInjectionBaseline41SeparatesStagesAndOnlyReportsDuplicateCandidates(t *testing.T) {
+	const sid = "baseline-41"
+	assembly := prepareTurnInjectionAssembly{
+		MemoryText:                "same fact",
+		ActualMemoryText:          "same fact",
+		DirectEvidenceText:        "same fact",
+		KGText:                    "Alice knows Bob",
+		WorldRulesText:            "doors stay locked",
+		CharacterText:             "Alice is alert",
+		CharacterRelationshipText: "Alice trusts Bob",
+		PersonaText:               "I remember the garden",
+		StorylineText:             "The manor mystery",
+		PendingThreadText:         "Who sent the letter?",
+		EpisodeText:               "They reached the manor",
+		Blocks: []prepareTurnInjectionBlock{
+			{Label: "memory", Count: 1, Text: "same fact"},
+			{Label: "direct_evidence", Count: 1, Text: "same fact"},
+			{Label: "kg", Count: 1, Text: "Alice knows Bob"},
+			{Label: "world_rules", Count: 1, Text: "doors stay locked"},
+			{Label: "character", Count: 1, Text: "Alice is alert"},
+			{Label: "persona_recollection", Count: 1, Text: "I remember the garden"},
+			{Label: "storyline", Count: 1, Text: "The manor mystery"},
+			{Label: "pending_thread", Count: 1, Text: "Who sent the letter?"},
+			{Label: "episode", Count: 1, Text: "They reached the manor"},
+		},
+		MemoryDeliveryPlan: map[string]any{
+			"classes": []any{
+				map[string]any{"text": "[Recent Events]\nsame fact\nThey reached the manor"},
+				map[string]any{"text": "[Direct Evidence]\nsame fact"},
+				map[string]any{"text": "[Subjective and Relationship]\nAlice knows Bob\nI remember the garden\nAlice trusts Bob"},
+				map[string]any{"text": "[World State]\ndoors stay locked"},
+				map[string]any{"text": "[Unresolved Goals]\nThe manor mystery\nWho sent the letter?"},
+			},
+		},
+	}
+	lineage := map[string]any{
+		"final_delivered_count": 1,
+		"items": []any{
+			map[string]any{"source_ref": "memory:baseline-41:1", "selection_lane": "actual", "delivered": true},
+			map[string]any{"source_ref": "memory:baseline-41:1", "selection_lane": "protected", "delivered": true},
+		},
+	}
+	baseline := buildMemoryInjectionBaseline41(
+		sid, "request-41", "same fact",
+		[]store.Memory{{ID: 1, ChatSessionID: sid, SummaryJSON: `{"turn_summary":"same fact"}`}},
+		[]store.DirectEvidence{{ID: 2, ChatSessionID: sid, EvidenceText: "same fact"}},
+		[]store.KGTriple{{ID: 3, ChatSessionID: sid, Subject: "Alice", Predicate: "knows", Object: "Bob"}},
+		[]store.WorldRule{{ID: 4, ChatSessionID: sid, Key: "doors", ValueJSON: `"locked"`}},
+		[]store.CharacterState{{ID: 5, ChatSessionID: sid, CharacterName: "Alice", StatusJSON: `{"alert":true}`, RelationshipsJSON: `{"Bob":"trust"}`}},
+		[]store.ActiveState{{ID: 6, ChatSessionID: sid, Content: "night"}},
+		[]store.CanonicalStateLayer{{ID: 7, ChatSessionID: sid, Content: "manor"}},
+		[]store.PersonaMemoryEntry{{ID: 8, MemoryText: "I remember the garden"}}, nil,
+		[]store.Storyline{{ID: 9, ChatSessionID: sid, Name: "Manor", CurrentContext: "mystery"}},
+		[]store.PendingThread{{ID: 10, ChatSessionID: sid, Description: "Who sent the letter?"}},
+		[]store.EpisodeSummary{{ID: 11, ChatSessionID: sid, SummaryText: "They reached the manor"}},
+		[]store.ChatLog{{ID: 12, ChatSessionID: sid, Role: "user", Content: "same fact"}},
+		"[Reversible State]\nnight", assembly, lineage,
+	)
+	if baseline["contract_version"] != "memory_injection_baseline.v1" || baseline["policy_mode"] != "observation_only_4_1" || baseline["canonical_mutation"] != false || baseline["vector_mutation"] != false {
+		t.Fatalf("baseline contract=%#v", baseline)
+	}
+	if surfaces := outputFidelityLineageSlice(baseline["surfaces"]); len(surfaces) != 9 {
+		t.Fatalf("surface count=%d baseline=%#v", len(surfaces), baseline)
+	} else if memorySurface := mapFromAny(surfaces[0]); intFromAny(memorySurface["selected_count"], 0) != 1 || intFromAny(memorySurface["rendered_count"], 0) != 1 || intFromAny(memorySurface["payload_character_count"], 0) == 0 {
+		t.Fatalf("memory selected/rendered/payload counts=%#v", memorySurface)
+	}
+	if len(outputFidelityLineageSlice(baseline["exact_same_row_lane_duplicates"])) != 1 ||
+		len(outputFidelityLineageSlice(baseline["semantic_duplicate_candidates"])) == 0 ||
+		len(outputFidelityLineageSlice(baseline["current_input_or_recent_context_duplicate_candidates"])) < 2 {
+		t.Fatalf("duplicate observations missing: %#v", baseline)
+	}
+	if mapFromAny(baseline["payload_application"])["status"] != "planned_unobserved" || mapFromAny(baseline["displayed_effect"])["status"] != "unobserved" {
+		t.Fatalf("selected/rendered were conflated with live stages: %#v", baseline)
+	}
 }

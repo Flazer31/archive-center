@@ -1,14 +1,39 @@
 # Gemini 3 PDF 장기기억 전달 실험 감사 및 인계
 
-상태: `audit_complete_implementation_not_started`
+상태: `HISTORICAL_AUDIT` — 현재 4.1 실행 계획으로 승계됨
 
-기준일: 2026-08-24
+감사 기준일: 2026-08-24
+승계 결정일: 2026-09-02
 
 활성 소스:
 
-`C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`
+`<archive-center-root>\source`
 
-이 문서는 사용자가 제공한 `Archive Center 4.0 — Gemini 3 계열용 PDF 장기기억 전달 실험` 작업안을 현재 Archive Center 소스, RisuAI 공식 소스, 각 제공자의 공식 문서와 대조한 결과다. 이 감사에서는 런타임 구현을 변경하지 않았다.
+이 문서는 사용자가 제공한 `Archive Center 4.0 — Gemini 3 계열용 PDF 장기기억 전달 실험` 작업안을 당시 Archive Center 소스, RisuAI 공식 소스, 각 제공자의 공식 문서와 대조한 역사적 감사 결과다. 이 감사에서는 런타임 구현을 변경하지 않았다.
+
+## 0. 현재 승계 결정
+
+2026-09-02에 PDF 기억 전달을 현재 Archive Center 4.1의 확장 범위로 배정했다. 현재 작업
+순서와 owner·검증 기준은
+[`archive-center-4.1-pdf-memory-transport-plan.md`](archive-center-4.1-pdf-memory-transport-plan.md)가
+소유하며, 버전 배정은
+[`4.1-9.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)가
+소유한다.
+
+현재 정의는 다음과 같다.
+
+- Go가 이미 선택한 `long_term_memory` 문장을 검색 가능한 PDF의 네이티브 텍스트로 만든다.
+- PDF가 적용된 최종 요청에서는 같은 장기기억 text를 함께 보내지 않는다.
+- Google AI Studio·Vertex는 Gemini `inlineData`, LLM Gateway는 OpenAI 호환 `file` block으로
+  전달한다.
+- 기억 검색·선택·예산·저장·리롤·분기·MariaDB·Chroma는 변경하지 않는다.
+- 전송 방식은 사용자가 선택하며 모델명이나 prompt 문구로 provider를 추측하지 않는다.
+- 현재 4.1 request-owned retry 문맥을 재사용하고 별도의 검색·Publisher·provider retry를
+  만들지 않는다.
+
+아래의 2026-08-24 감사 내용은 당시 판단과 미확인 지점을 보존하는 근거다. 그중 여러 관찰을
+결합해 PDF 적용을 거부하는 과거 설계나 별도 strict acceptance를 만드는 제안은 현재 계획으로
+승계하지 않는다. 현재 구현은 활성 `AGENTS.md`와 위 4.1 계획을 따른다.
 
 ## 1. 최종 판단
 
@@ -444,4 +469,4 @@ OpenAI와 Claude는 별도 실험 작업으로 분리한다.
 
 다음 요청을 새 세션에 그대로 전달할 수 있다.
 
-> 활성 소스 `C:\Users\com12\Downloads\Archive Center Clean Start 20260626-light\source`에서 `AGENTS.md`, `docs/permanent-risu-host-backend-boundary.md`, `docs/4.0-memory-restoration-work-contract.md`, `docs/gemini3-pdf-memory-transport-experiment-audit-and-handoff.md`를 전부 읽어라. 이번 세션에서는 인계 문서의 단계 1인 독립 Go PDF 생성기와 동일성 시험만 구현하라. Archive Center.js, provider 요청, 기억 선택·예산·저장 정책, DB schema를 변경하지 마라. 합성 한국어 장문으로 PDF text 추출의 처음·중간·끝, 검색·복사 가능성, bytes/base64 chars, 생성 시간과 메모리 비용을 검증하고 결과를 보고하라. 기존 dirty 변경을 보존하고 작업 전후 diff 범위를 증명하라.
+> 활성 소스 `<archive-center-root>\source`에서 `AGENTS.md`, `docs/permanent-risu-host-backend-boundary.md`, `docs/4.0-memory-restoration-work-contract.md`, `docs/gemini3-pdf-memory-transport-experiment-audit-and-handoff.md`를 전부 읽어라. 이번 세션에서는 인계 문서의 단계 1인 독립 Go PDF 생성기와 동일성 시험만 구현하라. Archive Center.js, provider 요청, 기억 선택·예산·저장 정책, DB schema를 변경하지 마라. 합성 한국어 장문으로 PDF text 추출의 처음·중간·끝, 검색·복사 가능성, bytes/base64 chars, 생성 시간과 메모리 비용을 검증하고 결과를 보고하라. 기존 dirty 변경을 보존하고 작업 전후 diff 범위를 증명하라.

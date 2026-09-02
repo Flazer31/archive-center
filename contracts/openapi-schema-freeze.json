@@ -1974,6 +1974,17 @@
           "title": "Max Injection Chars",
           "default": 18000
         },
+		"memory_transport_mode": {
+		  "type": "string",
+		  "title": "Memory Transport Mode",
+		  "description": "Representation used only for the already-selected long-term-memory lane. Text preserves the existing path; PDF modes alter only the final provider body.",
+		  "default": "text",
+		  "enum": [
+			"text",
+			"google_pdf",
+			"llm_gateway_pdf"
+		  ]
+		},
         "core_objective_memory_max_items": {
           "type": "integer",
           "minimum": 1,

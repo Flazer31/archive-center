@@ -359,48 +359,37 @@ func verifyRollbackAssistantDeletionEvidence(
 		return rollbackAssistantDeletionEvidence{Verified: true, Reason: "no_active_completed_source_revisions"}, nil
 	}
 
-	used := make([]bool, len(observations))
-	lastMatched := -1
-	findMatch := func(source store.MemorySourceRevision, identityOnly bool) int {
-		search := func(start int) int {
-			for index := start; index < len(observations); index++ {
-				// Disabled or still-streaming output is not a cold-start candidate,
-				// but it is still present in the host chat and therefore cannot be
-				// deletion evidence.
-				if used[index] {
-					continue
-				}
-				if rollbackAssistantObservationMatchesSource(source, observations[index], identityOnly) {
-					return index
-				}
-			}
-			return -1
+	// Preserve the 4.0.2 rollback contract: the current Host assistant history
+	// must be an exact prefix of the durable active-source history. Only the
+	// contiguous missing suffix is deletion evidence. A middle replacement,
+	// stale source revision, reordered observation, or later matched turn after
+	// a mismatch is a historical conflict and must never widen the rollback.
+	orderedObservations := append([]rollbackAssistantObservation(nil), observations...)
+	sort.SliceStable(orderedObservations, func(i, j int) bool {
+		return orderedObservations[i].MessageIndex < orderedObservations[j].MessageIndex
+	})
+	for index := 1; index < len(orderedObservations); index++ {
+		if orderedObservations[index-1].MessageIndex == orderedObservations[index].MessageIndex {
+			return rollbackAssistantDeletionEvidence{Reason: "historical_revision_conflict"}, nil
 		}
-		if match := search(lastMatched + 1); match >= 0 {
-			return match
-		}
-		return search(0)
 	}
 
-	removedCount := 0
-	firstRemovedTurn := 0
-	for _, source := range filtered {
-		match := findMatch(source, true)
-		if match < 0 {
-			match = findMatch(source, false)
-		}
-		if match >= 0 {
-			used[match] = true
-			if match > lastMatched {
-				lastMatched = match
-			}
+	prefixLength := minInt(len(filtered), len(orderedObservations))
+	for index := 0; index < prefixLength; index++ {
+		source := filtered[index]
+		observation := orderedObservations[index]
+		if rollbackAssistantObservationMatchesSource(source, observation, true) ||
+			rollbackAssistantObservationMatchesSource(source, observation, false) {
 			continue
 		}
-		removedCount++
-		if firstRemovedTurn == 0 || source.TurnIndex < firstRemovedTurn {
-			firstRemovedTurn = source.TurnIndex
-		}
+		return rollbackAssistantDeletionEvidence{Reason: "historical_revision_conflict"}, nil
 	}
+	if len(orderedObservations) >= len(filtered) {
+		return rollbackAssistantDeletionEvidence{Verified: true, Reason: "verified_no_assistant_output_removed"}, nil
+	}
+
+	removedCount := len(filtered) - len(orderedObservations)
+	firstRemovedTurn := filtered[len(orderedObservations)].TurnIndex
 	reason := "verified_no_assistant_output_removed"
 	if removedCount > 0 {
 		reason = "verified_assistant_output_removed"

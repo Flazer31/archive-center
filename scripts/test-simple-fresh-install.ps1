@@ -89,6 +89,66 @@ try {
     Assert-True ($helperLines -contains "timeout=1800") "Windows default timeout drifted"
     Assert-True ($helperLines -contains "start=True") "Windows package was not started"
 
+    $releaseHelperPath = Join-Path $repoRoot "scripts\install-github-release.ps1"
+    $fixtureAssetName = "Archive.Center.4.1.0.Windows.Auto.Install.Package.zip"
+    $fixturePackageBytes = [System.Text.Encoding]::UTF8.GetBytes("fixture-package`n")
+    $fixtureSHA256 = -join ([System.Security.Cryptography.SHA256]::Create().ComputeHash($fixturePackageBytes) | ForEach-Object { $_.ToString("x2") })
+    function Invoke-WindowsReleaseHelperFixture([string]$FixtureInstallDir, [bool]$BadChecksum) {
+        function Invoke-RestMethod {
+            [pscustomobject]@{
+                tag_name = "v4.1.0-fixture"
+                assets = @(
+                    [pscustomobject]@{ name = $fixtureAssetName; browser_download_url = "https://fixture.invalid/package.zip" },
+                    [pscustomobject]@{ name = "SHA256SUMS-4.1.0.txt"; browser_download_url = "https://fixture.invalid/SHA256SUMS-4.1.0.txt" }
+                )
+            }
+        }
+        function Invoke-WebRequest {
+            param(
+                [string]$Uri,
+                [hashtable]$Headers,
+                [string]$OutFile,
+                [int]$TimeoutSec
+            )
+            if ($Uri.EndsWith("SHA256SUMS-4.1.0.txt", [System.StringComparison]::Ordinal)) {
+                $digest = if ($BadChecksum) { "a" * 64 } else { $fixtureSHA256 }
+                [System.IO.File]::WriteAllText($OutFile, "$digest  $fixtureAssetName`n", [System.Text.Encoding]::ASCII)
+                return
+            }
+            if ($Uri.EndsWith("package.zip", [System.StringComparison]::Ordinal)) {
+                [System.IO.File]::WriteAllBytes($OutFile, $fixturePackageBytes)
+                return
+            }
+            throw "unexpected fixture URL: $Uri"
+        }
+        function Expand-Archive {
+            param(
+                [string]$LiteralPath,
+                [string]$DestinationPath,
+                [switch]$Force
+            )
+            $packageRoot = Join-Path $DestinationPath "package"
+            New-Item -ItemType Directory -Path $packageRoot -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $packageRoot "01_start_archive_center_windows.bat") -Value "@exit /b 0" -Encoding ASCII
+        }
+        & $releaseHelperPath -InstallDir $FixtureInstallDir -ExternalOperationTimeoutSeconds 30
+    }
+
+    Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+    $verifiedInstall = Join-Path $testRoot "verified-release-install"
+    Invoke-WindowsReleaseHelperFixture -FixtureInstallDir $verifiedInstall -BadChecksum $false
+    Assert-True (Test-Path -LiteralPath (Join-Path $verifiedInstall "current-package.txt") -PathType Leaf) "verified Windows release was not installed"
+
+    $tamperedInstall = Join-Path $testRoot "tampered-release-install"
+    $tamperedRejected = $false
+    try {
+        Invoke-WindowsReleaseHelperFixture -FixtureInstallDir $tamperedInstall -BadChecksum $true
+    } catch {
+        $tamperedRejected = $_.Exception.Message.Contains("SHA-256 mismatch")
+    }
+    Assert-True $tamperedRejected "tampered Windows release package was not rejected"
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $tamperedInstall "current-package.txt"))) "tampered Windows package changed the install pointer"
+
     $posixOutputRoot = $packageTestRoot
     $posixBuilder = Join-Path $repoRoot "ops\build-posix-managed-packages.ps1"
     & powershell.exe `

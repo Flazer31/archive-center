@@ -80,8 +80,11 @@ Archive Center.js.codex-backup-*
 Risu Output Quality Layer 2.5.js
 Risu Recomposer*.js
 AGENTS.md
+AC Recomposer Agent.js
+Archive Center 3.4-C.js
 .github/copilot-instructions.md
 prompts/*복사본*.txt
+prompts/critic_system.pre-first-compression-20260808.txt
 docs/**/_ui_slice_*.txt
 home.webp
 *.bak

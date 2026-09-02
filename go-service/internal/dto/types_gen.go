@@ -1020,6 +1020,9 @@ type PrepareTurnSettings struct {
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (18000): Go handler must apply default when field is absent in request.
 	MaxInjectionChars *int `json:"max_injection_chars,omitempty"`
+	// MemoryTransportMode selects the representation of the already-selected long-term-memory lane.
+	// DEFAULT: text preserves the existing payload path.
+	MemoryTransportMode *string `json:"memory_transport_mode,omitempty"`
 	// MemoryDeliveryBudgetMode selects automatic profile budgets or user-supplied per-class reservations.
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
 	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.
@@ -1091,6 +1094,10 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 	if dto.MaxInjectionChars == nil {
 		v := 18000
 		dto.MaxInjectionChars = &v
+	}
+	if dto.MemoryTransportMode == nil {
+		v := "text"
+		dto.MemoryTransportMode = &v
 	}
 	if dto.LorebookReferenceMode == nil {
 		v := "reference_assist"

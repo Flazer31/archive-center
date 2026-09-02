@@ -253,6 +253,10 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 			return
 		}
 		if replacementErr := s.replaceCompleteTurnLogicalTail(ctx, sid, req.TurnIndex, userText, assistantText, sourceAcceptance, now); replacementErr != nil {
+			failureAcceptance := sourceAcceptance
+			if replacementErr.CommitState == "not_committed" {
+				failureAcceptance = s.completeTurnSourceReplacementFailed(ctx, sourceAcceptance, sid, req.TurnIndex, replacementErr)
+			}
 			queueAction := "retry"
 			status := "error"
 			saveOK := false
@@ -296,6 +300,8 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				"queue_action":            queueAction,
 				"turn_index":              req.TurnIndex,
 				"fail_reasons":            []string{replacementErr.Code},
+				"source_acceptance":       completeTurnSourceAcceptancePayload(failureAcceptance),
+				"source_to_final_lineage": buildSourceToFinalLineage(req, failureAcceptance),
 				"turn_workflow_hud":       s.turnWorkflowHUDSnapshot(workflowRequestID),
 			})
 			return

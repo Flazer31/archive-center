@@ -566,8 +566,8 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 4.0.9",
-		`const VERSION = "4.0.9";`,
+		"//@version 4.1.0",
+		`const VERSION = "4.1.0";`,
 		`"settings.title": ` + "`Archive Center ${VERSION}`",
 		`<h2>Archive Center</h2>`,
 		`<span class="mo-hdr-ver">${VERSION}</span>`,

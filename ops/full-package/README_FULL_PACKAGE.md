@@ -44,6 +44,29 @@ backend. It does not install a Windows service or require administrator rights.
 
 Leave the console window open while using Archive Center.
 
+## Stop or cancel shutdown
+
+While the backend is running, press `Ctrl+C`. The PowerShell launcher asks
+whether to stop Archive Center and every managed service.
+
+- Enter `N` to cancel. The same backend, MariaDB, and ChromaDB processes keep
+  running.
+- Enter `Y` to enter the existing bounded cleanup path and stop the managed
+  process group.
+
+The launcher prevents the managed child processes from receiving the console
+signal before this choice. The generic `cmd.exe` batch prompt is not the owner
+of service shutdown and `N` is not implemented by restarting an already stopped
+backend.
+
+After a confirmed `Y` shutdown, Windows can additionally display `Terminate
+batch job (Y/N)?`. Enter `Y` there to close the BAT window. That second generic
+prompt appears only after service shutdown was confirmed; entering `N` there
+does not restart the stopped services.
+
+After a successful shutdown the BAT exits without an additional `pause`. It
+pauses only after a nonzero launcher exit so the error code remains visible.
+
 ## Updates are applied on the next start
 
 The Archive Center settings UI can check for an update and download a verified

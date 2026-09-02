@@ -1,15 +1,14 @@
-# Archive Center 4.0.9
+# Archive Center 4.1.0
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
 
-3.5 누적 릴리스에는 Canon Pack과 Source Discovery, RisuAI source lifecycle 추적,
-자료 종류별 독립 기억 예산, 출력 계보와 플로팅 진행 HUD가 포함됩니다. 완료 범위,
-실제 UI 제공 상태, 추가 검증이 필요한 부분과 3.6 이후 인계는
-[`docs/3.1-3.5-consolidated-release.md`](docs/3.1-3.5-consolidated-release.md)에
-정리되어 있습니다. 3.6부터 4.0까지의 정밀 장기 기억 구현 범위는
-[`docs/3.6-4.1-precision-long-term-memory-roadmap.md`](docs/3.6-4.1-precision-long-term-memory-roadmap.md)
-한 문서만 권위 로드맵으로 사용합니다.
+4.1.0은 같은 논리 요청의 provider 재시도 문맥 재사용, RisuAI 사용자 행 기준
+리롤·편집 재생성 교체, Windows Ctrl+C 종료 취소, 선택형 PDF 기억 전달,
+Yumi Provider Manager PDF 표식 경로와 Yumi Translator 1.4.2 원문 읽기 호환을
+포함합니다. 세부 구현·검증 범위는
+[`docs/archive-center-4.1.0-work-log.md`](docs/archive-center-4.1.0-work-log.md)에
+정리되어 있습니다.
 
 ## Runtime Architecture
 
@@ -36,6 +35,10 @@ the project license or source release.
 ## GitHub Fresh Install
 
 For a new installation, use the one-line entry point for your platform.
+
+Windows 릴리스 ZIP을 직접 받은 사용자는 빈 폴더에 압축을 풀고
+`01_start_archive_center_windows.bat`를 실행하면 필요한 런타임 준비와 백엔드
+시작이 이어집니다.
 
 POSIX:
 

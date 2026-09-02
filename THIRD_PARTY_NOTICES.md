@@ -67,17 +67,23 @@ The standard Windows package executables audited for this release
 (`archive-center-go`, `archive-center-updater`, and `mariadb-schema`) use the
 following external modules: `filippo.io/edwards25519`,
 `github.com/go-ole/go-ole`, `github.com/go-sql-driver/mysql`,
-`github.com/shirou/gopsutil/v4`, `github.com/yusufpapurcu/wmi`, and
-`golang.org/x/sys`. Their upstream license files were present in the Go module
-cache used for the audit. Other entries below are used by tests, transitive
-source dependencies, or optional migration tools and may not be present in a
-standard release binary.
+`github.com/phpdave11/gofpdi`, `github.com/pkg/errors`,
+`github.com/shirou/gopsutil/v4`, `github.com/signintech/gopdf`,
+`github.com/yusufpapurcu/wmi`, and `golang.org/x/sys`. Their upstream license
+files were present in the Go module cache used for the audit. The PDF-related
+license texts are also retained under `licenses/` in the Windows package.
+Other entries below are used by tests, transitive source dependencies, or
+optional migration tools and may not be present in a standard release binary.
 
 | Module | Version | License |
 | --- | --- | --- |
 | `github.com/DATA-DOG/go-sqlmock` | v1.5.2 | BSD 3-Clause |
 | `github.com/go-sql-driver/mysql` | v1.10.0 | MPL-2.0 |
+| `github.com/ledongthuc/pdf` | 5959a4027728 | BSD 3-Clause (tests only) |
+| `github.com/phpdave11/gofpdi` | 1f10f9844311 | MIT |
+| `github.com/pkg/errors` | v0.8.1 | BSD 2-Clause |
 | `github.com/shirou/gopsutil/v4` | v4.26.6 | BSD 3-Clause |
+| `github.com/signintech/gopdf` | v0.38.0 | MIT |
 | `modernc.org/sqlite` | v1.54.0 | BSD-style 3-Clause |
 | `filippo.io/edwards25519` | v1.2.0 | BSD 3-Clause |
 | `github.com/dustin/go-humanize` | v1.0.1 | MIT |
@@ -102,3 +108,18 @@ The MPL-2.0 modules remain available in Source Code form at their module
 repositories and through the Go module proxy using the exact versions listed
 in `go-service/go.sum`. Binary distributions must retain this notice so that
 recipients know where to obtain the MPL-covered Source Code.
+
+## Embedded PDF memory transport asset
+
+The opt-in PDF memory transport embeds the unmodified Google Fonts
+`NotoSansKR[wght].ttf` variable font so generated Korean and Hanja text remains
+searchable and copyable.
+
+- Project: https://fonts.google.com/noto/specimen/Noto+Sans+KR
+- Upstream: https://github.com/google/fonts/tree/main/ofl/notosanskr
+- Copyright: 2014-2021 Adobe, with Reserved Font Name "Source"
+- License: SIL Open Font License 1.1
+- Retained license text: `licenses/NotoSansKR-OFL-1.1.txt`
+
+The font is used only to render the already-selected long-term-memory text in
+the generated PDF. Archive Center does not modify or rename the font.
