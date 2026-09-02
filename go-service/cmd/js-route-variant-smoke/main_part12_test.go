@@ -1394,6 +1394,9 @@ func TestRecomposerLifecycleEnvelopeSurvivesLongGenerationWithoutTTL(t *testing.
 	}
 	data, err := os.ReadFile(filepath.Join(archiveCenterRoot(t), "AC Recomposer Agent.js"))
 	if err != nil {
+		if os.IsNotExist(err) {
+			t.Skip("optional AC Recomposer Agent.js is not part of the public repository")
+		}
 		t.Fatalf("read AC Recomposer Agent.js: %v", err)
 	}
 	src := string(data)
