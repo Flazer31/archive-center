@@ -6,7 +6,7 @@
 | --- | --- |
 | Review date | 2026-09-03 |
 | Branch | `work/4.2.0` |
-| Commit | 4.1 public parent `574c2d5b`; 4.2 local planning baseline `48a63711`; active 4.2 source/regression work remains a separate implementation commit until this record is finalized. |
+| Commit | 4.1 public parent `574c2d5b`; 4.2 local planning baseline `48a63711`; 4.2 source/regression implementation `43bc20a1`. |
 | Repository root | active `source/` worktree |
 | Inspection scope | Second-pass refresh of the clean active worktree: RisuAI adapter, Go service, route registration and call sites, configuration, schema/migrations, MariaDB write surfaces, persistence/vector lifecycle, representative tests, build/package scripts, and inactive/generated copies |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |

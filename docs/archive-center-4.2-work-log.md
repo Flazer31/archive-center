@@ -6,6 +6,7 @@
 
 - 공개 4.1 parent: `574c2d5b2295b0d50630474fb695055d5417777c`
 - 로컬 4.2 계획 기준점: `48a63711e9acc79ab514a4bb0a1ea183dd5b65b3`
+- 로컬 4.2 구현 기준점: `43bc20a19698d8e85c910c1b04f33b557eca42c7`
 - 활성 작업 branch: `work/4.2.0`
 
 이 문서는 4.2-A부터 4.2-G까지의 구현과 증거 단계를 기록한다. 소스·자동 회귀·패키지·
@@ -134,8 +135,9 @@ oversized top-K, direct-evidence/privacy 보존, Text/PDF plan 일치, 기본 �
 - 실행: `Archive Center 4.2.0 Windows Test Package/01_start_archive_center_windows.bat`
 - package status: `green`, `release_ready=true`, automatic update apply 활성
 - 관리 파일: 52개, 크기·SHA-256 불일치 0개
-- ZIP 크기: `17,891,270 bytes`
-- ZIP SHA-256: `75915857fdbba9392f8fad0fa78436a7d16de448c9307155830ea3a27cc394ae`
+- package source: `43bc20a19698d8e85c910c1b04f33b557eca42c7`, `source_dirty=false`
+- ZIP 크기: `17,891,262 bytes`
+- ZIP SHA-256: `e1c3f405d786399f6596f08b850705e2b250365b3d12ccf5e8b2856f770cfca2`
 - `SHA256SUMS-4.2.0.txt` 일치
 - source/package `Archive Center.js` SHA-256:
   `796d3f9d53829f57478ea2aa7c8702a1a0748b1201a4f5be1fec4bbd950d9b91`
