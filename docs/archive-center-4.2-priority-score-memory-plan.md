@@ -1,17 +1,23 @@
-# Archive Center 4.2 Priority Score Memory Plan
+# Archive Center 4.2 Priority Memory and User-Selectable Finalization Plan
 
 상태: `VERSION_ASSIGNED_PLAN`, `NOT_IMPLEMENTED`
 
 정본 버전 배정:
 [`4.1-9.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)
 
-기준일: 2026-09-02
+기준일: 2026-09-03
 
 ## 1. 사용자 체감 목표
 
 4.2의 목표는 기억을 많이 넣거나 정확성 조건을 더 쌓는 것이 아니다. 이미 저장된 기억 후보의
 관련성·중요도·최신성을 최종 선택까지 보존하고, 점수가 높은 핵심 사실이 낮은 점수의 반복적인
 관계·프로필·상태 자료보다 먼저 실제 본문 모델에 도달하게 한다.
+
+같은 버전의 후반 작업에서는 사용자가 `저장 확정 시점`을 선택할 수 있게 한다. 기존
+`응답 직후`가 기본값이며, 명시적으로 선택한 `다음 사용자 입력 시` mode는 다음 요청의
+`beforeRequest`에서 직전 RisuAI 사용자·assistant pair의 현재 최종본을 기존 `/complete-turn`으로
+한 번 확정한다. 직전 Critic과 현재 Publisher·본문 출력은 같은 시간대에 진행하되 현재 본문은
+직전 Critic 완료를 기다리지 않는다.
 
 ```text
 기존: 검색 중간 점수 → 문자열 평탄화 → lane 순서로 예산 소진
@@ -67,6 +73,13 @@ displayed-final
 완료 사실이 저장되지 않은 경우는 ranking으로 해결하지 않는다. 저장됐지만 점수나 선택에서
 밀린 경우에만 4.2 priority 경로가 직접 해결한다.
 
+### 2.4 응답 직후 확정만으로는 편집·리롤 최종본과 체감 대기를 함께 해결할 수 없음
+
+현재 4.1은 공식 `afterRequest` 결과를 받아 기존 `/complete-turn` 저장을 비동기로 시작한다.
+따라서 응답 뒤 사용자가 본문을 고치거나 리롤하기 전에 Critic 처리가 이미 시작될 수 있다.
+기존 동작은 그대로 필요한 사용자도 있으므로 이를 제거하지 않고, 저장 시점을 다음 사용자
+입력으로 늦추는 mode를 같은 설정의 선택지로 추가한다.
+
 ## 3. 1.0에서 복원할 것과 복원하지 않을 것
 
 역사적 1.0 검색은 다음 기본 합산 점수로 결과를 정렬했다.
@@ -112,6 +125,12 @@ priority_memory_item
   chars
   selection_status
   selection_reason
+```
+
+```text
+turn_finalization_mode
+  immediate_after_response  # 기본값, 현재 4.1 동작
+  next_user_input           # 명시적 선택, 직전 Host pair의 현재 최종본 확정
 ```
 
 ### 4-A 점수 생산
@@ -177,11 +196,33 @@ continuity anchor, must-account, 행동·대사·서브텍스트와 필요한 no
 Publisher는 truth writer가 아니며 전달되지 않은 기억, private knowledge 또는 과거 계획으로
 사용자 입력을 덮지 않는다.
 
+### 4-G 사용자 선택형 저장 확정 시점과 직전 Critic 파이프라이닝
+
+- 설정은 `저장 확정 시점` 하나로 제공하고 `응답 직후`를 기본값으로 유지한다;
+- `응답 직후` mode는 현재 4.1의 `beforeRequest`·`afterRequest`·`/complete-turn`·Critic·리롤·
+  분기·재시도 동작을 그대로 사용한다;
+- `다음 사용자 입력 시` mode의 `afterRequest`는 표시 후보와 request lineage만 관찰하고
+  canonical 저장을 시작하지 않는다;
+- 다음 사용자 행의 `beforeRequest`는 바로 앞의 완성된 Host 사용자·assistant pair를 읽어,
+  사용자가 편집하거나 리롤한 뒤 실제로 남긴 최종본을 기존 `/complete-turn`에 전달한다;
+- 같은 Host user row의 리롤과 assistant 삭제 후 편집·재생성은 마지막 assistant 하나만
+  확정하고, 내용이 같더라도 새 Host user row는 새 턴으로 처리한다;
+- 직전 `/complete-turn`과 현재 `/prepare-turn`·Publisher를 같은 `beforeRequest` 시간대에
+  시작하되 현재 본문 요청은 직전 Critic을 기다리지 않는다;
+- 현재 장기기억 선택은 직전 pending pair보다 앞의 마지막 확정 horizon을 사용하고, RisuAI의
+  최근 대화는 직전 pair를 정상 context로 계속 제공한다;
+- 마지막 응답 뒤 다음 입력이 없으면 RisuAI에는 남지만 Archive Center에는 `확정 대기`로
+  표시한다. 종료나 세션 전환만으로 자동 저장하지 않는다;
+- JavaScript는 Host pair 관찰·기존 API 호출·HUD 표시만 담당한다. mode, logical-turn identity,
+  branch/session 범위, 확정 horizon, idempotency, Critic와 canonical persistence는 Go가 소유한다;
+- 기존 `/prepare-turn`, `/complete-turn`, Critic, raw-pair 저장, 파생 저장과 vector outbox를
+  재사용하고 두 번째 저장 경로·Critic·scheduler·숨은 retry를 만들지 않는다.
+
 ## 5. 버전 인계 경계
 
 | 버전 | 소유 범위 |
 |---|---|
-| 4.2 | static priority score 복원, score lineage, canonical fact K, 요청 단위 current resolution, 제한적 자연어 사실 투영, 기존 Publisher 소비 |
+| 4.2 | static priority score 복원, score lineage, canonical fact K, 요청 단위 current resolution, 제한적 자연어 사실 투영, 기존 Publisher 소비, 사용자 선택형 저장 확정 시점과 직전 Critic 파이프라이닝 |
 | 4.3 | Memory·KG·상태·관계·thread 전체의 cross-surface 의미 통합과 대표 표현 선정 |
 | 4.4 | 여러 고득점 사실의 source-linked atomic bundle과 scoped raw excerpt |
 | 4.5 | item·project·plan·promise의 durable lifecycle과 status signal |
@@ -189,12 +230,13 @@ Publisher는 truth writer가 아니며 전달되지 않은 기억, private knowl
 | 5.1~5.7 | Actor별 접근·잠복·부분/완전 회상과 습관·감정·행동 표현 |
 | 7.5 | 기존 Go Publisher 안의 capability-adaptive 고급 guidance·review depth |
 
-4.2는 4.3의 전체 semantic consolidation, 4.4의 범용 bundle, 4.5의 durable lifecycle 또는 4.6의
-adaptive tuning을 미리 구현하지 않는다.
+4.2의 저장 확정 시점 mode는 직전 Host pair의 canonical 완료 시점을 선택하는 요청 수명주기다.
+4.3의 전체 semantic consolidation, 4.4의 범용 bundle, 4.5의 물건·계획·약속 durable lifecycle
+또는 4.6의 adaptive tuning을 미리 구현하지 않는다.
 
 ## 6. 구현 순서
 
-1. 개인정보를 제거한 동일 의미 fixture로 현재 4.1 baseline을 고정한다.
+1. 개인정보를 제거한 동일 의미 fixture로 현재 4.1 priority와 즉시 저장 baseline을 고정한다.
 2. 저장→후보→현재 점수→최종 budget에서 점수가 사라지는 위치를 production trace로 고정한다.
 3. 기존 Go owner 안에서 사실 단위 score-bearing candidate를 만든다.
 4. canonical identity와 요청 단위 current/historical 표현을 연결한다.
@@ -202,7 +244,12 @@ adaptive tuning을 미리 구현하지 않는다.
 6. 선택된 사실만 짧은 자연어로 렌더하고 score·rank·source lineage를 유지한다.
 7. 기존 Publisher가 delivered ref만 소비하도록 확인한다.
 8. Text와 Google/Vertex·Gateway·Provider Manager PDF가 동일한 plan/hash를 소비하는지 확인한다.
-9. 실제 RisuAI 4.1/4.2 A-B 뒤 Windows 4.2 테스트 package를 만든다.
+9. `저장 확정 시점` 설정과 Go-owned mode를 추가하고 기본 `응답 직후` parity를 고정한다.
+10. `다음 사용자 입력 시`의 직전 pair 확정, 확정 horizon과 Critic 비대기 흐름을 기존
+    `/complete-turn`·`/prepare-turn` owner에 연결한다.
+11. 두 mode의 리롤·편집·동일 문장 새 행·재시도·분기·재시작·번역기 회귀와 실제 provider
+    동시 실행 시간·usage를 확인한다.
+12. 실제 RisuAI 4.1/4.2 A-B 뒤 Windows 4.2 테스트 package를 만든다.
 
 ## 7. 필수 회귀와 체감 완료 기준
 
@@ -219,6 +266,13 @@ adaptive tuning을 미리 구현하지 않는다.
 - 리롤·provider 재시도·분기·Say Nothing·Yumi Translator·저장·Critic·벡터 색인 회귀가 없음;
 - 실제 “완료한 일을 다시 하려는” fixture에서 필요한 기억이 payload에 들어가고 displayed-final이
   그 완료 상태에서 이어짐.
+- 기본 `응답 직후` mode의 저장·리롤·편집·재시도 동작이 4.1과 동일함;
+- `다음 사용자 입력 시` mode에서 직전 pair의 편집·리롤 최종본만 정확히 한 번 저장되고 버린
+  assistant 후보는 남지 않음;
+- 새 사용자 입력의 `/prepare-turn`과 직전 `/complete-turn`이 같은 요청 시간대에 시작되더라도
+  현재 장기기억은 pending pair 앞의 확정 horizon을 사용함;
+- 직전 Critic 지연·실패가 현재 본문 출력을 기다리게 하거나 다른 저장 경로를 만들지 않음;
+- 마지막 응답 뒤 다음 입력이 없는 상태와 재시작 뒤 확정 대기가 HUD·진단에서 구분됨.
 
 ## 8. 금지선
 
@@ -227,6 +281,8 @@ adaptive tuning을 미리 구현하지 않는다.
 - 고정 lane quota, lane별 K, 낮은 점수 filler 또는 문자 상한 채우기를 만들지 않는다;
 - 점수 계산을 JavaScript, 외부 번역기 또는 Provider Manager에 두지 않는다;
 - 새 검색기·새 canonical store·새 graph DB·새 Publisher 경로를 만들지 않는다;
+- 지연 mode를 위해 두 번째 `/complete-turn`, 별도 Critic, broad chat sweep, background scheduler,
+  종료·세션 전환 자동 저장 또는 JavaScript 저장 정책을 만들지 않는다;
 - source row, raw evidence 또는 충돌 사실을 점수 때문에 삭제하거나 자동 병합하지 않는다;
 - fixture의 특정 문장·인물명·점수·예상 순위를 runtime에 hard-code하지 않는다;
 - 문서·source test·package 결과만으로 loaded RisuAI나 displayed-final 효과를 완료로 주장하지
