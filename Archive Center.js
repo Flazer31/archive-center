@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.1.0
+//@display-name Archive Center 4.2.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.1.0
+//@version 4.2.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,15 +37,16 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.1.0";
-  const BUILD_ID = "4.1.0";
-  const BUILD_CHANNEL = "release";
-  const BUILD_TIME = "2026-08-28 KST";
-  const BUILD_NOTES = "Archive Center 4.1.0 request retry, reroll identity, PDF memory transport, and Yumi translation compatibility";
+  const VERSION = "4.2.0";
+  const BUILD_ID = "4.2.0";
+  const BUILD_CHANNEL = "test";
+  const BUILD_TIME = "2026-09-03 KST";
+  const BUILD_NOTES = "Archive Center 4.2.0 priority-scored memory packs and selectable turn finalization";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
   const PENDING_FINAL_CONFIRMATION_STORAGE_KEY = `${PLUGIN_ID}_pendingFinalConfirmation`;
+  const NEXT_INPUT_FINALIZATION_STORAGE_KEY = `${PLUGIN_ID}_nextInputFinalization`;
   const CHATLOG_RESTORE_SNAPSHOT_STORAGE_KEY = `${PLUGIN_ID}_chatLogRestoreSnapshot_v1`;
   const ACTIVE_CHAT_BACKFILL_LEDGER_KEY = `${PLUGIN_ID}_activeChatBackfillLedger_v1`;
   const PERSONA_CAPSULE_CANDIDATE_QUEUE_KEY = `${PLUGIN_ID}_personaCapsuleCandidateQueue_v1`;
@@ -69,6 +70,7 @@
   const COMPLETION_TOKEN_PROFILE_VERSION = "p409_30000_v1";
   const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto", "before_latest_user", "after_anchor_marker", "after_last_cache_point", "after_first_system", "end"]);
   const MEMORY_TRANSPORT_MODE_OPTIONS = Object.freeze(["text", "google_pdf", "llm_gateway_pdf", "provider_manager_pdf"]);
+  const TURN_FINALIZATION_MODE_OPTIONS = Object.freeze(["immediate_after_response", "next_user_input"]);
   const VERTEX_FLEX_MODE_OPTIONS = Object.freeze(["off", "provisioned_then_flex", "flex_only"]);
     // J-3a: Plugin Main apply mode 허용값
   const PLUGIN_MAIN_APPLY_MODES = Object.freeze(["off", "shadow", "reviewed_apply"]);
@@ -155,6 +157,7 @@
     debug: false,
     topK: 5,
     coreObjectiveMemoryMaxItems: 5,
+    turnFinalizationMode: "immediate_after_response",
     requestTimeoutMs: 15000,
     auxiliaryInjectionPlacement: "auto",
     auxiliaryInjectionAnchorMarker: "",
@@ -1151,6 +1154,10 @@
       "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (실험)",
       "settings.hint.memoryTransportMode": "Go가 이미 선택한 장기 기억만 전송 형식으로 바꿉니다. Yumi 실험 모드는 Provider Manager의 Gemini PDF와 수동 지정 기능을 모두 켜야 합니다.",
+      "settings.label.turnFinalizationMode": "저장 확정 시점",
+      "settings.turnFinalizationMode.immediate_after_response": "응답 직후",
+      "settings.turnFinalizationMode.next_user_input": "다음 사용자 입력 시",
+      "settings.hint.turnFinalizationMode": "기본값은 4.1과 같은 응답 직후 저장입니다. 다음 사용자 입력 시를 고르면 직전 최종 출력만 그때 확정하며, 직전 평론가는 현재 본문 생성과 동시에 진행됩니다.",
       "settings.label.referenceInjectionMaxChars": "원작 DB 예산 (chars)",
       "settings.label.lorebookReferenceMaxChars": "로어북 예산 (chars)",
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
@@ -1170,7 +1177,7 @@
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.coreObjectiveMemoryMaxItems": "핵심 연관 기억 최대 수",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "관련도·인물 coverage·중복 제거 뒤 본문에 전달할 객관적 사건 요약의 최대 수입니다. 직접 근거·비밀 보호·상태·주관 기억·계층 보조 자료는 이 숫자를 소비하지 않지만 전체 문자 예산은 지킵니다.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "점수가 있는 기억 사실 전체에서 본문에 전달할 핵심 항목 수입니다. 직접 근거와 비밀 보호만 이 수를 소비하지 않으며, 모든 항목은 전체 문자 예산을 지킵니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
       "settings.label.uiLanguage": "UI 언어",
       "settings.label.turnWorkflowHUDEnabled": "플로팅 UI",
@@ -1559,7 +1566,7 @@
       "settings.label.topK": "ChromaDB Semantic Memories",
       "settings.label.topK.hint": "How many semantically relevant memories ChromaDB should retrieve for the current input. MariaDB hydrates selected vector hits as canonical rows.",
       "settings.label.coreObjectiveMemoryMaxItems": "Core Relevant Memory Maximum",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "Maximum objective event summaries delivered after relevance, entity coverage, and deduplication. Direct evidence, secret guards, states, subjective memories, and hierarchy support do not consume this count, but all remain inside the character budget.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "Maximum globally ranked scored memory facts delivered to the model. Direct evidence and secret guards do not consume this count; every item remains inside the character budget.",
       "settings.label.llmRetryCount": "LLM Retry Count",
       "settings.label.llmRetryCount.hint": "0 = no retry (1 attempt only), 3 = 3 additional attempts on failure",
       "settings.label.maxInjectionChars": "Memory Context Budget (chars)",
@@ -1570,6 +1577,10 @@
       "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (experimental)",
       "settings.hint.memoryTransportMode": "Changes only the representation of long-term memory already selected by Go. The Yumi experiment requires both Gemini PDF and manual selection in Provider Manager.",
+      "settings.label.turnFinalizationMode": "Save Finalization Time",
+      "settings.turnFinalizationMode.immediate_after_response": "Immediately after response",
+      "settings.turnFinalizationMode.next_user_input": "At next user input",
+      "settings.hint.turnFinalizationMode": "The default preserves 4.1 immediate saving. Next-user-input mode finalizes only the previous row's final response then, while its Critic runs alongside the current generation.",
       "settings.label.referenceInjectionMaxChars": "Original-work DB Budget (chars)",
       "settings.hint.referenceInjectionMaxChars": "Independent original-work reference limit. It does not borrow unused memory or lorebook capacity.",
       "settings.label.lorebookReferenceMaxChars": "Lorebook Budget (chars)",
@@ -2771,7 +2782,7 @@
       "settings.label.topK": "ChromaDB意味記憶検索数",
       "settings.label.topK.hint": "現在の入力に意味的に近い記憶をChromaDBで何件取得するかを指定します。MariaDBは選ばれたベクトル結果を正本rowとして確認します。",
       "settings.label.coreObjectiveMemoryMaxItems": "核心関連記憶の最大数",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "関連度・人物coverage・重複除去の後に本文へ渡す客観的事件要約の最大数です。直接根拠、秘密guard、状態、主観記憶、階層supportはこの数を消費しませんが、全体の文字予算には従います。",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "スコア付き記憶事実全体からモデルへ渡す核心項目数です。直接根拠と秘密保護だけはこの数を消費せず、全項目が文字予算に従います。",
       "settings.label.llmRetryCount": "LLMリトライ回数",
       "settings.label.llmRetryCount.hint": "0 = リトライなし（1回のみ）、3 = 失敗時3回追加試行",
       "settings.label.maxInjectionChars": "一般記憶予算（chars）",
@@ -2782,6 +2793,10 @@
       "settings.memoryTransportMode.llm_gateway_pdf": "LLM Gateway PDF",
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF（実験）",
       "settings.hint.memoryTransportMode": "Go が選択済みの長期記憶だけ転送形式を変更します。Yumi 実験モードでは Provider Manager の Gemini PDF と手動指定を両方有効にしてください。",
+      "settings.label.turnFinalizationMode": "保存確定時点",
+      "settings.turnFinalizationMode.immediate_after_response": "応答直後",
+      "settings.turnFinalizationMode.next_user_input": "次のユーザー入力時",
+      "settings.hint.turnFinalizationMode": "既定値は4.1と同じ応答直後保存です。次のユーザー入力時を選ぶと、直前行の最終応答だけをその時点で確定し、直前の評論家処理を現在の本文生成と並行させます。",
       "settings.label.referenceInjectionMaxChars": "原作DB予算（chars）",
       "settings.hint.referenceInjectionMaxChars": "原作参照専用の独立上限です。記憶やロアブックの未使用分を借用しません。",
       "settings.label.lorebookReferenceMaxChars": "ロアブック予算（chars）",
@@ -4626,6 +4641,8 @@
   // request identifier. Keep the exact beforeRequest context as the callback
   // handoff, then detach it synchronously when afterRequest starts.
   let _activeFinalConfirmationRequestContext = null;
+  const _nextInputFinalizations = new Map();
+  let _nextInputFinalizationLoaded = false;
   let _memoryTransportBodyInterceptorRegistration = null;
   const _pendingFinalConfirmations = new Map();
   const _pendingFinalConfirmationRecoveryEntries = new Map();
@@ -7830,6 +7847,258 @@
     }
   }
 
+  function serializeNextInputFinalizationMarker(marker) {
+    const source = marker && typeof marker === "object" ? marker : {};
+    const sessionId = String(source.sessionId || "").trim();
+    const requestId = String(source.requestId || "").trim();
+    const userMessageIndex = Number(source.userMessageIndex);
+    if (!sessionId || !requestId || !Number.isInteger(userMessageIndex) || userMessageIndex < 0) return null;
+    return {
+      contract_version: "next_input_finalization_marker.v1",
+      marker_id: String(source.markerId || [sessionId, requestId, userMessageIndex].join("|")).slice(0, 1400),
+      session_id: sessionId.slice(0, 512),
+      request_id: requestId.slice(0, 512),
+      request_type: String(source.requestType || "model").slice(0, 64),
+      host_chat_id: String(source.hostChatId || "").slice(0, 512),
+      request_message_count: Math.max(0, Math.trunc(Number(source.requestMessageCount || 0))),
+      user_message_index: userMessageIndex,
+      user_observed_pair_ordinal: Math.max(0, Math.trunc(Number(source.userObservedPairOrdinal || 0))),
+      user_message_chat_id: String(source.userMessageChatId || "").slice(0, 512),
+      user_message_time_ms: Math.max(0, Math.trunc(Number(source.userMessageTimeMs || 0))),
+      user_observed_content_hash: String(source.userObservedContentHash || "").slice(0, 128),
+      accepted_assistant_hash: String(source.acceptedAssistantHash || "").slice(0, 128),
+      queued_at: String(source.queuedAt || new Date().toISOString()),
+    };
+  }
+
+  async function saveNextInputFinalizationsToStorage() {
+    const items = [];
+    for (const marker of _nextInputFinalizations.values()) {
+      const safe = serializeNextInputFinalizationMarker(marker);
+      if (safe) items.push(safe);
+    }
+    await persistentSet(NEXT_INPUT_FINALIZATION_STORAGE_KEY, JSON.stringify({
+      v: 1,
+      saved_at: new Date().toISOString(),
+      items,
+    }));
+  }
+
+  async function loadNextInputFinalizationsFromStorage() {
+    if (_nextInputFinalizationLoaded) return _nextInputFinalizations.size;
+    _nextInputFinalizationLoaded = true;
+    const raw = await persistentGet(NEXT_INPUT_FINALIZATION_STORAGE_KEY);
+    if (!raw || typeof raw !== "string") return 0;
+    try {
+      const parsed = JSON.parse(raw);
+      if (!parsed || parsed.v !== 1 || !Array.isArray(parsed.items)) return 0;
+      for (const item of parsed.items) {
+        const marker = serializeNextInputFinalizationMarker({
+          markerId: item && item.marker_id,
+          sessionId: item && item.session_id,
+          requestId: item && item.request_id,
+          requestType: item && item.request_type,
+          hostChatId: item && item.host_chat_id,
+          requestMessageCount: item && item.request_message_count,
+          userMessageIndex: item && item.user_message_index,
+          userObservedPairOrdinal: item && item.user_observed_pair_ordinal,
+          userMessageChatId: item && item.user_message_chat_id,
+          userMessageTimeMs: item && item.user_message_time_ms,
+          userObservedContentHash: item && item.user_observed_content_hash,
+          acceptedAssistantHash: item && item.accepted_assistant_hash,
+          queuedAt: item && item.queued_at,
+        });
+        if (marker) {
+          _nextInputFinalizations.set(marker.session_id, {
+            markerId: marker.marker_id,
+            sessionId: marker.session_id,
+            requestId: marker.request_id,
+            requestType: marker.request_type,
+            hostChatId: marker.host_chat_id,
+            requestMessageCount: marker.request_message_count,
+            userMessageIndex: marker.user_message_index,
+            userObservedPairOrdinal: marker.user_observed_pair_ordinal,
+            userMessageChatId: marker.user_message_chat_id,
+            userMessageTimeMs: marker.user_message_time_ms,
+            userObservedContentHash: marker.user_observed_content_hash,
+            acceptedAssistantHash: marker.accepted_assistant_hash,
+            queuedAt: marker.queued_at,
+            orchestrationResult: null,
+            inFlight: false,
+          });
+        }
+      }
+    } catch (err) {
+      warnLog("next-input finalization restore failed (non-fatal):", err && err.message);
+    }
+    return _nextInputFinalizations.size;
+  }
+
+  function queueNextInputFinalization(requestContext, sourceAcceptanceFinality) {
+    const context = requestContext && typeof requestContext === "object" ? requestContext : {};
+    const sessionId = String(context.sessionId || "").trim();
+    const requestId = String(context.requestId || "").trim();
+    const userMessageIndex = Number(context.userMessageIndex);
+    if (!sessionId || !requestId || !Number.isInteger(userMessageIndex) || userMessageIndex < 0) return false;
+    const marker = {
+      markerId: [sessionId, requestId, userMessageIndex].join("|"),
+      sessionId,
+      requestId,
+      requestType: String(context.requestType || "model"),
+      hostChatId: String(context.hostChatId || ""),
+      requestMessageCount: Math.max(0, Math.trunc(Number(context.requestMessageCount || 0))),
+      userMessageIndex,
+      userObservedPairOrdinal: Math.max(0, Math.trunc(Number(context.userObservedPairOrdinal || 0))),
+      userMessageChatId: String(context.userMessageChatId || ""),
+      userMessageTimeMs: Math.max(0, Math.trunc(Number(context.userMessageTimeMs || 0))),
+      userObservedContentHash: String(context.userObservedContentHash || ""),
+      acceptedAssistantHash: String(sourceAcceptanceFinality && sourceAcceptanceFinality.persistence_content_hash || ""),
+      queuedAt: new Date().toISOString(),
+      orchestrationResult: context.orchestrationResult || null,
+      hostContext: context.hostContext || null,
+      inFlight: false,
+    };
+    _nextInputFinalizations.set(sessionId, marker);
+    saveNextInputFinalizationsToStorage().catch(function(err) {
+      warnLog("next-input finalization marker save failed:", err && err.message);
+    });
+    return true;
+  }
+
+  async function buildNextInputSourceAcceptanceFinality(marker, pair, currentRequestContext, hostContext = null) {
+    const resolved = await resolveCurrentActiveChatObject(marker.sessionId, hostContext);
+    const chat = resolved && resolved.chat && typeof resolved.chat === "object" ? resolved.chat : null;
+    const messages = chat && Array.isArray(chat.message) ? chat.message : [];
+    const assistantIndex = Number(pair && pair.risuAssistantMessageIndex);
+    const currentUserIndex = Number(currentRequestContext && currentRequestContext.userMessageIndex);
+    if (!chat || !Number.isInteger(assistantIndex) || assistantIndex < 0 || assistantIndex >= messages.length) return null;
+    if (!Number.isInteger(currentUserIndex) || currentUserIndex <= assistantIndex || currentUserIndex >= messages.length) return null;
+    const assistantMessage = messages[assistantIndex];
+    const currentUserMessage = messages[currentUserIndex];
+    const assistantComparable = extractComparableMessageRoleAndContent(assistantMessage);
+    const currentUserComparable = extractComparableMessageRoleAndContent(currentUserMessage);
+    if (!assistantComparable || assistantComparable.role !== "assistant" || !currentUserComparable || currentUserComparable.role !== "user") return null;
+    const base = await buildCompleteTurnSourceAcceptanceObservation(
+      marker.sessionId,
+      pair.assistantContent,
+      { allowExistingActiveMessage: true, userInput: pair.userContent, hostContext }
+    );
+    const userHash = computeOrchestrationDirtyHashOr1c(String(pair.userContent || "").trim());
+    const assistantHash = computeOrchestrationDirtyHashOr1c(normalizeAssistantPersistenceCandidate(pair.assistantContent));
+    return Object.assign({}, base, {
+      accepted: true,
+      contract_version: "source_acceptance_observation.v2",
+      host_lifecycle_contract_version: "risu_host_lifecycle_observation.v1",
+      observed_at_ms: Date.now(),
+      session_id: marker.sessionId,
+      finality_source: "risu_next_host_signal_active_chat",
+      finality_state: "committed_assistant_observed",
+      host_signal_source: "beforeRequest",
+      archive_center_request_correlation_id: marker.requestId,
+      request_id_provenance: "archive_center_correlation",
+      request_correlation_state: "matched_before_request_context",
+      request_type: marker.requestType || "model",
+      response_role: "assistant",
+      after_request_content_hash: marker.acceptedAssistantHash || assistantHash,
+      host_chat_id: String(chat.id || marker.hostChatId || ""),
+      host_chat_id_state: String(chat.id || marker.hostChatId || "") ? "observed" : "unobserved",
+      chat_streaming_state: "unobserved",
+      active_message_count: messages.length,
+      request_message_count: marker.requestMessageCount,
+      message_index: assistantIndex,
+      message_role: "char",
+      message_disabled_state: "not_disabled",
+      user_message_index: marker.userMessageIndex,
+      user_observed_pair_ordinal: marker.userObservedPairOrdinal,
+      user_message_chat_id: marker.userMessageChatId,
+      user_message_chat_id_state: marker.userMessageChatId ? "observed_before_request" : "unobserved",
+      user_message_time_ms: marker.userMessageTimeMs,
+      user_message_time_state: marker.userMessageTimeMs > 0 ? "observed_before_request" : "unobserved",
+      user_observed_content_hash: userHash,
+      user_persistence_content_hash: userHash,
+      observed_content_hash: String(base && base.observed_content_hash || assistantHash),
+      persistence_content_hash: assistantHash,
+      hash_algorithm: "or1c_utf16_djb2.v1",
+      position_observation: "committed_before_next_host_signal",
+      later_active_turn_message_count: 1,
+      next_signal_active_role: "user",
+      next_signal_user_index: currentUserIndex,
+      next_signal_user_observed_content_hash: computeOrchestrationDirtyHashOr1c(String(currentUserComparable.content || "").trim()),
+      revision_state: "not_exposed_by_risuai",
+      prompt_memory_availability: "through_previous_confirmed_turn",
+    });
+  }
+
+  function beginNextInputFinalizationPipeline(sessionId, currentRequestContext, hostContext = null) {
+    const sid = String(sessionId || "").trim();
+    const marker = _nextInputFinalizations.get(sid);
+    if (!marker) return { owned: false, started: false, reason: "no_pending_previous_turn" };
+    const currentUserIndex = Number(currentRequestContext && currentRequestContext.userMessageIndex);
+    if (!Number.isInteger(currentUserIndex) || currentUserIndex <= Number(marker.userMessageIndex)) {
+      return { owned: true, started: false, reason: "same_user_row_reroll_or_edit" };
+    }
+    if (marker.inFlight) return { owned: true, started: false, reason: "previous_turn_finalization_in_flight" };
+    marker.inFlight = true;
+    const markerId = String(marker.markerId || "");
+    Promise.resolve().then(async function persistPreviousCompletedPairAtNextInput() {
+      const resolved = await resolveCurrentActiveChatObject(sid, hostContext);
+      const chat = resolved && resolved.chat && typeof resolved.chat === "object" ? resolved.chat : null;
+      const chatId = String(chat && chat.id || "").trim();
+      if (marker.hostChatId && chatId && marker.hostChatId !== chatId) {
+        return { status: "skipped", reason: "pending_host_chat_not_active" };
+      }
+      const sourceMessages = chat && Array.isArray(chat.message) ? chat.message : [];
+      const pendingUserMessage = sourceMessages[Number(marker.userMessageIndex)];
+      const pendingUserComparable = extractComparableMessageRoleAndContent(pendingUserMessage);
+      if (!pendingUserComparable || pendingUserComparable.role !== "user") {
+        return { status: "skipped", reason: "pending_user_row_not_observed" };
+      }
+      const observedUserChatId = String(pendingUserMessage && pendingUserMessage.chatId || "").trim();
+      const stableUserRowMatches = marker.userMessageChatId && observedUserChatId
+        ? marker.userMessageChatId === observedUserChatId
+        : computeOrchestrationDirtyHashOr1c(String(pendingUserComparable.content || "").trim()) === marker.userObservedContentHash;
+      if (!stableUserRowMatches) {
+        return { status: "skipped", reason: "pending_user_row_identity_changed" };
+      }
+      const comparable = resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
+      const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable, {
+        source: "risu_next_host_signal_active_chat",
+      });
+      const pair = pairs.find(function(item) {
+        return Number(item && item.risuUserMessageIndex) === Number(marker.userMessageIndex);
+      });
+      if (!pair) return { status: "skipped", reason: "pending_user_row_pair_not_observed" };
+      const finality = await buildNextInputSourceAcceptanceFinality(marker, pair, currentRequestContext, hostContext);
+      if (!finality) return { status: "skipped", reason: "next_host_signal_observation_unavailable" };
+      return backfillOneActiveChatCompletedTurn(sid, pair, {
+        source: "risu_next_host_signal_active_chat",
+        sourceAcceptanceFinality: finality,
+        orchestrationResult: marker.orchestrationResult || null,
+        hostContext: marker.hostContext || hostContext || null,
+        hostObservedActiveTailReplacement: true,
+      });
+    }).then(async function finishNextInputFinalization(result) {
+      const current = _nextInputFinalizations.get(sid);
+      const success = result && (result.status === "saved" || result.status === "exists" || result.status === "queued");
+      if (current && String(current.markerId || "") === markerId) {
+        if (success) _nextInputFinalizations.delete(sid);
+        else current.inFlight = false;
+        await saveNextInputFinalizationsToStorage();
+      }
+      updateRuntimeState("lastCompleteTurnStatus", success ? "ok" : "warn", {
+        source: "next_user_input_pipeline",
+        detail: String(result && result.reason || result && result.status || "previous turn finalization pending"),
+        turnIndex: result && result.turnIndex,
+        nonBlocking: true,
+      });
+    }).catch(function(err) {
+      const current = _nextInputFinalizations.get(sid);
+      if (current && String(current.markerId || "") === markerId) current.inFlight = false;
+      warnLog("next-input previous-turn finalization failed:", err && err.message);
+    });
+    return { owned: true, started: true, reason: "previous_turn_critic_pipelined" };
+  }
+
   async function findLatestActiveChatUnsavedCompletedTurnPair(sessionId, hostContext = null) {
     try {
       const sid = String(sessionId || "").trim();
@@ -8265,6 +8534,10 @@
       return { status: "failed", reason: "request_build_failed", turnIndex: turn };
     }
     body.client_meta = body.client_meta || {};
+    body.client_meta.turn_finalization_mode = sourceAcceptanceFinality
+      && sourceAcceptanceFinality.finality_source === "risu_next_host_signal_active_chat"
+      ? "next_user_input"
+      : "immediate_after_response";
     if (sourceAcceptanceFinality) {
       body.client_meta.risu_host_final_confirmation = {
         version: "risu_next_host_signal_confirmation.v1",
@@ -8403,6 +8676,13 @@
   async function ensureActiveChatCompletedTurnsBackfilled(sessionId, options = {}) {
     if (!settings.enabled || !settings.dbEnabled) return { status: "off" };
     const sid = String(sessionId || "").trim();
+    if (
+      typeof _nextInputFinalizations !== "undefined"
+      && _nextInputFinalizations.has(sid)
+      && !(options && options.manual === true)
+    ) {
+      return { status: "skipped", reason: "next_user_input_finalization_owns_automatic_save" };
+    }
     if (!sid || sid === SESSION_FALLBACK || _activeChatBackfillInFlight.has(sid)) {
       return { status: "skipped", reason: "busy_or_invalid" };
     }
@@ -11424,6 +11704,11 @@
       merged.memoryTransportMode,
       DEFAULT_SETTINGS.memoryTransportMode,
       MEMORY_TRANSPORT_MODE_OPTIONS,
+    );
+    merged.turnFinalizationMode = sanitizeEnumValue(
+      merged.turnFinalizationMode,
+      DEFAULT_SETTINGS.turnFinalizationMode,
+      TURN_FINALIZATION_MODE_OPTIONS,
     );
     const rawMemoryDeliveryBudgets = merged.memoryDeliveryBudgets && typeof merged.memoryDeliveryBudgets === "object"
       ? merged.memoryDeliveryBudgets
@@ -15938,6 +16223,7 @@
           injection_enabled: settings.injectionEnabled !== false,
           max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars,
           memory_transport_mode: settings.memoryTransportMode || DEFAULT_SETTINGS.memoryTransportMode,
+          turn_finalization_mode: settings.turnFinalizationMode || DEFAULT_SETTINGS.turnFinalizationMode,
           memory_delivery_budget_mode: settings.memoryDeliveryBudgetMode || "auto",
           memory_delivery_budgets: { ...(settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets) },
           reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),
@@ -16071,6 +16357,7 @@
         turnWorkflowHUD: result.turn_workflow_hud || null,
         sourceContract: result.source_contract || null,
         currentInputDecision: result.current_input_decision || null,
+        turnFinalizationPolicy: result.turn_finalization_policy || null,
         messageSourceEnvelope: result.message_source_envelope || null,
         sessionBootstrap: result.session_bootstrap || null,
         risuHostContextSnapshot: result.risu_host_context_snapshot || null,
@@ -16094,6 +16381,7 @@
           payloadApplicationPlan: result.payload_application_plan || (result.injection_pack && result.injection_pack.payload_application_plan) || null,
           memoryTransportPlan: result.memory_transport_plan || (result.injection_pack && result.injection_pack.memory_transport_plan) || null,
           memoryTransportPayload: result.memory_transport_payload || null,
+          turnFinalizationPolicy: result.turn_finalization_policy || null,
           sourceToPayloadLineage: result.source_to_payload_lineage || (result.injection_pack && result.injection_pack.source_to_payload_lineage) || null,
           supervisorResult:   result.supervisor_result    || null,
           memoryBudgetResolution: result.memory_budget_resolution || null,
@@ -28919,7 +29207,7 @@
         : [];
       const meta = body.client_meta && typeof body.client_meta === "object" ? body.client_meta : {};
       const safeClientMeta = {};
-      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_episodes", "arc_interval_chapters", "saga_interval_arcs", "request_id", "idempotency_key", "reconciliation_retry_pending"].forEach(function(key) {
+      ["episode_interval_turns", "long_session_refresh_enabled", "chapter_auto_enabled", "arc_auto_enabled", "saga_auto_enabled", "chapter_interval_episodes", "arc_interval_chapters", "saga_interval_arcs", "request_id", "idempotency_key", "reconciliation_retry_pending", "turn_finalization_mode"].forEach(function(key) {
         if (Object.prototype.hasOwnProperty.call(meta, key)) safeClientMeta[key] = meta[key];
       });
       if (typeof meta.source_revision === "string" || typeof meta.source_revision === "number") {
@@ -32990,6 +33278,7 @@
     let lastOrchResult = null;
     let orchestrationDirtySignals = null;
     let orchestrationCacheDescriptor = null;
+    let nextInputFinalizationOwnership = { owned: false, started: false };
     try {
       recordRisuHookLifecycle("beforeRequest", "callback_observed");
       debugLog("beforeRequest hook fired, type:", type);
@@ -33084,6 +33373,11 @@
         mainRequestActiveMessages = [];
         mainRequestActiveChat = null;
       }
+      nextInputFinalizationOwnership = beginNextInputFinalizationPipeline(
+        orchSessionId,
+        finalConfirmationRequestContext,
+        orchHostContext,
+      );
       const yumiArchiveReadContext = await buildYumiV1ArchiveReadContext(
         messages,
         mainRequestActiveMessages,
@@ -33195,20 +33489,22 @@
         });
         return payload;
       }
-      Promise.resolve().then(function resolveBackfillIdentityAfterRollbackReconciliation() {
-        return preflightActiveChatBackfillIdentity(
-          orchSessionId,
-          { hostContext: orchHostContext }
-        );
-      }).then(function backfillCompletedTurnsWithResolvedIdentity(identityPreflight) {
-        return ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
-          reason: "before_request",
-          hostContext: orchHostContext,
-          identityPreflight,
+      if (!nextInputFinalizationOwnership.owned) {
+        Promise.resolve().then(function resolveBackfillIdentityAfterRollbackReconciliation() {
+          return preflightActiveChatBackfillIdentity(
+            orchSessionId,
+            { hostContext: orchHostContext }
+          );
+        }).then(function backfillCompletedTurnsWithResolvedIdentity(identityPreflight) {
+          return ensureActiveChatCompletedTurnsBackfilled(orchSessionId, {
+            reason: "before_request",
+            hostContext: orchHostContext,
+            identityPreflight,
+          });
+        }).catch(function(err) {
+          debugLog("active chat backfill beforeRequest failed:", err && err.message);
         });
-      }).catch(function(err) {
-        debugLog("active chat backfill beforeRequest failed:", err && err.message);
-      });
+      }
       let userInput = String(currentInputDecision.effective_user_input || "");
       let userInputInfo = {
         text: userInput,
@@ -34087,6 +34383,34 @@
         const sourceAcceptanceFinality = finalObservation.accepted === true
           ? finalObservation.observation
           : null;
+        const goFinalizationPolicy = persistenceOrchResult && (
+          persistenceOrchResult.turnFinalizationPolicy
+          || persistenceOrchResult.bundle && persistenceOrchResult.bundle.turnFinalizationPolicy
+        );
+        const goFinalizationMode = goFinalizationPolicy && goFinalizationPolicy.owner === "go"
+          ? String(goFinalizationPolicy.mode || "")
+          : "immediate_after_response";
+        if (goFinalizationMode === "next_user_input") {
+          if (persistenceOrchResult && persistenceOrchResult._trace) {
+            attachSanitizeTrace(persistenceOrchResult._trace, displaySanitizeTrace);
+          }
+          const queued = queueNextInputFinalization(
+            persistenceRequestContext,
+            sourceAcceptanceFinality,
+          );
+          updateRuntimeState("lastStreamingAfterRequest", queued ? "watching" : "warn", {
+            detail: queued
+              ? "accepted response waiting for the next user input"
+              : "next-input finalization marker unavailable",
+            reason_code: queued
+              ? "previous_turn_waiting_for_next_user_input"
+              : "next_input_finalization_marker_unavailable",
+            sessionId: chatSessionId,
+            requestType: persistenceRequestType,
+            promptMemoryAvailability: "through_previous_confirmed_turn",
+          });
+          return responseReturnContent;
+        }
         updateRuntimeState("lastStreamingAfterRequest", "ok", {
           detail: "afterRequest content accepted; persistence scheduled",
           reason_code: "after_request_content_accepted",
@@ -51204,6 +51528,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <small>${t('settings.hint.memoryTransportMode')}</small>
         </div>
         <div class="mo-row">
+          <label>${t('settings.label.turnFinalizationMode')}</label>
+          <select id="mo-turnFinalizationMode">
+            <option value="immediate_after_response"${s.turnFinalizationMode === "immediate_after_response" ? " selected" : ""}>${t('settings.turnFinalizationMode.immediate_after_response')}</option>
+            <option value="next_user_input"${s.turnFinalizationMode === "next_user_input" ? " selected" : ""}>${t('settings.turnFinalizationMode.next_user_input')}</option>
+          </select>
+          <small>${t('settings.hint.turnFinalizationMode')}</small>
+        </div>
+        <div class="mo-row">
           <label>${t('settings.label.maxInputContextChars')}</label>
           <input type="number" id="mo-maxInputContextChars" value="${s.maxInputContextChars}" min="1" step="100">
           <small style="color:#888;font-size:11px;">${t('settings.hint.maxInputContextChars')}</small>
@@ -52326,6 +52658,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             lorebookReferenceMaxChars: readValue("mo-lorebookReferenceMaxChars", settings.lorebookReferenceMaxChars),
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
             memoryTransportMode: readValue("mo-memoryTransportMode", settings.memoryTransportMode, true),
+            turnFinalizationMode: readValue("mo-turnFinalizationMode", settings.turnFinalizationMode, true),
             memoryDeliveryBudgets: {
               event_recent: readValue("mo-memoryBudgetEventRecent", settings.memoryDeliveryBudgets.event_recent),
               character_objective: readValue("mo-memoryBudgetCharacterObjective", settings.memoryDeliveryBudgets.character_objective),
@@ -52464,6 +52797,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
           setValueIfPresent("mo-memoryTransportMode", settings.memoryTransportMode || "text");
+          setValueIfPresent("mo-turnFinalizationMode", settings.turnFinalizationMode || "immediate_after_response");
           setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only");
           const refreshedMemoryBudgets = settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
           setValueIfPresent("mo-memoryBudgetEventRecent", refreshedMemoryBudgets.event_recent);
@@ -52961,6 +53295,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         }
       } catch (err) {
         warnLog("Pending final confirmation restore failed (non-fatal):", err && err.message);
+      }
+      try {
+        const restoredNextInputFinalizations = await loadNextInputFinalizationsFromStorage();
+        if (restoredNextInputFinalizations > 0) {
+          console.log(LOG_PREFIX, `Next-input finalizations restored: ${restoredNextInputFinalizations} items`);
+        }
+      } catch (err) {
+        warnLog("Next-input finalization restore failed (non-fatal):", err && err.message);
       }
 
       try {

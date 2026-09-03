@@ -4216,7 +4216,7 @@
     {
       "schema_name": "PrepareTurnSettings",
       "go_type_name": "PrepareTurnSettings",
-      "field_count": 17,
+      "field_count": 18,
       "required_count": 0,
       "blocker_count": 0,
       "fields": [
@@ -4442,7 +4442,21 @@
           "has_default": false,
           "default_value": null,
           "decode_presence_note": "Optional positive scalar int; pointer presence preserves legacy delivery when absent.",
-          "default_application_note": "No backend default: absent preserves legacy final delivery, while an explicit value caps only distinct objective event summaries after selection and deduplication."
+          "default_application_note": "In 4.2 production auto mode, this is the global scored-memory fact ceiling. Direct evidence and protected-secret authority lanes remain exempt; custom budget mode preserves the explicit user allocation path."
+        },
+        {
+          "name": "turn_finalization_mode",
+          "go_field_name": "TurnFinalizationMode",
+          "json_tag": "turn_finalization_mode,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "string",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": "immediate_after_response",
+          "decode_presence_note": "Optional non-null enum selecting the persistence confirmation point.",
+          "default_application_note": "immediate_after_response preserves 4.1. next_user_input pipelines the previous completed pair through the same /complete-turn owner without blocking current generation."
         },
         {
           "name": "top_k",

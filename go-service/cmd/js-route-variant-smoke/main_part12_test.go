@@ -1715,6 +1715,7 @@ function buildPostOutputSecondaryRequestContext(){return null;}
 function buildPrepareTurnHostObservations(){return {active_chat:[{role:"user",raw_content:current.user,message_index:0}]};}
 async function observePrepareTurnBootstrap(){return null;}
 function buildPrepareTurnSourceObservations(){return {sourceObservation:{},capabilityObservation:{}};}
+function beginNextInputFinalizationPipeline(){return {owned:false,started:false,reason:"no_pending_previous_turn"};}
 async function tryPrepareTurn(){return {source:"backend",currentInputDecision:{status:"deferred",reason_code:"fixture_stop_after_capture"}};}
 async function onInputHook(value){return value;}
 function onRisuOutput(){}

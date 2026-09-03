@@ -1,6 +1,6 @@
 # Archive Center 4.2 Priority Memory and User-Selectable Finalization Plan
 
-상태: `VERSION_ASSIGNED_PLAN`, `NOT_IMPLEMENTED`
+상태: `SOURCE_IMPLEMENTED`, `REGRESSION_VERIFIED`, `PACKAGE_BUILT`, `LIVE_GATES_OPEN`
 
 정본 버전 배정:
 [`4.1-9.0-integrated-roadmap.md`](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)
@@ -107,8 +107,8 @@ final_score = similarity × 0.60 + importance × 0.25 + recency × 0.15
 
 ## 4. 4.2 목표 계약
 
-계약명과 version은 구현 전에 현재 DTO·호출자를 확인해 최종 확정한다. 아래 shape은 책임과
-필수 관찰값을 고정하는 계획 표현이다.
+계약명과 version은 현재 DTO·production 호출자에 맞춰 확정했다. 구현·검증 증거는
+[`archive-center-4.2-work-log.md`](archive-center-4.2-work-log.md)에 기록한다.
 
 ```text
 priority_memory_item

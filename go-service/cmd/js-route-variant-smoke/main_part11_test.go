@@ -2403,6 +2403,9 @@ function buildPostOutputSecondaryRequestContext() { return null; }
 function buildPrepareTurnHostObservations() { return hostObservationsFixture; }
 async function observePrepareTurnBootstrap() { return bootstrapObservationFixture; }
 function buildPrepareTurnSourceObservations() { return {sourceObservation: {request_id: "request-runtime"}, capabilityObservation: {capabilities: {}}}; }
+function beginNextInputFinalizationPipeline() { return {owned:false,started:false,reason:"no_pending_previous_turn"}; }
+function buildOrchestrationModuleTransportStateOr1e() { return {}; }
+function applyOrchestrationModuleTransportTraceOr1e() {}
 function updateRuntimeState() {}
 async function ensureBackendRuntimeConfigBinding(instanceId) {
   runtimeConfigBindingCalls++;

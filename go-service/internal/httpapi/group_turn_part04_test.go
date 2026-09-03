@@ -556,17 +556,14 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if !strings.Contains(injection, "[Event and Recent Memories]") {
 		t.Errorf("injection_text missing event memory class: %q", injection)
 	}
-	if !strings.Contains(injection, "[Subjective Memories and Relationships]") {
-		t.Errorf("injection_text missing relationship memory class: %q", injection)
-	}
 	if !strings.Contains(injection, "[Unresolved Goals]") {
 		t.Errorf("injection_text missing unresolved-goal class: %q", injection)
 	}
 	if !strings.Contains(injection, "[Item, Location, and World States]") {
 		t.Errorf("injection_text missing world-state class: %q", injection)
 	}
-	if !strings.Contains(injection, "[Character Objective States]") {
-		t.Errorf("injection_text missing character-state class: %q", injection)
+	if strings.Contains(injection, "Alice --knows--> Bob") || strings.Contains(injection, `"injured":true`) {
+		t.Errorf("lower-ranked relationship/state facts should not bypass the global K: %q", injection)
 	}
 
 	if !strings.Contains(ict, "[Recent Chat]") {
@@ -623,8 +620,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 		t.Errorf("injection_pack.would_inject = %v, want true", injectionPack["would_inject"])
 	}
 	baseline := mapFromAny(resp["memory_injection_baseline"])
-	if baseline["contract_version"] != "memory_injection_baseline.v1" || baseline["policy_mode"] != "observation_only_4_1" || len(outputFidelityLineageSlice(baseline["surfaces"])) != 9 {
-		t.Fatalf("4.1 memory injection baseline missing: %#v", baseline)
+	if baseline["contract_version"] != "memory_injection_baseline.v1" || baseline["policy_mode"] != "4_1_baseline_with_4_2_priority_result" || baseline["selection_policy_changed"] != true || len(outputFidelityLineageSlice(baseline["surfaces"])) != 9 {
+		t.Fatalf("4.1 comparison baseline with active 4.2 result missing: %#v", baseline)
 	}
 	if mapFromAny(injectionPack["memory_injection_baseline"])["baseline_id"] != baseline["baseline_id"] || mapFromAny(resp["source_to_payload_lineage"])["memory_injection_baseline_id"] != baseline["baseline_id"] {
 		t.Fatalf("4.1 baseline was not linked to payload lineage: baseline=%#v pack=%#v lineage=%#v", baseline, injectionPack["memory_injection_baseline"], resp["source_to_payload_lineage"])
@@ -632,8 +629,12 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if injectionPack["would_write"] != false {
 		t.Errorf("injection_pack.would_write = %v, want false", injectionPack["would_write"])
 	}
-	if injectionPack["final_budget_owner"] != "go_memory_delivery_plan" {
-		t.Errorf("final_budget_owner = %v, want Go memory delivery owner", injectionPack["final_budget_owner"])
+	if injectionPack["final_budget_owner"] != "go_priority_memory_delivery_plan" {
+		t.Errorf("final_budget_owner = %v, want Go priority memory delivery owner", injectionPack["final_budget_owner"])
+	}
+	priorityPlan := mapFromAny(injectionPack["memory_delivery_plan"])
+	if priorityPlan["contract_version"] != "memory_delivery_plan.v2" || intFromAny(priorityPlan["priority_selected_count"], 0) != 5 || priorityPlan["low_score_backfill_after_k"] != false {
+		t.Fatalf("global priority selection contract mismatch: %#v", priorityPlan)
 	}
 	if _, ok := injectionPack["budget_decisions"].(map[string]any); !ok {
 		t.Fatalf("injection_pack.budget_decisions is not an object")

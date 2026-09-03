@@ -424,13 +424,23 @@ func buildMemoryInjectionBaseline41(
 		mustCompactJSON(semanticDuplicates),
 		mustCompactJSON(contextDuplicates),
 	}, "\x1f")
+	deliveryContract := extractionStringFromAny(assembly.MemoryDeliveryPlan["contract_version"])
+	priorityActive := deliveryContract == prepareTurnPriorityMemoryPlanVersion
+	policyMode := "observation_only_4_1"
+	if priorityActive {
+		policyMode = "4_1_baseline_with_4_2_priority_result"
+	}
 	return map[string]any{
 		"contract_version":               "memory_injection_baseline.v1",
 		"baseline_id":                    "mib_" + strings.TrimPrefix(prepareTurnTextHash(baselineSeed), "sha256:"),
 		"status":                         "observed_pre_payload",
 		"owner":                          "go",
-		"policy_mode":                    "observation_only_4_1",
-		"selection_policy_changed":       false,
+		"policy_mode":                    policyMode,
+		"selection_policy_changed":       priorityActive,
+		"active_delivery_contract":       nilIfEmpty(deliveryContract),
+		"active_score_version":           nilIfEmpty(extractionStringFromAny(assembly.MemoryDeliveryPlan["score_version"])),
+		"active_selected_fact_ids":       stringSliceFromAny(assembly.MemoryDeliveryPlan["selected_fact_ids"]),
+		"active_selected_fact_count":     intFromAny(assembly.MemoryDeliveryPlan["priority_selected_count"], 0),
 		"canonical_mutation":             false,
 		"vector_mutation":                false,
 		"surface_order":                  []string{"memory", "direct_evidence", "kg", "state", "persona", "relationship", "storyline", "pending_thread", "hierarchy_summary"},

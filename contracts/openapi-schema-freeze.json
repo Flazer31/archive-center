@@ -1982,7 +1982,18 @@
 		  "enum": [
 			"text",
 			"google_pdf",
-			"llm_gateway_pdf"
+			"llm_gateway_pdf",
+			"provider_manager_pdf"
+		  ]
+		},
+		"turn_finalization_mode": {
+		  "type": "string",
+		  "title": "Turn Finalization Mode",
+		  "description": "Chooses whether the accepted response is persisted immediately or the previous completed pair is finalized when the next user input begins. The latter pipelines the previous Critic with the current generation and never blocks the current model request.",
+		  "default": "immediate_after_response",
+		  "enum": [
+			"immediate_after_response",
+			"next_user_input"
 		  ]
 		},
         "core_objective_memory_max_items": {

@@ -232,6 +232,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	sessionBootstrap := buildPrepareTurnSessionBootstrap(request, sid)
 	hostContextSnapshot := buildPrepareTurnRisuHostContextSnapshot(request, sid)
 	hostContextReferenceEvidence := buildPrepareTurnHostContextReferenceEvidence(hostContextSnapshot)
+	turnFinalizationPolicy := buildPrepareTurnFinalizationPolicy(stringPtrValue(req.Settings.TurnFinalizationMode, prepareTurnFinalizationImmediate))
 	responseProjection := strings.TrimSpace(request.ResponseProjection)
 	if request.SourceDecisionOnly {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -264,6 +265,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"session_bootstrap":               sessionBootstrap,
 			"risu_host_context_snapshot":      hostContextSnapshot,
 			"host_context_reference_evidence": hostContextReferenceEvidence,
+			"turn_finalization_policy":        turnFinalizationPolicy,
 			"recall_result": map[string]any{
 				"status": "not_applicable", "reason": currentInputDecision.ReasonCode,
 			},
@@ -331,6 +333,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"session_bootstrap":               sessionBootstrap,
 			"risu_host_context_snapshot":      hostContextSnapshot,
 			"host_context_reference_evidence": hostContextReferenceEvidence,
+			"turn_finalization_policy":        turnFinalizationPolicy,
 		})
 		return
 	}
@@ -905,6 +908,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		documents = buildUnifiedRetrievalDocuments(sid, safeRetrievalMemories, safeRetrievalEvidence, kgTriples, episodeSums, resumePack, nil)
 		if injectionEnabled && memoryInjectionBudget > 0 {
 			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
+			priorityMemoryMaxItems := 5
+			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
+				priorityMemoryMaxItems = *req.Settings.CoreObjectiveMemoryMaxItems
+			}
+			assemblyPerspectiveContext["_priority_memory_enabled"] = true
+			assemblyPerspectiveContext["_priority_memory_max_items"] = priorityMemoryMaxItems
 			assemblyPerspectiveContext["_character_perspective_text"] = characterPerspectiveCandidateText
 			assemblyPerspectiveContext["_character_perspective_candidate_count"] = intFromAny(characterPerspectivePacket["candidate_count"], 0)
 			assemblyPerspectiveContext["_active_interaction_public_text"] = activeInteractionPublicCandidateText
@@ -1623,6 +1632,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_injection_baseline":       memoryInjectionBaseline,
 			"memory_transport_plan":           memoryTransportPlan,
+			"turn_finalization_policy":        turnFinalizationPolicy,
 			"temporal_packet":                 injectionPack["temporal_packet"],
 			"temporal_packet_text":            injectionPack["temporal_packet_text"],
 			"character_perspective_packet":    injectionPack["character_perspective_packet"],
@@ -1650,6 +1660,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_injection_baseline":       memoryInjectionBaseline,
 			"memory_transport_plan":           memoryTransportPlan,
+			"turn_finalization_policy":        turnFinalizationPolicy,
 			"memory_transport_payload":        memoryTransportPayload,
 			"memory_budget_resolution":        memoryBudgetResolution,
 			"language_context":                languageContext,
@@ -1694,6 +1705,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		"source_to_payload_lineage":       sourceToPayloadLineage,
 		"memory_injection_baseline":       memoryInjectionBaseline,
 		"memory_transport_plan":           memoryTransportPlan,
+		"turn_finalization_policy":        turnFinalizationPolicy,
 		"memory_transport_payload":        memoryTransportPayload,
 		"supervisor_result":               supervisorResult,
 		"publisher_call_budget_ledger":    publisherCallBudgetLedger,

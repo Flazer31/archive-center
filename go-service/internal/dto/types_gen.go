@@ -1027,6 +1027,9 @@ type PrepareTurnSettings struct {
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
 	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.
 	MemoryDeliveryBudgets map[string]int `json:"memory_delivery_budgets,omitempty"`
+	// TurnFinalizationMode selects immediate persistence or previous-turn persistence at the next user input.
+	// DEFAULT: immediate_after_response preserves the 4.1 lifecycle.
+	TurnFinalizationMode *string `json:"turn_finalization_mode,omitempty"`
 	// LorebookReferenceMode controls the separate read-only Host lorebook reference lane.
 	// Missing values default to reference_assist; the lorebook remains bounded support, not primary memory authority.
 	LorebookReferenceMode *string `json:"lorebook_reference_mode,omitempty"`
@@ -1098,6 +1101,10 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 	if dto.MemoryTransportMode == nil {
 		v := "text"
 		dto.MemoryTransportMode = &v
+	}
+	if dto.TurnFinalizationMode == nil {
+		v := "immediate_after_response"
+		dto.TurnFinalizationMode = &v
 	}
 	if dto.LorebookReferenceMode == nil {
 		v := "reference_assist"

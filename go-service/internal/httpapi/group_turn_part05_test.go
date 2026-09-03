@@ -259,8 +259,8 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 		t.Fatalf("decode: %v", err)
 	}
 	pack := mapFromAny(resp["injection_pack"])
-	if pack["final_budget_owner"] != "go_memory_delivery_plan" {
-		t.Fatalf("final budget owner=%v, want Go-owned delivery plan", pack["final_budget_owner"])
+	if pack["final_budget_owner"] != "go_priority_memory_delivery_plan" {
+		t.Fatalf("final budget owner=%v, want Go-owned priority delivery plan", pack["final_budget_owner"])
 	}
 	memoryText, _ := pack["memory_text"].(string)
 	for _, want := range []string{"Ava", "Bella", "Cora"} {
@@ -297,8 +297,8 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 	if used := intFromAny(plan["used_chars"], -1); used < 0 || used > intFromAny(plan["delivery_cap_chars"], 0) {
 		t.Fatalf("final delivery budget mismatch: %#v", plan)
 	}
-	if gap := intFromAny(plan["direct_entity_memory_gap"], -1); gap != 0 {
-		t.Fatalf("final direct-entity memory gap=%d, want 0: %#v", gap, plan)
+	if plan["contract_version"] != "memory_delivery_plan.v2" || intFromAny(plan["priority_selected_count"], 0) > 5 {
+		t.Fatalf("global priority/K contract mismatch: %#v", plan)
 	}
 	classText := map[string]string{}
 	for _, rawClass := range sliceFromAny(plan["classes"]) {
@@ -309,15 +309,9 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 		if !strings.Contains(classText["event_recent"], want) {
 			t.Fatalf("event_recent final class lost %q: %q", want, classText["event_recent"])
 		}
-		if !strings.Contains(classText["subjective_relationship"], want) {
-			t.Fatalf("subjective final class lost %q: %q", want, classText["subjective_relationship"])
-		}
 	}
 	if strings.Contains(classText["subjective_relationship"], "Dax") {
 		t.Fatalf("unmentioned private-memory owner entered final class: %q", classText["subjective_relationship"])
-	}
-	if !strings.Contains(classText["character_objective"], "Ren") {
-		t.Fatalf("stored active-scene objective state was lost: %q", classText["character_objective"])
 	}
 	for _, offScene := range []string{"Ava", "Bella", "Cora"} {
 		if strings.Contains(classText["character_objective"], offScene) {

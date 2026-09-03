@@ -114,6 +114,23 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 		allowedClasses[key] = true
 	}
 	nextOrdinal := map[string]int{}
+	priorityRefs := map[string]map[string][]string{}
+	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["priority_items"]) {
+		item := mapFromAny(raw)
+		if extractionStringFromAny(item["selection_status"]) != "selected" {
+			continue
+		}
+		lane := strings.TrimSpace(extractionStringFromAny(item["lane"]))
+		text := strings.TrimSpace(extractionStringFromAny(item["complete_text"]))
+		refs := stringSliceFromAny(item["source_refs"])
+		if lane == "" || text == "" || len(refs) == 0 {
+			continue
+		}
+		if priorityRefs[lane] == nil {
+			priorityRefs[lane] = map[string][]string{}
+		}
+		priorityRefs[lane][text] = append(priorityRefs[lane][text], refs[0])
+	}
 	items := []map[string]any{}
 	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["classes"]) {
 		class := mapFromAny(raw)
@@ -136,8 +153,13 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 			if key == "protected_secret" {
 				visibility = "rendered_protection_guard_only"
 			}
+			sourceRef := fmt.Sprintf("delivered-context:%s:%d", key, ordinal)
+			if refs := priorityRefs[key][prepareTurnPriorityCleanLine(line)]; len(refs) > 0 {
+				sourceRef = refs[0]
+				priorityRefs[key][prepareTurnPriorityCleanLine(line)] = refs[1:]
+			}
 			items = append(items, map[string]any{
-				"source_ref":          fmt.Sprintf("delivered-context:%s:%d", key, ordinal),
+				"source_ref":          sourceRef,
 				"final_text":          line,
 				"class":               key,
 				"delivered":           true,

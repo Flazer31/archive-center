@@ -264,8 +264,8 @@ func TestSeq165P93TraceBudgetInspectable(t *testing.T) {
 			t.Fatalf("budget_decisions missing %q", k)
 		}
 	}
-	if bd["final_budget_owner"] != "go_memory_delivery_plan" {
-		t.Fatalf("final_budget_owner=%v, want go_memory_delivery_plan", bd["final_budget_owner"])
+	if bd["final_budget_owner"] != "go_priority_memory_delivery_plan" {
+		t.Fatalf("final_budget_owner=%v, want go_priority_memory_delivery_plan", bd["final_budget_owner"])
 	}
 }
 

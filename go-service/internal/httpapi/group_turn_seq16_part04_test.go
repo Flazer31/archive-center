@@ -266,8 +266,8 @@ func TestSeq16P222FocusedValidationAggregateEquivalent(t *testing.T) {
 	}
 	passed++
 
-	if ip["final_budget_owner"] != "go_memory_delivery_plan" {
-		fail(fmt.Sprintf("injection_pack.final_budget_owner=%v, want go_memory_delivery_plan", ip["final_budget_owner"]))
+	if ip["final_budget_owner"] != "go_priority_memory_delivery_plan" {
+		fail(fmt.Sprintf("injection_pack.final_budget_owner=%v, want go_priority_memory_delivery_plan", ip["final_budget_owner"]))
 	}
 	passed++
 

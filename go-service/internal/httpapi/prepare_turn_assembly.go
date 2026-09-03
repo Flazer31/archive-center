@@ -87,8 +87,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	narrativeCurrentValues, activeStates := prepareTurnNarrativeStateFromPerspective(perspectiveContextArg)
 
 	out := prepareTurnInjectionAssembly{
-		LanguageContext:    languageContext,
-		PerspectiveContext: perspectiveContext,
+		LanguageContext:       languageContext,
+		PerspectiveContext:    perspectiveContext,
+		PriorityEntityAliases: entityIdentityAliases,
 		Counts: map[string]any{
 			"memory_count":                         len(memories),
 			"kg_count":                             len(kgTriples),
@@ -297,10 +298,14 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if t.ValidTo > 0 {
 			validTo = strconv.Itoa(t.ValidTo)
 		}
-		kgLines = append(kgLines, fmt.Sprintf(
+		line := fmt.Sprintf(
 			"- [source_turn=%s; valid=%s..%s] %s",
 			sourceTurn, validFrom, validTo, relation,
-		))
+		)
+		kgLines = append(kgLines, line)
+		appendPrepareTurnPrioritySourceMetadata(&out, "kg_triples", line,
+			prepareTurnPriorityStoredOccurrence("kg_triples", t.ID, ""),
+			prepareTurnPriorityStoredRowID(t.ID), t.SourceTurn, 0, false)
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph Support History; context only, not current-state authority; end_unrecorded means no closing turn recorded]", kgLines)
 
@@ -342,7 +347,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				storylineIrrelevantDropped++
 				continue
 			}
-			storylineLines = append(storylineLines, "- "+desc)
+			line := "- " + desc
+			storylineLines = append(storylineLines, line)
+			importance := sl.Confidence
+			importancePresent := sl.Confidence > 0
+			if sl.Pinned || sl.UserCorrected {
+				importance = 1
+				importancePresent = true
+			}
+			appendPrepareTurnPrioritySourceMetadata(&out, "storylines", line,
+				prepareTurnPriorityStoredOccurrence("storylines", sl.ID, ""),
+				prepareTurnPriorityStoredRowID(sl.ID), maxInt(sl.LastEvidenceTurn, sl.LastTurn), importance, importancePresent)
 		}
 	}
 	out.StorylineText = makePrepareTurnSection("[Storylines]", storylineLines)
@@ -469,7 +484,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			if persistent {
 				worldRulePersistentSelected++
 			}
-			worldRuleLines = append(worldRuleLines, "- "+desc)
+			line := "- " + desc
+			worldRuleLines = append(worldRuleLines, line)
+			importance := 0.0
+			importancePresent := false
+			if wr.Pinned || wr.UserCorrected {
+				importance = 1
+				importancePresent = true
+			}
+			appendPrepareTurnPrioritySourceMetadata(&out, "world_rules", line,
+				prepareTurnPriorityStoredOccurrence("world_rules", wr.ID, ""),
+				prepareTurnPriorityStoredRowID(wr.ID), wr.SourceTurn, importance, importancePresent)
 			if signature := worldRuleSignature(
 				wr.ChatSessionID,
 				wr.Scope,
@@ -580,7 +605,8 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		relationships := candidate.relationships
 		speechStyle := candidate.speechStyle
 		detail := candidate.detail
-		charLines = append(charLines, fmt.Sprintf("- %s: %s", name, detail))
+		charLine := fmt.Sprintf("- %s: %s", name, detail)
+		charLines = append(charLines, charLine)
 		objectiveParts := []string{}
 		if state != "" {
 			objectiveParts = append(objectiveParts, "state="+state)
@@ -590,11 +616,19 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		if candidate.sceneActive {
 			if objective := compactPrepareTurnLine(strings.Join(objectiveParts, "; "), 0); objective != "" {
-				charObjectiveLines = append(charObjectiveLines, fmt.Sprintf("- %s: %s", name, objective))
+				line := fmt.Sprintf("- %s: %s", name, objective)
+				charObjectiveLines = append(charObjectiveLines, line)
+				appendPrepareTurnPrioritySourceMetadata(&out, "character_states", line,
+					prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "objective"),
+					prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false)
 			}
 		}
 		if relationships != "" {
-			charRelationshipLines = append(charRelationshipLines, fmt.Sprintf("- %s: relationships=%s", name, compactPrepareTurnLine(relationships, 0)))
+			line := fmt.Sprintf("- %s: relationships=%s", name, compactPrepareTurnLine(relationships, 0))
+			charRelationshipLines = append(charRelationshipLines, line)
+			appendPrepareTurnPrioritySourceMetadata(&out, "character_states", line,
+				prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "relationship"),
+				prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false)
 		}
 	}
 	out.CharacterMemorySupport = buildPrepareTurnCharacterMemorySupport(
@@ -640,7 +674,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				pendingIrrelevantDropped++
 				continue
 			}
-			pendingLines = append(pendingLines, "- "+desc)
+			line := "- " + desc
+			pendingLines = append(pendingLines, line)
+			importance := float64(pt.Priority)
+			importancePresent := pt.Priority > 0
+			if pt.Pinned || pt.UserCorrected {
+				importance = 1
+				importancePresent = true
+			}
+			appendPrepareTurnPrioritySourceMetadata(&out, "pending_threads", line,
+				prepareTurnPriorityStoredOccurrence("pending_threads", pt.ID, ""),
+				prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent)
 			if pinnedActive {
 				pendingPinnedActiveSelected++
 			}
@@ -665,7 +709,11 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			episodeIrrelevantDropped++
 			continue
 		}
-		episodeLines = append(episodeLines, fmt.Sprintf("- turns %d-%d: %s", es.FromTurn, es.ToTurn, summary))
+		line := fmt.Sprintf("- turns %d-%d: %s", es.FromTurn, es.ToTurn, summary)
+		episodeLines = append(episodeLines, line)
+		appendPrepareTurnPrioritySourceMetadata(&out, "episode_summaries", line,
+			prepareTurnPriorityStoredOccurrence("episode_summaries", es.ID, ""),
+			prepareTurnPriorityStoredRowID(es.ID), es.ToTurn, 0, false)
 	}
 	out.EpisodeText = makePrepareTurnSection("[Episode Summaries]", episodeLines)
 	hierarchyEscalation := buildPrepareTurnHierarchyEscalation(resumePack, chatLogs, memorySelection, rawUserInput, profile)
@@ -674,6 +722,24 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.SagaText = hierarchyEscalation.SagaText
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, maxChars)
+	for _, entry := range personaEntries {
+		line := personaRecollectionEntryLine(entry, maxChars)
+		if line == "" {
+			continue
+		}
+		appendPrepareTurnPrioritySourceMetadata(&out, "persona_memory_entries", line,
+			prepareTurnPriorityStoredOccurrence("persona_memory_entries", entry.ID, ""),
+			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0)
+	}
+	for _, entry := range characterPrivateMemories {
+		line := characterPrivateRecollectionEntryLine(entry, maxChars)
+		if line == "" {
+			continue
+		}
+		appendPrepareTurnPrioritySourceMetadata(&out, "protagonist_entity_memories", line,
+			prepareTurnPriorityStoredOccurrence("protagonist_entity_memories", entry.ID, ""),
+			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0)
+	}
 
 	if latest := latestPrepareTurnEvidence(evidence); latest != nil {
 		out.LatestDirectEvidenceText = compactPrepareTurnLine(latest.EvidenceText, 0)
@@ -743,6 +809,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			line := fmt.Sprintf("- %s: %s", layer, filtered)
 			canonLines = append(canonLines, line)
 			canonRelationshipLines = append(canonRelationshipLines, line)
+			appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+				prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "relationship"),
+				prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
 			canonTypeCounts[layer]++
 			continue
 		}
@@ -770,6 +839,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := "- entity_state: " + text
 				*target = append(*target, line)
 				canonLines = append(canonLines, line)
+				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "entity"),
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
 				selectedLayer = true
 			}
 			if value, ok := entity["events"]; ok {
@@ -803,6 +875,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
+				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
 				selectedLayer = true
 			}
 		case "unresolved_threads":
@@ -846,6 +921,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
+				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
 				selectedLayer = true
 			}
 		default:
@@ -856,6 +934,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", layer, content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
+				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
 				selectedLayer = true
 			}
 		}
@@ -892,8 +973,11 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	deliveryBudgetContext := map[string]any{
 		"_memory_delivery_budget_mode": memoryDeliveryBudgetMode,
 		"_memory_delivery_budgets":     memoryDeliveryBudgets,
+		"_priority_memory_query":       strings.TrimSpace(rawUserInput + "\n" + memoryQuery),
 	}
 	if len(perspectiveContextArg) > 0 {
+		deliveryBudgetContext["_priority_memory_enabled"] = boolFromAny(perspectiveContextArg[0]["_priority_memory_enabled"])
+		deliveryBudgetContext["_priority_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_priority_memory_max_items"], 5)
 		deliveryBudgetContext["_core_objective_memory_max_items_present"] = boolFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items_present"])
 		deliveryBudgetContext["_core_objective_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items"], 0)
 	}
@@ -944,6 +1028,8 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["support_candidate_limit"] = recallLimit
 	out.Counts["support_candidate_limit_source"] = "processing_safety_bound_independent_of_top_k_and_final_delivery"
 	out.Counts["top_k_definition"] = "vector_memory_search_limit_only"
+	out.Counts["priority_memory_max_items"] = intFromAny(deliveryBudgetContext["_priority_memory_max_items"], 0)
+	out.Counts["priority_memory_enabled"] = boolFromAny(deliveryBudgetContext["_priority_memory_enabled"])
 	out.Counts["recent_memory_bound"] = len(memorySelection.Recent)
 	out.Counts["vector_memory_bound"] = len(memorySelection.VectorRelevant)
 	out.Counts["relevant_memory_bound"] = len(memorySelection.Relevant)
@@ -1040,7 +1126,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.BudgetDecisions = map[string]any{
 		"policy_version":                              "rmg07.prepare_turn.bundle.v1",
 		"max_injection_chars":                         maxChars,
-		"final_budget_owner":                          "go_memory_delivery_plan",
+		"final_budget_owner":                          extractionFirstNonEmpty(extractionStringFromAny(out.MemoryDeliveryPlan["final_budget_owner"]), "go_memory_delivery_plan"),
 		"memory_delivery_plan":                        out.MemoryDeliveryPlan,
 		"fallback_chat_log_included":                  strings.TrimSpace(out.FallbackText) != "",
 		"fallback_reason":                             fallbackReason,

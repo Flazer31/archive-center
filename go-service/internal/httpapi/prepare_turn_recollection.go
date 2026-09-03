@@ -95,30 +95,36 @@ func buildPersonaRecollectionText(entries []store.PersonaMemoryEntry, perEntryCh
 	}
 	entryLineBase := len(lines)
 	for _, entry := range entries {
-		text := personaRecollectionPromptLineText(entry, perEntryChars)
-		if text == "" {
-			continue
+		if line := personaRecollectionEntryLine(entry, perEntryChars); line != "" {
+			lines = append(lines, line)
 		}
-		meta := []string{}
-		if entry.SourceTurn > 0 {
-			meta = append(meta, fmt.Sprintf("turn %d", entry.SourceTurn))
-		}
-		if entry.Importance10 > 0 {
-			meta = append(meta, fmt.Sprintf("imp %.1f/10", entry.Importance10))
-		}
-		if portability := strings.TrimSpace(entry.Portability); portability != "" {
-			meta = append(meta, portability)
-		}
-		prefix := "-"
-		if len(meta) > 0 {
-			prefix = "- (" + strings.Join(meta, ", ") + ")"
-		}
-		lines = append(lines, prefix+" "+text)
 	}
 	if len(lines) <= entryLineBase {
 		return ""
 	}
 	return makePrepareTurnSection("[Persona Recollection]", lines)
+}
+
+func personaRecollectionEntryLine(entry store.PersonaMemoryEntry, perEntryChars int) string {
+	text := personaRecollectionPromptLineText(entry, perEntryChars)
+	if text == "" {
+		return ""
+	}
+	meta := []string{}
+	if entry.SourceTurn > 0 {
+		meta = append(meta, fmt.Sprintf("turn %d", entry.SourceTurn))
+	}
+	if entry.Importance10 > 0 {
+		meta = append(meta, fmt.Sprintf("imp %.1f/10", entry.Importance10))
+	}
+	if portability := strings.TrimSpace(entry.Portability); portability != "" {
+		meta = append(meta, portability)
+	}
+	prefix := "-"
+	if len(meta) > 0 {
+		prefix = "- (" + strings.Join(meta, ", ") + ")"
+	}
+	return prefix + " " + text
 }
 
 func buildCharacterPrivateRecollectionText(entries []store.ProtagonistEntityMemory, perEntryChars int) string {
@@ -133,33 +139,39 @@ func buildCharacterPrivateRecollectionText(entries []store.ProtagonistEntityMemo
 	}
 	entryLineBase := len(lines)
 	for _, entry := range entries {
-		text := characterPrivateRecollectionPromptLineText(entry, perEntryChars)
-		if text == "" {
-			continue
+		if line := characterPrivateRecollectionEntryLine(entry, perEntryChars); line != "" {
+			lines = append(lines, line)
 		}
-		owner := strings.TrimSpace(entry.OwnerEntityName)
-		if owner == "" {
-			owner = strings.TrimSpace(entry.OwnerEntityKey)
-		}
-		if owner == "" {
-			owner = "unknown NPC"
-		}
-		meta := []string{"owner " + owner}
-		if entry.SourceTurn > 0 {
-			meta = append(meta, fmt.Sprintf("turn %d", entry.SourceTurn))
-		}
-		if entry.Importance10 > 0 {
-			meta = append(meta, fmt.Sprintf("imp %.1f/10", entry.Importance10))
-		}
-		if policy := strings.TrimSpace(entry.TargetRevealPolicy); policy != "" {
-			meta = append(meta, policy)
-		}
-		lines = append(lines, "- ("+strings.Join(meta, ", ")+") "+text)
 	}
 	if len(lines) <= entryLineBase {
 		return ""
 	}
 	return makePrepareTurnSection("[Character Private Recollection]", lines)
+}
+
+func characterPrivateRecollectionEntryLine(entry store.ProtagonistEntityMemory, perEntryChars int) string {
+	text := characterPrivateRecollectionPromptLineText(entry, perEntryChars)
+	if text == "" {
+		return ""
+	}
+	owner := strings.TrimSpace(entry.OwnerEntityName)
+	if owner == "" {
+		owner = strings.TrimSpace(entry.OwnerEntityKey)
+	}
+	if owner == "" {
+		owner = "unknown NPC"
+	}
+	meta := []string{"owner " + owner}
+	if entry.SourceTurn > 0 {
+		meta = append(meta, fmt.Sprintf("turn %d", entry.SourceTurn))
+	}
+	if entry.Importance10 > 0 {
+		meta = append(meta, fmt.Sprintf("imp %.1f/10", entry.Importance10))
+	}
+	if policy := strings.TrimSpace(entry.TargetRevealPolicy); policy != "" {
+		meta = append(meta, policy)
+	}
+	return "- (" + strings.Join(meta, ", ") + ") " + text
 }
 
 func personaRecollectionPromptLineText(entry store.PersonaMemoryEntry, _ int) string {

@@ -1,14 +1,15 @@
-# Archive Center 4.1.0
+# Archive Center 4.2.0 Test Source
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
 
-4.1.0은 같은 논리 요청의 provider 재시도 문맥 재사용, RisuAI 사용자 행 기준
-리롤·편집 재생성 교체, Windows Ctrl+C 종료 취소, 선택형 PDF 기억 전달,
-Yumi Provider Manager PDF 표식 경로와 Yumi Translator 1.4.2 원문 읽기 호환을
-포함합니다. 세부 구현·검증 범위는
-[`docs/archive-center-4.1.0-work-log.md`](docs/archive-center-4.1.0-work-log.md)에
-정리되어 있습니다.
+4.2.0 test source는 4.1.0의 요청 재시도·리롤 교체·PDF 기억 전달·Yumi 호환을
+보존하면서, Go가 점수를 끝까지 보유하는 사실 단위 기억 후보, 요청 단위 current
+resolution, 전역 점수 순위와 핵심 기억 K, Priority Memory Pack, 사용자 선택형
+`저장 확정 시점`을 추가합니다. 기본값은 기존과 같은 `응답 직후`이며,
+`다음 사용자 입력 시`를 선택하면 직전 최종 응답의 Critic·저장이 다음 본문 요청과
+겹쳐 실행되되 현재 본문은 이를 기다리지 않습니다. 구현·검증 상태는
+[`docs/archive-center-4.2-work-log.md`](docs/archive-center-4.2-work-log.md)에 기록합니다.
 
 ## Runtime Architecture
 

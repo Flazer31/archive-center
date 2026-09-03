@@ -703,6 +703,8 @@ type prepareTurnInjectionAssembly struct {
 	ProtectedMemoryText       string
 	MemoryDeliveryLineage     map[string]any
 	MemoryDeliveryPlan        map[string]any
+	PrioritySourceMetadata    []prepareTurnPrioritySourceMetadata
+	PriorityEntityAliases     map[string]any
 	CharacterMemorySupport    map[string]any
 	KGText                    string
 	DirectEvidenceText        string
@@ -786,6 +788,10 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 			temporalPacketText = text
 		}
 	}
+	finalBudgetOwner := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_budget_owner"])
+	if finalBudgetOwner == "" {
+		finalBudgetOwner = "go_memory_delivery_plan"
+	}
 
 	return map[string]any{
 		"status":                                status,
@@ -839,7 +845,7 @@ func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled,
 		"trimmed":                       assembly.Trimmed,
 		"counts":                        assembly.Counts,
 		"status_vocabulary":             []string{"off", "skeleton", "partial", "ready", "degraded"},
-		"final_budget_owner":            "go_memory_delivery_plan",
+		"final_budget_owner":            finalBudgetOwner,
 		"apply_verdict":                 "shadow_only",
 		"apply_verdict_rule":            "trace_only",
 		"saga_text":                     nilIfEmpty(assembly.SagaText),
