@@ -269,3 +269,9 @@ jobs plus the release archive/updater checks when publishing 4.2. Do not describ
 mocked installer download/start boundaries or cross-built platform binaries as
 real native-device runtime installation. Keep native updater tests distinct from
 the loaded RisuAI plugin's separate update operation.
+
+The [4.2.0 release verification](docs/archive-center-4.2.0-release-verification.md)
+records public assets, the tagged-source CI run, and a real GitHub 4.1-to-4.2
+managed update with MariaDB/Chroma fixture preservation on isolated Windows.
+Keep that verified scope distinct from loaded RisuAI, the user's original data,
+full runtime downloads, and native-device coverage on other platforms.

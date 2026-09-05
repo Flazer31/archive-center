@@ -728,6 +728,9 @@ RisuAI 플러그인의 별도 갱신 절차를 README와 릴리스 안내에 명
 - Windows 후보 패키지의 격리 core_lite/off fresh smoke: warning/failure 0.
 - Ubuntu/macOS production POSIX 설치 계약과 native updater 회귀를 기존 CI에 추가.
 
-실제 MariaDB/Chroma를 둔 관리형 업데이트와 원격 CI 결과는 게시 과정에서 별도로
-확인한다. 이 항목은 이전의 Windows 테스트 패키지를 모든 OS 실기기 검증으로
-격상하지 않으며, loaded RisuAI와 Provider 품질 검증도 대체하지 않는다.
+릴리스 커밋 `4257081c217e57b7e570592fb1090b484255c013`의 원격 CI 네 작업이 모두
+통과했고, 최종 7개 ZIP과 checksum을 `v4.2.0` 최신 안정판으로 공개했다.
+공개 직후 실제 MariaDB/Chroma를 둔 격리 Windows 4.1에서 UI와 같은 업데이트 요청을
+실행하여 4.2 재시작, `committed`, 대화·기억·벡터와 설정 보존을 확인했다.
+구체적인 범위는 [공개 및 업데이트 검증 기록](archive-center-4.2.0-release-verification.md)을 따른다.
+이 결과는 모든 OS 실기기 검증이나 loaded RisuAI·Provider 품질 검증을 대체하지 않는다.

@@ -4,14 +4,14 @@
 
 | Field | Value |
 | --- | --- |
-| Review date | 2026-09-04 |
+| Review date | 2026-09-05 (release evidence refresh) |
 | Branch | `work/4.2.0` |
-| Commit | 4.1 public parent `574c2d5b`; 4.2 local planning baseline `48a63711`; 4.2 source/regression implementation `43bc20a1`; current package-evidence checkpoint `c2f1a2d5`, plus the uncommitted fact-semantic relevance correction documented here. |
+| Commit | 4.1 public parent `574c2d5b`; 4.2 source/regression checkpoints `43bc20a1` and `c2f1a2d5`; public `v4.2.0` release source `4257081c217e57b7e570592fb1090b484255c013`, including the fact-semantic relevance correction. |
 | Repository root | active `source/` worktree |
 | Inspection scope | Second-pass refresh of the clean active worktree: RisuAI adapter, Go service, route registration and call sites, configuration, schema/migrations, MariaDB write surfaces, persistence/vector lifecycle, representative tests, build/package scripts, and inactive/generated copies |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |
-| Evidence level | Primarily source-audit evidence. This revision also records bounded Windows-package, real MariaDB/Chroma readiness, read-only real-session PDF generation, and user-observed loaded-RisuAI Provider Manager/direct Vertex transport where stated. Fact-level semantic relevance, complete-turn-summary/per-category K selection, and the array-ordinal canonical identity correction are source/regression verified; the current Windows 4.2.0 test package includes that correction. Loaded-RisuAI verification of this package remains open. Live semantic-recall quality, Google AI Studio/LLM Gateway behavior, usage comparison, long-session generalization, and published-release behavior remain unclaimed. |
-| Confidence | **VERIFIED** within each explicitly cited source/regression/package/backend-live tier; **UNKNOWN** for loaded-host, provider body/usage/display, and release behavior listed in section 20. |
+| Evidence level | Source/regression, seven public 4.2.0 packages, tagged-source Windows/Ubuntu/macOS CI, and an isolated Windows public 4.1-to-4.2 managed update with real MariaDB/Chroma fixture preservation are verified within the [release record](docs/archive-center-4.2.0-release-verification.md). Earlier bounded PDF/Provider Manager observations remain limited to their stated artifacts. Loaded-RisuAI verification of the release, live recall quality, Google AI Studio/LLM Gateway behavior, usage comparison, long-session generalization, and full native-device coverage remain open. |
+| Confidence | **VERIFIED** within each explicitly cited source/regression/package/backend-live/public-release tier; **UNKNOWN** for the remaining loaded-host, provider body/usage/display, and native-device behavior in section 20. |
 
 Status words used in this document have strict meanings:
 
@@ -74,7 +74,7 @@ flowchart LR
 
 ```text
 source/
-├── Archive Center.js              active RisuAI adapter source (4.2.0 test)
+├── Archive Center.js              active RisuAI adapter source (4.2.0 release)
 ├── go-service/                    active Go backend source
 │   ├── cmd/                       service, package, operator, audit, and smoke executables
 │   ├── internal/config/           environment parsing and mode validation
@@ -135,7 +135,7 @@ source/
 | Backend service | `go-service/cmd/archive-center-go/main.go` | `main()` | Built executable or `go run` | Load/validate config, build server, preflight dependencies, start workers/routes, serve HTTP | [`main()`](go-service/cmd/archive-center-go/main.go#L23-L116) | VERIFIED |
 | Schema tool | `go-service/cmd/mariadb-schema/main.go` | `main()` | Windows/POSIX package launchers or an operator invoke it with `--execute` and a DSN | Apply fresh schema and additive compatibility statements; it is not called by the HTTP service startup | [`main()`](go-service/cmd/mariadb-schema/main.go#L96), [Windows launcher](ops/full-package/scripts/start-full-windows.ps1#L1358), [POSIX launcher](ops/full-package-posix/start-full-posix.sh#L481) | VERIFIED |
 | Managed updater | `go-service/cmd/archive-center-updater/main.go` | `main()` | Managed package launchers copy/invoke a recovery runner; `/update/apply` only stages the request and asks an authorized service to exit | Verify/apply/commit/rollback managed package state | [`main()`](go-service/cmd/archive-center-updater/main.go#L23), [Windows launcher](ops/full-package/scripts/start-full-windows.ps1#L984-L1091), [POSIX launcher](ops/full-package-posix/start-full-posix.sh#L305-L340), [`handleUpdateApply()`](go-service/internal/httpapi/group_update.go#L243) | VERIFIED |
-| Public fresh installers | `install-windows.ps1`, `install.sh`, `scripts/install-github-release.ps1`, `scripts/install-github-release.sh` | public bootstrap plus release helper | New users run one fixed public command; direct ZIP users enter the Windows package through `01_start_archive_center_windows.bat` | Select the current OS/CPU release asset, verify its exact SHA-256 record before extraction, preserve an install-level data root, and start the platform launcher | [`install-windows.ps1`](install-windows.ps1), [`install.sh`](install.sh), [`install-github-release.ps1`](scripts/install-github-release.ps1), [`install-github-release.sh`](scripts/install-github-release.sh) | VERIFIED source/regression; published 4.1 release pending |
+| Public fresh installers | `install-windows.ps1`, `install.sh`, `scripts/install-github-release.ps1`, `scripts/install-github-release.sh` | public bootstrap plus release helper | New users run one fixed public command; direct ZIP users enter the Windows package through `01_start_archive_center_windows.bat` | Select the current OS/CPU release asset, verify its exact SHA-256 record before extraction, preserve an install-level data root, and start the platform launcher | [`install-windows.ps1`](install-windows.ps1), [`install.sh`](install.sh), [`install-github-release.ps1`](scripts/install-github-release.ps1), [`install-github-release.sh`](scripts/install-github-release.sh) | VERIFIED production-entrypoint contract CI on Windows/Ubuntu/macOS; 4.2 assets published; full native runtime installation remains separately scoped |
 | Windows package launcher | `ops/full-package/01_start_archive_center_windows.bat`, `scripts/start-full-windows.ps1`, `scripts/windows-console-control.ps1` | BAT entry plus PowerShell process-lifetime functions | User launches the public BAT; PowerShell starts and owns the managed process group | Start/update/recover the Windows package; isolate managed children from Ctrl+C, confirm `N`/`Y`, then perform bounded cleanup only after confirmation or parent/launcher loss | [`Start-ArchiveChildProcess()`](ops/full-package/scripts/start-full-windows.ps1), [`Wait-ArchiveBackendLifetime()`](ops/full-package/scripts/start-full-windows.ps1), [`Wait-ArchiveProcessWithCtrlCConfirmation()`](ops/full-package/scripts/windows-console-control.ps1) | VERIFIED source/process/package-live regression |
 | Import/migration operators | `go-service/cmd/mariadb-import`, `go-service/cmd/legacy10-migrate` | `main()` | Explicit manual/tool invocation with `--execute` and a DSN | Directly populate MariaDB from validated legacy/export inputs; not mounted service entry points or packaged runtime binaries | [`mariadb-import`](go-service/cmd/mariadb-import/main.go#L210), [`legacy10-migrate`](go-service/cmd/legacy10-migrate/main.go#L70) | VERIFIED |
 | Package builders | `ops/*.ps1` | script entry | Operator invocation | Compile Go tools and copy active source payloads to generated output | [`build-full-package.ps1`](ops/build-full-package.ps1#L446-L704), [`build-posix-managed-packages.ps1`](ops/build-posix-managed-packages.ps1#L306-L516) | VERIFIED |
@@ -634,13 +634,13 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 5. **UNKNOWN:** Whether complete-turn and vector/reprocessing queues drain correctly during long sessions, process crashes, network partitions, and restart.
 6. **UNKNOWN:** Whether native RisuAI context plus Archive Center injection has zero semantic duplicates in real payloads for all supported Risu versions.
 7. **UNKNOWN:** Whether all direct maintenance/write routes have the intended deployment authentication and operator audit policy.
-8. **UNKNOWN:** Which plugin and backend artifacts are currently loaded in RisuAI. The generated Windows 4.2.0 test package is verified against the current dirty worktree and its recorded hashes, but package evidence does not identify the artifact loaded by the Host.
+8. **UNKNOWN:** Which plugin and backend artifacts are currently loaded in RisuAI. The public 4.2.0 packages match tagged release source `4257081c`; package evidence does not identify the artifact loaded by the Host.
 9. **UNKNOWN:** Whether the verified source-level branch observer, Go worldline resolver, and topology/manual-repair UI work end to end in the currently loaded RisuAI/PocketRisu version.
 10. **UNKNOWN:** Whether every raw-prefix or post-admission `partial_commit` state is automatically reconciled, especially for KG/narrative/character/status projections outside common admission.
 11. **UNKNOWN:** The intended removal milestone for each remaining active JavaScript local turn/budget/placement/legacy helper and the protection-only exception.
 12. **UNKNOWN:** Whether the loaded RisuAI/PocketRisu implementation exposes the official lorebook API with the observed shapes, and whether `search_only`/`reference_assist` behaves correctly against real scoped entries.
 13. **UNKNOWN:** The intended durable idempotency, retry, and freshness policy for Host lorebook snapshots. Session deletion/migration source ownership is now verified and should not be listed as unresolved.
-14. **VERIFIED package / UNKNOWN live:** The current Windows 4.2.0 test package includes migrations through `012`, matches the source plugin hash, passes its 52-file manifest/checksum verification, and passes isolated fresh-install smoke with no warning. Real existing-data upgrade, UI managed-update application, loaded-host, and existing MariaDB/ChromaDB checks remain **UNKNOWN**.
+14. **VERIFIED public package / isolated Windows live update:** The seven 4.2.0 ZIPs passed manifests/checksums and 4.1 preflight. A real public 4.1 backend accepted the same managed-update API request used by the UI, restarted as 4.2.0 and committed, preserving MariaDB chat/memory fixtures, Chroma documents/embeddings/query results, and local settings. See the [release record](docs/archive-center-4.2.0-release-verification.md). Actual RisuAI UI invocation/loading, the user's original-data deployment, and full native installation/update on other devices remain **UNKNOWN**.
 15. **UNKNOWN:** Whether the actually loaded RisuAI version preserves the inspected top-level serialization plus inner provider-retry callback loop, whether fallback model switching supplies the same payload shape, and whether an unexpected overlap presents different official correlation evidence.
 16. **UNKNOWN:** Whether `memory_injection_baseline.v1` matches a captured real provider payload and whether any listed surface changes the displayed final output; source/regression payload observation is not displayed-final evidence.
 17. **UNKNOWN:** Whether the affected user's exact RisuAI build exposes any official blank-submit or synthetic-message origin beyond the inspected stored row, and the exact redacted role/index/hash mapping around the reported Say Nothing deletion. Until then, the literal text is not authoritative Host provenance and the reported worldline count is not source-verified.
@@ -684,3 +684,10 @@ download/start boundaries; they are not proof of full native MariaDB/Chroma
 installation on every device. All seven release archives remain owned by
 `ops/build-release-assets.ps1`. The RisuAI plugin update and backend managed
 package update remain separate operations.
+
+All four jobs passed for tagged release source `4257081c`. The seven ZIPs and
+checksum list are public as latest stable `v4.2.0`; uploaded asset digests match
+the final clean-source build. A separate real public 4.1-to-4.2 Windows managed
+update reached readiness and commit while preserving real MariaDB/Chroma test
+data and local configuration. See [the release evidence](docs/archive-center-4.2.0-release-verification.md)
+for exact boundaries; this does not close loaded-RisuAI or all-device questions.

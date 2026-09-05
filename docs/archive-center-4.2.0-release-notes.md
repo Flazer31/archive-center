@@ -74,3 +74,8 @@ Windows arm64는 이번 릴리스의 네이티브 배포 대상이 아닙니다.
 - 실제 공개 4.1 패키지 7개에서 4.2 업데이트 사전검증 통과.
 - Windows 4.1 업데이터의 실제 적용·복구·재적용·확정과 테스트 설정/runtime 보존 확인.
 - Windows 패키지의 격리 시작·준비 상태 검사 통과.
+- 릴리스 소스의 Windows·Ubuntu·macOS GitHub CI 모두 통과.
+- 격리 Windows 환경에서 실제 공개 4.1 → 4.2 관리형 업데이트와 재시작·확정 통과.
+  실제 MariaDB 대화·기억, ChromaDB 문서·벡터 검색, 로컬 설정 보존 확인.
+
+검증 범위와 별도 확인이 필요한 환경은 [공개 및 업데이트 검증 기록](archive-center-4.2.0-release-verification.md)에 정리했다.
