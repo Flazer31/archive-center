@@ -96,6 +96,9 @@ func TestPrepareTurnSettingsDefaultMemoryInjectionBudget(t *testing.T) {
 	if settings.MemoryTransportMode == nil || *settings.MemoryTransportMode != "text" {
 		t.Fatalf("expected default memory transport mode text, got %v", settings.MemoryTransportMode)
 	}
+	if settings.RecentConversationReferenceCount == nil || *settings.RecentConversationReferenceCount != 5 {
+		t.Fatalf("expected default recent conversation reference count 5, got %v", settings.RecentConversationReferenceCount)
+	}
 }
 
 func TestActiveScopeRequestRequiredField(t *testing.T) {

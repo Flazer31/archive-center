@@ -658,6 +658,10 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 		`a quiet scene may remain quiet`,
 		`coreObjectiveMemoryMaxItems: 5`,
 		`core_objective_memory_max_items: sanitizeTopKSetting(`,
+		`recentConversationReferenceCount: 5`,
+		`recent_conversation_messages: (prepareOptions.recentConversationMessages || []).map`,
+		`recent_conversation_reference_count: sanitizeTopKSetting(`,
+		`recentConversationMessages: archiveReadActiveMessages`,
 	}
 	for _, needle := range required {
 		if !strings.Contains(src, needle) {
@@ -895,9 +899,11 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`<input type="text" id="mo-bridgeUrl"`,
 		`<input type="number" id="mo-requestTimeoutMs"`,
 		`<input type="number" id="mo-topK"`,
+		`<input type="number" id="mo-recentConversationReferenceCount"`,
 		`settings.bridgeUrl = sanitizeBridgeUrl(`,
 		`settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();`,
 		`topK: $("mo-topK").value`,
+		`recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value`,
 		`failedQueueMaxAttempts: failedQueueMaxAttempts(),`,
 		`criticReprocessingIntervalSec: sanitizeNumber(s.criticReprocessingIntervalSec, DEFAULT_SETTINGS.criticReprocessingIntervalSec, 1, 3600),`,
 		`id="mo-criticReprocessingIntervalSec"`,

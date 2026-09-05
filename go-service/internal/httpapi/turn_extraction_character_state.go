@@ -292,11 +292,17 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		}
 		threadType := strings.TrimSpace(stringFromMap(thread, "thread_type"))
 		confidence := clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1)
+		lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(thread, "lifecycle_key"))
+		threadKey := stableKey("thread", title)
+		if lifecycleStorageKey := narrativeLifecycleStorageKey(lifecycleKey); lifecycleStorageKey != "" {
+			threadKey = lifecycleStorageKey
+			thread["lifecycle_key"] = lifecycleKey
+		}
 		if saver, ok := s.Store.(pendingThreadSaver); ok {
 			result.trySave("SavePendingThread", func() error {
 				return saver.SavePendingThread(ctx, &store.PendingThread{
 					ChatSessionID:    sid,
-					ThreadKey:        stableKey("thread", title),
+					ThreadKey:        threadKey,
 					Description:      extractionFirstNonEmpty(stringFromMap(thread, "details"), title),
 					Status:           "open",
 					CreatedTurn:      turnIndex,
@@ -322,6 +328,9 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			"status":      "open",
 			"confidence":  confidence,
 			"source_turn": turnIndex,
+		}
+		if lifecycleKey != "" {
+			threadState["lifecycle_key"] = lifecycleKey
 		}
 		subject := strings.TrimSpace(stringFromMap(thread, "subject"))
 		stateSlot := normalizeNarrativeStateSlot(stringFromMap(thread, "state_slot"))
@@ -380,6 +389,7 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 			}, result, func() { result.Storylines++ })
 		}
 	}
+	s.resolvePendingThreadsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
 
 	if saver, ok := s.Store.(worldRuleSaver); ok {
 		worldRuleItems := worldRuleItemsForSave(extraction)
@@ -436,6 +446,66 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		}
 	}
 	s.saveCriticIngestTrace(ctx, sid, turnIndex, now, result)
+}
+
+func (s *Server) resolvePendingThreadsFromExtraction(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult) {
+	if s == nil || s.Store == nil || result == nil {
+		return
+	}
+	lifecycleKeys, legacySubjects := narrativeResolvedThreadIdentities(extraction)
+	for _, claim := range normalizeNarrativeStateClaims(extraction) {
+		switch claim.Transition {
+		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
+			if claim.LifecycleKey != "" {
+				lifecycleKeys[claim.LifecycleKey] = true
+			}
+			if subject := normalizeArtifactDedupeText(claim.Subject); subject != "" {
+				legacySubjects[subject] = true
+			}
+		}
+	}
+	if len(lifecycleKeys) == 0 && len(legacySubjects) == 0 {
+		return
+	}
+	saver, ok := s.Store.(pendingThreadSaver)
+	if !ok {
+		result.addSkipReason("resolved_threads", "pending_thread_store_unavailable", nil)
+		return
+	}
+	threads, err := s.Store.ListPendingThreads(ctx, sid, "")
+	if err != nil {
+		result.addSkipReason("resolved_threads", "pending_thread_read_failed", err.Error())
+		return
+	}
+	for index := range threads {
+		thread := threads[index]
+		metadata := mapFromAny(parseJSONMap(thread.HookMetadataJSON))
+		lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(metadata, "lifecycle_key"))
+		matched := lifecycleKey != "" && lifecycleKeys[lifecycleKey]
+		if !matched && lifecycleKey == "" {
+			for _, value := range []string{thread.Title, thread.Description, stringFromMap(metadata, "subject"), stringFromMap(metadata, "title")} {
+				if legacySubjects[normalizeArtifactDedupeText(value)] {
+					matched = true
+					break
+				}
+			}
+		}
+		if !matched {
+			continue
+		}
+		metadata["status"] = "resolved"
+		metadata["resolved_turn"] = turnIndex
+		thread.Status = "resolved"
+		thread.ResolvedTurn = turnIndex
+		thread.SourceTurn = turnIndex
+		thread.LastSeenTurn = turnIndex
+		thread.ResolutionNote = extractionFirstNonEmpty(stringFromMap(metadata, "resolution_note"), "resolved by critic lifecycle transition")
+		thread.HookMetadataJSON = mustCompactJSON(metadata)
+		thread.UpdatedAt = now
+		result.trySave("SavePendingThread(resolved)", func() error {
+			return saver.SavePendingThread(ctx, &thread)
+		}, result, func() { result.PendingThreads++ })
+	}
 }
 
 func (r *artifactSaveResult) addSkipReason(surface, reason string, input any) {

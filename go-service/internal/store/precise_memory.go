@@ -147,9 +147,10 @@ type ActiveInteractionMemoryReader interface {
 	ListActiveInteractionMemoryUnits(context.Context, string) ([]PreciseMemoryUnit, error)
 }
 
-// GeneralVectorPreciseMemoryReader lists only source-active precise units that
-// are eligible for the general vector index. It is an optional administrative
-// inventory boundary; perspective-scoped units remain on their typed lanes.
+// GeneralVectorPreciseMemoryReader lists source-active precise units that are
+// eligible for the general vector index, including their canonical fact text
+// and provenance for request-time vector-hit hydration. Perspective-scoped
+// units remain on their typed lanes.
 type GeneralVectorPreciseMemoryReader interface {
 	ListGeneralVectorPreciseMemoryUnits(context.Context, string) ([]PreciseMemoryUnit, error)
 }

@@ -2044,6 +2044,13 @@
           "title": "Supervisor Enabled",
           "default": true
         },
+        "recent_conversation_reference_count": {
+          "type": "integer",
+          "minimum": 1,
+          "title": "Recent Conversation Reference Count",
+          "description": "Number of recent completed user/final-assistant conversations used by the existing memory recall query set. This is independent of top_k and the final core-memory item ceiling.",
+          "default": 5
+        },
         "top_k": {
           "type": "integer",
           "title": "Top K",

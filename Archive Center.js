@@ -39,8 +39,8 @@
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "4.2.0";
   const BUILD_ID = "4.2.0";
-  const BUILD_CHANNEL = "test";
-  const BUILD_TIME = "2026-09-03 KST";
+  const BUILD_CHANNEL = "release";
+  const BUILD_TIME = "2026-09-05 KST";
   const BUILD_NOTES = "Archive Center 4.2.0 priority-scored memory packs and selectable turn finalization";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
@@ -157,6 +157,7 @@
     debug: false,
     topK: 5,
     coreObjectiveMemoryMaxItems: 5,
+    recentConversationReferenceCount: 5,
     turnFinalizationMode: "immediate_after_response",
     requestTimeoutMs: 15000,
     auxiliaryInjectionPlacement: "auto",
@@ -1155,9 +1156,8 @@
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (실험)",
       "settings.hint.memoryTransportMode": "Go가 이미 선택한 장기 기억만 전송 형식으로 바꿉니다. Yumi 실험 모드는 Provider Manager의 Gemini PDF와 수동 지정 기능을 모두 켜야 합니다.",
       "settings.label.turnFinalizationMode": "저장 확정 시점",
-      "settings.turnFinalizationMode.immediate_after_response": "응답 직후",
-      "settings.turnFinalizationMode.next_user_input": "다음 사용자 입력 시",
-      "settings.hint.turnFinalizationMode": "기본값은 4.1과 같은 응답 직후 저장입니다. 다음 사용자 입력 시를 고르면 직전 최종 출력만 그때 확정하며, 직전 평론가는 현재 본문 생성과 동시에 진행됩니다.",
+      "settings.turnFinalizationMode.immediate_after_response": "현재 턴",
+      "settings.turnFinalizationMode.next_user_input": "이전 턴",
       "settings.label.referenceInjectionMaxChars": "원작 DB 예산 (chars)",
       "settings.label.lorebookReferenceMaxChars": "로어북 예산 (chars)",
       "settings.label.narrativeGuideMode": "서사 가이드 모드",
@@ -1177,7 +1177,9 @@
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.coreObjectiveMemoryMaxItems": "핵심 연관 기억 최대 수",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "점수가 있는 기억 사실 전체에서 본문에 전달할 핵심 항목 수입니다. 직접 근거와 비밀 보호만 이 수를 소비하지 않으며, 모든 항목은 전체 문자 예산을 지킵니다.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "완성된 턴 요약 묶음과 각 기억 자료 분류에서 본문에 전달할 최대 항목 수를 각각 정합니다.",
+      "settings.label.recentConversationReferenceCount": "최근 대화 참고 수",
+      "settings.label.recentConversationReferenceCount.hint": "기억을 찾을 때 참고할 최근 완결 대화 수입니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
       "settings.label.uiLanguage": "UI 언어",
       "settings.label.turnWorkflowHUDEnabled": "플로팅 UI",
@@ -1322,6 +1324,8 @@
       "timeline.session.unknown": "알 수 없음",
       "turn_hud.turn": "{n}턴",
       "turn_hud.turn_unknown": "턴 확인 중",
+      "turn_hud.slot.current": "현재 턴 생성",
+      "turn_hud.slot.previous": "직전 턴 평론가·저장",
       "turn_hud.completed": "저장 완료",
       "turn_hud.completed_with_warning": "경고와 함께 저장 완료",
       "turn_hud.invalidated": "작업 중단",
@@ -1566,7 +1570,9 @@
       "settings.label.topK": "ChromaDB Semantic Memories",
       "settings.label.topK.hint": "How many semantically relevant memories ChromaDB should retrieve for the current input. MariaDB hydrates selected vector hits as canonical rows.",
       "settings.label.coreObjectiveMemoryMaxItems": "Core Relevant Memory Maximum",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "Maximum globally ranked scored memory facts delivered to the model. Direct evidence and secret guards do not consume this count; every item remains inside the character budget.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "Sets the maximum items delivered for complete turn summaries and for each memory category.",
+      "settings.label.recentConversationReferenceCount": "Recent Conversation Reference Count",
+      "settings.label.recentConversationReferenceCount.hint": "How many recent completed conversations are referenced when finding memory.",
       "settings.label.llmRetryCount": "LLM Retry Count",
       "settings.label.llmRetryCount.hint": "0 = no retry (1 attempt only), 3 = 3 additional attempts on failure",
       "settings.label.maxInjectionChars": "Memory Context Budget (chars)",
@@ -1578,9 +1584,8 @@
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF (experimental)",
       "settings.hint.memoryTransportMode": "Changes only the representation of long-term memory already selected by Go. The Yumi experiment requires both Gemini PDF and manual selection in Provider Manager.",
       "settings.label.turnFinalizationMode": "Save Finalization Time",
-      "settings.turnFinalizationMode.immediate_after_response": "Immediately after response",
-      "settings.turnFinalizationMode.next_user_input": "At next user input",
-      "settings.hint.turnFinalizationMode": "The default preserves 4.1 immediate saving. Next-user-input mode finalizes only the previous row's final response then, while its Critic runs alongside the current generation.",
+      "settings.turnFinalizationMode.immediate_after_response": "Current turn",
+      "settings.turnFinalizationMode.next_user_input": "Previous turn",
       "settings.label.referenceInjectionMaxChars": "Original-work DB Budget (chars)",
       "settings.hint.referenceInjectionMaxChars": "Independent original-work reference limit. It does not borrow unused memory or lorebook capacity.",
       "settings.label.lorebookReferenceMaxChars": "Lorebook Budget (chars)",
@@ -2538,6 +2543,8 @@
       "dash.section.turnTrace": "Last Turn Trace",
       "turn_hud.turn": "Turn {n}",
       "turn_hud.turn_unknown": "Resolving turn",
+      "turn_hud.slot.current": "Current turn generation",
+      "turn_hud.slot.previous": "Previous turn Critic and save",
       "turn_hud.completed": "Save complete",
       "turn_hud.completed_with_warning": "Saved with warnings",
       "turn_hud.invalidated": "Operation stopped",
@@ -2782,7 +2789,9 @@
       "settings.label.topK": "ChromaDB意味記憶検索数",
       "settings.label.topK.hint": "現在の入力に意味的に近い記憶をChromaDBで何件取得するかを指定します。MariaDBは選ばれたベクトル結果を正本rowとして確認します。",
       "settings.label.coreObjectiveMemoryMaxItems": "核心関連記憶の最大数",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "スコア付き記憶事実全体からモデルへ渡す核心項目数です。直接根拠と秘密保護だけはこの数を消費せず、全項目が文字予算に従います。",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "完結ターン要約と各記憶分類から本文へ送る最大項目数をそれぞれ設定します。",
+      "settings.label.recentConversationReferenceCount": "最近の会話参照数",
+      "settings.label.recentConversationReferenceCount.hint": "記憶検索で参照する最近の完結会話数です。",
       "settings.label.llmRetryCount": "LLMリトライ回数",
       "settings.label.llmRetryCount.hint": "0 = リトライなし（1回のみ）、3 = 失敗時3回追加試行",
       "settings.label.maxInjectionChars": "一般記憶予算（chars）",
@@ -2794,9 +2803,8 @@
       "settings.memoryTransportMode.provider_manager_pdf": "Yumi Provider Manager PDF（実験）",
       "settings.hint.memoryTransportMode": "Go が選択済みの長期記憶だけ転送形式を変更します。Yumi 実験モードでは Provider Manager の Gemini PDF と手動指定を両方有効にしてください。",
       "settings.label.turnFinalizationMode": "保存確定時点",
-      "settings.turnFinalizationMode.immediate_after_response": "応答直後",
-      "settings.turnFinalizationMode.next_user_input": "次のユーザー入力時",
-      "settings.hint.turnFinalizationMode": "既定値は4.1と同じ応答直後保存です。次のユーザー入力時を選ぶと、直前行の最終応答だけをその時点で確定し、直前の評論家処理を現在の本文生成と並行させます。",
+      "settings.turnFinalizationMode.immediate_after_response": "現在のターン",
+      "settings.turnFinalizationMode.next_user_input": "直前のターン",
       "settings.label.referenceInjectionMaxChars": "原作DB予算（chars）",
       "settings.hint.referenceInjectionMaxChars": "原作参照専用の独立上限です。記憶やロアブックの未使用分を借用しません。",
       "settings.label.lorebookReferenceMaxChars": "ロアブック予算（chars）",
@@ -3752,6 +3760,8 @@
       "timeline.session.rollbackTitle": "ledgerに基づき最新のセッション移行をロールバック",
       "turn_hud.turn": "ターン {n}",
       "turn_hud.turn_unknown": "ターン確認中",
+      "turn_hud.slot.current": "現在ターンの生成",
+      "turn_hud.slot.previous": "直前ターンの批評・保存",
       "turn_hud.completed": "保存完了",
       "turn_hud.completed_with_warning": "警告付きで保存完了",
       "turn_hud.invalidated": "処理中断",
@@ -11693,6 +11703,10 @@
       merged.coreObjectiveMemoryMaxItems,
       DEFAULT_SETTINGS.coreObjectiveMemoryMaxItems,
     );
+    merged.recentConversationReferenceCount = sanitizeTopKSetting(
+      merged.recentConversationReferenceCount,
+      DEFAULT_SETTINGS.recentConversationReferenceCount,
+    );
     merged.requestTimeoutMs = getRequestTimeoutSettingMs(merged.requestTimeoutMs);
     // Sprint 3-B: injection budget
     merged.maxInjectionChars = Math.max(0, Math.floor(Number(merged.maxInjectionChars) || DEFAULT_SETTINGS.maxInjectionChars));
@@ -14317,7 +14331,7 @@
 
   const TURN_WORKFLOW_HUD_CONTRACT = "turn_workflow_hud.v3";
   const TURN_WORKFLOW_HUD_RECOVERY_REQUEST_CONTRACT = "turn_workflow_recovery_request.v1";
-  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;width:min(140px,calc(100vw - 10px));pointer-events:none;font-family:Pretendard Variable,Pretendard,Inter,Geist,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#F4F5F7";
+  const TURN_WORKFLOW_HUD_ROOT_STYLE = "position:fixed;top:50%;right:max(5px,env(safe-area-inset-right));transform:translateY(-50%);z-index:1000;display:flex;flex-direction:column;gap:7px;width:min(140px,calc(100vw - 10px));max-height:calc(100vh - 10px);pointer-events:none;font-family:Pretendard Variable,Pretendard,Inter,Geist,system-ui,-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;font-size:10px;line-height:1.25;color:#F4F5F7";
   const TURN_WORKFLOW_HUD_ROOT_SELECTOR = ".mo-turn-workflow-hud-root";
   const TURN_WORKFLOW_HUD_SURFACE_SELECTOR = ".mo-turn-workflow-hud-root > div";
   const TURN_WORKFLOW_HUD_CARD_STYLE = "position:relative;box-sizing:border-box;width:100%;max-height:calc(100vh - 20px);border:1px solid rgba(255,255,255,.07);border-radius:12px;background:#181C24;box-shadow:0 16px 40px rgba(0,0,0,.48);padding:8px;pointer-events:auto;font-size:10px;line-height:1.25;letter-spacing:-.01em;color:#F4F5F7;white-space:normal;overflow:auto;overflow-wrap:anywhere;overscroll-behavior:contain;scrollbar-width:thin";
@@ -14356,6 +14370,8 @@
   const TURN_WORKFLOW_HUD_RECOVERY_WRAP_STYLE = "margin-top:7px;padding-top:6px;border-top:1px solid rgba(255,255,255,.07)";
   const TURN_WORKFLOW_HUD_RECOVERY_BUTTON_STYLE = "box-sizing:border-box;width:100%;min-height:26px;margin:0;padding:5px 7px;border:1px solid rgba(143,167,255,.45);border-radius:7px;background:#202A48;color:#F4F5F7;font:inherit;font-size:8px;font-weight:600;line-height:1.25;cursor:pointer";
   const TURN_WORKFLOW_HUD_RECOVERY_STATUS_STYLE = "font-size:7px;line-height:1.3;color:#B9A4F7;overflow-wrap:anywhere";
+  const TURN_WORKFLOW_HUD_SLOT_STYLE = "min-height:0;pointer-events:none";
+  const TURN_WORKFLOW_HUD_SLOT_LABEL_STYLE = "margin:0 0 3px 2px;font-size:7px;font-weight:600;line-height:1.15;letter-spacing:.04em;color:#8FA7FF";
 
   let _turnWorkflowHUDActiveRequestId = "";
   let _turnWorkflowHUDWatchToken = 0;
@@ -14363,8 +14379,16 @@
   let _turnWorkflowHUDLastRevision = 0;
   let _turnWorkflowHUDTerminalRequestId = "";
   let _turnWorkflowHUDLastView = null;
+  let _turnWorkflowHUDCurrentFinalizationMode = "immediate_after_response";
   let _turnWorkflowHUDStreamAbortController = null;
   let _turnWorkflowHUDStreamReader = null;
+  let _turnWorkflowHUDPreviousRequestId = "";
+  let _turnWorkflowHUDPreviousWatchToken = 0;
+  let _turnWorkflowHUDPreviousWatchRunning = false;
+  let _turnWorkflowHUDPreviousLastRevision = 0;
+  let _turnWorkflowHUDPreviousLastView = null;
+  let _turnWorkflowHUDPreviousStreamAbortController = null;
+  let _turnWorkflowHUDPreviousStreamReader = null;
   let _turnWorkflowHUDElapsedTimer = null;
   let _turnWorkflowHUDMainDocument = null;
   let _turnWorkflowHUDMainDOMPermissionPromise = null;
@@ -14495,6 +14519,13 @@
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
     _turnWorkflowHUDLastView = null;
+    _turnWorkflowHUDCurrentFinalizationMode = "immediate_after_response";
+    cancelTurnWorkflowHUDPreviousStream();
+    _turnWorkflowHUDPreviousWatchToken++;
+    _turnWorkflowHUDPreviousWatchRunning = false;
+    _turnWorkflowHUDPreviousRequestId = "";
+    _turnWorkflowHUDPreviousLastRevision = 0;
+    _turnWorkflowHUDPreviousLastView = null;
     _turnWorkflowHUDHostWarningsByRequestId.clear();
     clearTurnWorkflowHUDTimer();
     await _turnWorkflowHUDRenderChain;
@@ -14726,8 +14757,13 @@
   }
 
   function dismissTurnWorkflowHUD(requestId) {
-    if (requestId && _turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
-    const dismissedRequestId = String(requestId || _turnWorkflowHUDActiveRequestId || "").trim();
+    if (
+      requestId
+      && (_turnWorkflowHUDActiveRequestId || _turnWorkflowHUDPreviousRequestId)
+      && requestId !== _turnWorkflowHUDActiveRequestId
+      && requestId !== _turnWorkflowHUDPreviousRequestId
+    ) return;
+    const dismissedRequestId = String(requestId || _turnWorkflowHUDActiveRequestId || _turnWorkflowHUDPreviousRequestId || "").trim();
     if (dismissedRequestId) _turnWorkflowHUDHostWarningsByRequestId.delete(dismissedRequestId);
     else _turnWorkflowHUDHostWarningsByRequestId.clear();
     const listenerIds = takeTurnWorkflowHUDDismissListenerIds();
@@ -14738,6 +14774,13 @@
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
     _turnWorkflowHUDLastView = null;
+    _turnWorkflowHUDCurrentFinalizationMode = "immediate_after_response";
+    cancelTurnWorkflowHUDPreviousStream();
+    _turnWorkflowHUDPreviousWatchToken++;
+    _turnWorkflowHUDPreviousWatchRunning = false;
+    _turnWorkflowHUDPreviousRequestId = "";
+    _turnWorkflowHUDPreviousLastRevision = 0;
+    _turnWorkflowHUDPreviousLastView = null;
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("dismiss", async function() {
       await removeTurnWorkflowHUDDismissListeners(listenerIds);
@@ -14908,7 +14951,71 @@
     }).filter(Boolean).join("");
   }
 
-  function buildTurnWorkflowHUDPresentation(view) {
+  function projectTurnWorkflowHUDPhaseView(view, phase) {
+    const normalizedPhase = String(phase || "").trim();
+    if (!view || (normalizedPhase !== "generation" && normalizedPhase !== "finalization")) return view;
+    const firstOrdinal = normalizedPhase === "generation" ? 1 : 7;
+    const lastOrdinal = normalizedPhase === "generation" ? 6 : 12;
+    const offset = firstOrdinal - 1;
+    const sourceStages = Array.isArray(view.stages) ? view.stages : [];
+    const projectStage = function(stage) {
+      if (!stage || typeof stage !== "object") return stage;
+      const sourceOrdinal = Number(stage.ordinal || 0);
+      return Object.assign({}, stage, {
+        ordinal: sourceOrdinal > 0 ? Math.min(6, Math.max(1, sourceOrdinal - offset)) : 1,
+        total: 6,
+      });
+    };
+    const stages = sourceStages.filter(function(stage) {
+      const ordinal = Number(stage && stage.ordinal || 0);
+      return ordinal >= firstOrdinal && ordinal <= lastOrdinal;
+    }).map(projectStage);
+    let currentStage = view.current_stage && typeof view.current_stage === "object"
+      ? view.current_stage
+      : null;
+    const currentOrdinal = Number(currentStage && currentStage.ordinal || 0);
+    if (normalizedPhase === "finalization" && currentOrdinal < firstOrdinal) {
+      currentStage = sourceStages.find(function(stage) {
+        return Number(stage && stage.ordinal || 0) === firstOrdinal;
+      }) || {
+        key: "final_output_accepted",
+        label_key: "turn_hud.stage.final_output_accepted",
+        status: "running",
+        ordinal: firstOrdinal,
+        total: 12,
+        llm_call: false,
+      };
+    } else if (normalizedPhase === "generation" && currentOrdinal > lastOrdinal) {
+      currentStage = sourceStages.find(function(stage) {
+        return Number(stage && stage.ordinal || 0) === lastOrdinal;
+      }) || currentStage;
+    }
+    return Object.assign({}, view, {
+      current_stage: projectStage(currentStage),
+      stages,
+    });
+  }
+
+  function dismissTurnWorkflowHUDPrevious(requestId) {
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId || normalizedRequestId !== _turnWorkflowHUDPreviousRequestId) return false;
+    _turnWorkflowHUDHostWarningsByRequestId.delete(normalizedRequestId);
+    cancelTurnWorkflowHUDPreviousStream();
+    _turnWorkflowHUDPreviousWatchToken++;
+    _turnWorkflowHUDPreviousWatchRunning = false;
+    _turnWorkflowHUDPreviousRequestId = "";
+    _turnWorkflowHUDPreviousLastRevision = 0;
+    _turnWorkflowHUDPreviousLastView = null;
+    queueTurnWorkflowHUDOperation("dismiss previous", async function() {
+      await removeTurnWorkflowHUDDismissListeners();
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (root) await applyTurnWorkflowHUDStack(root);
+    });
+    return true;
+  }
+
+  function buildTurnWorkflowHUDPresentation(view, phase = "") {
+    view = projectTurnWorkflowHUDPhaseView(view, phase);
     const severity = String(view.severity || "normal");
     if (String(view.display_mode || "") === "notice") {
       const failed = view.status === "failed" || severity === "error";
@@ -14946,14 +15053,18 @@
       const errorDetailsHTML = turnWorkflowHUDErrorDetailsHTML(error);
       const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
       const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
+      const closeButtonOnly = turnWorkflowHUDCloseButtonOnly(view);
       const meta = [
         turnWorkflowHUDTurnLabel(view),
         String(error.code || "CRITIC_REPROCESSING_QUEUED"),
       ].filter(Boolean).join(" · ");
       return {
         terminal: false,
+        dismissible: closeButtonOnly,
+        closeButtonOnly,
         elapsedStartedAt: "",
-        html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle("warning")}">`
+        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle("warning")}">`
+          + (closeButtonOnly ? turnWorkflowHUDDismissButtonHTML() : "")
           + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running_title"))}</div>`
           + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
@@ -15053,6 +15164,142 @@
     return !settings || settings.turnWorkflowHUDEnabled !== false;
   }
 
+  function turnWorkflowHUDSlotHTML(presentation, slot, labelKey, dual) {
+    if (!presentation || !presentation.html) return "";
+    let cardHTML = String(presentation.html);
+    if (dual) {
+      cardHTML = cardHTML.replace(
+        "max-height:calc(100vh - 20px)",
+        "max-height:calc((100vh - 27px)/2)",
+      );
+    }
+    if (dual && slot === "previous" && presentation.dismissible !== true) {
+      cardHTML = cardHTML.replace(turnWorkflowHUDDismissButtonHTML(), "");
+    }
+    cardHTML = cardHTML.replace(
+      "<div",
+      `<div data-turn-workflow-card="${escapeTurnWorkflowHUDHTML(slot)}"`,
+    );
+    return `<section data-turn-workflow-slot="${escapeTurnWorkflowHUDHTML(slot)}" style="${TURN_WORKFLOW_HUD_SLOT_STYLE}">`
+      + `<div style="${TURN_WORKFLOW_HUD_SLOT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(labelKey))}</div>`
+      + cardHTML
+      + `</section>`;
+  }
+
+  function buildTurnWorkflowHUDStackPresentation(currentView, previousView, currentFinalizationMode = "immediate_after_response") {
+    const splitWorkflow = String(currentFinalizationMode || "") === "next_user_input" || !!previousView;
+    const projectedCurrentView = currentView
+      ? projectTurnWorkflowHUDPhaseView(currentView, splitWorkflow ? "generation" : "")
+      : null;
+    const projectedPreviousView = previousView
+      ? projectTurnWorkflowHUDPhaseView(previousView, "finalization")
+      : null;
+    const currentPresentation = projectedCurrentView
+      ? buildTurnWorkflowHUDPresentation(projectedCurrentView)
+      : null;
+    const previousPresentation = projectedPreviousView
+      ? buildTurnWorkflowHUDPresentation(projectedPreviousView)
+      : null;
+    if (currentPresentation && previousPresentation) {
+      return {
+        html: turnWorkflowHUDSlotHTML(currentPresentation, "current", "turn_hud.slot.current", true)
+          + turnWorkflowHUDSlotHTML(previousPresentation, "previous", "turn_hud.slot.previous", true),
+        currentPresentation,
+        previousPresentation,
+        dual: true,
+        currentCardSelector: '[data-turn-workflow-card="current"]',
+        previousCardSelector: '[data-turn-workflow-card="previous"]',
+        elapsedSelector: '[data-turn-workflow-card="current"] time',
+      };
+    }
+    if (currentPresentation) {
+      if (splitWorkflow) {
+        return {
+          html: turnWorkflowHUDSlotHTML(currentPresentation, "current", "turn_hud.slot.current", false),
+          currentPresentation,
+          previousPresentation: null,
+          dual: false,
+          currentCardSelector: '[data-turn-workflow-card="current"]',
+          previousCardSelector: "",
+          elapsedSelector: '[data-turn-workflow-card="current"] time',
+        };
+      }
+      return {
+        html: currentPresentation.html,
+        currentPresentation,
+        previousPresentation: null,
+        dual: false,
+        currentCardSelector: "div",
+        previousCardSelector: "",
+        elapsedSelector: "time",
+      };
+    }
+    if (previousPresentation) {
+      return {
+        html: turnWorkflowHUDSlotHTML(previousPresentation, "previous", "turn_hud.slot.previous", false),
+        currentPresentation: null,
+        previousPresentation,
+        dual: false,
+        currentCardSelector: "",
+        previousCardSelector: '[data-turn-workflow-card="previous"]',
+        elapsedSelector: "",
+      };
+    }
+    return { html: "", currentPresentation: null, previousPresentation: null, dual: false };
+  }
+
+  async function applyTurnWorkflowHUDStack(root) {
+    const currentView = _turnWorkflowHUDLastView;
+    const previousView = _turnWorkflowHUDPreviousLastView;
+    const stack = buildTurnWorkflowHUDStackPresentation(
+      currentView,
+      previousView,
+      _turnWorkflowHUDCurrentFinalizationMode,
+    );
+    clearTurnWorkflowHUDTimer();
+    await root.setInnerHTML(stack.html);
+    if (stack.currentPresentation && stack.currentPresentation.elapsedStartedAt && stack.elapsedSelector) {
+      _turnWorkflowHUDElapsedElement = await root.querySelector(stack.elapsedSelector);
+      _turnWorkflowHUDElapsedStartedAt = stack.currentPresentation.elapsedStartedAt;
+      if (_turnWorkflowHUDElapsedElement) {
+        await updateTurnWorkflowHUDElapsed();
+        scheduleTurnWorkflowHUDElapsedFrame();
+      }
+    }
+    if (
+      stack.currentPresentation
+      && (stack.currentPresentation.terminal || stack.currentPresentation.dismissible)
+      && stack.currentCardSelector
+    ) {
+      const currentCard = await root.querySelector(stack.currentCardSelector);
+      await attachTurnWorkflowHUDDismiss(
+        currentCard,
+        String(currentView && currentView.request_id || "").trim(),
+        stack.currentPresentation.closeButtonOnly === true,
+      );
+      await attachTurnWorkflowHUDRecovery(
+        stack.dual ? currentCard : root,
+        currentView,
+        stack.currentPresentation.recoveryAction,
+      );
+    }
+    if (stack.previousPresentation && stack.previousCardSelector) {
+      const previousCard = await root.querySelector(stack.previousCardSelector);
+      if (stack.previousPresentation.terminal || stack.previousPresentation.dismissible) {
+        const previousRequestId = String(previousView && previousView.request_id || "").trim();
+        await attachTurnWorkflowHUDDismiss(
+          previousCard,
+          previousRequestId,
+          stack.previousPresentation.closeButtonOnly === true,
+          async function() {
+            dismissTurnWorkflowHUDPrevious(previousRequestId);
+          },
+        );
+      }
+      await attachTurnWorkflowHUDRecovery(previousCard, previousView, stack.previousPresentation.recoveryAction);
+    }
+  }
+
   function renderTurnWorkflowHUD(view) {
     if (_turnWorkflowHUDUnloaded) return;
     if (!turnWorkflowHUDIsEnabled()) {
@@ -15064,6 +15311,7 @@
     if (!requestId) return;
     if (_turnWorkflowHUDActiveRequestId && requestId !== _turnWorkflowHUDActiveRequestId) return;
     _turnWorkflowHUDActiveRequestId = requestId;
+    _turnWorkflowHUDLastView = view;
     const revision = Number(view.revision || 0);
     _turnWorkflowHUDLastRevision = Math.max(_turnWorkflowHUDLastRevision, revision);
     const presentation = buildTurnWorkflowHUDPresentation(view);
@@ -15076,24 +15324,7 @@
       await removeTurnWorkflowHUDDismissListeners();
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
-      clearTurnWorkflowHUDTimer();
-      await root.setInnerHTML(presentation.html);
-      if (presentation.elapsedStartedAt) {
-        _turnWorkflowHUDElapsedElement = await root.querySelector("time");
-        _turnWorkflowHUDElapsedStartedAt = presentation.elapsedStartedAt;
-        if (_turnWorkflowHUDElapsedElement) {
-          await updateTurnWorkflowHUDElapsed();
-          scheduleTurnWorkflowHUDElapsedFrame();
-        }
-      }
-      if (presentation.terminal) {
-        await attachTurnWorkflowHUDDismiss(
-          await root.querySelector("div"),
-          requestId,
-          presentation.closeButtonOnly === true,
-        );
-        await attachTurnWorkflowHUDRecovery(root, view, presentation.recoveryAction);
-      }
+      await applyTurnWorkflowHUDStack(root);
     });
   }
 
@@ -15222,6 +15453,19 @@
     });
   }
 
+  function renderTurnWorkflowHUDPreviousTransportError(requestId, path, fallbackReasonCode) {
+    if (_turnWorkflowHUDUnloaded || !turnWorkflowHUDIsEnabled()) return;
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId || normalizedRequestId !== _turnWorkflowHUDPreviousRequestId) return;
+    rememberTurnWorkflowHUDHostWarning(
+      normalizedRequestId,
+      classifyTurnWorkflowHUDTransportFailure(path, fallbackReasonCode),
+    );
+    if (_turnWorkflowHUDPreviousLastView) {
+      renderTurnWorkflowHUDPrevious(_turnWorkflowHUDPreviousLastView);
+    }
+  }
+
   function consumeTurnWorkflowHUD(view) {
     if (!turnWorkflowHUDIsEnabled()) return false;
     if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT || view.status === "unknown") return false;
@@ -15231,6 +15475,36 @@
     if (revision > 0 && revision < _turnWorkflowHUDLastRevision) return false;
     _turnWorkflowHUDLastView = view;
     renderTurnWorkflowHUD(view);
+    return true;
+  }
+
+  function renderTurnWorkflowHUDPrevious(view) {
+    if (_turnWorkflowHUDUnloaded || !turnWorkflowHUDIsEnabled()) return;
+    if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT) return;
+    const requestId = String(view.request_id || "").trim();
+    if (!requestId || requestId !== _turnWorkflowHUDPreviousRequestId) return;
+    const revision = Number(view.revision || 0);
+    _turnWorkflowHUDPreviousLastRevision = Math.max(_turnWorkflowHUDPreviousLastRevision, revision);
+    _turnWorkflowHUDPreviousLastView = view;
+    return queueTurnWorkflowHUDOperation("render previous", async function() {
+      if (requestId !== _turnWorkflowHUDPreviousRequestId) return;
+      if (revision > 0 && revision < _turnWorkflowHUDPreviousLastRevision) return;
+      await removeTurnWorkflowHUDDismissListeners();
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (!root || requestId !== _turnWorkflowHUDPreviousRequestId) return;
+      await applyTurnWorkflowHUDStack(root);
+    });
+  }
+
+  function consumeTurnWorkflowHUDPrevious(view) {
+    if (!turnWorkflowHUDIsEnabled()) return false;
+    if (!view || view.contract_version !== TURN_WORKFLOW_HUD_CONTRACT || view.status === "unknown") return false;
+    const requestId = String(view.request_id || "").trim();
+    if (!requestId || requestId !== _turnWorkflowHUDPreviousRequestId) return false;
+    const revision = Number(view.revision || 0);
+    if (revision > 0 && revision < _turnWorkflowHUDPreviousLastRevision) return false;
+    _turnWorkflowHUDPreviousLastView = view;
+    renderTurnWorkflowHUDPrevious(view);
     return true;
   }
 
@@ -15286,6 +15560,22 @@
     const controller = _turnWorkflowHUDStreamAbortController;
     _turnWorkflowHUDStreamReader = null;
     _turnWorkflowHUDStreamAbortController = null;
+    try {
+      if (controller) controller.abort();
+    } catch { /* no-op */ }
+    try {
+      if (reader && typeof reader.cancel === "function") {
+        const cancellation = reader.cancel();
+        if (cancellation && typeof cancellation.catch === "function") cancellation.catch(function() {});
+      }
+    } catch { /* no-op */ }
+  }
+
+  function cancelTurnWorkflowHUDPreviousStream() {
+    const reader = _turnWorkflowHUDPreviousStreamReader;
+    const controller = _turnWorkflowHUDPreviousStreamAbortController;
+    _turnWorkflowHUDPreviousStreamReader = null;
+    _turnWorkflowHUDPreviousStreamAbortController = null;
     try {
       if (controller) controller.abort();
     } catch { /* no-op */ }
@@ -15385,6 +15675,61 @@
     return true;
   }
 
+  async function consumeTurnWorkflowHUDPreviousStreamLine(line, token, requestId) {
+    const normalized = String(line || "").trim();
+    if (!normalized) return false;
+    let view;
+    try {
+      view = JSON.parse(normalized);
+    } catch {
+      throw turnWorkflowHUDStreamFailure("stream_decode_failed", "invalid previous-turn NDJSON event");
+    }
+    if (
+      token !== _turnWorkflowHUDPreviousWatchToken
+      || requestId !== _turnWorkflowHUDPreviousRequestId
+    ) return true;
+    if (String(view && view.request_id || "") !== requestId) {
+      throw turnWorkflowHUDStreamFailure("stream_request_mismatch", "previous-turn stream request mismatch");
+    }
+    if (consumeTurnWorkflowHUDPrevious(view)) {
+      await _turnWorkflowHUDRenderChain;
+    }
+    return view && (
+      view.status === "completed"
+      || view.status === "completed_with_warning"
+      || view.status === "failed"
+      || view.status === "invalidated"
+    );
+  }
+
+  async function consumeTurnWorkflowHUDPreviousStream(reader, token, requestId) {
+    const decoder = new TextDecoder();
+    let buffered = "";
+    while (
+      token === _turnWorkflowHUDPreviousWatchToken
+      && requestId === _turnWorkflowHUDPreviousRequestId
+    ) {
+      const chunk = await reader.read();
+      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffered.slice(0, newlineIndex);
+        buffered = buffered.slice(newlineIndex + 1);
+        if (await consumeTurnWorkflowHUDPreviousStreamLine(line, token, requestId)) return true;
+        newlineIndex = buffered.indexOf("\n");
+      }
+      if (chunk && chunk.done === true) {
+        buffered += decoder.decode();
+        if (
+          buffered.trim()
+          && await consumeTurnWorkflowHUDPreviousStreamLine(buffered, token, requestId)
+        ) return true;
+        return false;
+      }
+    }
+    return true;
+  }
+
   // The backend cannot publish a workflow ViewModel until /prepare-turn has
   // registered the request. Render only the host-observed waiting state here;
   // the first backend revision replaces it with authoritative turn/stage data.
@@ -15398,6 +15743,9 @@
     _turnWorkflowHUDWatchToken++;
     _turnWorkflowHUDWatchRunning = false;
     _turnWorkflowHUDActiveRequestId = normalizedRequestId;
+    _turnWorkflowHUDCurrentFinalizationMode = String(settings && settings.turnFinalizationMode || "") === "next_user_input"
+      ? "next_user_input"
+      : "immediate_after_response";
     if (previousRequestId) _turnWorkflowHUDHostWarningsByRequestId.delete(previousRequestId);
     _turnWorkflowHUDLastRevision = 0;
     _turnWorkflowHUDTerminalRequestId = "";
@@ -15419,6 +15767,30 @@
       },
     });
     return normalizedRequestId;
+  }
+
+  function finishTurnWorkflowHUDCurrentGeneration(requestId) {
+    const normalizedRequestId = String(requestId || "").trim();
+    if (
+      !normalizedRequestId
+      || normalizedRequestId !== _turnWorkflowHUDActiveRequestId
+    ) return false;
+    _turnWorkflowHUDHostWarningsByRequestId.delete(normalizedRequestId);
+    cancelTurnWorkflowHUDStream();
+    _turnWorkflowHUDWatchToken++;
+    _turnWorkflowHUDWatchRunning = false;
+    _turnWorkflowHUDActiveRequestId = "";
+    _turnWorkflowHUDLastRevision = 0;
+    _turnWorkflowHUDTerminalRequestId = "";
+    _turnWorkflowHUDLastView = null;
+    _turnWorkflowHUDCurrentFinalizationMode = "immediate_after_response";
+    clearTurnWorkflowHUDTimer();
+    queueTurnWorkflowHUDOperation("finish current generation", async function() {
+      await removeTurnWorkflowHUDDismissListeners();
+      const root = await ensureTurnWorkflowHUDRoot();
+      if (root) await applyTurnWorkflowHUDStack(root);
+    });
+    return true;
   }
 
   function renderTurnWorkflowHUDSameRequestRetry(requestId, attemptCount) {
@@ -15526,6 +15898,65 @@
         _turnWorkflowHUDStreamAbortController = null;
         _turnWorkflowHUDStreamReader = null;
         _turnWorkflowHUDWatchRunning = false;
+      }
+    });
+  }
+
+  function startTurnWorkflowHUDPreviousWatch(requestId) {
+    if (!turnWorkflowHUDIsEnabled()) {
+      dismissTurnWorkflowHUD();
+      return;
+    }
+    const normalizedRequestId = String(requestId || "").trim();
+    if (!normalizedRequestId) return;
+    if (settings.webDirectBridgeEnabled === true) {
+      debugLog("previous-turn workflow HUD live stream is unavailable in Web Risu direct bridge test mode");
+      return;
+    }
+    if (
+      _turnWorkflowHUDPreviousWatchRunning
+      && _turnWorkflowHUDPreviousRequestId === normalizedRequestId
+    ) return;
+    cancelTurnWorkflowHUDPreviousStream();
+    _turnWorkflowHUDPreviousWatchToken++;
+    const token = _turnWorkflowHUDPreviousWatchToken;
+    _turnWorkflowHUDPreviousWatchRunning = true;
+    _turnWorkflowHUDPreviousRequestId = normalizedRequestId;
+    _turnWorkflowHUDPreviousLastRevision = 0;
+    _turnWorkflowHUDPreviousLastView = null;
+    (async function() {
+      const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
+      if (!bridgeRoute.url) {
+        throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "bridge URL is unavailable");
+      }
+      const controller = new AbortController();
+      _turnWorkflowHUDPreviousStreamAbortController = controller;
+      const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
+        + "&after_revision=0";
+      const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
+      if (
+        token !== _turnWorkflowHUDPreviousWatchToken
+        || _turnWorkflowHUDPreviousRequestId !== normalizedRequestId
+      ) {
+        try { await reader.cancel(); } catch { /* no-op */ }
+        return;
+      }
+      _turnWorkflowHUDPreviousStreamReader = reader;
+      const terminal = await consumeTurnWorkflowHUDPreviousStream(reader, token, normalizedRequestId);
+      _turnWorkflowHUDPreviousStreamReader = null;
+      if (!terminal) {
+        throw turnWorkflowHUDStreamFailure(
+          "hud_transport_nonterminal_eof",
+          "previous-turn HUD stream ended before a terminal backend state",
+        );
+      }
+    })().catch(function(err) {
+      debugLog("previous-turn workflow HUD watcher failed:", err && err.message);
+    }).finally(function() {
+      if (token === _turnWorkflowHUDPreviousWatchToken) {
+        _turnWorkflowHUDPreviousStreamAbortController = null;
+        _turnWorkflowHUDPreviousStreamReader = null;
+        _turnWorkflowHUDPreviousWatchRunning = false;
       }
     });
   }
@@ -16213,6 +16644,13 @@
             content: String(parsed.text || (m && m.content) || ""),
           };
         }).filter(function(m) { return m.role || m.content; }),
+        recent_conversation_messages: (prepareOptions.recentConversationMessages || []).map(function(m) {
+          const parsed = getPayloadMessageRoleAndText(m);
+          return {
+            role: parsed.role || String((m && m.role) || ""),
+            content: String(parsed.text || (m && m.content) || ""),
+          };
+        }).filter(function(m) { return m.role || m.content; }),
         continuity_trigger_mode: (continuityInfo && continuityInfo.triggerMode) ? continuityInfo.triggerMode : "none",
         continuity_query: (continuityInfo && continuityInfo.query) ? String(continuityInfo.query) : "",
         settings: {
@@ -16236,6 +16674,10 @@
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           supervisor_enabled: !guideDisabled,
           top_k: freshFirstTurnLightMode ? 0 : sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
+          recent_conversation_reference_count: sanitizeTopKSetting(
+            settings.recentConversationReferenceCount,
+            DEFAULT_SETTINGS.recentConversationReferenceCount,
+          ),
           core_objective_memory_max_items: sanitizeTopKSetting(
             settings.coreObjectiveMemoryMaxItems,
             DEFAULT_SETTINGS.coreObjectiveMemoryMaxItems,
@@ -29513,22 +29955,37 @@
   async function tryCompleteTurn(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, prebuiltBody) {
     if (!settings.enabled || !settings.dbEnabled) return null;
     let workflowRequestId = "";
+    let previousTurnHUD = false;
     try {
       const body = prebuiltBody || await buildCompleteTurnRequestBody(
         turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace
       );
       if (!body) return null;
       workflowRequestId = turnWorkflowHUDRequestIdFromCompleteBody(body);
-      if (workflowRequestId) startTurnWorkflowHUDWatch(workflowRequestId);
+      previousTurnHUD = String(body && body.client_meta && body.client_meta.turn_finalization_mode || "")
+        === "next_user_input";
+      if (workflowRequestId) {
+        if (previousTurnHUD) startTurnWorkflowHUDPreviousWatch(workflowRequestId);
+        else startTurnWorkflowHUDWatch(workflowRequestId);
+      }
       const result = await safeCall(
         () => bridgeFetchWithRetry("/complete-turn", { method: "POST", body, timeoutMs: 0 }, 1),
         null, "tryCompleteTurn"
       );
       if (workflowRequestId) {
         if (result && result.turn_workflow_hud) {
-          consumeTurnWorkflowHUD(result.turn_workflow_hud);
+          if (previousTurnHUD) consumeTurnWorkflowHUDPrevious(result.turn_workflow_hud);
+          else consumeTurnWorkflowHUD(result.turn_workflow_hud);
         } else if (!result) {
-          renderTurnWorkflowHUDTransportError(workflowRequestId, "/complete-turn", "complete_turn_transport_unavailable");
+          if (previousTurnHUD) {
+            renderTurnWorkflowHUDPreviousTransportError(
+              workflowRequestId,
+              "/complete-turn",
+              "complete_turn_transport_unavailable",
+            );
+          } else {
+            renderTurnWorkflowHUDTransportError(workflowRequestId, "/complete-turn", "complete_turn_transport_unavailable");
+          }
         }
       }
       const sourceAcceptance = result && result.source_acceptance;
@@ -29552,7 +30009,15 @@
     } catch (err) {
       debugLog("[M-4c] tryCompleteTurn error:", err.message);
       if (workflowRequestId) {
-        renderTurnWorkflowHUDTransportError(workflowRequestId, "/complete-turn", "complete_turn_transport_unavailable");
+        if (previousTurnHUD) {
+          renderTurnWorkflowHUDPreviousTransportError(
+            workflowRequestId,
+            "/complete-turn",
+            "complete_turn_transport_unavailable",
+          );
+        } else {
+          renderTurnWorkflowHUDTransportError(workflowRequestId, "/complete-turn", "complete_turn_transport_unavailable");
+        }
       }
       return null;
     }
@@ -29863,6 +30328,7 @@
           _injectionPack: preparedBundle.injectionPack || { payload_application_plan: compactPlan },
           _sourceToPayloadLineage: preparedBundle.sourceToPayloadLineage || null,
           _referenceInjection: preparedBundle.referenceInjection || null,
+          turnFinalizationPolicy: preparedBundle.turnFinalizationPolicy || null,
           _effectiveUserInput: userInput,
           _effectiveUserInputChanged: false,
           timestamp: Date.now(),
@@ -30829,7 +31295,7 @@
         trace.applyMode && trace.applyMode.payloadReplaced
       );
 
-      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _sourceToPayloadLineage: (preparedBundle && preparedBundle.sourceToPayloadLineage) || null, _referenceInjection: (preparedBundle && preparedBundle.referenceInjection) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
+      return { searchResult, wakeUpContext, supervisorResult, kgRecallResult, activeStatesResult, episodeRecallResult, storylineResult, characterResult, worldRulesResult, pendingThreadsResult, locationContextResult, continuityPackResult: continuityPackRequested ? continuityPackResult : null, continuityInfo, _trace: trace, _chatSessionId: chatSessionId, _improvementTrace, _injectionPack: (preparedBundle && preparedBundle.injectionPack) || null, _sourceToPayloadLineage: (preparedBundle && preparedBundle.sourceToPayloadLineage) || null, _referenceInjection: (preparedBundle && preparedBundle.referenceInjection) || null, turnFinalizationPolicy: (preparedBundle && preparedBundle.turnFinalizationPolicy) || null, _effectiveUserInput: userInput, _effectiveUserInputChanged: _effectiveUserInputChanged, timestamp: Date.now() };
     } catch (err) {
       warnLog("orchestrateTurnHelpers failed:", err.message);
       updateRuntimeState("lastError", "error", { detail: err.message });
@@ -33623,6 +34089,7 @@
 
       const preparedTurnResult = await tryPrepareTurn(orchSessionId, userInput, archiveReadMessages, continuityInfo, type, turnLanguageContext, {
         hostContext: orchHostContext,
+        recentConversationMessages: archiveReadActiveMessages,
         freshFirstTurnLightMode,
         freshFirstTurnLightModeMeta,
         runtimeTokenInfo,
@@ -34398,6 +34865,9 @@
             persistenceRequestContext,
             sourceAcceptanceFinality,
           );
+          if (queued) {
+            finishTurnWorkflowHUDCurrentGeneration(persistenceRequestContext.requestId);
+          }
           updateRuntimeState("lastStreamingAfterRequest", queued ? "watching" : "warn", {
             detail: queued
               ? "accepted response waiting for the next user input"
@@ -34780,52 +35250,6 @@
           await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderAssistantMissing");
         }
         debugLog("[M-4c] assistant content missing; skip empty assistant persistence and complete fallback");
-        return responseReturnContent ?? "";
-      }
-      const recentPersistedDuplicate = hasPersistedAssistantContent
-        ? await findRecentPersistedCompleteTurnPairForContent(chatSessionId, safeSavedUserInput, persistedAssistantContent)
-        : null;
-      if (recentPersistedDuplicate && Number(recentPersistedDuplicate.turnIndex || 0) > 0) {
-        const duplicateTurnIndex = Number(recentPersistedDuplicate.turnIndex);
-        trackTurnIndex(duplicateTurnIndex, chatSessionId);
-        setTurnCounterAtLeast(chatSessionId, duplicateTurnIndex);
-        promoteAssistantSnapshot(chatSessionId, persistedAssistantContent, duplicateTurnIndex);
-        updateRuntimeState("lastSaveStatus", "ok", {
-          turnIndex: duplicateTurnIndex,
-          reason_code: "idempotent_pair_replay",
-          detail: "idempotent pair replay; duplicate save skipped",
-        });
-        updateRuntimeState("lastCompleteStatus", "ok", {
-          turnIndex: duplicateTurnIndex,
-          reason_code: "accepted_existing_pair",
-          detail: "accepted (existing pair)",
-        });
-        updateRuntimeState("lastCompleteTurnStatus", "ok", {
-          turnIndex: duplicateTurnIndex,
-          source: "local",
-          reason_code: "idempotent_pair_replay",
-          detail: "idempotent_pair_replay",
-          failReasons: [],
-        });
-        if (requestOrchResult && requestOrchResult._trace) {
-          requestOrchResult._trace.duplicatePersistenceGuard = {
-            status: "skipped_duplicate_complete_turn",
-            source: recentPersistedDuplicate.source || "recent_backend_pair_duplicate_guard",
-            existingTurnIndex: duplicateTurnIndex,
-            latestBackendTurn: Number(recentPersistedDuplicate.latestBackendTurn || 0),
-            userChars: String(safeSavedUserInput || "").length,
-            assistantChars: String(persistedAssistantContent || "").length,
-          };
-          requestOrchResult._trace.endedAt = new Date().toISOString();
-          lastTurnTrace = requestOrchResult._trace;
-          pushTurnHistory(lastTurnTrace);
-          syncRuntimeStateFromTurnTrace(lastTurnTrace);
-        }
-        requestOrchResult = null;
-        if (panelOpen) {
-          await safeCall(() => refreshOpenArchiveCenterUI(), undefined, "afterRequestRenderDuplicatePairReplay");
-        }
-        debugLog("[M-4c] duplicate complete-turn pair skipped; existing turn:", duplicateTurnIndex);
         return responseReturnContent ?? "";
       }
       turnIdx = await reserveAfterRequestPersistenceTurnIndex(
@@ -45950,9 +46374,9 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0B0D11}
 .mo-row label{font-size:12px;line-height:1.45;color:#8B909A;flex:0 0 min(220px,34%)}
 .mo-row input[type=text],.mo-row input[type=number],.mo-row input[type=url],.mo-row input[type=search],.mo-row input[type=file]{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:9px 11px;border-radius:10px;font-size:13px;flex:1;min-width:0;max-width:100%}
 .mo-row input:focus,.mo-row select:focus{border-color:#8FA7FF;outline:none}
-.mo-chk{display:flex;align-items:center;gap:8px}
-.mo-chk input[type=checkbox]{width:16px;height:16px;accent-color:#5D73E6;cursor:pointer}
-.mo-chk label{cursor:pointer;font-size:13px}
+.mo-chk{display:flex;align-items:center;gap:8px;flex:1 1 240px;min-width:0}
+.mo-chk input[type=checkbox]{width:16px;height:16px;flex:0 0 16px;accent-color:#5D73E6;cursor:pointer}
+.mo-chk label{cursor:pointer;font-size:13px;flex:1 1 auto;min-width:0}
 .mo-footer{min-height:64px;background:rgba(19,22,28,.96);border-top:1px solid rgba(255,255,255,.07);padding:10px clamp(16px,3vw,40px);display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .mo-footer-language{display:flex;align-items:center;gap:8px;margin-left:8px}
 .mo-footer-language label{font-size:12px;color:#8B909A}
@@ -46401,6 +46825,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
 .mo-status{background:#13161C;border:1px solid rgba(255,255,255,.07);border-radius:12px;color:#8B909A}.mo-status-ok{border-color:rgba(110,190,145,.28);color:#91C9AA}.mo-status-notice{border-color:rgba(143,167,255,.30);color:#8FA7FF}.mo-status-wait{border-color:rgba(199,168,105,.28);color:#C7A869}.mo-status-fail{border-color:rgba(230,133,165,.32);color:#E685A5}
 .mo-session-normalize-status,.mo-session-normalize-result{background:#13161C;border-color:rgba(255,255,255,.07);border-radius:14px;color:#F4F5F7;box-shadow:0 12px 28px rgba(0,0,0,.18)}
 @media(max-width:600px){.mo-hdr{min-height:60px;padding:10px 14px;align-items:center}.mo-brand-mark{width:32px;height:32px;flex-basis:32px}.mo-hdr-left{min-width:0;flex:1 1 auto}.mo-hdr-ver{display:none}.mo-hdr-actions{min-width:0;flex-wrap:nowrap;gap:5px}.mo-hdr-actions>.mo-dash-header-card,.mo-hdr-actions>.mo-hdr-danger-btn{display:none}.mo-debug-toggle{padding:6px 8px}.mo-app-nav{padding:0 14px}.mo-tabs{gap:20px;min-height:48px}.mo-tab-btn{padding:15px 0 13px;font-size:12px}.mo-workspace{padding:20px 14px 56px}.mo-memory-context{align-items:flex-start;flex-direction:column;gap:8px}.mo-memory-layout{display:block;padding-top:18px}.mo-memory-rail{position:static;margin-bottom:18px}.mo-memory-rail-label{display:none}.mo-ex-tabs{flex-direction:row;flex-wrap:nowrap;max-width:100%;overflow-x:auto;scrollbar-width:thin;border-bottom:1px solid rgba(255,255,255,.07)}.mo-ex-tab{width:auto;flex:0 0 auto;border-left:0;border-bottom:2px solid transparent;padding:10px 8px}.mo-ex-tab-active{border-bottom-color:#F4F5F7;background:transparent}.mo-memory-workspace-head{padding-bottom:10px}.mo-memory-management-stack{grid-template-columns:1fr}.mo-memory-admin-session-list{grid-template-columns:1fr}.mo-memory-admin-workspace-head{align-items:flex-start;flex-direction:column}.mo-memory-admin-actions,.mo-memory-admin-secondary{justify-content:flex-start}.mo-model-grid{grid-template-columns:1fr}.mo-row{display:block}.mo-row label{display:block;margin-bottom:7px}.mo-row input,.mo-row select,.mo-row textarea{width:100%}.mo-common-grid>*{grid-column:1/-1}.mo-settings-card,.mo-prompt-card{padding:16px}.mo-footer{padding:10px 14px}.mo-footer-language{margin-left:0}.mo-export-panel{width:100%;height:100%;max-height:100%;border-radius:0}}
+@media(max-width:600px){.mo-row .mo-chk{display:flex;width:100%;min-width:0}.mo-row .mo-chk label{display:inline;flex:1 1 auto;margin:0}}
 @media(max-width:600px){.mo-tl-toolbar{grid-template-columns:1fr;align-items:stretch;padding:12px}.mo-tl-session-chooser{min-width:100%}.mo-tl-session-actions{justify-content:flex-start;gap:5px}.mo-tl-toolbar-meta{grid-column:1;gap:6px 10px}.mo-tl-main{padding:8px}.mo-tl-canvas-tools{align-items:flex-start}.mo-tl-canvas-actions{width:100%}.mo-tl-canvas-actions .mo-btn{flex:1 1 auto}.mo-tl-canvas-frame{height:clamp(480px,72vh,680px);min-height:420px}.mo-tl-node-inspector{inset:8px}.mo-tl-node-inspector-body{padding:12px}.mo-tl-stream{gap:8px}.mo-tl-stream:before{left:36px}.mo-tl-entry{grid-template-columns:24px 18px minmax(0,1fr);gap:6px}.mo-tl-entry-meta{align-items:center;font-size:10px}.mo-tl-entry-time{display:none}.mo-tl-node{width:15px;height:15px;box-shadow:0 0 0 4px #13161C}.mo-tl-card{padding:10px 11px;border-radius:12px}.mo-tl-card-head{flex-direction:column;align-items:stretch;gap:6px}.mo-tl-badges{justify-content:flex-start}.mo-tl-title{font-size:13px;line-height:1.4}.mo-tl-summary{font-size:11px;line-height:1.4;-webkit-line-clamp:1}.mo-tl-turn-item{grid-template-columns:14px minmax(0,1fr);grid-template-areas:"dot kind" "dot text" "dot action";align-items:start;gap:5px 8px;padding:10px}.mo-tl-turn-item .mo-tl-turn-dot{grid-area:dot;margin-top:4px}.mo-tl-turn-kind{grid-area:kind;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.mo-tl-turn-item>span:nth-child(3){grid-area:text;min-width:0}.mo-tl-turn-item-title,.mo-tl-turn-preview{white-space:normal;display:-webkit-box;-webkit-box-orient:vertical;overflow:hidden}.mo-tl-turn-item-title{-webkit-line-clamp:2}.mo-tl-turn-preview{-webkit-line-clamp:2}.mo-tl-row-actions{grid-area:action;justify-self:start;flex-wrap:wrap}.mo-tl-row-actions .mo-btn{min-height:34px;padding:6px 12px}.mo-detail-header{align-items:flex-start}.mo-detail-header strong{min-width:0;overflow:hidden;text-overflow:ellipsis}.mo-detail-header .mo-note{font-size:10px}.mo-tl-node-inspector-head>div{align-items:flex-start;flex-direction:column;gap:2px}.mo-tl-inline-detail{margin-left:0;padding-left:8px}}
 `;
 
@@ -51408,6 +51833,23 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <input type="number" id="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
           <input class="mo-range" type="range" id="mo-embeddingTimeoutRange" data-sync-input="mo-embeddingTimeout" value="${s.embeddingTimeout ?? DEFAULT_SETTINGS.embeddingTimeout}" min="5" max="3000" step="5">
         </div>
+        <div class="mo-row">
+          <label>${t('settings.label.memoryTransportMode')}</label>
+          <select id="mo-memoryTransportMode">
+            <option value="text"${s.memoryTransportMode === "text" ? " selected" : ""}>${t('settings.memoryTransportMode.text')}</option>
+            <option value="google_pdf"${s.memoryTransportMode === "google_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.google_pdf')}</option>
+            <option value="llm_gateway_pdf"${s.memoryTransportMode === "llm_gateway_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.llm_gateway_pdf')}</option>
+            <option value="provider_manager_pdf"${s.memoryTransportMode === "provider_manager_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.provider_manager_pdf')}</option>
+          </select>
+          <small>${t('settings.hint.memoryTransportMode')}</small>
+        </div>
+        <div class="mo-row">
+          <label>${t('settings.label.turnFinalizationMode')}</label>
+          <select id="mo-turnFinalizationMode">
+            <option value="immediate_after_response"${s.turnFinalizationMode === "immediate_after_response" ? " selected" : ""}>${t('settings.turnFinalizationMode.immediate_after_response')}</option>
+            <option value="next_user_input"${s.turnFinalizationMode === "next_user_input" ? " selected" : ""}>${t('settings.turnFinalizationMode.next_user_input')}</option>
+          </select>
+        </div>
         <div class="mo-note">출판사·평론가 타임아웃은 각 LLM 설정의 Timeout (ms)가 백엔드 실제 호출에 그대로 적용됩니다.</div>
       </div>
       <div class="mo-settings-card mo-common-card-memory">
@@ -51420,6 +51862,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <label>${t('settings.label.coreObjectiveMemoryMaxItems')}</label>
           <input type="number" id="mo-coreObjectiveMemoryMaxItems" value="${s.coreObjectiveMemoryMaxItems}" min="1" step="1">
           <small>${t('settings.label.coreObjectiveMemoryMaxItems.hint')}</small>
+        </div>
+        <div class="mo-row mo-range-row">
+          <label>${t('settings.label.recentConversationReferenceCount')}</label>
+          <input type="number" id="mo-recentConversationReferenceCount" value="${s.recentConversationReferenceCount}" min="1" step="1">
+          <small>${t('settings.label.recentConversationReferenceCount.hint')}</small>
         </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.llmRetryCount')}</label>
@@ -51518,24 +51965,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <small style="color:#888;font-size:11px;">${t('settings.hint.maxInjectionChars')}</small>
         </div>
         <div class="mo-row">
-          <label>${t('settings.label.memoryTransportMode')}</label>
-          <select id="mo-memoryTransportMode">
-            <option value="text"${s.memoryTransportMode === "text" ? " selected" : ""}>${t('settings.memoryTransportMode.text')}</option>
-            <option value="google_pdf"${s.memoryTransportMode === "google_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.google_pdf')}</option>
-            <option value="llm_gateway_pdf"${s.memoryTransportMode === "llm_gateway_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.llm_gateway_pdf')}</option>
-            <option value="provider_manager_pdf"${s.memoryTransportMode === "provider_manager_pdf" ? " selected" : ""}>${t('settings.memoryTransportMode.provider_manager_pdf')}</option>
-          </select>
-          <small>${t('settings.hint.memoryTransportMode')}</small>
-        </div>
-        <div class="mo-row">
-          <label>${t('settings.label.turnFinalizationMode')}</label>
-          <select id="mo-turnFinalizationMode">
-            <option value="immediate_after_response"${s.turnFinalizationMode === "immediate_after_response" ? " selected" : ""}>${t('settings.turnFinalizationMode.immediate_after_response')}</option>
-            <option value="next_user_input"${s.turnFinalizationMode === "next_user_input" ? " selected" : ""}>${t('settings.turnFinalizationMode.next_user_input')}</option>
-          </select>
-          <small>${t('settings.hint.turnFinalizationMode')}</small>
-        </div>
-        <div class="mo-row">
           <label>${t('settings.label.maxInputContextChars')}</label>
           <input type="number" id="mo-maxInputContextChars" value="${s.maxInputContextChars}" min="1" step="100">
           <small style="color:#888;font-size:11px;">${t('settings.hint.maxInputContextChars')}</small>
@@ -51546,7 +51975,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             <option value="auto"${s.memoryDeliveryBudgetMode !== "custom" ? " selected" : ""}>자동</option>
             <option value="custom"${s.memoryDeliveryBudgetMode === "custom" ? " selected" : ""}>직접 설정</option>
           </select>
-          <small>0은 해당 자료를 끄는 값이 아니라 자동 배분 요청으로 처리합니다. 최종 선택과 순서는 Go 백엔드가 확정합니다.</small>
+          <small>직접 설정은 각 자료가 사용할 문자 상한입니다. 완성 턴 요약과 사건 기억은 ‘사건·최근 기억’ 예산을 함께 씁니다. 0은 해당 자료를 끄는 값이 아니라 자동 배분 요청이며, 최종 선택과 순서는 Go 백엔드가 확정합니다.</small>
         </div>
         <div class="mo-row mo-range-row"><label>사건·최근 기억</label><input type="number" id="mo-memoryBudgetEventRecent" data-memory-budget-control value="${memoryBudgets.event_recent}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetEventRecentRange" data-sync-input="mo-memoryBudgetEventRecent" data-memory-budget-control value="${memoryBudgets.event_recent}" min="0" max="50000" step="100"></div>
         <div class="mo-row mo-range-row"><label>인물의 객관 상태</label><input type="number" id="mo-memoryBudgetCharacterObjective" data-memory-budget-control value="${memoryBudgets.character_objective}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetCharacterObjectiveRange" data-sync-input="mo-memoryBudgetCharacterObjective" data-memory-budget-control value="${memoryBudgets.character_objective}" min="0" max="50000" step="100"></div>
@@ -52649,6 +53078,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             embeddingTimeout: $("mo-embeddingTimeout").value,
             topK: $("mo-topK").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
+            recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value,
             lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")
               ? "reference_assist"
               : "search_only",
@@ -52793,6 +53223,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-topK").value = settings.topK;
           $("mo-coreObjectiveMemoryMaxItems").value = settings.coreObjectiveMemoryMaxItems;
+          $("mo-recentConversationReferenceCount").value = settings.recentConversationReferenceCount;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");

@@ -15,21 +15,157 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
+const prepareTurnPrivatePreciseMemorySearchResultsKey = "_priority_precise_memory_search_results"
+
+type prepareTurnRetrievalQuery struct {
+	Text   string
+	Source string
+}
+
+func prepareTurnVectorDocumentRanksBefore(left, right vector.VectorDocument) bool {
+	if left.SimilarityAvailable != right.SimilarityAvailable {
+		return left.SimilarityAvailable
+	}
+	if left.Similarity != right.Similarity {
+		return left.Similarity > right.Similarity
+	}
+	return left.Distance < right.Distance
+}
+
+// prepareTurnRecentConversationQueries turns each completed Host conversation
+// into one retrieval-only query. The user input and final assistant output stay
+// together so the semantic search sees both the intent and its resulting scene.
+// A trailing current user input is intentionally left to RawUserInput below.
+func prepareTurnRecentConversationQueries(messages []map[string]any, limit int) []prepareTurnRetrievalQuery {
+	if limit < 1 {
+		return nil
+	}
+	completed := make([]string, 0, limit)
+	pendingUserInputs := []string{}
+	for _, msg := range messages {
+		role := strings.ToLower(strings.TrimSpace(fmt.Sprint(msg["role"])))
+		content := strings.TrimSpace(fmt.Sprint(msg["content"]))
+		if content == "" {
+			continue
+		}
+		switch role {
+		case "user":
+			pendingUserInputs = append(pendingUserInputs, content)
+		case "assistant", "char":
+			parts := make([]string, 0, len(pendingUserInputs)+1)
+			for _, userInput := range pendingUserInputs {
+				parts = append(parts, "user:\n"+userInput)
+			}
+			parts = append(parts, "assistant:\n"+content)
+			completed = append(completed, strings.Join(parts, "\n"))
+			pendingUserInputs = pendingUserInputs[:0]
+		}
+	}
+	if len(completed) > limit {
+		completed = completed[len(completed)-limit:]
+	}
+	queries := make([]prepareTurnRetrievalQuery, 0, len(completed))
+	for i := len(completed) - 1; i >= 0; i-- {
+		queries = append(queries, prepareTurnRetrievalQuery{Text: completed[i], Source: "recent_conversation_turn"})
+	}
+	return queries
+}
+
+func prepareTurnRecentConversationReferenceLimit(settings dto.PrepareTurnSettings) int {
+	defaults := dto.PrepareTurnSettings{}
+	defaults.ApplyDefaults()
+	return prepareTurnIntSetting(settings.RecentConversationReferenceCount, defaults.RecentConversationReferenceCount)
+}
+
+// prepareTurnRetrievalQueries is the request-owned query set for vector recall.
+// The current query and configured number of recent completed conversations are
+// separate from the Chroma result limit. Each completed conversation remains
+// its own semantic query. It is retrieval context only and never becomes another
+// final-payload block; no prompt phrase is classified.
+func prepareTurnRetrievalQueries(req dto.PrepareTurnRequest, recentConversationLimit int) []prepareTurnRetrievalQuery {
+	queries := make([]prepareTurnRetrievalQuery, 0, maxInt(recentConversationLimit, 0)+1)
+	if query := strings.TrimSpace(stringPtrValue(req.ContinuityQuery, "")); query != "" {
+		queries = append(queries, prepareTurnRetrievalQuery{Text: query, Source: "continuity_query"})
+	} else if rawUserInput := strings.TrimSpace(stringPtrValue(req.RawUserInput, "")); rawUserInput != "" {
+		queries = append(queries, prepareTurnRetrievalQuery{Text: rawUserInput, Source: "raw_user_input"})
+	} else {
+		for i := len(req.Messages) - 1; i >= 0; i-- {
+			msg := req.Messages[i]
+			if strings.EqualFold(strings.TrimSpace(fmt.Sprint(msg["role"])), "assistant") {
+				continue
+			}
+			if query := strings.TrimSpace(fmt.Sprint(msg["content"])); query != "" {
+				queries = append(queries, prepareTurnRetrievalQuery{Text: query, Source: "latest_non_assistant_message"})
+				break
+			}
+		}
+	}
+
+	queries = append(queries, prepareTurnRecentConversationQueries(req.Messages, recentConversationLimit)...)
+	return queries
+}
+
+// prepareTurnEffectiveContinuityQuery is the fact-scoring representation of
+// the same request query set used by vector recall. Individual raw messages
+// remain separate embedding inputs in prepareTurnVectorShadow.
+func prepareTurnEffectiveContinuityQuery(req dto.PrepareTurnRequest, recentConversationLimit int) (string, string) {
+	queries := prepareTurnRetrievalQueries(req, recentConversationLimit)
+	if len(queries) == 0 {
+		return "", "unobserved"
+	}
+	texts := make([]string, 0, len(queries))
+	recentConversationCount := 0
+	for _, query := range queries {
+		texts = append(texts, query.Text)
+		if query.Source == "recent_conversation_turn" {
+			recentConversationCount++
+		}
+	}
+	source := queries[0].Source
+	if recentConversationCount > 0 {
+		if len(queries) == recentConversationCount {
+			source = "recent_conversation_turns"
+		} else {
+			source += "+recent_conversation_turns"
+		}
+	}
+	return strings.Join(texts, "\n"), source
+}
+
 func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTurnRequest, limit int, historyScopes ...prepareTurnHistoryScope) map[string]any {
+	return s.prepareTurnVectorShadowWithPreciseCandidateLimits(ctx, req, limit, nil, historyScopes...)
+}
+
+func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.Context, req dto.PrepareTurnRequest, limit int, preciseCandidateLimits map[string]int, historyScopes ...prepareTurnHistoryScope) map[string]any {
+	limit = prepareTurnRecallLimit(limit)
+	recentConversationLimit := prepareTurnRecentConversationReferenceLimit(req.Settings)
+	retrievalQueries := prepareTurnRetrievalQueries(req, recentConversationLimit)
+	effectiveQuery, effectiveQuerySource := prepareTurnEffectiveContinuityQuery(req, recentConversationLimit)
+	recentConversationQueryCount := 0
+	for _, query := range retrievalQueries {
+		if query.Source == "recent_conversation_turn" {
+			recentConversationQueryCount++
+		}
+	}
 	shadow := map[string]any{
-		"status":                       "unconfigured",
-		"engine":                       "chromadb",
-		"source":                       "go_r1_read_shadow",
-		"note":                         "ChromaDB is the 2.0 vector accelerator; MariaDB remains canonical truth",
-		"configured":                   s.Cfg.Readiness.ChromaConfigured,
-		"chromadb_endpoint_configured": strings.TrimSpace(s.Cfg.ChromaEndpoint) != "",
-		"recall_read_drill_enabled":    true,
-		"product_read_enabled":         strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil,
-		"live_retrieval_enabled":       false,
-		"chromadb_live_enabled":        false,
-		"health_checked":               false,
-		"search_attempted":             false,
-		"backfill_attempted":           false,
+		"status":                          "unconfigured",
+		"engine":                          "chromadb",
+		"source":                          "go_r1_read_shadow",
+		"note":                            "ChromaDB is the 2.0 vector accelerator; MariaDB remains canonical truth",
+		"configured":                      s.Cfg.Readiness.ChromaConfigured,
+		"chromadb_endpoint_configured":    strings.TrimSpace(s.Cfg.ChromaEndpoint) != "",
+		"recall_read_drill_enabled":       true,
+		"product_read_enabled":            strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil,
+		"live_retrieval_enabled":          false,
+		"chromadb_live_enabled":           false,
+		"health_checked":                  false,
+		"search_attempted":                false,
+		"backfill_attempted":              false,
+		"query_text_source":               effectiveQuerySource,
+		"query_text_chars":                len([]rune(effectiveQuery)),
+		"query_text_count":                len(retrievalQueries),
+		"recent_conversation_query_limit": recentConversationLimit,
+		"recent_conversation_query_count": recentConversationQueryCount,
 	}
 	defer finalizePrepareTurnVectorShadow(shadow)
 	if s.Vector == nil {
@@ -52,8 +188,13 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	shadow["model_ready"] = health.ModelReady
 	shadow["preflight_issues"] = health.PreflightIssues
 	queryVector := clientMetaFloat32Vector(req.ClientMeta, "chroma_query_vector")
+	queryVectors := [][]float32{}
 	queryKey := "chroma_query_vector"
-	if len(queryVector) == 0 {
+	if len(queryVector) > 0 {
+		queryVectors = append(queryVectors, queryVector)
+		shadow["query_vector_supplied_count"] = 1
+		shadow["query_history_embedding_skipped_count"] = maxInt(len(retrievalQueries)-1, 0)
+	} else {
 		shadow["query_embedding_attempted"] = true
 		embeddingCfg := s.completeTurnExtractionConfig(req.ClientMeta).Embedder
 		shadow["query_embedding_configured"] = embeddingCfg.hasConfig()
@@ -63,44 +204,53 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 			shadow["query_embedding_missing_fields"] = embeddingCfg.missingFields()
 			return shadow
 		}
-		queryText := strings.TrimSpace(stringPtrValue(req.RawUserInput, ""))
-		if queryText == "" {
-			queryText = strings.TrimSpace(stringPtrValue(req.ContinuityQuery, ""))
-		}
-		if queryText == "" {
-			for i := len(req.Messages) - 1; i >= 0; i-- {
-				msg := req.Messages[i]
-				if strings.TrimSpace(fmt.Sprint(msg["role"])) == "assistant" {
-					continue
-				}
-				queryText = strings.TrimSpace(fmt.Sprint(msg["content"]))
-				if queryText != "" {
-					break
-				}
-			}
-		}
-		if queryText == "" {
+		if len(retrievalQueries) == 0 {
 			shadow["search_skipped_reason"] = "missing_query_text_for_embedding"
 			return shadow
 		}
-		embeddingJSON, model, err := callQueryEmbedding(ctx, embeddingCfg, queryText)
-		if err != nil {
-			shadow["status"] = "degraded"
-			shadow["query_embedding_status"] = "error"
-			shadow["query_embedding_error"] = err.Error()
-			shadow["search_skipped_reason"] = "query_embedding_failed"
-			return shadow
+		historyEmbeddingErrors := []string{}
+		model := strings.TrimSpace(embeddingCfg.Model)
+		for index, query := range retrievalQueries {
+			embeddingJSON, resolvedModel, err := callQueryEmbedding(ctx, embeddingCfg, query.Text)
+			if err != nil {
+				if index == 0 {
+					shadow["status"] = "degraded"
+					shadow["query_embedding_status"] = "error"
+					shadow["query_embedding_error"] = err.Error()
+					shadow["search_skipped_reason"] = "query_embedding_failed"
+					return shadow
+				}
+				historyEmbeddingErrors = append(historyEmbeddingErrors, err.Error())
+				continue
+			}
+			vectorValue := parseFloat32JSONList(embeddingJSON)
+			if len(vectorValue) == 0 {
+				if index == 0 {
+					shadow["status"] = "degraded"
+					shadow["query_embedding_status"] = "empty"
+					shadow["search_skipped_reason"] = "query_embedding_empty"
+					return shadow
+				}
+				historyEmbeddingErrors = append(historyEmbeddingErrors, "query_embedding_empty")
+				continue
+			}
+			queryVectors = append(queryVectors, vectorValue)
+			if strings.TrimSpace(resolvedModel) != "" {
+				model = strings.TrimSpace(resolvedModel)
+			}
 		}
-		queryVector = parseFloat32JSONList(embeddingJSON)
-		if len(queryVector) == 0 {
-			shadow["status"] = "degraded"
-			shadow["query_embedding_status"] = "empty"
-			shadow["search_skipped_reason"] = "query_embedding_empty"
-			return shadow
-		}
+		queryVector = queryVectors[0]
 		queryKey = "server_query_embedding"
+		if len(queryVectors) > 1 {
+			queryKey = "server_query_embeddings"
+		}
 		shadow["query_embedding_status"] = "ok"
 		shadow["query_embedding_model"] = model
+		shadow["query_embedding_count"] = len(queryVectors)
+		shadow["query_history_embedding_error_count"] = len(historyEmbeddingErrors)
+		if len(historyEmbeddingErrors) > 0 {
+			shadow["query_history_embedding_errors"] = historyEmbeddingErrors
+		}
 	}
 
 	if strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil {
@@ -111,39 +261,57 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	} else {
 		shadow["note"] = "R2 bounded recall read drill: ChromaDB vector search remains support-only until endpoint readiness is configured"
 	}
-	limit = prepareTurnRecallLimit(limit)
 	candidateLimit := limit
 	filter := strings.TrimSpace(clientMetaString(req.ClientMeta, "chroma_filter"))
 	searchSessionIDs := prepareTurnVectorHistorySessionIDs(req.ChatSessionID, historyScopes)
-	searchAcrossSessions := func(searchFilter func(string) string) ([]vector.VectorDocument, error) {
-		results := []vector.VectorDocument{}
+	searchAcrossSessions := func(searchFilter func(string) string, perSessionLimits map[string]int) ([]vector.VectorDocument, error) {
+		resultsByID := map[string]vector.VectorDocument{}
+		resultOrder := []string{}
 		var firstErr error
 		for _, searchSessionID := range searchSessionIDs {
-			sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, queryVector, candidateLimit, searchFilter(searchSessionID))
-			switch {
-			case searchErr == nil:
-				for index := range sessionResults {
-					if strings.TrimSpace(sessionResults[index].ChatSessionID) == "" {
-						sessionResults[index].ChatSessionID = searchSessionID
-					}
+			sessionLimit := candidateLimit
+			if perSessionLimits != nil {
+				sessionLimit = perSessionLimits[searchSessionID]
+				if sessionLimit <= 0 {
+					continue
 				}
-				results = append(results, sessionResults...)
-			case errors.Is(searchErr, vector.ErrNotFound):
-			default:
-				if firstErr == nil {
-					firstErr = searchErr
+			}
+			for _, searchVector := range queryVectors {
+				sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, searchVector, sessionLimit, searchFilter(searchSessionID))
+				switch {
+				case searchErr == nil:
+					for index := range sessionResults {
+						if strings.TrimSpace(sessionResults[index].ChatSessionID) == "" {
+							sessionResults[index].ChatSessionID = searchSessionID
+						}
+						doc := sessionResults[index]
+						key := strings.TrimSpace(doc.ChatSessionID) + "\x1f" + strings.TrimSpace(doc.ID)
+						if strings.TrimSpace(doc.ID) == "" {
+							key += "\x1f" + strings.TrimSpace(doc.SourceTable) + "\x1f" + strings.TrimSpace(doc.SourceRowID) + "\x1f" + strings.TrimSpace(doc.DocumentText)
+						}
+						previous, exists := resultsByID[key]
+						if !exists {
+							resultOrder = append(resultOrder, key)
+						}
+						if !exists || prepareTurnVectorDocumentRanksBefore(doc, previous) {
+							resultsByID[key] = doc
+						}
+					}
+				case errors.Is(searchErr, vector.ErrNotFound):
+				default:
+					if firstErr == nil {
+						firstErr = searchErr
+					}
 				}
 			}
 		}
+		results := make([]vector.VectorDocument, 0, len(resultOrder))
+		for _, key := range resultOrder {
+			results = append(results, resultsByID[key])
+		}
 		if len(results) > 0 {
 			sort.SliceStable(results, func(i, j int) bool {
-				if results[i].SimilarityAvailable != results[j].SimilarityAvailable {
-					return results[i].SimilarityAvailable
-				}
-				if results[i].Similarity != results[j].Similarity {
-					return results[i].Similarity > results[j].Similarity
-				}
-				return results[i].Distance < results[j].Distance
+				return prepareTurnVectorDocumentRanksBefore(results[i], results[j])
 			})
 			return results, nil
 		}
@@ -155,6 +323,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	shadow["search_attempted"] = true
 	shadow["query_vector_key"] = queryKey
 	shadow["query_vector_dim"] = len(queryVector)
+	shadow["query_vector_count"] = len(queryVectors)
 	shadow["limit"] = limit
 	shadow["candidate_limit"] = candidateLimit
 	shadow["candidate_policy"] = "ui_configured_vector_recall_limit_per_worldline_history_session"
@@ -165,7 +334,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 			return filter
 		}
 		return fmt.Sprintf("chat_session_id == %q", searchSessionID)
-	})
+	}, nil)
 	switch {
 	case err == nil:
 		results, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, results)
@@ -194,7 +363,7 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 	memoryFilter := `tier == "memory"`
 	shadow["memory_search_attempted"] = true
 	shadow["memory_search_filter"] = memoryFilter
-	memoryResults, memoryErr := searchAcrossSessions(func(string) string { return memoryFilter })
+	memoryResults, memoryErr := searchAcrossSessions(func(string) string { return memoryFilter }, nil)
 	switch {
 	case memoryErr == nil:
 		memoryResults, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, memoryResults)
@@ -220,7 +389,274 @@ func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTur
 		shadow["memory_search_results"] = []map[string]any{}
 		shadow["memory_search_error"] = memoryErr.Error()
 	}
+	preciseCandidateCount := 0
+	for _, count := range preciseCandidateLimits {
+		preciseCandidateCount += maxInt(count, 0)
+	}
+	shadow["precise_memory_search_candidate_count"] = preciseCandidateCount
+	preciseMemoryFilter := `source_table == "precise_memory_units"`
+	shadow["precise_memory_search_filter"] = preciseMemoryFilter
+	if preciseCandidateCount <= 0 {
+		shadow["precise_memory_search_attempted"] = false
+		shadow["precise_memory_search_result"] = "no_canonical_candidates"
+		shadow["precise_memory_search_result_count"] = 0
+		return shadow
+	}
+	shadow["precise_memory_search_attempted"] = true
+	preciseResults, preciseErr := searchAcrossSessions(func(string) string { return preciseMemoryFilter }, preciseCandidateLimits)
+	switch {
+	case preciseErr == nil:
+		shadow["precise_memory_search_result"] = "ok"
+		shadow["precise_memory_search_result_count"] = len(preciseResults)
+		// This private handoff is consumed and removed by prepare-turn before the
+		// public response is assembled. It reuses the same query vector and never
+		// becomes a second payload or persistence surface.
+		shadow[prepareTurnPrivatePreciseMemorySearchResultsKey] = vectorDocumentSearchPreview(preciseResults)
+	case errors.Is(preciseErr, vector.ErrNotFound):
+		shadow["precise_memory_search_result"] = "not_found"
+		shadow["precise_memory_search_result_count"] = 0
+	case errors.Is(preciseErr, vector.ErrNotEnabled):
+		shadow["precise_memory_search_result"] = "err_not_enabled"
+		shadow["precise_memory_search_result_count"] = 0
+	default:
+		shadow["precise_memory_search_result"] = "error"
+		shadow["precise_memory_search_result_count"] = 0
+		shadow["precise_memory_search_error"] = preciseErr.Error()
+	}
 	return shadow
+}
+
+func prepareTurnLoadGeneralPreciseMemoryUnits(
+	ctx context.Context,
+	reader store.GeneralVectorPreciseMemoryReader,
+	fallbackSessionID string,
+	historyScope prepareTurnHistoryScope,
+) (map[string][]store.PreciseMemoryUnit, map[string]int, map[string]any) {
+	unitsBySession := map[string][]store.PreciseMemoryUnit{}
+	candidateLimits := map[string]int{}
+	trace := map[string]any{
+		"contract_version": "prepare_turn.precise_fact_candidate_snapshot.v1",
+		"status":           "unavailable",
+		"candidate_count":  0,
+		"session_count":    0,
+		"scope_dropped":    0,
+	}
+	if reader == nil {
+		trace["reason"] = "general_precise_memory_reader_unavailable"
+		return unitsBySession, candidateLimits, trace
+	}
+	segmentsBySession := map[string][]prepareTurnHistorySegment{}
+	for _, segment := range historyScope.Segments {
+		segmentsBySession[segment.SessionID] = append(segmentsBySession[segment.SessionID], segment)
+	}
+	errorsBySession := []string{}
+	for _, sid := range prepareTurnVectorHistorySessionIDs(fallbackSessionID, []prepareTurnHistoryScope{historyScope}) {
+		units, err := reader.ListGeneralVectorPreciseMemoryUnits(ctx, sid)
+		if err != nil {
+			if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
+				errorsBySession = append(errorsBySession, sid+": "+err.Error())
+			}
+			continue
+		}
+		filtered := make([]store.PreciseMemoryUnit, 0, len(units))
+		for _, unit := range units {
+			if strings.TrimSpace(unit.ChatSessionID) != sid || !store.PreciseMemoryGeneralVectorEligible(&unit) {
+				continue
+			}
+			turn := maxInt(unit.SourceTurnStart, unit.SourceTurnEnd)
+			inScope := len(segmentsBySession) == 0
+			for _, segment := range segmentsBySession[sid] {
+				if prepareTurnHistorySegmentContains(segment, turn) {
+					inScope = true
+					break
+				}
+			}
+			if !inScope {
+				trace["scope_dropped"] = intFromAny(trace["scope_dropped"], 0) + 1
+				continue
+			}
+			filtered = append(filtered, unit)
+		}
+		if len(filtered) > 0 {
+			unitsBySession[sid] = filtered
+			candidateLimits[sid] = len(filtered)
+			trace["candidate_count"] = intFromAny(trace["candidate_count"], 0) + len(filtered)
+		}
+	}
+	trace["session_count"] = len(unitsBySession)
+	trace["read_error_count"] = len(errorsBySession)
+	if len(errorsBySession) > 0 {
+		trace["status"] = "partial"
+		trace["read_errors"] = errorsBySession
+	} else {
+		trace["status"] = "ready"
+	}
+	return unitsBySession, candidateLimits, trace
+}
+
+func prepareTurnVectorHitLooksLikePreciseMemory(hit map[string]any) bool {
+	sourceTable := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "source_table")))
+	if sourceTable != "" {
+		return sourceTable == "precise_memory_units"
+	}
+	tier := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "tier")))
+	if tier == "precise_memory" {
+		return true
+	}
+	id := strings.ToLower(strings.TrimSpace(stringFromMap(hit, "id")))
+	return strings.HasPrefix(id, "precise_memory:")
+}
+
+// prepareTurnHydratePreciseMemoryVectorFacts converts precise-memory vector
+// hits into MariaDB-backed fact score observations. Production prepare-turn
+// supplies a canonical unit snapshot and a dedicated tier search made with the
+// already-created query vector. The variadic snapshot keeps older direct unit
+// tests and diagnostic callers compatible with the broad-search observation.
+// Missing vector observations never become an eligibility condition for the
+// existing memory path.
+func prepareTurnHydratePreciseMemoryVectorFacts(
+	ctx context.Context,
+	reader store.GeneralVectorPreciseMemoryReader,
+	vectorShadow map[string]any,
+	historyScope prepareTurnHistoryScope,
+	preloadedUnits ...map[string][]store.PreciseMemoryUnit,
+) ([]prepareTurnPrioritySemanticFact, map[string]any) {
+	trace := map[string]any{
+		"contract_version": "prepare_turn.precise_fact_vector_hydration.v1",
+		"status":           "not_attempted",
+		"score_owner":      "precise_memory_unit_vector_similarity",
+		"search_owner":     "existing_prepare_turn_broad_vector_search",
+		"input_hit_count":  0,
+		"hydrated_count":   0,
+		"missing_count":    0,
+		"scope_dropped":    0,
+	}
+	if reader == nil {
+		trace["status"] = "unavailable"
+		trace["reason"] = "general_precise_memory_reader_unavailable"
+		return nil, trace
+	}
+	searchResults := vectorShadow["search_results"]
+	searchResult := strings.TrimSpace(stringFromMap(vectorShadow, "search_result"))
+	if dedicatedResults, ok := vectorShadow[prepareTurnPrivatePreciseMemorySearchResultsKey]; ok {
+		searchResults = dedicatedResults
+		searchResult = strings.TrimSpace(stringFromMap(vectorShadow, "precise_memory_search_result"))
+		trace["search_owner"] = "dedicated_precise_memory_tier_same_query_vector"
+	}
+	if searchResult != "ok" {
+		trace["status"] = "skipped"
+		trace["reason"] = searchResult
+		return nil, trace
+	}
+	type scoreObservation struct {
+		score  float64
+		source string
+	}
+	hits := map[string]scoreObservation{}
+	hitOrder := []string{}
+	sessions := map[string]bool{}
+	for _, hit := range prepareTurnVectorSearchResultMaps(searchResults) {
+		if !prepareTurnVectorHitLooksLikePreciseMemory(hit) {
+			continue
+		}
+		score, ok := prepareTurnVectorHitSimilarity(hit)
+		if !ok || !prepareTurnVectorSimilarityEligible(score, stringFromMap(hit, "similarity_source")) {
+			continue
+		}
+		unitID := strings.TrimSpace(stringFromMap(hit, "source_row_id"))
+		if unitID == "" {
+			id := strings.TrimSpace(stringFromMap(hit, "id"))
+			parts := strings.SplitN(id, ":", 3)
+			if len(parts) == 3 {
+				unitID = strings.TrimSpace(parts[2])
+			}
+		}
+		sid := strings.TrimSpace(stringFromMap(hit, "chat_session_id"))
+		if unitID == "" || sid == "" {
+			continue
+		}
+		key := sid + "\x1f" + unitID
+		if previous, exists := hits[key]; exists && previous.score >= score {
+			continue
+		}
+		if _, exists := hits[key]; !exists {
+			hitOrder = append(hitOrder, key)
+		}
+		hits[key] = scoreObservation{score: score, source: strings.TrimSpace(stringFromMap(hit, "similarity_source"))}
+		sessions[sid] = true
+	}
+	trace["input_hit_count"] = len(hits)
+	if len(hits) == 0 {
+		trace["status"] = "ready"
+		trace["reason"] = "no_precise_memory_vector_hits"
+		return nil, trace
+	}
+
+	segmentsBySession := map[string][]prepareTurnHistorySegment{}
+	for _, segment := range historyScope.Segments {
+		segmentsBySession[segment.SessionID] = append(segmentsBySession[segment.SessionID], segment)
+	}
+	unitsByKey := map[string]store.PreciseMemoryUnit{}
+	readErrors := []string{}
+	for sid := range sessions {
+		var units []store.PreciseMemoryUnit
+		if len(preloadedUnits) > 0 && preloadedUnits[0] != nil {
+			units = preloadedUnits[0][sid]
+		} else {
+			loaded, err := reader.ListGeneralVectorPreciseMemoryUnits(ctx, sid)
+			if err != nil {
+				if !errors.Is(err, store.ErrNotFound) && !errors.Is(err, store.ErrNotEnabled) {
+					readErrors = append(readErrors, sid+": "+err.Error())
+				}
+				continue
+			}
+			units = loaded
+		}
+		for _, unit := range units {
+			if strings.TrimSpace(unit.ChatSessionID) != sid || !store.PreciseMemoryGeneralVectorEligible(&unit) {
+				continue
+			}
+			turn := maxInt(unit.SourceTurnStart, unit.SourceTurnEnd)
+			inScope := len(segmentsBySession) == 0
+			for _, segment := range segmentsBySession[sid] {
+				if prepareTurnHistorySegmentContains(segment, turn) {
+					inScope = true
+					break
+				}
+			}
+			if !inScope {
+				trace["scope_dropped"] = intFromAny(trace["scope_dropped"], 0) + 1
+				continue
+			}
+			key := sid + "\x1f" + strings.TrimSpace(unit.UnitID)
+			if _, wanted := hits[key]; wanted {
+				unitsByKey[key] = unit
+			}
+		}
+	}
+	facts := []prepareTurnPrioritySemanticFact{}
+	for _, key := range hitOrder {
+		unit, ok := unitsByKey[key]
+		if !ok {
+			trace["missing_count"] = intFromAny(trace["missing_count"], 0) + 1
+			continue
+		}
+		fact, ok := prepareTurnPrioritySemanticFactFromPreciseUnit(unit, hits[key].score, hits[key].source)
+		if !ok {
+			trace["missing_count"] = intFromAny(trace["missing_count"], 0) + 1
+			continue
+		}
+		facts = append(facts, fact)
+	}
+	trace["hydrated_count"] = len(facts)
+	trace["read_error_count"] = len(readErrors)
+	if len(readErrors) > 0 {
+		trace["status"] = "partial"
+		trace["read_errors"] = readErrors
+	} else {
+		trace["status"] = "ready"
+	}
+	return facts, trace
 }
 
 func prepareTurnVectorHistorySessionIDs(fallbackSessionID string, historyScopes []prepareTurnHistoryScope) []string {

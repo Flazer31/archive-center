@@ -562,8 +562,8 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	if !strings.Contains(injection, "[Item, Location, and World States]") {
 		t.Errorf("injection_text missing world-state class: %q", injection)
 	}
-	if strings.Contains(injection, "Alice --knows--> Bob") || strings.Contains(injection, `"injured":true`) {
-		t.Errorf("lower-ranked relationship/state facts should not bypass the global K: %q", injection)
+	if !strings.Contains(injection, "Alice --knows--> Bob") || !strings.Contains(injection, "health: injured") {
+		t.Errorf("independently ranked relationship/state lanes did not contribute their relevant facts: %q", injection)
 	}
 
 	if !strings.Contains(ict, "[Recent Chat]") {
@@ -633,8 +633,17 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 		t.Errorf("final_budget_owner = %v, want Go priority memory delivery owner", injectionPack["final_budget_owner"])
 	}
 	priorityPlan := mapFromAny(injectionPack["memory_delivery_plan"])
-	if priorityPlan["contract_version"] != "memory_delivery_plan.v2" || intFromAny(priorityPlan["priority_selected_count"], 0) != 5 || priorityPlan["low_score_backfill_after_k"] != false {
-		t.Fatalf("global priority selection contract mismatch: %#v", priorityPlan)
+	corePriority := mapFromAny(priorityPlan["core_objective_memory"])
+	if priorityPlan["contract_version"] != "memory_delivery_plan.v2" ||
+		corePriority["contract_version"] != "core_priority_memory_delivery.v3" ||
+		boolFromAny(priorityPlan["unused_k_transfer_between_groups"]) || priorityPlan["low_score_backfill_after_k"] != false {
+		t.Fatalf("independent priority-group selection contract mismatch: %#v", priorityPlan)
+	}
+	for _, rawGroup := range sliceFromAny(corePriority["quota_groups"]) {
+		group := mapFromAny(rawGroup)
+		if intFromAny(group["selected_count"], 0) > intFromAny(group["requested_max_items"], 0) {
+			t.Fatalf("priority group exceeded its independent K: %#v", group)
+		}
 	}
 	if _, ok := injectionPack["budget_decisions"].(map[string]any); !ok {
 		t.Fatalf("injection_pack.budget_decisions is not an object")
@@ -978,7 +987,7 @@ func TestPrepareTurnPersonaRecollectionSupportLane(t *testing.T) {
 	srv.RegisterRoutes(mux)
 
 	body := `{"chat_session_id":"target-loop","turn_index":2,"raw_user_input":"Look around the room.","settings":{"max_injection_chars":1200,"max_input_context_chars":800,"injection_enabled":true,"input_context_enabled":true,"top_k":2}}`
-	body = `{"chat_session_id":"sess-weak-plan","turn_index":8,"raw_user_input":"continue","client_meta":{"language_context":{"session_output_language":"ko","output_language_source":"plugin_setting"}},"settings":{"max_injection_chars":1600,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2,"guide_mode":"standard","guide_strength":"weak","narrative_stance":"balanced"}}`
+	body = `{"chat_session_id":"sess-weak-plan","turn_index":8,"raw_user_input":"continue","continuity_query":"Chloe pauses near the mirror and Siwoo remembers the hidden brass key.","client_meta":{"language_context":{"session_output_language":"ko","output_language_source":"plugin_setting"}},"settings":{"max_injection_chars":1600,"max_input_context_chars":900,"injection_enabled":true,"input_context_enabled":true,"top_k":2,"guide_mode":"standard","guide_strength":"weak","narrative_stance":"balanced"}}`
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()

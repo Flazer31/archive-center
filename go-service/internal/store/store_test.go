@@ -1196,6 +1196,35 @@ func TestMariaDBSavePendingThreadUpdatesExistingOpenHook(t *testing.T) {
 	}
 }
 
+func TestMariaDBSavePendingThreadResolvedReplayIsIdempotent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock new: %v", err)
+	}
+	defer db.Close()
+	m := &mariadbStore{db: db}
+	ctx := context.Background()
+
+	mock.ExpectExec("UPDATE pending_threads").
+		WithArgs("Repay Park Dojun", "resolved", 12, 12, 0, "obligation", `{"lifecycle_key":"loan-settlement"}`, sqlmock.AnyArg(), "sess-1", "thread_lifecycle_abc").
+		WillReturnResult(sqlmock.NewResult(0, 0))
+	mock.ExpectQuery("SELECT id").
+		WithArgs("sess-1", "thread_lifecycle_abc").
+		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(7)))
+
+	err = m.SavePendingThread(ctx, &PendingThread{
+		ChatSessionID: "sess-1", ThreadKey: "thread_lifecycle_abc", Description: "Repay Park Dojun",
+		Status: "resolved", ResolvedTurn: 12, SourceTurn: 12, HookType: "obligation",
+		HookMetadataJSON: `{"lifecycle_key":"loan-settlement"}`,
+	})
+	if err != nil {
+		t.Fatalf("SavePendingThread resolved replay: %v", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("resolved replay inserted a duplicate row: %v", err)
+	}
+}
+
 func TestMariaDBSavePendingThreadDoesNotOverwriteManualTrustFlags(t *testing.T) {
 	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(sqlmock.QueryMatcherEqual))
 	if err != nil {

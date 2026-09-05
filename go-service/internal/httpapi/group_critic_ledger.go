@@ -363,11 +363,15 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 				continue
 			}
 			text := firstNonEmptyLedgerString(item.Title, item.Description, item.ThreadKey, item.HookMetadataJSON)
-			builder.add("unresolved_pending_thread", fmt.Sprintf("pending_thread_%d", item.ID), "mariadb_canonical", firstNonEmptyLedgerString(item.Status, "open"), text, item.UpdatedAt, map[string]any{
+			sourceRef := map[string]any{
 				"type":        "pending_thread",
 				"id":          item.ID,
 				"source_turn": item.SourceTurn,
-			})
+			}
+			if lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(parseJSONMap(item.HookMetadataJSON), "lifecycle_key")); lifecycleKey != "" {
+				sourceRef["lifecycle_key"] = lifecycleKey
+			}
+			builder.add("unresolved_pending_thread", fmt.Sprintf("pending_thread_%d", item.ID), "mariadb_canonical", firstNonEmptyLedgerString(item.Status, "open"), text, item.UpdatedAt, sourceRef)
 		}
 	}
 

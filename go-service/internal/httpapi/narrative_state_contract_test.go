@@ -81,6 +81,68 @@ func TestSaveNarrativeStateKeepsOneCurrentValueAndLinksEvidence(t *testing.T) {
 	}
 }
 
+func TestLifecycleKeyCarriesCompletionAcrossChangedStateWording(t *testing.T) {
+	const lifecycleKey = "park-dojun-loan-settlement"
+	st := &turnRecordingStore{}
+	srv := &Server{Store: st}
+	result := artifactSaveResult{}
+	firstExcerpt := "The loan and its repayment remained outstanding."
+	srv.saveNarrativeStateFromExtraction(
+		context.Background(), "sess-lifecycle", 10,
+		map[string]any{"state_claims": []any{map[string]any{
+			"subject": "Park Dojun loan", "subject_type": "entity", "state_slot": "debt_status",
+			"lifecycle_key": lifecycleKey, "value": "outstanding", "transition": "set",
+			"confidence": 0.9, "evidence_excerpt": firstExcerpt,
+		}}}, "Before the update. "+firstExcerpt+" After the update.", nil, time.Unix(100, 0), &result,
+	)
+	secondExcerpt := "The liquor settled the debt and the note was burned."
+	srv.saveNarrativeStateFromExtraction(
+		context.Background(), "sess-lifecycle", 12,
+		map[string]any{
+			"state_deltas": map[string]any{"resolved_threads": []any{map[string]any{"lifecycle_key": lifecycleKey}}},
+			"state_claims": []any{map[string]any{
+				"subject": "Burned loan note", "subject_type": "entity", "state_slot": "document_status",
+				"lifecycle_key": lifecycleKey, "value": "settled and burned", "transition": "set",
+				"confidence": 0.9, "evidence_excerpt": secondExcerpt,
+			}},
+		}, "Before the settlement. "+secondExcerpt+" After the settlement.", nil, time.Unix(120, 0), &result,
+	)
+	if len(st.returnStatusCurrent) != 1 || len(st.savedStatusEvents) != 2 {
+		t.Fatalf("one lifecycle did not retain one current state: current=%d events=%d", len(st.returnStatusCurrent), len(st.savedStatusEvents))
+	}
+	payload := parseJSONMap(st.returnStatusCurrent[0].ValueJSON)
+	if payload["lifecycle_key"] != lifecycleKey || payload["transition"] != "resolve" ||
+		payload["value"] != "settled and burned" || payload["previous_value"] != "outstanding" {
+		t.Fatalf("completion did not replace the lifecycle current value: %#v", payload)
+	}
+}
+
+func TestResolvedLifecycleClosesStoredPendingThread(t *testing.T) {
+	const lifecycleKey = "park-dojun-loan-settlement"
+	threadKey := narrativeLifecycleStorageKey(lifecycleKey)
+	st := &turnRecordingStore{returnPendingThreads: []store.PendingThread{{
+		ID: 7, ChatSessionID: "sess-thread-close", ThreadKey: threadKey,
+		Description: "Repay Park Dojun", Status: "open", CreatedTurn: 5, SourceTurn: 5,
+		HookMetadataJSON: mustCompactJSON(map[string]any{"title": "Repay Park Dojun", "lifecycle_key": lifecycleKey}),
+	}}}
+	srv := &Server{Store: st}
+	result := artifactSaveResult{}
+	cost := canonicalStateWriteCostMeasurement{}
+	srv.saveCharacterAndStateArtifacts(
+		context.Background(), "sess-thread-close", 12,
+		map[string]any{"state_deltas": map[string]any{"resolved_threads": []any{map[string]any{
+			"lifecycle_key": lifecycleKey, "resolution_note": "The debt was settled.",
+		}}}}, "", completeTurnEmbeddingConfig{}, time.Unix(120, 0), &result, nil, &cost,
+	)
+	if len(st.savedPendingThreads) != 1 {
+		t.Fatalf("resolved_threads did not update the stored pending row: %#v", st.savedPendingThreads)
+	}
+	closed := st.savedPendingThreads[0]
+	if closed.ThreadKey != threadKey || closed.Status != "resolved" || closed.ResolvedTurn != 12 || closed.SourceTurn != 12 {
+		t.Fatalf("stored pending thread was not closed in place: %#v", closed)
+	}
+}
+
 func TestSaveNarrativeStateRejectsNonFinalReplacementAndRequiresExplicitReactivation(t *testing.T) {
 	ctx := context.Background()
 	st := &turnRecordingStore{}
@@ -255,6 +317,29 @@ func TestContinuityCorrectionNewLifecycleCarryIsGoalOnly(t *testing.T) {
 	)
 	if !strings.Contains(goalAssembly.ContinuityCorrectionText, "Atlas Restoration / goal_status: completed") {
 		t.Fatalf("structured goal terminal carry missing: %q", goalAssembly.ContinuityCorrectionText)
+	}
+	lifecycleClaim := narrativeStateClaim{
+		Subject: "Burned loan note", SubjectType: "entity", StateSlot: "document_status",
+		LifecycleKey: "park-dojun-loan-settlement", Value: "settled and burned", ClaimScope: "objective",
+		Transition: "complete", Confidence: 0.9,
+	}
+	lifecycleValue := store.StatusCurrentValue{
+		ID: 31, ChatSessionID: "sess", RegistryID: 1, StatusKey: narrativeStateStatusKey,
+		OwnerScope: narrativeStateOwnerScope(lifecycleClaim), OwnerID: narrativeStateOwnerID(lifecycleClaim),
+		OwnerLabel: narrativeStateOwnerLabel(lifecycleClaim), ValueKind: "note", WriteState: "current",
+		ValueJSON: mustCompactJSON(narrativeStateValuePayload(lifecycleClaim, "outstanding", 31)),
+		EvidenceJSON: mustCompactJSON(map[string]any{
+			"contract_version": narrativeStateContractVersion, "source_turn": 31, "evidence_excerpt": "settled and burned",
+		}),
+		SourceTurn: 31,
+	}
+	lifecycleAssembly := buildPrepareTurnInjectionAssembly(
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		5, 9000, "Review the burned loan note.", "default", nil, nil, nil,
+		prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{lifecycleValue}, nil),
+	)
+	if !strings.Contains(lifecycleAssembly.ContinuityCorrectionText, "Burned loan note / document_status: settled and burned") {
+		t.Fatalf("lifecycle terminal carry missing outside legacy goal_status: %q", lifecycleAssembly.ContinuityCorrectionText)
 	}
 }
 
@@ -440,6 +525,33 @@ func TestNarrativeStateOpenIdentityMatchIsExact(t *testing.T) {
 		`{"subject":"First Terminal Goal","state_slot":"goal_status"}`,
 	) {
 		t.Fatal("first grounded terminal claim did not suppress its exact older open artifact")
+	}
+	lifecycleClaim := narrativeStateClaim{
+		Subject: "Burned loan note", SubjectType: "entity", StateSlot: "document_status",
+		LifecycleKey: "park-dojun-loan-settlement", Value: "settled", ClaimScope: "objective",
+		Transition: "resolve", Confidence: 0.9,
+	}
+	lifecycleCurrent := store.StatusCurrentValue{
+		ID: 5, ChatSessionID: "sess", RegistryID: 1, StatusKey: narrativeStateStatusKey,
+		OwnerScope: narrativeStateOwnerScope(lifecycleClaim), OwnerID: narrativeStateOwnerID(lifecycleClaim),
+		ValueKind: "note", WriteState: "current",
+		ValueJSON: mustCompactJSON(narrativeStateValuePayload(lifecycleClaim, "outstanding", 30)),
+		EvidenceJSON: mustCompactJSON(map[string]any{
+			"evidence_excerpt": "The debt was settled.", "source_turn": 30,
+		}),
+		SourceTurn: 30,
+	}
+	if !narrativeCurrentStateSupersedesOpenArtifact(
+		[]store.StatusCurrentValue{lifecycleCurrent}, 10,
+		`{"lifecycle_key":"park-dojun-loan-settlement","subject":"Repay Park Dojun","state_slot":"goal_status"}`,
+	) {
+		t.Fatal("shared lifecycle key did not suppress an older open artifact with changed wording")
+	}
+	if narrativeCurrentStateSupersedesOpenArtifact(
+		[]store.StatusCurrentValue{lifecycleCurrent}, 10,
+		`{"lifecycle_key":"different-lifecycle","subject":"Repay Park Dojun","state_slot":"goal_status"}`,
+	) {
+		t.Fatal("different lifecycle key was collapsed")
 	}
 }
 

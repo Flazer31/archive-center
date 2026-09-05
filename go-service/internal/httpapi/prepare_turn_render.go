@@ -704,6 +704,7 @@ type prepareTurnInjectionAssembly struct {
 	MemoryDeliveryLineage     map[string]any
 	MemoryDeliveryPlan        map[string]any
 	PrioritySourceMetadata    []prepareTurnPrioritySourceMetadata
+	PriorityFactSeeds         []prepareTurnPriorityFactSeed
 	PriorityEntityAliases     map[string]any
 	CharacterMemorySupport    map[string]any
 	KGText                    string

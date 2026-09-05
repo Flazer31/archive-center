@@ -1686,7 +1686,7 @@ function assert(condition, message) {
     revision:2,
     status:"recovering",
     severity:"warning",
-    dismissal_policy:"none",
+    dismissal_policy:"x_only",
     error:{
       ...recoverableError,
       recovery_actions:[{
@@ -1741,6 +1741,7 @@ function assert(condition, message) {
   assert(recoveryBridgeCalls[0].options.body.request_id === "recoverable-turn", "recovery action lost its request identity");
   assert(surface.innerHTML.includes("평론가 재처리 중"), "recoverable HUD did not render the accepted recovery state");
   assert(!surface.recoveryButton, "accepted recovery action stayed clickable");
+  assert(surface.button && typeof surface.button.listeners.click === "function", "recovering HUD close button listener missing");
   assert(recoveryStreamCalls.length === 1 && recoveryStreamCalls[0].includes("/turn-workflow/events?request_id=recoverable-turn"), "accepted recovery did not restart the existing HUD event stream");
   assert(typeof recoveryStreamReadResolve === "function", "recovery HUD stream did not wait for a backend revision");
   recoveryStreamReadResolve();
@@ -1751,6 +1752,17 @@ function assert(condition, message) {
   await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "recovery status HUD close button did not dismiss HUD");
+
+  assert(consumeTurnWorkflowHUD({
+    ...recoveryResponseView,
+    request_id:"recovering-close",
+    revision:1
+  }), "automatic recovering HUD view was rejected");
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.button && typeof surface.button.listeners.click === "function", "automatic recovering HUD has no close button");
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "automatic recovering HUD close button did not dismiss HUD");
 
   recoveryBridgeFailure = true;
   _lastBridgeFailureByPath.set("/turn-workflow/recovery", {

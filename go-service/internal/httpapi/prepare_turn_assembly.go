@@ -145,14 +145,34 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		objectiveEntitySource = "unobserved_no_objective_state_delivery"
 	}
 	memoryQuery := prepareTurnEventMemoryQuery(recollectionContext, entityScope.Direct)
+	priorityMemoryQueryInput := map[string]any(nil)
+	if len(perspectiveContextArg) > 0 {
+		priorityMemoryQueryInput = perspectiveContextArg[0]
+	}
+	priorityMemoryQuery := strings.TrimSpace(extractionStringFromAny(priorityMemoryQueryInput["_priority_memory_query"]))
+	priorityMemoryQuerySource := strings.TrimSpace(extractionStringFromAny(priorityMemoryQueryInput["_priority_memory_query_source"]))
+	priorityMemoryQuerySet := prepareTurnPriorityQuerySetFromAny(priorityMemoryQueryInput[prepareTurnPriorityQuerySetContextKey])
+	if priorityMemoryQuery == "" {
+		priorityMemoryQuery = prepareTurnPriorityContextQuery(
+			rawUserInput,
+			recollectionContext.currentAssistantContext,
+			entityScope.Direct,
+			entityScope.Scene,
+		)
+		priorityMemoryQuerySource = "assembly_context"
+		priorityMemoryQuerySet = []string{priorityMemoryQuery}
+	}
 	out.MemoryRecallQuery = memoryQuery
 	out.Counts["recall_query_sources"] = []string{"current_user_input", "directly_referenced_entities", "relevant_previous_stored_event_summary"}
 	out.Counts["directly_referenced_entities"] = entityScope.Direct
 	out.Counts["stored_active_scene_entities"] = entityScope.Scene
 	out.Counts["accepted_recent_context_entities"] = entityScope.Scene
 	out.Counts["objective_entity_source"] = objectiveEntitySource
-	out.Counts["previous_assistant_raw_used_for_search"] = false
-	out.Counts["previous_assistant_used_for_entity_scope_only"] = recollectionContext.currentAssistantContext != ""
+	previousAssistantRawUsedForSearch := strings.Contains(priorityMemoryQuerySource, "recent_conversation_turns")
+	out.Counts["previous_assistant_raw_used_for_search"] = previousAssistantRawUsedForSearch
+	out.Counts["previous_assistant_used_for_entity_scope_only"] = false
+	out.Counts["previous_assistant_used_for_priority_fact_affinity"] = previousAssistantRawUsedForSearch || priorityMemoryQuerySource == "continuity_query"
+	out.Counts["priority_relevance_query_source"] = priorityMemoryQuerySource
 	out.Counts["previous_assistant_raw_delivery_owner"] = "input_context_only"
 	out.Counts["current_scene_state_turn"] = recollectionContext.currentSceneTurn
 	out.Counts["latest_assistant_turn"] = recollectionContext.latestAssistantTurn
@@ -243,6 +263,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
+	appendPrepareTurnPriorityMemoryFactSeeds(&out, memories)
 	if perspectiveCandidateText != "" {
 		for _, line := range strings.Split(perspectiveCandidateText, "\n") {
 			line = strings.TrimSpace(line)
@@ -303,9 +324,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			sourceTurn, validFrom, validTo, relation,
 		)
 		kgLines = append(kgLines, line)
-		appendPrepareTurnPrioritySourceMetadata(&out, "kg_triples", line,
+		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "kg_triples", "auxiliary", line,
 			prepareTurnPriorityStoredOccurrence("kg_triples", t.ID, ""),
-			prepareTurnPriorityStoredRowID(t.ID), t.SourceTurn, 0, false)
+			prepareTurnPriorityStoredRowID(t.ID), t.SourceTurn, 0, false, "general", "", nil)
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph Support History; context only, not current-state authority; end_unrecorded means no closing turn recorded]", kgLines)
 
@@ -355,9 +376,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				importance = 1
 				importancePresent = true
 			}
-			appendPrepareTurnPrioritySourceMetadata(&out, "storylines", line,
+			appendPrepareTurnPrioritySourceMetadata(&out, "unresolved_goal", "storylines", "auxiliary", line,
 				prepareTurnPriorityStoredOccurrence("storylines", sl.ID, ""),
-				prepareTurnPriorityStoredRowID(sl.ID), maxInt(sl.LastEvidenceTurn, sl.LastTurn), importance, importancePresent)
+				prepareTurnPriorityStoredRowID(sl.ID), maxInt(sl.LastEvidenceTurn, sl.LastTurn), importance, importancePresent, "general", "", nil)
 		}
 	}
 	out.StorylineText = makePrepareTurnSection("[Storylines]", storylineLines)
@@ -492,9 +513,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				importance = 1
 				importancePresent = true
 			}
-			appendPrepareTurnPrioritySourceMetadata(&out, "world_rules", line,
+			appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "world_rules", "required", line,
 				prepareTurnPriorityStoredOccurrence("world_rules", wr.ID, ""),
-				prepareTurnPriorityStoredRowID(wr.ID), wr.SourceTurn, importance, importancePresent)
+				prepareTurnPriorityStoredRowID(wr.ID), wr.SourceTurn, importance, importancePresent, "general", "", nil)
 			if signature := worldRuleSignature(
 				wr.ChatSessionID,
 				wr.Scope,
@@ -618,17 +639,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			if objective := compactPrepareTurnLine(strings.Join(objectiveParts, "; "), 0); objective != "" {
 				line := fmt.Sprintf("- %s: %s", name, objective)
 				charObjectiveLines = append(charObjectiveLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "character_states", line,
+				appendPrepareTurnPrioritySourceMetadata(&out, "character_objective", "character_states", "required", line,
 					prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "objective"),
-					prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false)
+					prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false, "general", "", nil)
 			}
 		}
 		if relationships != "" {
 			line := fmt.Sprintf("- %s: relationships=%s", name, compactPrepareTurnLine(relationships, 0))
 			charRelationshipLines = append(charRelationshipLines, line)
-			appendPrepareTurnPrioritySourceMetadata(&out, "character_states", line,
+			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
 				prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "relationship"),
-				prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false)
+				prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false, "perspective_scoped", name, []string{name})
 		}
 	}
 	out.CharacterMemorySupport = buildPrepareTurnCharacterMemorySupport(
@@ -638,13 +659,23 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		perspectiveContext,
 		characterMemoryReadContext,
 	)
-	charObjectiveLines = append(charObjectiveLines, prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "character_objective")...)
-	charRelationshipLines = append(charRelationshipLines, prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "subjective_relationship")...)
+	for _, line := range prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "character_objective") {
+		charObjectiveLines = append(charObjectiveLines, line)
+		appendPrepareTurnPrioritySourceMetadata(&out, "character_objective", "character_states", "required", line,
+			"", nil, 0, 0, false, "general", "", nil)
+	}
+	for _, line := range prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "subjective_relationship") {
+		charRelationshipLines = append(charRelationshipLines, line)
+		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
+			"", nil, 0, 0, false, "perspective_scoped", "", nil)
+	}
 	out.CharacterText = makePrepareTurnSection("[Characters]", charLines)
 	out.CharacterObjectiveText = makePrepareTurnSection("[Character Objective States]", charObjectiveLines)
 	if interactionPublicCandidateText != "" {
 		for _, line := range prepareTurnDeliveryItems(interactionPublicCandidateText) {
 			charRelationshipLines = append(charRelationshipLines, line)
+			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
+				"", nil, 0, 0, false, "source_scoped", "", nil)
 		}
 		out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
 	}
@@ -682,9 +713,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				importance = 1
 				importancePresent = true
 			}
-			appendPrepareTurnPrioritySourceMetadata(&out, "pending_threads", line,
+			appendPrepareTurnPrioritySourceMetadata(&out, "unresolved_goal", "pending_threads", "required", line,
 				prepareTurnPriorityStoredOccurrence("pending_threads", pt.ID, ""),
-				prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent)
+				prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent, "general", "", nil)
 			if pinnedActive {
 				pendingPinnedActiveSelected++
 			}
@@ -711,15 +742,36 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		line := fmt.Sprintf("- turns %d-%d: %s", es.FromTurn, es.ToTurn, summary)
 		episodeLines = append(episodeLines, line)
-		appendPrepareTurnPrioritySourceMetadata(&out, "episode_summaries", line,
+		appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "episode_summaries", "auxiliary", line,
 			prepareTurnPriorityStoredOccurrence("episode_summaries", es.ID, ""),
-			prepareTurnPriorityStoredRowID(es.ID), es.ToTurn, 0, false)
+			prepareTurnPriorityStoredRowID(es.ID), es.ToTurn, 0, false, "general", "", nil)
 	}
 	out.EpisodeText = makePrepareTurnSection("[Episode Summaries]", episodeLines)
 	hierarchyEscalation := buildPrepareTurnHierarchyEscalation(resumePack, chatLogs, memorySelection, rawUserInput, profile)
 	out.ChapterText = hierarchyEscalation.ChapterText
 	out.ArcText = hierarchyEscalation.ArcText
 	out.SagaText = hierarchyEscalation.SagaText
+	if resumePack != nil && resumePack.Chapter != nil && strings.TrimSpace(out.ChapterText) != "" {
+		for _, line := range prepareTurnDeliveryItems(out.ChapterText) {
+			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "chapter_summaries", "auxiliary", line,
+				prepareTurnPriorityStoredOccurrence("chapter_summaries", resumePack.Chapter.ID, ""),
+				prepareTurnPriorityStoredRowID(resumePack.Chapter.ID), resumePack.Chapter.ToTurn, 0, false, "general", "", nil)
+		}
+	}
+	if resumePack != nil && resumePack.Arc != nil && strings.TrimSpace(out.ArcText) != "" {
+		for _, line := range prepareTurnDeliveryItems(out.ArcText) {
+			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "arc_summaries", "auxiliary", line,
+				prepareTurnPriorityStoredOccurrence("arc_summaries", resumePack.Arc.ID, ""),
+				prepareTurnPriorityStoredRowID(resumePack.Arc.ID), resumePack.Arc.ToTurn, 0, false, "general", "", nil)
+		}
+	}
+	if resumePack != nil && resumePack.Saga != nil && strings.TrimSpace(out.SagaText) != "" {
+		for _, line := range prepareTurnDeliveryItems(out.SagaText) {
+			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "saga_digests", "auxiliary", line,
+				prepareTurnPriorityStoredOccurrence("saga_digests", resumePack.Saga.ID, ""),
+				prepareTurnPriorityStoredRowID(resumePack.Saga.ID), resumePack.Saga.ToTurn, 0, false, "general", "", nil)
+		}
+	}
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, maxChars)
 	for _, entry := range personaEntries {
@@ -727,18 +779,23 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		if line == "" {
 			continue
 		}
-		appendPrepareTurnPrioritySourceMetadata(&out, "persona_memory_entries", line,
+		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "persona_memory_entries", "auxiliary", line,
 			prepareTurnPriorityStoredOccurrence("persona_memory_entries", entry.ID, ""),
-			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0)
+			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0, "protagonist_private", "protagonist", []string{"protagonist"})
 	}
 	for _, entry := range characterPrivateMemories {
 		line := characterPrivateRecollectionEntryLine(entry, maxChars)
 		if line == "" {
 			continue
 		}
-		appendPrepareTurnPrioritySourceMetadata(&out, "protagonist_entity_memories", line,
+		owner := prepareTurnMemoryOwnerLabel(entry.OwnerEntityKey, entry.OwnerEntityName)
+		visibility := strings.TrimSpace(entry.OwnerVisibility)
+		if visibility == "" {
+			visibility = "owner_private"
+		}
+		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "protagonist_entity_memories", "required", line,
 			prepareTurnPriorityStoredOccurrence("protagonist_entity_memories", entry.ID, ""),
-			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0)
+			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0, visibility, owner, []string{owner})
 	}
 
 	if latest := latestPrepareTurnEvidence(evidence); latest != nil {
@@ -809,9 +866,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			line := fmt.Sprintf("- %s: %s", layer, filtered)
 			canonLines = append(canonLines, line)
 			canonRelationshipLines = append(canonRelationshipLines, line)
-			appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "canonical_state_layers", "required", line,
 				prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "relationship"),
-				prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
+				prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "source_scoped", "", nil)
 			canonTypeCounts[layer]++
 			continue
 		}
@@ -827,7 +884,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				canonIrrelevant++
 				continue
 			}
-			appendCanonicalSubset := func(target *[]string, rawQuery, fallbackQuery string, subset map[string]any) {
+			appendCanonicalSubset := func(target *[]string, lane, rawQuery, fallbackQuery string, subset map[string]any) {
 				if len(subset) == 0 {
 					return
 				}
@@ -839,17 +896,17 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := "- entity_state: " + text
 				*target = append(*target, line)
 				canonLines = append(canonLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+				appendPrepareTurnPrioritySourceMetadata(&out, lane, "canonical_state_layers", "required", line,
 					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "entity"),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
 				selectedLayer = true
 			}
 			if value, ok := entity["events"]; ok {
-				appendCanonicalSubset(&canonEventLines, memoryQuery, "", map[string]any{"events": value})
+				appendCanonicalSubset(&canonEventLines, "event_recent", memoryQuery, "", map[string]any{"events": value})
 			}
 			if characters, ok := entity["characters"]; ok {
 				if filtered, ok := prepareTurnCanonicalCharactersForScene(characters, objectiveEntityNames); ok {
-					appendCanonicalSubset(&canonCharacterLines, objectiveQuery, "", map[string]any{"characters": filtered})
+					appendCanonicalSubset(&canonCharacterLines, "character_objective", objectiveQuery, "", map[string]any{"characters": filtered})
 				} else {
 					canonCharacterRosterOnlyDropped++
 				}
@@ -860,7 +917,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 					worldSubset[key] = value
 				}
 			}
-			appendCanonicalSubset(&canonWorldLines, rawSupportQuery, worldQuery, worldSubset)
+			appendCanonicalSubset(&canonWorldLines, "world_state", rawSupportQuery, worldQuery, worldSubset)
 		case "scene_state":
 			if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
 				canonIrrelevant++
@@ -875,9 +932,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
 					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
 				selectedLayer = true
 			}
 		case "unresolved_threads":
@@ -921,9 +978,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
 					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
 				selectedLayer = true
 			}
 		default:
@@ -934,9 +991,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 				line := fmt.Sprintf("- %s: %s", layer, content)
 				canonLines = append(canonLines, line)
 				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "canonical_state_layers", line,
+				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
 					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0)
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
 				selectedLayer = true
 			}
 		}
@@ -971,15 +1028,20 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		out.Counts["subjective_relationship_lane_reason"] = "no_request_or_current_scene_evidence_selected"
 	}
 	deliveryBudgetContext := map[string]any{
-		"_memory_delivery_budget_mode": memoryDeliveryBudgetMode,
-		"_memory_delivery_budgets":     memoryDeliveryBudgets,
-		"_priority_memory_query":       strings.TrimSpace(rawUserInput + "\n" + memoryQuery),
+		"_memory_delivery_budget_mode":        memoryDeliveryBudgetMode,
+		"_memory_delivery_budgets":            memoryDeliveryBudgets,
+		"_priority_memory_query":              priorityMemoryQuery,
+		"_priority_memory_query_source":       priorityMemoryQuerySource,
+		prepareTurnPriorityQuerySetContextKey: priorityMemoryQuerySet,
 	}
 	if len(perspectiveContextArg) > 0 {
 		deliveryBudgetContext["_priority_memory_enabled"] = boolFromAny(perspectiveContextArg[0]["_priority_memory_enabled"])
 		deliveryBudgetContext["_priority_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_priority_memory_max_items"], 5)
 		deliveryBudgetContext["_core_objective_memory_max_items_present"] = boolFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items_present"])
 		deliveryBudgetContext["_core_objective_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items"], 0)
+		deliveryBudgetContext["_priority_memory_current_turn"] = intFromAny(perspectiveContextArg[0]["_priority_memory_current_turn"], 0)
+		deliveryBudgetContext[prepareTurnPrioritySemanticFactsContextKey] = perspectiveContextArg[0][prepareTurnPrioritySemanticFactsContextKey]
+		deliveryBudgetContext["_priority_precise_vector_trace"] = perspectiveContextArg[0]["_priority_precise_vector_trace"]
 	}
 	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, maxChars, deliveryBudgetContext)
 	out.MemoryDeliveryLineage = finalizePrepareTurnMemoryDeliveryLineage(out.MemoryDeliveryLineage, out.MemoryDeliveryPlan)

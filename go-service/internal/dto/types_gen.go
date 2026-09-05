@@ -1065,6 +1065,9 @@ type PrepareTurnSettings struct {
 	TakeoverMode *string `json:"takeover_mode,omitempty"`
 	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
 	// DEFAULT: Optional field with default (5): Go handler must apply default when field is absent in request.
+	RecentConversationReferenceCount *int `json:"recent_conversation_reference_count,omitempty"`
+	// PRESENCE: Optional non-null scalar int: absent vs zero-value distinction requires pointer type or custom decode logic when zero is semantically meaningful.
+	// DEFAULT: Optional field with default (5): Go handler must apply default when field is absent in request.
 	TopK *int `json:"top_k,omitempty"`
 }
 
@@ -1133,6 +1136,10 @@ func (dto *PrepareTurnSettings) ApplyDefaults() {
 	if dto.TakeoverMode == nil {
 		v := "off"
 		dto.TakeoverMode = &v
+	}
+	if dto.RecentConversationReferenceCount == nil {
+		v := 5
+		dto.RecentConversationReferenceCount = &v
 	}
 	if dto.TopK == nil {
 		v := 5

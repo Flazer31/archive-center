@@ -184,9 +184,16 @@ func (m *mariadbStore) ListGeneralVectorPreciseMemoryUnits(ctx context.Context, 
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT
 			unit.id, unit.unit_id, unit.chat_session_id,
+			unit.source_turn_start, unit.source_turn_end, unit.source_revision,
+			unit.memory_kind, COALESCE(unit.memory_subtype, ''), unit.payload_json,
+			COALESCE(unit.actor_entity_id, ''), COALESCE(unit.subject_entity_id, ''),
+			COALESCE(unit.affected_entity_id, ''), COALESCE(unit.location_entity_id, ''),
+			COALESCE(unit.object_entity_id, ''), COALESCE(unit.relationship_key, ''),
+			unit.truth_scope, unit.authority_class,
 			unit.admission_state, unit.review_state, unit.visibility,
 			COALESCE(unit.knowledge_holder_entity_id, ''),
-			unit.epistemic_mode, unit.lifecycle_state
+			unit.epistemic_mode, COALESCE(unit.reveal_condition, ''),
+			unit.confidence, unit.lifecycle_state, unit.created_at, unit.updated_at
 		FROM precise_memory_units unit
 		JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = unit.chat_session_id
@@ -205,9 +212,14 @@ func (m *mariadbStore) ListGeneralVectorPreciseMemoryUnits(ctx context.Context, 
 		var item PreciseMemoryUnit
 		if err := rows.Scan(
 			&item.ID, &item.UnitID, &item.ChatSessionID,
+			&item.SourceTurnStart, &item.SourceTurnEnd, &item.SourceRevision,
+			&item.Kind, &item.Subtype, &item.PayloadJSON,
+			&item.ActorEntityID, &item.SubjectEntityID, &item.AffectedEntityID,
+			&item.LocationEntityID, &item.ObjectEntityID, &item.RelationshipKey,
+			&item.TruthScope, &item.AuthorityClass,
 			&item.AdmissionState, &item.ReviewState, &item.Visibility,
-			&item.KnowledgeHolderEntityID, &item.EpistemicMode,
-			&item.LifecycleState,
+			&item.KnowledgeHolderEntityID, &item.EpistemicMode, &item.RevealCondition,
+			&item.Confidence, &item.LifecycleState, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}

@@ -232,7 +232,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	sessionBootstrap := buildPrepareTurnSessionBootstrap(request, sid)
 	hostContextSnapshot := buildPrepareTurnRisuHostContextSnapshot(request, sid)
 	hostContextReferenceEvidence := buildPrepareTurnHostContextReferenceEvidence(hostContextSnapshot)
-	turnFinalizationPolicy := buildPrepareTurnFinalizationPolicy(stringPtrValue(req.Settings.TurnFinalizationMode, prepareTurnFinalizationImmediate))
+	turnFinalizationMode := normalizePrepareTurnFinalizationMode(stringPtrValue(req.Settings.TurnFinalizationMode, prepareTurnFinalizationImmediate))
+	turnFinalizationPolicy := buildPrepareTurnFinalizationPolicy(turnFinalizationMode)
 	responseProjection := strings.TrimSpace(request.ResponseProjection)
 	if request.SourceDecisionOnly {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -340,7 +341,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	timing.addElapsed("migration_guard", migrationStartedAt)
 	workflowRequestID := prepareTurnWorkflowRequestID(prepareSourceContract, request)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
-		s.TurnWorkflows.begin(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+		if turnFinalizationMode == prepareTurnFinalizationNextInput {
+			s.TurnWorkflows.beginForNextInputFinalization(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+		} else {
+			s.TurnWorkflows.begin(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+		}
 		s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
 			Key:         "host_observation",
 			Owner:       "risu_host",
@@ -414,12 +419,44 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	}
 	rawUserInput := stringPtrValue(req.RawUserInput, "")
 	turnIndex := intPtrValue(req.TurnIndex, 0)
+	priorityMemoryRequest := req
+	priorityMemoryRequest.Messages = request.RecentConversationMessages
+	recentConversationReferenceCount := prepareTurnRecentConversationReferenceLimit(req.Settings)
+	priorityMemoryRetrievalQueries := prepareTurnRetrievalQueries(priorityMemoryRequest, recentConversationReferenceCount)
+	priorityMemoryQuery, priorityMemoryQuerySource := prepareTurnEffectiveContinuityQuery(priorityMemoryRequest, recentConversationReferenceCount)
+	priorityMemoryQuerySet := make([]string, 0, len(priorityMemoryRetrievalQueries))
+	for _, query := range priorityMemoryRetrievalQueries {
+		priorityMemoryQuerySet = append(priorityMemoryQuerySet, query.Text)
+	}
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
 	perspectiveContext = resolvePrepareTurnPerspectiveIdentity(r.Context(), s.Store, sid, perspectiveContext)
 	historyScope := resolvePrepareTurnHistoryScope(r.Context(), s.Store, sid, currentTurnFence)
+	priorityPreciseUnits := map[string][]store.PreciseMemoryUnit{}
+	priorityPreciseCandidateLimits := map[string]int{}
+	priorityPreciseCandidateTrace := map[string]any{
+		"contract_version": "prepare_turn.precise_fact_candidate_snapshot.v1",
+		"status":           "unavailable",
+		"reason":           "general_precise_memory_reader_unavailable",
+		"candidate_count":  0,
+		"session_count":    0,
+	}
+	if preciseReader, ok := s.Store.(store.GeneralVectorPreciseMemoryReader); ok {
+		priorityPreciseUnits, priorityPreciseCandidateLimits, priorityPreciseCandidateTrace = prepareTurnLoadGeneralPreciseMemoryUnits(
+			r.Context(),
+			preciseReader,
+			sid,
+			historyScope,
+		)
+	}
 	vectorStartedAt := time.Now()
-	vectorShadow := s.prepareTurnVectorShadow(r.Context(), req, memoryTopK, historyScope)
+	vectorShadow := s.prepareTurnVectorShadowWithPreciseCandidateLimits(
+		r.Context(),
+		priorityMemoryRequest,
+		memoryTopK,
+		priorityPreciseCandidateLimits,
+		historyScope,
+	)
 	timing.addElapsed("vector_recall", vectorStartedAt)
 	vectorMemoryIDs, vectorEvidenceIDs := prepareTurnVectorHistoryRowIDs(vectorShadow)
 
@@ -454,6 +491,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	var reversibleCurrentValues []store.StatusCurrentValue
 	var characterPerspectiveUnits []store.PreciseMemoryUnit
 	var activeInteractionUnits []store.PreciseMemoryUnit
+	var prioritySemanticFacts []prepareTurnPrioritySemanticFact
+	prioritySemanticTrace := map[string]any{
+		"contract_version": "prepare_turn.precise_fact_vector_hydration.v1",
+		"status":           "unavailable", "reason": "general_precise_memory_reader_unavailable",
+		"score_owner": "precise_memory_unit_vector_similarity",
+	}
 	characterMemoryReadContext := buildPrepareTurnCharacterMemoryReadContext(r.Context(), s.Store, sid)
 
 	readErrs := []error{}
@@ -482,6 +525,21 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	storeReadsStartedAt := time.Now()
 	if s.Store != nil {
 		ctx := r.Context()
+		if preciseReader, ok := s.Store.(store.GeneralVectorPreciseMemoryReader); ok {
+			prioritySemanticFacts, prioritySemanticTrace = prepareTurnHydratePreciseMemoryVectorFacts(
+				ctx,
+				preciseReader,
+				vectorShadow,
+				historyScope,
+				priorityPreciseUnits,
+			)
+			prioritySemanticTrace["candidate_snapshot"] = priorityPreciseCandidateTrace
+			if status := strings.TrimSpace(extractionStringFromAny(prioritySemanticTrace["status"])); status == "ready" || status == "partial" {
+				readsOK++
+				sessionStateReads["precise_memory_vector_facts"] = true
+			}
+		}
+		delete(vectorShadow, prepareTurnPrivatePreciseMemorySearchResultsKey)
 		if interactionReader, ok := s.Store.(store.ActiveInteractionMemoryReader); ok {
 			units, err := interactionReader.ListActiveInteractionMemoryUnits(ctx, sid)
 			if err == nil {
@@ -921,6 +979,12 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			assemblyPerspectiveContext["_active_interaction_candidate_count"] = intFromAny(activeInteractionPacket["candidate_count"], 0)
 			assemblyPerspectiveContext[prepareTurnCharacterMemoryContextKey] = characterMemoryReadContext
 			assemblyPerspectiveContext[prepareTurnEntityIdentityAliasesContextKey] = entityIdentityAliases
+			assemblyPerspectiveContext["_priority_memory_query"] = priorityMemoryQuery
+			assemblyPerspectiveContext["_priority_memory_query_source"] = priorityMemoryQuerySource
+			assemblyPerspectiveContext[prepareTurnPriorityQuerySetContextKey] = priorityMemoryQuerySet
+			assemblyPerspectiveContext["_priority_memory_current_turn"] = maxInt(turnIndex, currentTurnFence)
+			assemblyPerspectiveContext[prepareTurnPrioritySemanticFactsContextKey] = prioritySemanticFacts
+			assemblyPerspectiveContext["_priority_precise_vector_trace"] = prioritySemanticTrace
 			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
 				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
 				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
@@ -1568,12 +1632,20 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	helperBudgetGovernorTrace := buildHelperBudgetGovernorTrace(injectionAssembly, maxInjectionChars)
 
 	tracePreview := map[string]any{
-		"source":              "go_r1_read_shadow",
-		"would_call_llm":      false,
-		"would_write":         false,
-		"prompt_source":       promptAssembly["prompt_source"],
-		"evidence_counts":     evidenceCounts,
-		"section_summary":     sectionSummary,
+		"source":          "go_r1_read_shadow",
+		"would_call_llm":  false,
+		"would_write":     false,
+		"prompt_source":   promptAssembly["prompt_source"],
+		"evidence_counts": evidenceCounts,
+		"section_summary": sectionSummary,
+		"vector_recall_query": map[string]any{
+			"query_text_source":                   stringFromMap(vectorShadow, "query_text_source"),
+			"query_text_count":                    intFromAny(vectorShadow["query_text_count"], 0),
+			"recent_conversation_query_limit":     intFromAny(vectorShadow["recent_conversation_query_limit"], 0),
+			"recent_conversation_query_count":     intFromAny(vectorShadow["recent_conversation_query_count"], 0),
+			"query_vector_count":                  intFromAny(vectorShadow["query_vector_count"], 0),
+			"query_history_embedding_error_count": intFromAny(vectorShadow["query_history_embedding_error_count"], 0),
+		},
 		"supervisor_status":   supervisorInputPack["status"],
 		"critic_status":       criticInputPack["status"],
 		"storyline_selection": supervisorInputPack["storyline_selection"],

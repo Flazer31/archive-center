@@ -52,6 +52,350 @@ func TestArchiveCenter42PriorityMemoryAndFinalizationWiringMarkers(t *testing.T)
 	}
 }
 
+func TestArchiveCenter42PrimarySettingsPlaceRecentConversationAndLifecycleControls(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	embedding := strings.Index(src, `id="mo-embeddingTimeout"`)
+	memoryTransport := strings.Index(src, `id="mo-memoryTransportMode"`)
+	turnFinalization := strings.Index(src, `id="mo-turnFinalizationMode"`)
+	advanced := strings.Index(src, `<!-- ▸ 고급 설정`)
+	if embedding < 0 || memoryTransport < 0 || turnFinalization < 0 || advanced < 0 ||
+		!(embedding < memoryTransport && memoryTransport < turnFinalization && turnFinalization < advanced) {
+		t.Fatal("memory transport and save finalization controls must appear below embedding timeout and outside advanced settings")
+	}
+
+	topK := strings.Index(src, `id="mo-topK"`)
+	coreMemory := strings.Index(src, `id="mo-coreObjectiveMemoryMaxItems"`)
+	recentConversation := strings.Index(src, `id="mo-recentConversationReferenceCount"`)
+	llmRetry := strings.Index(src, `id="mo-llmRetryCount"`)
+	if topK < 0 || coreMemory < 0 || recentConversation < 0 || llmRetry < 0 ||
+		!(topK < coreMemory && coreMemory < recentConversation && recentConversation < llmRetry) {
+		t.Fatal("recent conversation reference count must follow the Chroma and core-memory controls in primary settings")
+	}
+}
+
+func TestArchiveCenter42AfterRequestLetsGoResolveRawOnlyAndCompletedReplays(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	afterRequest := extractJSFunctionBlockForTest(t, src, "function onAfterRequest(content, type)")
+	if strings.Contains(afterRequest, `findRecentPersistedCompleteTurnPairForContent(`) ||
+		strings.Contains(afterRequest, `skipped_duplicate_complete_turn`) {
+		t.Fatal("afterRequest must not treat an existing raw pair as a completed turn before Go checks derived artifacts")
+	}
+	reserveIndex := strings.Index(afterRequest, `turnIdx = await reserveAfterRequestPersistenceTurnIndex(`)
+	completeIndex := strings.Index(afterRequest, `() => tryCompleteTurn(turnIdx`)
+	if reserveIndex < 0 || completeIndex < 0 || reserveIndex >= completeIndex {
+		t.Fatal("afterRequest no longer routes the accepted pair through Go-owned turn resolution and /complete-turn")
+	}
+}
+
+func TestArchiveCenter42OrchestrationCarriesGoFinalizationPolicyToAfterRequest(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Fatalf("node is required for the 4.2 finalization-policy handoff fixture: %v", err)
+		}
+	}
+	src := readArchiveCenterJS(t)
+	orchestrate := extractArchiveCenterJSAsyncFunction(t, src, "orchestrateTurnHelpers")
+	script := `
+const settings={enabled:true};
+function debugLog(){}
+function newTurnTrace(){return {providerCallBudgetLedgers:{}};}
+function truncPreview(value){return String(value||"");}
+function normalizeResponseExecutionContractTrace(value){return value||null;}
+function applyOrchestrationModuleTransportTraceOr1e(){}
+function buildOrchestrationModuleTransportStateOr1e(){return {};}
+const _lastPrepareTurnSource="backend-shadow";
+async function getCurrentChatSessionId(){return "fallback-session";}
+function peekNextTurnIndex(){return 2;}
+function buildInputTransparency(){return {};}
+let _effectiveInputAwaitingNewTurn=true;
+let _lastActivitySnapshot=null;
+` + orchestrate + `
+(async function(){
+  const policy={contract_version:"turn_finalization_policy.v1",owner:"go",mode:"next_user_input"};
+  const result=await orchestrateTurnHelpers("next input",[],null,{
+    payloadApplicationPlan:{contract_version:"payload_application_plan.v1",owner:"go",apply_rule:"apply_exact_text_without_reassembly"},
+    injectionPack:{},
+    turnFinalizationPolicy:policy,
+  },null,{chatSessionId:"session-1"});
+  if(!result || result.turnFinalizationPolicy!==policy){
+    throw new Error("Go finalization policy was dropped before afterRequest: "+JSON.stringify(result&&result.turnFinalizationPolicy));
+  }
+})().catch(function(err){console.error(err&&err.stack||err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("4.2 finalization-policy handoff runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestArchiveCenter42NextInputCompleteTurnUsesPreviousHUDWithoutChangingImmediateHUD(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Fatalf("node is required for the 4.2 dual-HUD routing fixture: %v", err)
+		}
+	}
+	src := readArchiveCenterJS(t)
+	tryCompleteTurn := extractArchiveCenterJSAsyncFunction(t, src, "tryCompleteTurn")
+	phaseProjection := extractArchiveCenterJSFunction(t, src, "projectTurnWorkflowHUDPhaseView")
+	finishCurrentGeneration := extractArchiveCenterJSFunction(t, src, "finishTurnWorkflowHUDCurrentGeneration")
+	dismissPrevious := extractArchiveCenterJSFunction(t, src, "dismissTurnWorkflowHUDPrevious")
+	slotHTML := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDSlotHTML")
+	stackPresentation := extractArchiveCenterJSFunction(t, src, "buildTurnWorkflowHUDStackPresentation")
+	applyStack := extractArchiveCenterJSAsyncFunction(t, src, "applyTurnWorkflowHUDStack")
+	currentIndex := strings.Index(stackPresentation, `turnWorkflowHUDSlotHTML(currentPresentation, "current", "turn_hud.slot.current", true)`)
+	previousIndex := strings.Index(stackPresentation, `turnWorkflowHUDSlotHTML(previousPresentation, "previous", "turn_hud.slot.previous", true)`)
+	if currentIndex < 0 || previousIndex < 0 || currentIndex >= previousIndex {
+		t.Fatal("dual HUD must render current generation above previous-turn Critic/save")
+	}
+	script := `
+const TURN_WORKFLOW_HUD_SLOT_STYLE="slot-style";
+const TURN_WORKFLOW_HUD_SLOT_LABEL_STYLE="label-style";
+function escapeTurnWorkflowHUDHTML(value){return String(value==null?"":value);}
+function t(key){return key==="turn_hud.slot.current"?"CURRENT":(key==="turn_hud.slot.previous"?"PREVIOUS":key);}
+function turnWorkflowHUDDismissButtonHTML(){return '<button data-close="1"></button>';}
+function buildTurnWorkflowHUDPresentation(view){
+  const stage=view&&view.current_stage||{};
+  return {terminal:view&&view.terminal===true,dismissible:view&&view.dismissible===true,closeButtonOnly:view&&view.closeButtonOnly===true,recoveryAction:null,elapsedStartedAt:"",ordinal:Number(stage.ordinal||0),total:Number(stage.total||0),html:'<div style="max-height:calc(100vh - 20px)">'+turnWorkflowHUDDismissButtonHTML()+String(view.name||"")+':'+String(stage.ordinal||0)+'/'+String(stage.total||0)+'</div>'};
+}
+` + phaseProjection + "\n" + finishCurrentGeneration + "\n" + dismissPrevious + "\n" + slotHTML + "\n" + stackPresentation + "\n" + applyStack + `
+const settings={enabled:true,dbEnabled:true};
+const primaryStarts=[];
+const previousStarts=[];
+const primaryViews=[];
+const previousViews=[];
+const transportErrors=[];
+const dismissBindings=[];
+const queuedOperations=[];
+const appliedStacks=[];
+let _turnWorkflowHUDActiveRequestId="request-waiting";
+let _turnWorkflowHUDLastView={request_id:"request-waiting",name:"CURRENT-CARD"};
+let _turnWorkflowHUDLastRevision=6;
+let _turnWorkflowHUDTerminalRequestId="";
+let _turnWorkflowHUDCurrentFinalizationMode="next_user_input";
+let _turnWorkflowHUDWatchToken=1;
+let _turnWorkflowHUDWatchRunning=true;
+let _turnWorkflowHUDPreviousRequestId="request-previous";
+let _turnWorkflowHUDPreviousLastRevision=12;
+let _turnWorkflowHUDPreviousLastView={request_id:"request-previous",name:"PREVIOUS-CARD",terminal:true};
+let _turnWorkflowHUDPreviousWatchToken=1;
+let _turnWorkflowHUDPreviousWatchRunning=false;
+let _turnWorkflowHUDElapsedElement=null;
+let _turnWorkflowHUDElapsedStartedAt="";
+const _turnWorkflowHUDHostWarningsByRequestId=new Map();
+const root={
+  async setInnerHTML(html){appliedStacks.push(String(html||""));},
+  async querySelector(selector){return {selector:String(selector||"")};},
+};
+function cancelTurnWorkflowHUDStream(){}
+function cancelTurnWorkflowHUDPreviousStream(){}
+function clearTurnWorkflowHUDTimer(){}
+function queueTurnWorkflowHUDOperation(_label,operation){const pending=Promise.resolve().then(operation);queuedOperations.push(pending);return pending;}
+async function removeTurnWorkflowHUDDismissListeners(){}
+async function ensureTurnWorkflowHUDRoot(){return root;}
+async function attachTurnWorkflowHUDDismiss(card,requestId,closeButtonOnly,onClick){dismissBindings.push({card,requestId,closeButtonOnly,onClick});}
+async function attachTurnWorkflowHUDRecovery(){}
+async function updateTurnWorkflowHUDElapsed(){}
+function scheduleTurnWorkflowHUDElapsedFrame(){}
+async function drainQueuedOperations(){for(let index=0;index<queuedOperations.length;index++)await queuedOperations[index];}
+function turnWorkflowHUDRequestIdFromCompleteBody(body){return String(body&&body.client_meta&&body.client_meta.turn_workflow_request_id||"");}
+function startTurnWorkflowHUDWatch(requestId){primaryStarts.push(String(requestId||""));}
+function startTurnWorkflowHUDPreviousWatch(requestId){previousStarts.push(String(requestId||""));}
+function consumeTurnWorkflowHUD(view){primaryViews.push(view);}
+function consumeTurnWorkflowHUDPrevious(view){previousViews.push(view);}
+function renderTurnWorkflowHUDTransportError(){transportErrors.push("current");}
+function renderTurnWorkflowHUDPreviousTransportError(){transportErrors.push("previous");}
+async function safeCall(call){return await call();}
+async function bridgeFetchWithRetry(_path,options){
+  const requestId=String(options&&options.body&&options.body.client_meta&&options.body.client_meta.turn_workflow_request_id||"");
+  return {
+    status:"ok",
+    source_acceptance:{accepted:false,replace_existing:false,lifecycle:"candidate_or_inactive"},
+    turn_workflow_hud:{contract_version:"turn_workflow_hud.v3",request_id:requestId,status:"completed",revision:12},
+  };
+}
+function debugLog(){}
+function updateRuntimeState(){}
+` + tryCompleteTurn + `
+(async function(){
+  const stages=Array.from({length:12},function(_,index){return {key:"stage-"+(index+1),ordinal:index+1,total:12,status:"pending"};});
+  const generation=projectTurnWorkflowHUDPhaseView({current_stage:stages[5],stages},"generation");
+  if(generation.current_stage.ordinal!==6 || generation.current_stage.total!==6 || generation.stages.length!==6 || generation.stages[0].key!=="stage-1" || generation.stages[5].key!=="stage-6"){
+    throw new Error("current generation was not projected as six stages: "+JSON.stringify(generation));
+  }
+  const finalization=projectTurnWorkflowHUDPhaseView({current_stage:stages[8],stages},"finalization");
+  if(finalization.current_stage.ordinal!==3 || finalization.current_stage.total!==6 || finalization.stages.length!==6 || finalization.stages[0].key!=="stage-7" || finalization.stages[5].key!=="stage-12"){
+    throw new Error("previous finalization was not projected as six stages: "+JSON.stringify(finalization));
+  }
+  const dual=buildTurnWorkflowHUDStackPresentation({name:"CURRENT-CARD",current_stage:stages[2],stages},{name:"PREVIOUS-CARD",current_stage:stages[8],stages},"next_user_input");
+  if(dual.html.indexOf("CURRENT")<0 || dual.html.indexOf("PREVIOUS")<0 || dual.html.indexOf("CURRENT")>=dual.html.indexOf("PREVIOUS")){
+    throw new Error("dual HUD labels were not rendered current-above-previous: "+dual.html);
+  }
+  if(dual.currentPresentation.ordinal!==3 || dual.currentPresentation.total!==6 || dual.previousPresentation.ordinal!==3 || dual.previousPresentation.total!==6 || dual.html.indexOf("CURRENT-CARD:3/6")<0 || dual.html.indexOf("PREVIOUS-CARD:3/6")<0){
+    throw new Error("dual HUD did not render both tracks with independent 1-6 numbering: "+dual.html);
+  }
+  if(dual.html.indexOf('data-turn-workflow-card="current"')<0 || dual.html.indexOf('data-turn-workflow-card="previous"')<0){
+    throw new Error("dual HUD did not render both request-scoped cards: "+dual.html);
+  }
+  if((dual.html.match(/data-close=/g)||[]).length!==1){
+    throw new Error("previous card retained a dead second close button: "+dual.html);
+  }
+  const dualRecovering=buildTurnWorkflowHUDStackPresentation(
+    {name:"CURRENT-CARD",current_stage:stages[2],stages},
+    {name:"PREVIOUS-RECOVERY",current_stage:stages[8],stages,dismissible:true,closeButtonOnly:true},
+    "next_user_input"
+  );
+  if((dualRecovering.html.match(/data-close=/g)||[]).length!==2){
+    throw new Error("recovering previous card lost its requested close button: "+dualRecovering.html);
+  }
+  const delayedCurrentOnly=buildTurnWorkflowHUDStackPresentation({name:"CURRENT-CARD",current_stage:stages[2],stages},null,"next_user_input");
+  if(delayedCurrentOnly.html.indexOf('data-turn-workflow-slot="current"')<0 || delayedCurrentOnly.currentPresentation.ordinal!==3 || delayedCurrentOnly.currentPresentation.total!==6){
+    throw new Error("next-input current-only HUD did not identify the six-stage generation phase");
+  }
+  const immediateCurrentOnly=buildTurnWorkflowHUDStackPresentation({name:"CURRENT-CARD",current_stage:stages[2],stages},null,"immediate_after_response");
+  if(immediateCurrentOnly.html.indexOf('data-turn-workflow-slot="current"')>=0 || immediateCurrentOnly.currentPresentation.ordinal!==3 || immediateCurrentOnly.currentPresentation.total!==12){
+    throw new Error("immediate HUD no longer preserves the original single twelve-stage presentation");
+  }
+  _turnWorkflowHUDPreviousLastView={request_id:"request-previous",name:"PREVIOUS-RECOVERY",dismissible:true,closeButtonOnly:true};
+  await applyTurnWorkflowHUDStack(root);
+  if(!dismissBindings.find(function(binding){return binding.requestId==="request-previous" && binding.closeButtonOnly===true;})){
+    throw new Error("recovering previous HUD did not bind its close button");
+  }
+  dismissBindings.length=0;
+  _turnWorkflowHUDPreviousLastView={request_id:"request-previous",name:"PREVIOUS-CARD",terminal:true};
+  await applyTurnWorkflowHUDStack(root);
+  const previousDismiss=dismissBindings.find(function(binding){return binding.requestId==="request-previous";});
+  if(!previousDismiss || typeof previousDismiss.onClick!=="function"){
+    throw new Error("completed previous HUD was not dismissible while the current HUD was present");
+  }
+  await previousDismiss.onClick();
+  await drainQueuedOperations();
+  if(_turnWorkflowHUDPreviousRequestId!=="" || _turnWorkflowHUDPreviousLastView!==null || _turnWorkflowHUDActiveRequestId!=="request-waiting"){
+    throw new Error("dismissing the previous HUD did not preserve only the current HUD");
+  }
+  _turnWorkflowHUDPreviousRequestId="request-previous";
+  _turnWorkflowHUDPreviousLastRevision=9;
+  _turnWorkflowHUDPreviousLastView={request_id:"request-previous",name:"PREVIOUS-CARD"};
+  if(!finishTurnWorkflowHUDCurrentGeneration("request-waiting")){
+    throw new Error("accepted delayed response did not finish the current generation HUD");
+  }
+  await drainQueuedOperations();
+  if(_turnWorkflowHUDActiveRequestId!=="" || _turnWorkflowHUDLastView!==null || _turnWorkflowHUDPreviousRequestId!=="request-previous" || _turnWorkflowHUDPreviousLastView===null){
+    throw new Error("finishing current generation did not leave only the previous Critic HUD");
+  }
+  await tryCompleteTurn(10,"user-a","assistant-a",[],"session-1",null,{
+    client_meta:{turn_workflow_request_id:"request-a",turn_finalization_mode:"next_user_input"},
+  });
+  if(previousStarts.join(",")!=="request-a" || primaryStarts.length!==0){
+    throw new Error("next-input complete-turn did not use only the previous-turn HUD: "+JSON.stringify({primaryStarts,previousStarts}));
+  }
+  if(previousViews.length!==1 || primaryViews.length!==0){
+    throw new Error("next-input terminal ViewModel did not stay on the previous-turn HUD");
+  }
+  await tryCompleteTurn(11,"user-b","assistant-b",[],"session-1",null,{
+    client_meta:{turn_workflow_request_id:"request-b",turn_finalization_mode:"immediate_after_response"},
+  });
+  if(primaryStarts.join(",")!=="request-b" || previousStarts.join(",")!=="request-a"){
+    throw new Error("immediate mode no longer uses the unchanged primary HUD: "+JSON.stringify({primaryStarts,previousStarts}));
+  }
+  if(primaryViews.length!==1 || previousViews.length!==1 || transportErrors.length!==0){
+    throw new Error("dual-HUD completion routing produced an unexpected result");
+  }
+})().catch(function(err){console.error(err&&err.stack||err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("4.2 dual-HUD routing runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
+func TestArchiveCenter42PreviousHUDStreamsTheSameRequestScopedWorkflow(t *testing.T) {
+	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if nodePath == "" {
+		var err error
+		nodePath, err = exec.LookPath("node")
+		if err != nil {
+			t.Fatalf("node is required for the 4.2 previous-HUD stream fixture: %v", err)
+		}
+	}
+	src := readArchiveCenterJS(t)
+	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "cancelTurnWorkflowHUDPreviousStream"),
+		extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDStreamFailure"),
+		extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream"),
+		extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDPreviousStreamLine"),
+		extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDPreviousStream"),
+		extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDPreviousWatch"),
+	}, "\n")
+	for _, forbidden := range []string{"/turn-workflow/status", "setInterval(", "setTimeout("} {
+		if strings.Contains(functions, forbidden) {
+			t.Fatalf("previous-turn HUD added forbidden polling transport %q", forbidden)
+		}
+	}
+	script := `
+const settings={turnWorkflowHUDEnabled:true,webDirectBridgeEnabled:false,bridgeUrl:"http://127.0.0.1:28080"};
+const encoder=new TextEncoder();
+let _turnWorkflowHUDPreviousRequestId="";
+let _turnWorkflowHUDPreviousWatchToken=0;
+let _turnWorkflowHUDPreviousWatchRunning=false;
+let _turnWorkflowHUDPreviousLastRevision=0;
+let _turnWorkflowHUDPreviousLastView=null;
+let _turnWorkflowHUDPreviousStreamAbortController=null;
+let _turnWorkflowHUDPreviousStreamReader=null;
+let _turnWorkflowHUDRenderChain=Promise.resolve();
+const received=[];
+const paths=[];
+let response;
+const R={nativeFetch:async function(url){paths.push(String(url||""));return response;}};
+function turnWorkflowHUDIsEnabled(){return true;}
+function dismissTurnWorkflowHUD(){throw new Error("previous HUD unexpectedly dismissed the current HUD");}
+function debugLog(){}
+function resolveBridgeRuntimeRoute(raw){return {url:String(raw||"")};}
+function consumeTurnWorkflowHUDPrevious(view){
+  received.push(String(view&&view.status||""));
+  _turnWorkflowHUDPreviousLastRevision=Math.max(_turnWorkflowHUDPreviousLastRevision,Number(view&&view.revision||0));
+  _turnWorkflowHUDPreviousLastView=view;
+  _turnWorkflowHUDRenderChain=Promise.resolve();
+  return true;
+}
+function responseFromLines(lines){
+  const chunks=[encoder.encode(lines.join("\n")+"\n")];
+  return {ok:true,status:200,body:{getReader:function(){return {
+    read:async function(){return chunks.length?{value:chunks.shift(),done:false}:{done:true};},
+    cancel:async function(){},
+  };}}};
+}
+` + functions + `
+(async function(){
+  response=responseFromLines([
+    JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"request-a",status:"running",revision:7}),
+    JSON.stringify({contract_version:"turn_workflow_hud.v3",request_id:"request-a",status:"completed",revision:12}),
+  ]);
+  startTurnWorkflowHUDPreviousWatch("request-a");
+  for(let i=0;i<20&&_turnWorkflowHUDPreviousWatchRunning;i++) await new Promise(function(resolve){setImmediate(resolve);});
+  if(_turnWorkflowHUDPreviousWatchRunning) throw new Error("previous-turn HUD stream did not settle");
+  if(paths.length!==1 || !paths[0].includes("request_id=request-a") || !paths[0].includes("after_revision=0")){
+    throw new Error("previous-turn HUD did not open exactly one request-scoped event stream: "+JSON.stringify(paths));
+  }
+  if(received.join(",")!=="running,completed"){
+    throw new Error("previous-turn HUD did not render sequential backend revisions: "+received.join(","));
+  }
+})().catch(function(err){console.error(err&&err.stack||err);process.exit(1);});
+`
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("4.2 previous-HUD stream runtime fixture failed: %v\n%s", err, output)
+	}
+}
+
 func TestArchiveCenter42NextInputFinalizationUsesPreviousStableRowWithoutBlocking(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {

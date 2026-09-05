@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,24 +179,38 @@ func TestMariaDBGeneralVectorPreciseMemoryReaderUsesActiveSourceAndCurrentEligib
 	}
 	defer db.Close()
 	m := &mariadbStore{db: db}
+	now := time.Unix(100, 0)
 	mock.ExpectQuery(`FROM precise_memory_units unit[\s\S]+JOIN memory_source_revisions source_revision[\s\S]+source_revision\.lifecycle_state = 'active'[\s\S]+unit\.lifecycle_state = 'active'`).
 		WithArgs("session").
 		WillReturnRows(sqlmock.NewRows([]string{
-			"id", "unit_id", "chat_session_id", "admission_state", "review_state",
-			"visibility", "knowledge_holder_entity_id", "epistemic_mode", "lifecycle_state",
+			"id", "unit_id", "chat_session_id", "source_turn_start", "source_turn_end", "source_revision",
+			"memory_kind", "memory_subtype", "payload_json", "actor_entity_id", "subject_entity_id",
+			"affected_entity_id", "location_entity_id", "object_entity_id", "relationship_key",
+			"truth_scope", "authority_class", "admission_state", "review_state", "visibility",
+			"knowledge_holder_entity_id", "epistemic_mode", "reveal_condition", "confidence",
+			"lifecycle_state", "created_at", "updated_at",
 		}).AddRow(
-			int64(1), "public-unit", "session", "committed", "source_observed",
-			"public", "", "direct", "active",
+			int64(1), "public-unit", "session", 10, 10, "rev-10", "event", "observed_event",
+			`{"summary":"public event"}`, "actor", "", "", "location", "", "",
+			"objective", "objective_world_state", "committed", "source_observed",
+			"public", "", "direct", "", 0.9, "active", now, now,
 		).AddRow(
-			int64(3), "review-public-unit", "session", "review_required", "needs_review",
-			"public", "", "direct", "active",
+			int64(3), "review-public-unit", "session", 11, 11, "rev-11", "event", "observed_event",
+			`{"summary":"review event"}`, "actor", "", "", "location", "", "",
+			"objective", "support_hypothesis", "review_required", "needs_review",
+			"public", "", "direct", "", 0.6, "active", now, now,
 		).AddRow(
-			int64(2), "private-unit", "session", "committed", "source_observed",
-			"owner_private", "holder", "known", "active",
+			int64(2), "private-unit", "session", 12, 12, "rev-12", "observation", "known",
+			`{"observation":"private"}`, "actor", "subject", "", "", "", "",
+			"actor_scoped", "subjective_episodic", "committed", "source_observed",
+			"owner_private", "holder", "known", "", 0.8, "active", now, now,
 		))
 	items, err := m.ListGeneralVectorPreciseMemoryUnits(context.Background(), "session")
 	if err != nil || len(items) != 2 || items[0].UnitID != "public-unit" || items[1].UnitID != "review-public-unit" {
 		t.Fatalf("general precise inventory=%#v err=%v, want public and review-public units", items, err)
+	}
+	if items[0].SourceTurnStart != 10 || items[0].Kind != "event" || !strings.Contains(items[0].PayloadJSON, "public event") {
+		t.Fatalf("general precise reader did not return canonical fact content: %#v", items[0])
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

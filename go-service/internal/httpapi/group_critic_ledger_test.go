@@ -60,6 +60,7 @@ func TestCriticArchiveLedgerPreviewBuildsReadOnlyLedgerFromFixtureStore(t *testi
 		"status":          "open",
 		"source_turn":     10,
 		"confidence":      0.8,
+		"details_json":    `{"lifecycle_key":"mina-hesitation-question"}`,
 		"created_at":      "2026-06-21T00:00:04Z",
 		"updated_at":      "2026-06-21T00:00:05Z",
 	})
@@ -122,10 +123,15 @@ func TestCriticArchiveLedgerPreviewBuildsReadOnlyLedgerFromFixtureStore(t *testi
 	}
 	lanes := map[string]bool{}
 	allSummaries := ""
+	lifecycleKeyObserved := false
 	for _, raw := range items {
 		item := raw.(map[string]any)
 		lanes[item["lane"].(string)] = true
 		allSummaries += " " + item["summary"].(string)
+		if item["lane"] == "unresolved_pending_thread" {
+			sourceRef := mapFromAny(item["source_ref"])
+			lifecycleKeyObserved = sourceRef["lifecycle_key"] == "mina-hesitation-question"
+		}
 	}
 	for _, lane := range []string{"direct_evidence", "recent_accepted_memory", "active_state_snapshot", "unresolved_pending_thread", "recent_resolution_event"} {
 		if !lanes[lane] {
@@ -134,6 +140,9 @@ func TestCriticArchiveLedgerPreviewBuildsReadOnlyLedgerFromFixtureStore(t *testi
 	}
 	if strings.Contains(allSummaries, "private draft") || strings.Contains(allSummaries, "<thinking>") {
 		t.Fatalf("reasoning text leaked into ledger summaries: %s", allSummaries)
+	}
+	if !lifecycleKeyObserved {
+		t.Fatalf("pending lifecycle key was not exposed for exact Critic reuse: %#v", items)
 	}
 }
 

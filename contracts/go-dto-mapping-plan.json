@@ -4216,7 +4216,7 @@
     {
       "schema_name": "PrepareTurnSettings",
       "go_type_name": "PrepareTurnSettings",
-      "field_count": 18,
+      "field_count": 19,
       "required_count": 0,
       "blocker_count": 0,
       "fields": [
@@ -4457,6 +4457,20 @@
           "default_value": "immediate_after_response",
           "decode_presence_note": "Optional non-null enum selecting the persistence confirmation point.",
           "default_application_note": "immediate_after_response preserves 4.1. next_user_input pipelines the previous completed pair through the same /complete-turn owner without blocking current generation."
+        },
+        {
+          "name": "recent_conversation_reference_count",
+          "go_field_name": "RecentConversationReferenceCount",
+          "json_tag": "recent_conversation_reference_count,omitempty",
+          "required": false,
+          "nullable": false,
+          "proposed_go_type": "int",
+          "blockers": [],
+          "mapping_strategy": "direct",
+          "has_default": true,
+          "default_value": 5,
+          "decode_presence_note": "Optional non-null scalar int controlling how many recent completed user/final-assistant conversations participate in the existing memory recall query set.",
+          "default_application_note": "Optional field with default (5): this history-reference depth is independent of top_k and the final core-memory item ceiling."
         },
         {
           "name": "top_k",

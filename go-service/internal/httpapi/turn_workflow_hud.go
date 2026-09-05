@@ -253,12 +253,13 @@ type turnWorkflowHUDRecoveryTarget struct {
 }
 
 type turnWorkflowHUDEntry struct {
-	view           turnWorkflowHUDViewModel
-	history        []turnWorkflowHUDViewModel
-	changed        chan struct{}
-	attemptKey     string
-	sequence       uint64
-	recoveryTarget turnWorkflowHUDRecoveryTarget
+	view                     turnWorkflowHUDViewModel
+	history                  []turnWorkflowHUDViewModel
+	changed                  chan struct{}
+	attemptKey               string
+	sequence                 uint64
+	recoveryTarget           turnWorkflowHUDRecoveryTarget
+	finalizesAtNextUserInput bool
 }
 
 type turnWorkflowHUDNoticeObservation struct {
@@ -316,6 +317,14 @@ func newTurnWorkflowHUDStages() []turnWorkflowHUDStage {
 }
 
 func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn int) *turnWorkflowHUDViewModel {
+	return l.beginWithFinalizationTiming(requestID, sessionID, logicalTurn, false)
+}
+
+func (l *turnWorkflowHUDLedger) beginForNextInputFinalization(requestID, sessionID string, logicalTurn int) *turnWorkflowHUDViewModel {
+	return l.beginWithFinalizationTiming(requestID, sessionID, logicalTurn, true)
+}
+
+func (l *turnWorkflowHUDLedger) beginWithFinalizationTiming(requestID, sessionID string, logicalTurn int, finalizesAtNextUserInput bool) *turnWorkflowHUDViewModel {
 	if l == nil {
 		return nil
 	}
@@ -339,7 +348,9 @@ func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn i
 	}
 	if previousID := l.activeBySession[sessionID]; previousID != "" && previousID != requestID {
 		if previous := l.entries[previousID]; previous != nil && !turnWorkflowHUDTerminal(previous.view.Status) {
-			l.invalidateLocked(previous, "superseded_by_new_request", now)
+			if !previous.finalizesAtNextUserInput {
+				l.invalidateLocked(previous, "superseded_by_new_request", now)
+			}
 		}
 	}
 	l.ensureCapacityLocked(now)
@@ -370,7 +381,8 @@ func (l *turnWorkflowHUDLedger) begin(requestID, sessionID string, logicalTurn i
 			Facts:           newTurnWorkflowHUDFacts(),
 			Warnings:        []turnWorkflowHUDNotice{},
 		},
-		changed: make(chan struct{}),
+		changed:                  make(chan struct{}),
+		finalizesAtNextUserInput: finalizesAtNextUserInput,
 	}
 	entry.view.CurrentStage = cloneTurnWorkflowHUDStage(&entry.view.Stages[0])
 	setTurnWorkflowHUDFactValue(&entry.view, turnWorkflowHUDFact{
@@ -1523,6 +1535,8 @@ func syncTurnWorkflowHUDPresentation(view *turnWorkflowHUDViewModel) {
 	}
 	view.Severity = normalizeTurnWorkflowHUDSeverity(view.Severity)
 	switch {
+	case view.Status == "recovering":
+		view.DismissalPolicy = turnWorkflowHUDDismissXOnly
 	case !turnWorkflowHUDTerminal(view.Status):
 		view.DismissalPolicy = turnWorkflowHUDDismissNone
 	case view.Severity == turnWorkflowHUDSeverityWarning || view.Severity == turnWorkflowHUDSeverityError:

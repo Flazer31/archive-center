@@ -24,6 +24,7 @@ type narrativeStateClaim struct {
 	Subject          string
 	SubjectType      string
 	StateSlot        string
+	LifecycleKey     string
 	Value            string
 	ClaimScope       string
 	PerspectiveOwner string
@@ -36,6 +37,7 @@ type narrativeStateClaim struct {
 
 func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateClaim {
 	out := []narrativeStateClaim{}
+	resolvedLifecycleKeys, resolvedLegacySubjects := narrativeResolvedThreadIdentities(extraction)
 	appendClaim := func(raw any, sourceKind string, index int) {
 		item := mapFromAny(raw)
 		if len(item) == 0 {
@@ -45,6 +47,7 @@ func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateCl
 			Subject:          strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "subject"), stringFromMap(item, "entity"), stringFromMap(item, "owner"))),
 			SubjectType:      normalizeNarrativeSubjectType(stringFromMap(item, "subject_type")),
 			StateSlot:        normalizeNarrativeStateSlot(extractionFirstNonEmpty(stringFromMap(item, "state_slot"), stringFromMap(item, "slot"), stringFromMap(item, "relation_dimension"))),
+			LifecycleKey:     normalizeNarrativeLifecycleKey(stringFromMap(item, "lifecycle_key")),
 			Value:            strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "value"), stringFromMap(item, "state_value"), stringFromMap(item, "belief"))),
 			ClaimScope:       normalizeNarrativeClaimScope(extractionFirstNonEmpty(stringFromMap(item, "claim_scope"), sourceKind)),
 			PerspectiveOwner: strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "perspective_owner"), stringFromMap(item, "believer"), stringFromMap(item, "knower"))),
@@ -60,6 +63,10 @@ func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateCl
 		if claim.Transition == "" {
 			claim.Transition = "set"
 		}
+		if claim.Transition == "set" && ((claim.LifecycleKey != "" && resolvedLifecycleKeys[claim.LifecycleKey]) ||
+			(claim.LifecycleKey == "" && resolvedLegacySubjects[normalizeArtifactDedupeText(claim.Subject)])) {
+			claim.Transition = "resolve"
+		}
 		if claim.ClaimScope == "belief" && claim.PerspectiveOwner == "" {
 			claim.PerspectiveOwner = claim.Subject
 		}
@@ -72,6 +79,49 @@ func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateCl
 		appendClaim(raw, "objective", i)
 	}
 	return out
+}
+
+func normalizeNarrativeLifecycleKey(raw string) string {
+	return normalizeArtifactDedupeText(raw)
+}
+
+func narrativeLifecycleStorageKey(raw string) string {
+	key := normalizeNarrativeLifecycleKey(raw)
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte("narrative-lifecycle.v1\x1f" + key))
+	return "thread_lifecycle_" + hex.EncodeToString(sum[:12])
+}
+
+func narrativeResolvedThreadIdentities(extraction map[string]any) (map[string]bool, map[string]bool) {
+	lifecycleKeys := map[string]bool{}
+	legacySubjects := map[string]bool{}
+	appendItems := func(raw any) {
+		for _, value := range sliceFromAny(raw) {
+			item := mapFromAny(value)
+			if len(item) == 0 {
+				if subject := normalizeArtifactDedupeText(extractionStringFromAny(value)); subject != "" {
+					legacySubjects[subject] = true
+				}
+				continue
+			}
+			if key := normalizeNarrativeLifecycleKey(stringFromMap(item, "lifecycle_key")); key != "" {
+				lifecycleKeys[key] = true
+			}
+			if subject := normalizeArtifactDedupeText(extractionFirstNonEmpty(
+				stringFromMap(item, "subject"), stringFromMap(item, "title"),
+				stringFromMap(item, "description"),
+			)); subject != "" {
+				legacySubjects[subject] = true
+			}
+		}
+	}
+	appendItems(extraction["resolved_threads"])
+	stateDeltas := mapFromAny(extraction["state_deltas"])
+	appendItems(stateDeltas["resolved_threads"])
+	appendItems(mapFromAny(stateDeltas["unresolved_threads"])["resolved"])
+	return lifecycleKeys, legacySubjects
 }
 
 func appendNarrativeStateEvidenceExcerpts(extraction map[string]any) map[string]any {
@@ -165,13 +215,22 @@ func normalizeNarrativeStateSlot(raw string) string {
 }
 
 func narrativeStateOwnerID(claim narrativeStateClaim) string {
-	key := strings.Join([]string{
+	parts := []string{
 		strings.ToLower(strings.TrimSpace(claim.SubjectType)),
 		strings.ToLower(strings.TrimSpace(claim.Subject)),
 		strings.ToLower(strings.TrimSpace(claim.StateSlot)),
 		strings.ToLower(strings.TrimSpace(claim.ClaimScope)),
 		strings.ToLower(strings.TrimSpace(claim.PerspectiveOwner)),
-	}, "|")
+	}
+	if claim.LifecycleKey != "" {
+		parts = []string{
+			"lifecycle",
+			normalizeNarrativeLifecycleKey(claim.LifecycleKey),
+			strings.ToLower(strings.TrimSpace(claim.ClaimScope)),
+			strings.ToLower(strings.TrimSpace(claim.PerspectiveOwner)),
+		}
+	}
+	key := strings.Join(parts, "|")
 	sum := sha256.Sum256([]byte(key))
 	return "state:" + hex.EncodeToString(sum[:12])
 }
@@ -195,6 +254,7 @@ func narrativeStateValuePayload(claim narrativeStateClaim, previousValue string,
 		"subject":           claim.Subject,
 		"subject_type":      claim.SubjectType,
 		"state_slot":        claim.StateSlot,
+		"lifecycle_key":     claim.LifecycleKey,
 		"value":             claim.Value,
 		"claim_scope":       claim.ClaimScope,
 		"perspective_owner": claim.PerspectiveOwner,
@@ -246,7 +306,7 @@ func (s *Server) ensureNarrativeStateDefinition(ctx context.Context, sid string,
 		OptionsJSON: mustCompactJSON(map[string]any{
 			"contract_version":         narrativeStateContractVersion,
 			"generic_state_lane":       true,
-			"current_value_key":        "subject+state_slot+claim_scope+perspective_owner",
+			"current_value_key":        "lifecycle_key_or_subject+state_slot+claim_scope+perspective_owner",
 			"turn_is_audit_order_only": true,
 		}),
 		RegistryState: "active",
@@ -304,9 +364,8 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			result.addSkipReason("narrative_state", "evidence_excerpt_not_grounded", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot})
 			continue
 		}
-		goalLifecycle := claim.SubjectType == "entity" &&
-			claim.StateSlot == "goal_status" &&
-			claim.ClaimScope == "objective"
+		goalLifecycle := claim.ClaimScope == "objective" && (claim.LifecycleKey != "" ||
+			(claim.SubjectType == "entity" && claim.StateSlot == "goal_status"))
 		if goalLifecycle && claim.Confidence < narrativeStateMinimumConfidence {
 			result.addSkipReason("narrative_state", "low_confidence_current_state_change", map[string]any{
 				"subject": claim.Subject, "state_slot": claim.StateSlot, "confidence": claim.Confidence,
@@ -641,9 +700,10 @@ func narrativeCorrectionTransitionNeedsCarry(payload map[string]any) bool {
 	case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear":
 		return true
 	case "defer", "abandon", "complete", "supersede", "reopen", "resume":
-		return normalizeNarrativeSubjectType(extractionStringFromAny(payload["subject_type"])) == "entity" &&
-			normalizeNarrativeStateSlot(extractionStringFromAny(payload["state_slot"])) == "goal_status" &&
-			normalizeNarrativeClaimScope(extractionStringFromAny(payload["claim_scope"])) == "objective"
+		return normalizeNarrativeLifecycleKey(extractionStringFromAny(payload["lifecycle_key"])) != "" ||
+			(normalizeNarrativeSubjectType(extractionStringFromAny(payload["subject_type"])) == "entity" &&
+				normalizeNarrativeStateSlot(extractionStringFromAny(payload["state_slot"])) == "goal_status" &&
+				normalizeNarrativeClaimScope(extractionStringFromAny(payload["claim_scope"])) == "objective")
 	default:
 		return false
 	}
@@ -745,15 +805,16 @@ func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentVal
 			continue
 		}
 		subjectType := normalizeNarrativeSubjectType(extractionStringFromAny(view.Payload["subject_type"]))
-		if subjectType != "entity" ||
-			view.Slot != "goal_status" ||
-			extractionFloatFromAny(view.Payload["confidence"], 0) < narrativeStateMinimumConfidence {
+		lifecycleKey := normalizeNarrativeLifecycleKey(extractionStringFromAny(view.Payload["lifecycle_key"]))
+		if extractionFloatFromAny(view.Payload["confidence"], 0) < narrativeStateMinimumConfidence ||
+			(lifecycleKey == "" && (subjectType != "entity" || view.Slot != "goal_status")) {
 			continue
 		}
 		claim := narrativeStateClaim{
 			Subject:          view.Subject,
 			SubjectType:      subjectType,
 			StateSlot:        view.Slot,
+			LifecycleKey:     lifecycleKey,
 			ClaimScope:       view.Scope,
 			PerspectiveOwner: view.Perspective,
 		}
@@ -768,6 +829,10 @@ func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentVal
 			continue
 		}
 		artifact := parseJSONMap(text)
+		artifactLifecycleKey := normalizeNarrativeLifecycleKey(extractionStringFromAny(artifact["lifecycle_key"]))
+		if claim.LifecycleKey != "" && artifactLifecycleKey == claim.LifecycleKey {
+			return true
+		}
 		if normalizeNarrativeStateSlot(extractionStringFromAny(artifact["state_slot"])) == "goal_status" &&
 			normalizeArtifactDedupeText(extractionStringFromAny(artifact["subject"])) == normalizeArtifactDedupeText(view.Subject) {
 			return true
@@ -789,6 +854,14 @@ func prepareTurnOpenGoalArtifact(raw any) string {
 	}
 	identity := strings.TrimSpace(extractionFirstNonEmpty(subject, title))
 	stateSlot := normalizeNarrativeStateSlot(stringFromMap(payload, "state_slot"))
+	lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(payload, "lifecycle_key"))
+	if lifecycleKey != "" {
+		return mustCompactJSON(map[string]any{
+			"lifecycle_key": lifecycleKey,
+			"subject":       identity,
+			"state_slot":    stateSlot,
+		})
+	}
 	if identity == "" || stateSlot != "goal_status" {
 		return ""
 	}

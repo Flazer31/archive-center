@@ -81,6 +81,47 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 	t.Logf("prepare-turn response bytes compact=%d legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
 }
 
+func TestPrepareTurnProductionProjectionExposesVectorRecallQueryDiagnostics(t *testing.T) {
+	srv := setupTestServer()
+	srv.Vector = &turnRecordingVectorStore{}
+	_, response := prepareTurnPerfRequest(t, srv, `{
+		"chat_session_id":"compact-vector-recall-query-diagnostics",
+		"raw_user_input":"Continue from the letter on the table.",
+		"recent_conversation_messages":[
+			{"role":"user","content":"Open the archive."},
+			{"role":"assistant","content":"The first previous scene."},
+			{"role":"user","content":"Place the letter on the table."},
+			{"role":"assistant","content":"The latest previous scene."},
+			{"role":"user","content":"Continue from the letter on the table."}
+		],
+		"client_meta":{"chroma_query_vector":[1,0]},
+		"response_projection":"prepare_turn.production_compact.v1",
+		"settings":{"top_k":1,"recent_conversation_reference_count":2,"guide_strength":"none"}
+	}`)
+
+	if _, exists := response["recall_result"]; exists {
+		t.Fatal("compact production response must keep the full recall_result omitted")
+	}
+	diagnostics := mapFromAny(mapFromAny(response["trace_preview"])["vector_recall_query"])
+	want := map[string]any{
+		"query_text_source":                   "raw_user_input+recent_conversation_turns",
+		"query_text_count":                    3,
+		"recent_conversation_query_limit":     2,
+		"recent_conversation_query_count":     2,
+		"query_vector_count":                  1,
+		"query_history_embedding_error_count": 0,
+	}
+	for key, expected := range want {
+		actual, exists := diagnostics[key]
+		if !exists {
+			t.Fatalf("compact vector recall diagnostics missing %q: %#v", key, diagnostics)
+		}
+		if fmt.Sprint(actual) != fmt.Sprint(expected) {
+			t.Fatalf("compact vector recall diagnostics %s=%v, want %v: %#v", key, actual, expected, diagnostics)
+		}
+	}
+}
+
 func TestPrepareTurnMemoryRecallPlanKeepsUnobservedRequirementsUnobserved(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

@@ -303,6 +303,77 @@ func TestAdminForceReplaysCanonicalPublicProjectionWithoutDirectChromaMutation(t
 	}
 }
 
+type adminCanonicalDerivedStateWriteSpy struct {
+	*adminCanonicalReplayTestStore
+	activeStates    int
+	canonicalLayers int
+	pendingThreads  int
+	storylines      int
+}
+
+func (s *adminCanonicalDerivedStateWriteSpy) SaveActiveState(context.Context, *store.ActiveState) error {
+	s.activeStates++
+	return nil
+}
+
+func (s *adminCanonicalDerivedStateWriteSpy) SaveCanonicalStateLayer(context.Context, *store.CanonicalStateLayer) error {
+	s.canonicalLayers++
+	return nil
+}
+
+func (s *adminCanonicalDerivedStateWriteSpy) SavePendingThread(context.Context, *store.PendingThread) error {
+	s.pendingThreads++
+	return nil
+}
+
+func (s *adminCanonicalDerivedStateWriteSpy) SaveStoryline(context.Context, *store.Storyline) error {
+	s.storylines++
+	return nil
+}
+
+func TestAdminCanonicalVectorReplayDoesNotRewriteDerivedState(t *testing.T) {
+	const sid = "sess-vector-only-replay"
+	embeddingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"model":"test-model","data":[{"embedding":[0.1,0.2]}]}`)
+	}))
+	defer embeddingServer.Close()
+	base := newAdminCanonicalReplayTestStore(sid, 12, map[string]any{
+		"turn_summary":      "The debt was settled and its thread closed.",
+		"importance_score":  8,
+		"evidence_excerpts": []any{"The debt was settled and its thread closed."},
+		"state_deltas": map[string]any{
+			"resolved_threads": []any{map[string]any{"lifecycle_key": "loan-settlement"}},
+		},
+		"pending_threads": []any{map[string]any{
+			"title": "A state row that must not be replayed", "lifecycle_key": "not-for-reindex", "confidence": 0.9,
+		}},
+	})
+	spy := &adminCanonicalDerivedStateWriteSpy{adminCanonicalReplayTestStore: base}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	cfg.ChromaEndpoint = "http://127.0.0.1:8000"
+	srv := NewServer(cfg)
+	srv.Store = spy
+	srv.Vector = &turnRecordingVectorStore{}
+	result, err := srv.runAdminReindexJob(context.Background(), sid, map[string]any{
+		"force": true,
+		"client_meta": map[string]any{"embedding": map[string]any{
+			"provider": "openai", "api_key": "key", "endpoint": embeddingServer.URL,
+			"model": "test-model", "timeout_ms": 5000,
+		}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result["canonical_replays_completed"] != 1 || len(base.admissions) != 1 {
+		t.Fatalf("canonical vector replay did not complete: result=%#v admissions=%d", result, len(base.admissions))
+	}
+	if spy.activeStates != 0 || spy.canonicalLayers != 0 || spy.pendingThreads != 0 || spy.storylines != 0 {
+		t.Fatalf("vector replay rewrote derived state: active=%d canonical=%d pending=%d storylines=%d", spy.activeStates, spy.canonicalLayers, spy.pendingThreads, spy.storylines)
+	}
+}
+
 func TestAdminVoyageCanonicalReplayDoesNotResendRawChat(t *testing.T) {
 	oldClient := proxyHTTPClient
 	defer func() { proxyHTTPClient = oldClient }()

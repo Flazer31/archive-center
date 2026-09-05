@@ -103,11 +103,13 @@ func prepareTurnDeliveryFactKey(line string) string {
 
 func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxChars int, perspective map[string]any) map[string]any {
 	mode, budgets := prepareTurnResolveMemoryBudgets(perspective)
-	if mode == "auto" && boolFromAny(perspective["_priority_memory_enabled"]) {
+	if boolFromAny(perspective["_priority_memory_enabled"]) {
 		return buildPrepareTurnPriorityMemoryDeliveryPlan(
 			out,
 			maxChars,
 			intFromAny(perspective["_priority_memory_max_items"], 5),
+			mode,
+			budgets,
 			perspective,
 		)
 	}
@@ -466,6 +468,15 @@ func finalizePrepareTurnMemoryDeliveryLineage(lineage, plan map[string]any) map[
 	coreContract := mapFromAny(plan["core_objective_memory"])
 	priorityOutcomeByRow := map[string]map[string]any{}
 	if extractionStringFromAny(plan["contract_version"]) == prepareTurnPriorityMemoryPlanVersion {
+		for _, raw := range prepareTurnMemoryLineageSlice(plan["turn_summary_items"]) {
+			summaryItem := mapFromAny(raw)
+			rowKey := strings.TrimSpace(fmt.Sprint(summaryItem["source_row_id"]))
+			if rowKey == "" || rowKey == "<nil>" {
+				continue
+			}
+			summaryItem["canonical_fact_id"] = summaryItem["summary_id"]
+			priorityOutcomeByRow[rowKey] = summaryItem
+		}
 		for _, raw := range prepareTurnMemoryLineageSlice(plan["priority_items"]) {
 			priorityItem := mapFromAny(raw)
 			if extractionStringFromAny(priorityItem["source_table"]) != "memories" {
@@ -509,14 +520,14 @@ func finalizePrepareTurnMemoryDeliveryLineage(lineage, plan map[string]any) map[
 				if extractionStringFromAny(outcome["selection_status"]) == "selected" {
 					deliveredActual++
 					item["delivery_status"] = "delivered_final"
-					item["reason_code"] = "selected_by_global_priority_rank"
-					item["core_objective_k_consumption"] = "counted_global_priority_fact"
+					item["reason_code"] = "selected_by_priority_group_rank"
+					item["core_objective_k_consumption"] = "counted_priority_group_item"
 					continue
 				}
 				item["delivered"] = false
 				item["delivery_status"] = "deferred_priority_memory"
 				item["reason_code"] = outcome["selection_reason"]
-				item["core_objective_k_consumption"] = "deferred_by_global_priority_plan"
+				item["core_objective_k_consumption"] = "deferred_by_priority_group_plan"
 				continue
 			}
 		}

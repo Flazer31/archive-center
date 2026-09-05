@@ -56,15 +56,18 @@ type PrepareTurnLorebookReferenceScopeV1 struct {
 // editing generated code or changing its defaulting behavior.
 type PrepareTurnContractRequest struct {
 	PrepareTurnRequest
-	SourceDecisionOnly       bool                                 `json:"source_decision_only,omitempty"`
-	ResponseProjection       string                               `json:"response_projection,omitempty"`
-	NarrativeSupportMaxChars *int                                 `json:"narrative_support_max_chars,omitempty"`
-	PublisherGuidanceFormat  *string                              `json:"publisher_guidance_format,omitempty"`
-	SourceObservation        *PrepareTurnSourceObservationV1      `json:"source_observation,omitempty"`
-	CapabilityObservation    *PrepareTurnCapabilityObservationV1  `json:"capability_observation,omitempty"`
-	HostObservations         *PrepareTurnHostObservationsV1       `json:"host_observations,omitempty"`
-	BootstrapObservation     *PrepareTurnBootstrapObservationV1   `json:"bootstrap_observation,omitempty"`
-	LorebookReferenceScope   *PrepareTurnLorebookReferenceScopeV1 `json:"lorebook_reference_scope,omitempty"`
+	// RecentConversationMessages is the non-mutating Archive-only active-chat
+	// read copy used solely to form recent conversation recall queries.
+	RecentConversationMessages []map[string]any                     `json:"recent_conversation_messages,omitempty"`
+	SourceDecisionOnly         bool                                 `json:"source_decision_only,omitempty"`
+	ResponseProjection         string                               `json:"response_projection,omitempty"`
+	NarrativeSupportMaxChars   *int                                 `json:"narrative_support_max_chars,omitempty"`
+	PublisherGuidanceFormat    *string                              `json:"publisher_guidance_format,omitempty"`
+	SourceObservation          *PrepareTurnSourceObservationV1      `json:"source_observation,omitempty"`
+	CapabilityObservation      *PrepareTurnCapabilityObservationV1  `json:"capability_observation,omitempty"`
+	HostObservations           *PrepareTurnHostObservationsV1       `json:"host_observations,omitempty"`
+	BootstrapObservation       *PrepareTurnBootstrapObservationV1   `json:"bootstrap_observation,omitempty"`
+	LorebookReferenceScope     *PrepareTurnLorebookReferenceScopeV1 `json:"lorebook_reference_scope,omitempty"`
 }
 
 func (request *PrepareTurnContractRequest) ApplyDefaults() {

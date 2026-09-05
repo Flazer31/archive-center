@@ -35,7 +35,7 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - String arrays: `evidence_excerpts`, `prune_targets`.
 - Object arrays: `kg_triples`, `speaker_attributions`, `interaction_events`, `relationship_observations`, `interaction_boundaries`, `habit_observations`, `character_profile_observations`, `voice_observations`, `user_interaction_profile`, `rp_character_profile`, `world_rules`, `protected_secrets`, `character_identity_accuracy`, `persona_capsule_candidates`, `narrative_events`, `physical_conditions`, `entity_conditions`, `reversible_states`, `pending_threads`.
 - Shapes: `"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":"","importance_10":8,"emotional_weight":0.7}]`; `"belief_updates":[{"perspective_owner":"","belief":"","evidence_excerpt":"","importance_10":6,"emotional_weight":0.4}]`.
-- State shape: `"state_claims":[{"subject":"","state_slot":"","value":"","transition":"set","evidence_excerpt":""}]`.
+- State shape: `"state_claims":[{"subject":"","state_slot":"","lifecycle_key":"","value":"","transition":"set|complete|resolve","evidence_excerpt":""}]`.
 - Shape: `"character_deltas":[{"name":"","status":{"key":"value"}}]`; `name` required.
 - Objects: `story_clock`, `relationship_memory`, `entities`, `archive_hint`, `world_rule_audit`, `world_state`, `state_deltas`.
 - Keep every durable item focused. One malformed optional item must not erase independent valid fields or items.
@@ -69,9 +69,10 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 
 [Events, Beliefs, And Movement]
 - Separate history, objective current state, and character belief. `narrative_events` are what happened; `state_claims` are evidence-bound current facts; `belief_updates` are a named perspective owner's knowledge, suspicion, or misunderstanding.
-- Use a stable `state_slot`, not a sentence or turn number. For goal/thread lifecycle, use the exact title as `subject`, `subject_type=entity`, and `state_slot=goal_status`; use the same title in matching `pending_threads` or opened unresolved threads.
+- Give each thread a stable `lifecycle_key`; reuse an unresolved Ledger `source_ref.lifecycle_key` in matching state/thread records.
+- On completion, emit `state_claims.transition=complete|resolve` plus the same key in `state_deltas.resolved_threads`; keep the event in `narrative_events` and omit it from `pending_threads`.
 - Preserve speaker, listeners, subject, value, evidence, and epistemic uncertainty. Generated wording may paraphrase support, but direct-evidence entries require exact source text. Missing optional support must not erase a generated record.
-- `pending_threads` may represent any continuing promise, goal, question, risk, obligation, or unresolved thread. Preserve transition wording; backend projection decides currentness.
+- `pending_threads` carries the stable key for a continuing promise, goal, question, risk, or obligation.
 - A turn index is audit order, not proof that an older fact remains current. When the latest turn corrects a state, emit the new current value rather than duplicating the old value.
 - `state_deltas` records scene/time/tension/relationship changes and opened or resolved threads. `story_clock` may record grounded time, order, duration, correction, plan, or flashback with uncertainty.
 - Location and time typed lanes do not suppress compatible kg_triples. Do not treat 'X lives in London' as 'the current scene is London'; a temporary visit is not durable residence. Story calendar facts such as 'summer vacation has started' require evidence for time movement. Do not infer an immediate return to school, season change, or day jump.

@@ -45,6 +45,98 @@ func TestTurnWorkflowHUDBeginOrderAndSameSessionInvalidation(t *testing.T) {
 	}
 }
 
+func TestTurnWorkflowHUDNextInputEntrySurvivesTheFollowingRequest(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	previous := ledger.beginForNextInputFinalization("request-previous", "session-a", 100)
+	if previous == nil {
+		t.Fatal("previous workflow was not created")
+	}
+	ledger.finishStage("request-previous", turnWorkflowStagePrepareSource, "succeeded", "")
+	ledger.finishStage("request-previous", turnWorkflowStageRecall, "succeeded", "")
+	ledger.finishStage("request-previous", turnWorkflowStageContext, "succeeded", "")
+	ledger.finishStage("request-previous", turnWorkflowStagePublisherLLM, "succeeded", "")
+	ledger.finishStage("request-previous", turnWorkflowStagePayload, "succeeded", "")
+	ledger.startStage("request-previous", turnWorkflowStageAwaitFinal)
+
+	current := ledger.begin("request-current", "session-a", 101)
+	if current == nil || current.Status != "running" || current.LogicalTurn != 101 {
+		t.Fatalf("current workflow = %#v", current)
+	}
+	preserved, ok := ledger.snapshot("request-previous")
+	if !ok || preserved.Status != "running" {
+		t.Fatalf("previous workflow was not preserved: %#v, found=%t", preserved, ok)
+	}
+	if preserved.CurrentStage == nil || preserved.CurrentStage.Key != turnWorkflowStageAwaitFinal {
+		t.Fatalf("previous current stage = %#v", preserved.CurrentStage)
+	}
+
+	ledger.finishStage("request-previous", turnWorkflowStageAwaitFinal, "succeeded", "")
+	ledger.startStage("request-previous", turnWorkflowStageFinalAccepted)
+	preserved, ok = ledger.snapshot("request-previous")
+	if !ok || preserved.Status != "running" || preserved.CurrentStage == nil || preserved.CurrentStage.Key != turnWorkflowStageFinalAccepted {
+		t.Fatalf("previous workflow did not advance independently: %#v, found=%t", preserved, ok)
+	}
+	currentSnapshot, ok := ledger.snapshot("request-current")
+	if !ok || currentSnapshot.Status != "running" || currentSnapshot.CurrentStage == nil || currentSnapshot.CurrentStage.Key != turnWorkflowStagePrepareSource {
+		t.Fatalf("current workflow changed with previous advancement: %#v, found=%t", currentSnapshot, ok)
+	}
+}
+
+func TestPrepareTurnNextInputKeepsPreviousWorkflowRunning(t *testing.T) {
+	cfg := config.Default()
+	srv := NewServer(cfg)
+	srv.TurnWorkflows.beginForNextInputFinalization("request-previous", "session-next-input-hud", 100)
+	srv.TurnWorkflows.startStage("request-previous", turnWorkflowStageAwaitFinal)
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	inputHash := prepareOR1CHash("continue")
+	body, err := json.Marshal(map[string]any{
+		"chat_session_id": "session-next-input-hud",
+		"turn_index":      101,
+		"raw_user_input":  "continue",
+		"messages":        []map[string]any{{"role": "user", "content": "continue"}},
+		"host_observations": map[string]any{
+			"contract_version": prepareHostObservationsVersion,
+			"session_id":       "session-next-input-hud",
+			"request_id":       "request-current",
+			"request_type":     "model",
+			"payload_writable": true,
+			"active_chat": []map[string]any{{
+				"observation_ref": "active:0", "source_kind": "active_chat", "observation_stage": "active_chat_stored_message",
+				"message_index": 0, "role": "user", "raw_content": "continue", "content_hash": inputHash,
+				"hash_algorithm": "or1c_utf16_djb2.v1", "evidence_state": "observed",
+			}},
+			"payload": []map[string]any{{
+				"observation_ref": "payload:0", "source_kind": "before_request_payload", "message_index": 0,
+				"role": "user", "raw_content": "continue", "content_hash": inputHash,
+				"hash_algorithm": "or1c_utf16_djb2.v1", "evidence_state": "observed",
+			}},
+		},
+		"settings": map[string]any{
+			"turn_finalization_mode": "next_user_input",
+			"injection_enabled":      false,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	previous, ok := srv.TurnWorkflows.snapshot("request-previous")
+	if !ok || previous.Status != "running" {
+		t.Fatalf("previous workflow was superseded by next-input prepare: %#v, found=%t", previous, ok)
+	}
+	current, ok := srv.TurnWorkflows.snapshot("request-current")
+	if !ok || current.Status != "awaiting_final_output" || current.LogicalTurn != 101 {
+		t.Fatalf("current workflow = %#v, found=%t, response=%s", current, ok, rec.Body.String())
+	}
+}
+
 func TestTurnWorkflowHUDDerivedPersistenceFailureKeepsCauseAndCommittedCount(t *testing.T) {
 	ledger := newTurnWorkflowHUDLedger()
 	ledger.begin("request-derived", "session-a", 2)
@@ -81,6 +173,9 @@ func TestTurnWorkflowHUDDerivedPersistenceFailureKeepsCauseAndCommittedCount(t *
 		view.Error.RecoveryActions[0].Status != "running" ||
 		view.Status != "recovering" {
 		t.Fatalf("recovery actions=%+v", view.Error.RecoveryActions)
+	}
+	if view.DismissalPolicy != turnWorkflowHUDDismissXOnly {
+		t.Fatalf("recovering dismissal policy=%q, want %q", view.DismissalPolicy, turnWorkflowHUDDismissXOnly)
 	}
 	var derived turnWorkflowHUDFact
 	for _, fact := range view.Facts {
@@ -276,7 +371,7 @@ func TestTurnWorkflowHUDRecoveryReopensOnlyTheFailedTurn(t *testing.T) {
 	view, ok := ledger.snapshot("request-recovery")
 	if !ok || view.Error == nil || len(view.Error.RecoveryActions) != 1 ||
 		view.Status != "recovering" || view.Severity != turnWorkflowHUDSeverityWarning ||
-		view.DismissalPolicy != turnWorkflowHUDDismissNone || view.EndedAt != nil ||
+		view.DismissalPolicy != turnWorkflowHUDDismissXOnly || view.EndedAt != nil ||
 		view.Error.RecoveryActions[0].Status != "requested" {
 		t.Fatalf("recovery view=%+v found=%t", view, ok)
 	}
@@ -443,7 +538,7 @@ func TestTurnWorkflowHUDQueuedRecoveryBecomesVisibleCompletion(t *testing.T) {
 	)
 	queued, ok := ledger.snapshot("request-recovery-complete")
 	if !ok || queued.Status != "recovering" || turnWorkflowHUDTerminal(queued.Status) ||
-		queued.DismissalPolicy != turnWorkflowHUDDismissNone || queued.Error == nil ||
+		queued.DismissalPolicy != turnWorkflowHUDDismissXOnly || queued.Error == nil ||
 		len(queued.Error.RecoveryActions) != 1 || queued.Error.RecoveryActions[0].Status != "running" {
 		t.Fatalf("queued recovery view=%+v found=%t", queued, ok)
 	}

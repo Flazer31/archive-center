@@ -297,8 +297,17 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 	if used := intFromAny(plan["used_chars"], -1); used < 0 || used > intFromAny(plan["delivery_cap_chars"], 0) {
 		t.Fatalf("final delivery budget mismatch: %#v", plan)
 	}
-	if plan["contract_version"] != "memory_delivery_plan.v2" || intFromAny(plan["priority_selected_count"], 0) > 5 {
-		t.Fatalf("global priority/K contract mismatch: %#v", plan)
+	corePriority := mapFromAny(plan["core_objective_memory"])
+	if plan["contract_version"] != "memory_delivery_plan.v2" ||
+		corePriority["contract_version"] != "core_priority_memory_delivery.v3" ||
+		boolFromAny(plan["unused_k_transfer_between_groups"]) {
+		t.Fatalf("independent priority-group/K contract mismatch: %#v", plan)
+	}
+	for _, rawGroup := range sliceFromAny(corePriority["quota_groups"]) {
+		group := mapFromAny(rawGroup)
+		if intFromAny(group["selected_count"], 0) > intFromAny(group["requested_max_items"], 0) {
+			t.Fatalf("priority group exceeded its independent K: %#v", group)
+		}
 	}
 	classText := map[string]string{}
 	for _, rawClass := range sliceFromAny(plan["classes"]) {
@@ -307,7 +316,7 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 	}
 	for _, want := range []string{"Ava", "Bella", "Cora"} {
 		if !strings.Contains(classText["event_recent"], want) {
-			t.Fatalf("event_recent final class lost %q: %q", want, classText["event_recent"])
+			t.Fatalf("event_recent final class lost %q: %q items=%#v", want, classText["event_recent"], plan["priority_items"])
 		}
 	}
 	if strings.Contains(classText["subjective_relationship"], "Dax") {

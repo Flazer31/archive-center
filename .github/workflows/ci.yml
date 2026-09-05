@@ -116,3 +116,31 @@ jobs:
       - name: Simple Windows and generated macOS launcher contracts
         shell: powershell
         run: .\scripts\test-simple-fresh-install.ps1
+
+  simple-fresh-install-posix:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: "1.26.6"
+          cache: true
+          cache-dependency-path: go-service/go.sum
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Production POSIX fresh-install contracts
+        shell: bash
+        run: sh ./scripts/test-simple-fresh-install.sh
+
+      - name: Native updater transaction tests
+        working-directory: go-service
+        run: go test ./internal/packageupdate ./cmd/archive-center-updater -count=1

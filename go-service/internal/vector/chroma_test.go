@@ -297,6 +297,17 @@ func TestChromaStoreUpsertSearchCountDelete(t *testing.T) {
 	}
 }
 
+func TestChromaWhereSupportsExistingPreciseMemorySourceTableMetadata(t *testing.T) {
+	got := chromaWhere("session-1", `source_table == "precise_memory_units"`)
+	want := map[string]any{"$and": []map[string]any{
+		{"chat_session_id": "session-1"},
+		{"source_table": "precise_memory_units"},
+	}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("precise-memory where = %#v, want %#v", got, want)
+	}
+}
+
 func TestChromaStoreReranksReturnedCandidatesByActualCosine(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

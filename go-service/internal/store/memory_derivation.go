@@ -40,6 +40,15 @@ func WithMemoryAdmissionVectorReplay(ctx context.Context, refresh, reconcileElig
 	})
 }
 
+// MemoryAdmissionVectorReplayRequested reports whether the current call is an
+// administrative vector-maintenance replay. HTTP orchestration uses this only
+// to stop after the canonical memory/vector admission has been refreshed, so a
+// reindex cannot replay unrelated derived-state writes.
+func MemoryAdmissionVectorReplayRequested(ctx context.Context) bool {
+	options := memoryAdmissionVectorReplayFromContext(ctx)
+	return options.Refresh || options.ReconcileEligibility
+}
+
 func memoryAdmissionVectorReplayFromContext(ctx context.Context) memoryAdmissionVectorReplayOptions {
 	if ctx == nil {
 		return memoryAdmissionVectorReplayOptions{}

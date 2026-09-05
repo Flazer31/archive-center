@@ -224,6 +224,22 @@ func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) 
 	if affected, rowErr := result.RowsAffected(); rowErr == nil && affected > 0 {
 		return nil
 	}
+	if strings.EqualFold(strings.TrimSpace(p.Status), "resolved") {
+		var existingID int64
+		err = m.db.QueryRowContext(ctx, `
+			SELECT id
+			FROM pending_threads
+			WHERE chat_session_id = ? AND thread_key = ? AND status = 'resolved'
+			ORDER BY id DESC
+			LIMIT 1
+		`, p.ChatSessionID, p.ThreadKey).Scan(&existingID)
+		if err == nil {
+			return nil
+		}
+		if err != sql.ErrNoRows {
+			return err
+		}
+	}
 	_, err = m.db.ExecContext(ctx, `
 		INSERT INTO pending_threads (
 			chat_session_id, thread_key, description, status, created_turn,

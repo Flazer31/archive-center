@@ -181,6 +181,14 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			return result
 		}
 		existingEvidence = admittedEvidence
+		if store.MemoryAdmissionVectorReplayRequested(ctx) {
+			// Reindex owns only the canonical memory/evidence/precise-memory
+			// vector materialization performed by the admission transaction.
+			// Replaying the remaining Critic artifact reducer would append active
+			// and canonical states, pending threads, storylines, and other derived
+			// rows every time an administrator refreshes vectors.
+			return result
+		}
 		s.savePostAdmissionPreciseMemoryProjections(ctx, sid, admittedPreciseUnits, now, &result)
 	}
 	if !admissionHandled {

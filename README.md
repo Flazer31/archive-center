@@ -1,15 +1,19 @@
-# Archive Center 4.2.0 Test Source
+# Archive Center 4.2.0
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
 
-4.2.0 test source는 4.1.0의 요청 재시도·리롤 교체·PDF 기억 전달·Yumi 호환을
-보존하면서, Go가 점수를 끝까지 보유하는 사실 단위 기억 후보, 요청 단위 current
-resolution, 전역 점수 순위와 핵심 기억 K, Priority Memory Pack, 사용자 선택형
-`저장 확정 시점`을 추가합니다. 기본값은 기존과 같은 `응답 직후`이며,
-`다음 사용자 입력 시`를 선택하면 직전 최종 응답의 Critic·저장이 다음 본문 요청과
-겹쳐 실행되되 현재 본문은 이를 기다리지 않습니다. 구현·검증 상태는
-[`docs/archive-center-4.2-work-log.md`](docs/archive-center-4.2-work-log.md)에 기록합니다.
+4.2.0은 사실별 관련성·중요도·RP 턴 최신성을 최종 기억 선택에 반영합니다. 현재
+입력과 최근 완결 대화를 검색에 함께 참고하고, 완성 턴 요약과 각 기억 자료 분류에
+`핵심 연관 기억 최대 수`를 독립적으로 적용합니다. 완료 사건·재색인·평론가 재개와
+HUD 표시도 보완했습니다.
+
+`저장 확정 시점`의 기본값인 **현재 턴**은 응답 직후 평론가·저장을 진행합니다.
+**이전 턴**을 선택하면 다음 새 입력에서 직전 최종 응답을 확정하며, 현재 응답 생성과
+직전 평론가·저장을 두 진행 카드로 나누어 표시합니다.
+
+변경 사항은 [4.2.0 릴리스 안내](docs/archive-center-4.2.0-release-notes.md), 구현과
+검증 이력은 [4.2 작업 기록](docs/archive-center-4.2-work-log.md)에 정리되어 있습니다.
 
 ## Runtime Architecture
 
@@ -53,8 +57,14 @@ Windows PowerShell:
 irm https://raw.githubusercontent.com/Flazer31/archive-center/main/install-windows.ps1 | iex
 ```
 
-Updates use a separate path; these entry points never update or overwrite an
-existing install. See [`docs/simple-fresh-install.md`](docs/simple-fresh-install.md).
+기존 관리형 설치는 Archive Center 설정의 **업데이트 확인 → 지금 업데이트**를 사용합니다.
+백엔드가 해당 OS·CPU의 패키지를 선택하고, 실행기가 교체·재시작과 준비 상태 확인을
+진행합니다. 위 한 줄 명령은 신규 설치 전용이며 기존 설치를 덮어쓰지 않습니다.
+[신규 설치 안내](docs/simple-fresh-install.md)를 참고하십시오.
+
+RisuAI에 설치된 `Archive Center.js`는 RisuAI의 플러그인 업데이트 기능이나 새 파일
+가져오기로 함께 갱신하십시오. 백엔드 패키지 업데이트만으로 RisuAI에 이미 설치된
+플러그인 코드가 교체되지는 않습니다.
 
 Raw `git clone` is a source/operator path. It does not by itself configure
 MariaDB, ChromaDB, package launchers, or live service env. See
