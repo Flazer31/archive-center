@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -167,13 +168,17 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		"recent_conversation_query_limit": recentConversationLimit,
 		"recent_conversation_query_count": recentConversationQueryCount,
 	}
+	searchTiming := newBackendTimingTrace("")
+	shadow["breakdown_ms"] = searchTiming.stagesMS
 	defer finalizePrepareTurnVectorShadow(shadow)
 	if s.Vector == nil {
 		shadow["status"] = "disabled"
 		shadow["health_error"] = "vector store is not configured"
 		return shadow
 	}
+	healthStarted := time.Now()
 	health, err := s.Vector.Health(ctx)
+	searchTiming.addElapsed("health", healthStarted)
 	shadow["health_checked"] = true
 	if err != nil {
 		shadow["status"] = "degraded"
@@ -211,7 +216,9 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		historyEmbeddingErrors := []string{}
 		model := strings.TrimSpace(embeddingCfg.Model)
 		for index, query := range retrievalQueries {
+			embeddingStarted := time.Now()
 			embeddingJSON, resolvedModel, err := callQueryEmbedding(ctx, embeddingCfg, query.Text)
+			searchTiming.addElapsed("embedding", embeddingStarted)
 			if err != nil {
 				if index == 0 {
 					shadow["status"] = "degraded"
@@ -277,7 +284,9 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 				}
 			}
 			for _, searchVector := range queryVectors {
+				vectorStarted := time.Now()
 				sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, searchVector, sessionLimit, searchFilter(searchSessionID))
+				searchTiming.addElapsed("vector_search", vectorStarted)
 				switch {
 				case searchErr == nil:
 					for index := range sessionResults {
@@ -337,7 +346,9 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	}, nil)
 	switch {
 	case err == nil:
+		revisionStarted := time.Now()
 		results, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, results)
+		searchTiming.addElapsed("revision_checks", revisionStarted)
 		shadow["source_revision_filter"] = revisionFilter
 		if len(results) == 0 {
 			shadow["search_result"] = "not_found"
@@ -366,7 +377,9 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	memoryResults, memoryErr := searchAcrossSessions(func(string) string { return memoryFilter }, nil)
 	switch {
 	case memoryErr == nil:
+		revisionStarted := time.Now()
 		memoryResults, revisionFilter := s.filterPrepareTurnActiveSourceRevisionVectors(ctx, req.ChatSessionID, memoryResults)
+		searchTiming.addElapsed("revision_checks", revisionStarted)
 		shadow["memory_source_revision_filter"] = revisionFilter
 		if len(memoryResults) == 0 {
 			shadow["memory_search_result"] = "not_found"

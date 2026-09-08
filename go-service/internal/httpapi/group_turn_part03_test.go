@@ -854,7 +854,7 @@ func TestCompleteTurnCriticLedgerWiringBehindFeatureFlag(t *testing.T) {
 	}
 }
 
-func TestImportHypamemoryRequiresCriticConfig(t *testing.T) {
+func TestImportHypamemoryPreservesOriginalWithoutCriticConfig(t *testing.T) {
 	fake := &turnRecordingStore{}
 	cfg := config.Default()
 	cfg.StoreMode = config.StoreModeMariaDBAuthority
@@ -872,17 +872,20 @@ func TestImportHypamemoryRequiresCriticConfig(t *testing.T) {
 	mux.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("import/hypamemory status = %d, want 200 fail-closed response: %s", rec.Code, rec.Body.String())
+		t.Fatalf("import/hypamemory status = %d, want 200: %s", rec.Code, rec.Body.String())
 	}
 	var resp map[string]any
 	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("decode import/hypamemory response: %v", err)
 	}
-	if resp["status"] != "error" || resp["code"] != "critic_config_missing" {
-		t.Fatalf("expected critic_config_missing without runtime critic config, got %+v", resp)
+	if resp["status"] != "ok" || resp["saved"] != float64(1) || resp["analysis_skipped"] != float64(1) {
+		t.Fatalf("expected original saved without analysis, got %+v", resp)
 	}
-	if len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 || len(fake.savedAuditLogs) != 0 {
-		t.Fatalf("HypaMemory import must not fake writes without critic config, memories=%d evidence=%d kg=%d audit=%d", len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples), len(fake.savedAuditLogs))
+	if len(fake.savedMemories) != 1 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 || !hasAuditEvent(fake.savedAuditLogs, "hypamemory_import") {
+		t.Fatalf("expected source memory without invented analysis, memories=%d evidence=%d kg=%d audit=%d", len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples), len(fake.savedAuditLogs))
+	}
+	if original := parseJSONMap(fake.savedMemories[0].SummaryJSON)["turn_summary"]; original != "Chloe remembers the rooftop promise." {
+		t.Fatalf("original replaced: %v", original)
 	}
 }
 
@@ -971,6 +974,11 @@ func TestImportHypamemoryWithRuntimeCriticSavesArtifacts(t *testing.T) {
 	}
 	if len(vec.docs) != 2 {
 		t.Fatalf("public imported memory and evidence were not retained for general recall, got %d", len(vec.docs))
+	}
+	stored := parseJSONMap(fake.savedMemories[0].SummaryJSON)
+	imported := mapFromAny(stored["hypamemory_import"])
+	if stored["turn_summary"] != "Chloe trusts Hero after the rooftop promise." || imported["original_text"] != stored["turn_summary"] || imported["critic_summary"] != "Imported HypaMemory says Chloe trusts Hero after the rooftop promise." {
+		t.Fatalf("source replaced by Critic summary: %+v", stored)
 	}
 	if !hasAuditEvent(fake.savedAuditLogs, "hypamemory_import") {
 		t.Fatalf("expected hypamemory_import audit log, got %#v", fake.savedAuditLogs)

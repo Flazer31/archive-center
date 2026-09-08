@@ -1,5 +1,10 @@
 ﻿# Packaging Hygiene for Archive Center 2.0
 
+> Historical 2.0 R0/R1 design record, reviewed 2026-09-08. Its pre-approval status
+> describes that stage. Current authorized packaging uses [Ops](README.md),
+> [AI_GUARDRAILS](../AI_GUARDRAILS.md) and the [test.18 record](../docs/archive-center-4.3-test-build-18.md).
+> Reviewed example configuration is shipped by the current builder; live secrets and user data are not.
+
 > Status: **R0/R1 design contract**  
 > Live packaging / release pipeline is banned until explicit approval.
 

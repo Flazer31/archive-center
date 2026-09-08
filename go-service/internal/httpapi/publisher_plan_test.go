@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync/atomic"
@@ -13,6 +15,298 @@ import (
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
+
+func Test43PublisherStrengthPolicyReachesProviderAndPrepareTurnPayload(t *testing.T) {
+	const narrativeBudget = 3000
+	texts := []string{
+		"The user chooses to stay with the quiet repair attempt.",
+		"Explore the repair at the user's chosen pace.",
+		"The crew observes how the attempted repair responds.",
+		"The quiet pause gives the crew room to react.",
+		"Keep the pressure quiet.",
+	}
+	wire := publisherWireV3Parsed(
+		publisherWireV3Item("book_author", "current_arc", texts[0], "active:1"),
+		publisherWireV3Item("book_author", "narrative_goal", texts[1], "active:1"),
+		publisherWireV3Item("book_author", "next_beats", texts[2], "active:1"),
+		publisherWireV3Item("book_author", "next_beats", texts[3], "active:1"),
+		publisherWireV3PressureItem("quiet", texts[4], "active:1"),
+	)
+	content, err := json.Marshal(wire)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls atomic.Int64
+	captured := make(chan map[string]any, 1)
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode Publisher request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		select {
+		case captured <- request:
+		default:
+			t.Error("unexpected additional Publisher request")
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
+	}))
+	defer provider.Close()
+
+	var baselineOptions, baselineAccepted, baselineMemory []byte
+	for _, tc := range []struct {
+		strength    string
+		application string
+		instruction string
+	}{
+		{"weak", "optional_hints", "brief optional hints"},
+		{"medium", "connected_recommendations", "linking reaction, detail and continuity"},
+		{"strong", "response_priorities", "concrete enactment and an observable scene or NPC response"},
+		{"extreme", "response_priorities", "immediate consequence within this response"},
+		{"maximum", "response_priorities", "opening, development and landing"},
+		{"none", "disabled", ""},
+	} {
+		for _, format := range []string{"compact", "standard", "explicit"} {
+			t.Run(tc.strength+"_"+format, func(t *testing.T) {
+				beforeCalls := calls.Load()
+				response := outputFidelity36FPrepareResponseWithBudgets(t, "ko_reencounter_supported_v1", "standard", tc.strength, format, provider.URL, true, true, 9000, narrativeBudget)
+				payload, guidanceTrace := outputFidelity35CGuideTrace(t, response)
+				lane := outputFidelity36FFindLane(payload, "output_guidance")
+				memoryLane := outputFidelity36FFindLane(payload, "long_term_memory")
+				if !boolFromAny(memoryLane["applied"]) || extractionStringFromAny(memoryLane["text"]) == "" {
+					t.Fatalf("strength %s lost memory delivery: %#v", tc.strength, memoryLane)
+				}
+				memory, _ := json.Marshal(memoryLane)
+				if baselineMemory == nil {
+					baselineMemory = memory
+				} else if !bytes.Equal(memory, baselineMemory) {
+					t.Fatalf("strength/format changed the existing memory lane: got=%s baseline=%s", memory, baselineMemory)
+				}
+				if tc.strength == "none" {
+					if calls.Load() != beforeCalls || boolFromAny(lane["applied"]) || extractionStringFromAny(lane["text"]) != "" {
+						t.Fatalf("none called Publisher or emitted guidance: calls=%d lane=%#v", calls.Load()-beforeCalls, lane)
+					}
+					return
+				}
+				if calls.Load() != beforeCalls+1 {
+					t.Fatalf("Publisher calls=%d, want one", calls.Load()-beforeCalls)
+				}
+				var request map[string]any
+				select {
+				case request = <-captured:
+				default:
+					t.Fatal("production prepare-turn did not dispatch Publisher")
+				}
+				messages := anySliceFromAny(request["messages"])
+				if len(messages) != 2 {
+					t.Fatalf("Publisher message count=%d", len(messages))
+				}
+				var modelInput map[string]any
+				if err := json.Unmarshal([]byte(extractionStringFromAny(mapFromAny(messages[1])["content"])), &modelInput); err != nil {
+					t.Fatal(err)
+				}
+				policy := mapFromAny(modelInput["guide_strength_policy"])
+				instruction := extractionStringFromAny(policy["response_instruction"])
+				authority := extractionStringFromAny(policy["user_authority"])
+				if policy["strength"] != tc.strength || policy["guidance_application"] != tc.application || !strings.Contains(instruction, tc.instruction) {
+					t.Fatalf("strength policy did not reach actual provider input: %#v", policy)
+				}
+				for _, want := range []string{"explicit setting revisions", "chosen actions and pacing take precedence", "freely chooses", "quiet scenes, pauses and failed attempts"} {
+					if !strings.Contains(authority, want) {
+						t.Fatalf("strength %s lost user/creative authority %q: %s", tc.strength, want, authority)
+					}
+				}
+				if len(policy) != 4 {
+					t.Fatalf("model policy includes diagnostic-only controls: %#v", policy)
+				}
+				delete(request, "messages")
+				options, _ := json.Marshal(request)
+				if baselineOptions == nil {
+					baselineOptions = options
+				} else if !bytes.Equal(options, baselineOptions) {
+					t.Fatalf("strength changed provider settings: got=%s baseline=%s", options, baselineOptions)
+				}
+				proposal := mapFromAny(mapFromAny(mapFromAny(response["supervisor_result"])["directive"])["supervisor_scene_proposal"])
+				acceptedItems := anySliceFromAny(mapFromAny(proposal["publisher_plan"])["accepted_items"])
+				if len(acceptedItems) != len(texts) || mapFromAny(acceptedItems[len(acceptedItems)-1])["level"] != "quiet" {
+					t.Fatalf("strength changed received items or quiet pressure: %#v", acceptedItems)
+				}
+				accepted, _ := json.Marshal(acceptedItems)
+				if string(accepted) == "null" {
+					t.Fatalf("prepare-turn lost accepted Publisher plan: %#v", proposal)
+				}
+				if baselineAccepted == nil {
+					baselineAccepted = accepted
+				} else if !bytes.Equal(accepted, baselineAccepted) {
+					t.Fatalf("strength changed accepted text/order: got=%s baseline=%s", accepted, baselineAccepted)
+				}
+				visible := extractionStringFromAny(lane["text"])
+				if !boolFromAny(lane["applied"]) || !strings.Contains(visible, instruction) || !strings.Contains(visible, authority) || !strings.Contains(extractionStringFromAny(payload["auxiliary_text"]), visible) {
+					t.Fatalf("actual %s payload lost the provider's strength policy: %#v", format, lane)
+				}
+				if tc.application == "response_priorities" && (strings.Contains(strings.ToLower(visible), "ideas=optional") || strings.Contains(strings.ToLower(visible), "proposal_only") || strings.Contains(visible, "These are optional ideas")) {
+					t.Fatalf("strong guidance is still wrapped as entirely optional: %s", visible)
+				}
+				last := -1
+				for _, text := range texts {
+					at := strings.Index(visible, text)
+					if at <= last || strings.Count(visible, text) != 1 {
+						t.Fatalf("guidance lost recommendation text/order %q: %s", text, visible)
+					}
+					last = at
+				}
+				if intFromAny(lane["budget_chars"], -1) != narrativeBudget || intFromAny(guidanceTrace["budget_chars"], -1) != narrativeBudget || intFromAny(guidanceTrace["applied_count"], 0) != 1 {
+					t.Fatalf("strength changed guidance budget or block count: lane=%#v trace=%#v", lane, guidanceTrace)
+				}
+			})
+		}
+	}
+}
+
+func Test43PublisherCreativeProgressPreservesHistoricalSourceTurns(t *testing.T) {
+	const currentRef = "input:latest"
+	const currentInput = "Mira gets to work repairing the bridge with the crew."
+	const nextBeat = "The crew divides the work, Mira fits the delivered brace, and the first repaired span opens for testing."
+	seeds := []prepareTurnPriorityFactSeed{
+		{Lane: "subjective_relationship", SourceTable: "character_relationships", SourceRowID: 1, SourceTurn: 8, Fact: prepareTurnPriorityMemoryFact{Text: "Mira plans to visit the smith tomorrow.", EntitySurface: "Mira", Structured: true}},
+		{Lane: "event_recent", SourceTable: "memories", SourceRowID: 2, SourceTurn: 12, Fact: prepareTurnPriorityMemoryFact{Text: "Mira visited the smith and received one bridge brace.", EntitySurface: "Mira", Structured: true}},
+		{Lane: "world_state", SourceTable: "world_rules", SourceRowID: 3, Fact: prepareTurnPriorityMemoryFact{Text: "The river is shallow along the eastern bank.", Structured: true}},
+		{Lane: "character_objective", SourceTable: "character_profiles", SourceRowID: 4, SourceTurn: 4, Fact: prepareTurnPriorityMemoryFact{Text: "Mira is known as the bridge keeper.", EntitySurface: "Mira", MemoryRole: "identity_metadata", Structured: true}},
+		{Lane: "character_objective", SourceTable: "character_states", SourceRowID: 5, SourceTurn: 14, Fact: prepareTurnPriorityMemoryFact{Text: "Mira carries one bridge brace.", EntitySurface: "Mira", Structured: true}},
+	}
+	before, _ := json.Marshal(seeds)
+	assembly := &prepareTurnInjectionAssembly{Counts: map[string]any{}, PriorityFactSeeds: seeds}
+	plan := buildPrepareTurnMemoryDeliveryPlan(assembly, 6000, priorityMemoryTestContext(3))
+	memoryText := extractionStringFromAny(plan["final_text"])
+	for _, seed := range seeds {
+		if seed.Fact.MemoryRole == "identity_metadata" {
+			continue
+		}
+		want := seed.Fact.Text
+		if seed.SourceTurn > 0 {
+			want = fmt.Sprintf("[source turn %d] %s", seed.SourceTurn, want)
+			if seed.SourceTable == "character_states" {
+				want = fmt.Sprintf("[state snapshot turn %d; fields may be older] %s", seed.SourceTurn, seed.Fact.Text)
+			}
+		}
+		if !strings.Contains(memoryText, "- "+want) {
+			t.Fatalf("source time or original fact missing from rendered memory: want=%q text=%q", want, memoryText)
+		}
+	}
+	if strings.Contains(memoryText, "[source turn 0]") {
+		t.Fatalf("unknown source time was fabricated: %q", memoryText)
+	}
+	if !strings.Contains(memoryText, "identity_metadata: Mira is known as the bridge keeper.") {
+		t.Fatalf("identity metadata branch was not exercised: %q", memoryText)
+	}
+	for _, line := range strings.Split(memoryText, "\n") {
+		if strings.Contains(line, "identity_metadata:") && !strings.HasPrefix(line, "- [source turn ") && !strings.HasPrefix(line, "- [state snapshot turn ") {
+			t.Fatalf("identity enrichment erased the source time: %q", line)
+		}
+	}
+	for _, raw := range prepareTurnMemoryLineageSlice(plan["priority_items"]) {
+		item := mapFromAny(raw)
+		if strings.HasPrefix(extractionStringFromAny(item["complete_text"]), "[source turn ") {
+			t.Fatalf("presentation metadata replaced the original fact: %#v", item)
+		}
+	}
+	after, _ := json.Marshal(seeds)
+	if !bytes.Equal(before, after) {
+		t.Fatal("rendering mutated source facts")
+	}
+	current := currentRef
+	rules := buildResponseExecutionSourceRulesWithMemory(
+		dto.PrepareTurnCurrentInputDecisionV1{SelectedObservationRef: &current}, dto.PrepareTurnHostContextReferenceEvidenceV1{},
+		"creative-progress", nil, "The brace has arrived; bridge repairs start now.", nil, plan,
+	)
+	pack := supervisorBoundaryTestPack("maximum")
+	for key, value := range rules {
+		mapFromAny(pack["response_execution_contract"])[key] = value
+	}
+	pack["support_packet"] = buildSupervisorSupportPacket("creative-progress", currentInput, rules, nil, "The brace has arrived; bridge repairs start now.", nil, plan)
+	var calls atomic.Int64
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode provider request: %v", err)
+		}
+		messages := anySliceFromAny(request["messages"])
+		if len(messages) != 2 {
+			t.Errorf("publisher message count=%d", len(messages))
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		systemPrompt := extractionStringFromAny(mapFromAny(messages[0])["content"])
+		for _, want := range []string{"NPC initiative", "creative additions", "source-turn label", "private", "user can adopt, change or disregard", "user revisions"} {
+			if !strings.Contains(systemPrompt, want) {
+				t.Errorf("active default prompt lost creative or continuity context %q", want)
+			}
+		}
+		for _, obsolete := range []string{"do not", "cannot", "never", "forbidden_moves", "guardrails", "scene_mandate", "required_outcomes"} {
+			if strings.Contains(strings.ToLower(systemPrompt), obsolete) {
+				t.Errorf("active default still generates prohibitions: %q", obsolete)
+			}
+		}
+		var modelInput map[string]any
+		if err := json.Unmarshal([]byte(extractionStringFromAny(mapFromAny(messages[1])["content"])), &modelInput); err != nil {
+			t.Errorf("decode Publisher input: %v", err)
+		}
+		modelContext, _ := json.Marshal(modelInput["supervisor_support_packet"])
+		snapshot := seeds[len(seeds)-1]
+		if !strings.Contains(string(modelContext), fmt.Sprintf("[state snapshot turn %d; fields may be older] %s", snapshot.SourceTurn, snapshot.Fact.Text)) {
+			t.Error("snapshot provenance or exact quantity did not reach the Publisher request")
+		}
+		for _, seed := range seeds[:2] {
+			if !strings.Contains(string(modelContext), fmt.Sprintf("[source turn %d] %s", seed.SourceTurn, seed.Fact.Text)) {
+				t.Errorf("source time did not reach Publisher context: %s", modelContext)
+			}
+		}
+		execution := mapFromAny(modelInput["response_execution_contract"])
+		for _, key := range []string{"continuity_context", "response_focus", "development_opportunities", "continuity_anchors"} {
+			if len(anySliceFromAny(execution[key])) == 0 {
+				t.Errorf("positive model execution context %q missing: %#v", key, execution)
+			}
+		}
+		if _, exists := execution["must_not_assert"]; exists {
+			t.Error("legacy negative execution heading reached the model")
+		}
+		instructions, _ := json.Marshal(execution)
+		if strings.Contains(strings.ToLower(string(instructions)), "do not") || !strings.Contains(string(instructions), "changes to established settings or facts") {
+			t.Errorf("execution context still restricts normal creative progression: %s", instructions)
+		}
+		response, _ := json.Marshal(publisherWireV3Parsed(publisherWireV3Item("book_author", "next_beats", nextBeat, currentRef)))
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(response)}}}})
+	}))
+	defer provider.Close()
+	srv := setupTestServer()
+	srv.Cfg.PromptDir = filepath.Join("..", "..", "..", "prompts")
+	result, trace, err := srv.runSupervisorLLM(context.Background(), "creative-progress", pack, completeTurnLLMConfig{
+		Provider: "openai", APIKey: "test-key", Endpoint: provider.URL, Model: "test-publisher", TimeoutMs: 2000, MaxTokens: 1200,
+	})
+	if err != nil || calls.Load() != 1 {
+		t.Fatalf("single Publisher call failed: calls=%d err=%v trace=%#v", calls.Load(), err, trace)
+	}
+	for _, format := range []string{"compact", "standard", "explicit"} {
+		guidance := supervisorSceneProposalGuidanceItems(result, format)
+		if len(guidance) != 1 || !strings.Contains(guidance[0].Text, nextBeat) {
+			t.Fatalf("%s rendering lost the creative progression proposal: %#v", format, guidance)
+		}
+		payload := buildPrepareTurnPayloadApplicationPlan(currentInput, "", memoryText, "", true, false, 6000, 0, 2000, guidance, "succeeded")
+		auxiliary := extractionStringFromAny(payload["auxiliary_text"])
+		if !strings.Contains(auxiliary, memoryText) || !strings.Contains(auxiliary, nextBeat) {
+			t.Fatalf("%s payload plan changed the dated memory or creative proposal: %#v", format, payload)
+		}
+	}
+	if publisherModelInstructionChars(publisherModelExecutionContract(rules)) <= 0 {
+		t.Fatal("renamed instruction fields disappeared from usage accounting")
+	}
+	if _, retained := rules["must_not_assert"]; !retained {
+		t.Fatal("model projection mutated the internal execution contract")
+	}
+}
 
 func TestPublisherGuidanceFormatsPreserveAcceptedPlanAndSingleBlock(t *testing.T) {
 	parsed := publisherWireV3Parsed(
@@ -201,6 +495,36 @@ func TestPublisherPlanV2FailureHasNoDefaultOrStaleGuidance(t *testing.T) {
 		if _, exists := proposal["publisher_plan"]; exists {
 			t.Fatalf("failed plan fabricated a default plan: %#v", proposal)
 		}
+	}
+}
+
+func Test43PublisherSyntaxRecoveryUsesOneCallAndKeepsGuide(t *testing.T) {
+	const guide = "The crew considers the repair at the user's chosen pace."
+	wire := publisherWireV3Parsed(publisherWireV3Item("book_author", "next_beats", guide, "input:latest"))
+	encoded, _ := json.Marshal(wire)
+	broken := strings.TrimSuffix(string(encoded), "]}") + "}"
+	var calls atomic.Int64
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": broken}}}})
+	}))
+	defer provider.Close()
+	srv := setupTestServer()
+	result, trace, err := srv.runSupervisorLLM(context.Background(), "publisher-recovery", supervisorBoundaryTestPack("strong"), completeTurnLLMConfig{
+		Provider: "openai", APIKey: "test-key", Endpoint: provider.URL, Model: "test", TimeoutMs: 2000, MaxTokens: 1200,
+	})
+	if err != nil || calls.Load() != 1 {
+		t.Fatalf("local recovery added a provider call: %d %v", calls.Load(), err)
+	}
+	items := supervisorSceneProposalGuidanceItems(result, "standard")
+	found := false
+	for _, item := range items {
+		if strings.Contains(item.Text, guide) {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("repaired guide was lost or rewritten: %+v trace=%+v", items, trace)
 	}
 }
 
@@ -501,10 +825,13 @@ func TestPublisherProviderReceivesCompactProjectionWithoutMutatingInternalContra
 			t.Fatalf("model support packet retained redundant visibility metadata: %#v", projectedMemory)
 		}
 		modelExecution := mapFromAny(modelInput["response_execution_contract"])
-		if modelExecution["planner_support_language"] != "ko" || modelExecution["concealment_active"] != true || len(modelExecution) != 6 {
+		if modelExecution["planner_support_language"] != "ko" || len(modelExecution) != 5 {
 			t.Fatalf("model execution projection=%#v", modelExecution)
 		}
-		preserve := mapFromAny(anySliceFromAny(modelExecution["must_preserve"])[0])
+		if _, exists := modelExecution["concealment_active"]; exists {
+			t.Fatalf("model execution retained an internal control flag: %#v", modelExecution)
+		}
+		preserve := mapFromAny(anySliceFromAny(modelExecution["continuity_context"])[0])
 		if preserve["instruction"] != "Preserve delivered continuity." || !reflect.DeepEqual(stringSliceFromAny(preserve["source_refs"]), []string{"memory:delivered"}) {
 			t.Fatalf("model execution instruction lost semantics: %#v", preserve)
 		}
@@ -562,6 +889,13 @@ func TestPublisherJSONFailureDiagnosticsAreBoundedAndIdentifyDuplicateKey(t *tes
 
 func TestPublisherJSONFailureDiagnosticsReportSyntaxOffsetWhenAvailable(t *testing.T) {
 	content := `{"contract_version":"publisher_output.v3","items":[,]}`
+	// Shared trailing-comma recovery now reads the original fixture as an empty
+	// list, matching Critic syntax recovery; it must not manufacture guide items.
+	parsed, err := parsePublisherJSONObject(content)
+	if err != nil || len(sliceFromAny(parsed["items"])) != 0 {
+		t.Fatalf("empty-list syntax recovery changed content: %#v %v", parsed, err)
+	}
+	content = `{"contract_version":"publisher_output.v3","items":[?]}`
 	_, parseErr := parsePublisherJSONObject(content)
 	if parseErr == nil {
 		t.Fatal("malformed Publisher array was accepted")

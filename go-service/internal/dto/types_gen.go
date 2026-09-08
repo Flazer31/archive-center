@@ -1038,6 +1038,7 @@ type PrepareTurnSettings struct {
 	LorebookReferenceMaxChars *int `json:"lorebook_reference_max_chars,omitempty"`
 	// PRESENCE: Optional non-null scalar int controlling only the final objective-event memory item ceiling.
 	// DEFAULT: No default: absent callers preserve the legacy character-budget-only delivery behavior.
+	// Legacy wire key: per-group core priority target; remaining facts use the character budget.
 	CoreObjectiveMemoryMaxItems *int `json:"core_objective_memory_max_items,omitempty"`
 	// PRESENCE: Optional non-null scalar int carrying the independent original-work reference cap.
 	// DEFAULT: Optional field with default (3000): Go handler must apply default when field is absent in request.

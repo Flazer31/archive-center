@@ -243,7 +243,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		memorySelection,
 		recallLimit,
 	)
-	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, protectedPerspectiveContext)
+	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, canonicalMemories, protectedPerspectiveContext)
 	actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
 	protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
 	out.MemoryDeliveryLineage = buildPrepareTurnMemoryDeliveryLineage(memorySelection, memoryLanguageTrace)
@@ -264,10 +264,21 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
 	appendPrepareTurnPriorityMemoryFactSeeds(&out, memories)
+	perspectiveRecollectionLines := map[string]bool{}
+	if len(perspectiveContextArg) > 0 {
+		seeds, _ := perspectiveContextArg[0]["_character_perspective_fact_seeds"].([]prepareTurnPriorityFactSeed)
+		out.PriorityFactSeeds = append(out.PriorityFactSeeds, seeds...)
+		for _, seed := range seeds {
+			perspectiveRecollectionLines[seed.Fact.Text] = true
+		}
+	}
 	if perspectiveCandidateText != "" {
 		for _, line := range strings.Split(perspectiveCandidateText, "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || line == "[Character Perspective]" {
+				continue
+			}
+			if perspectiveRecollectionLines[strings.TrimPrefix(line, "- ")] {
 				continue
 			}
 			protectedMemoryLines = append(protectedMemoryLines, line)
@@ -685,6 +696,10 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	pendingIrrelevantDropped := 0
 	pendingPinnedActiveSelected := 0
 	pendingSuppressedDropped := 0
+	// Use the already configured Host conversation query set before candidate
+	// scoring. Otherwise an implicit "continue" loses the named ongoing goal
+	// before either ordinary selection or the optional specialist can see it.
+	pendingQuery := strings.TrimSpace(goalQuery + "\n" + strings.Join(stringsFromAny(priorityMemoryQueryInput[prepareTurnPriorityQuerySetContextKey]), "\n"))
 	for _, pt := range pendingThreads {
 		if len(pendingLines) >= recallLimit {
 			break
@@ -701,7 +716,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		}
 		if desc != "" {
 			pinnedActive := pt.Pinned && strings.EqualFold(status, "open")
-			if !pinnedActive && !prepareTurnRequestFirstRelevant(rawSupportQuery, goalQuery, desc) {
+			if !pinnedActive && !prepareTurnRequestFirstRelevant(rawSupportQuery, pendingQuery, desc) {
 				pendingIrrelevantDropped++
 				continue
 			}

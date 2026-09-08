@@ -352,6 +352,15 @@ func (m *mariadbStore) saveAutomaticForkLineageRecord(ctx context.Context, recor
 	if existing != nil && !upgradesConfirmedV1ToV2 &&
 		(existing.LineageState == "confirmed" || existing.ImportedAt.After(record.ImportedAt)) {
 		expected = *existing
+		// Attach the first observed message-origin map without changing any
+		// confirmed parent, fork point, source identity or earlier provenance.
+		if existing.LineageState == "confirmed" && record.LineageState == "confirmed" &&
+			(strings.TrimSpace(existing.InheritedItemsJSON) == "" || strings.TrimSpace(existing.InheritedItemsJSON) == "[]") && record.InheritedItemsJSON != "" {
+			if _, err := tx.ExecContext(ctx, `UPDATE session_fork_lineage SET inherited_items_json = ? WHERE id = ?`, record.InheritedItemsJSON, existing.ID); err != nil {
+				return record, err
+			}
+			expected.InheritedItemsJSON = record.InheritedItemsJSON
+		}
 	} else {
 		_, err = tx.ExecContext(ctx, `
 			INSERT INTO session_fork_lineage (

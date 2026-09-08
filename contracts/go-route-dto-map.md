@@ -1,5 +1,11 @@
 # Go Route to DTO Mapping Table
 
+> Historical Archive Center 2.0 R0/R1 contract/evidence, reviewed 2026-09-08.
+> “Current”, “planned” and route/schema counts below refer to that original snapshot.
+> For active Go/Host ownership and implemented routes, use [STRUCTURE](../STRUCTURE.md)
+> and [AI_GUARDRAILS](../AI_GUARDRAILS.md), checked against active source.
+> This notice preserves the original contract; it does not declare a new API or schema.
+
 > Source of truth: `Archive Center Beta 0.8(fix)\backend\main.py` and `backend\routes`
 > Generated from static extraction of FastAPI route decorators and function signatures.
 > Date: 2026-05-21

@@ -715,6 +715,7 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 }
 
 type sessionRoutingTurnResolutionRequest struct {
+	worldlineOriginDepth   int
 	ChatSessionID          string                    `json:"chat_session_id"`
 	Mode                   string                    `json:"mode"`
 	StableCharacterID      string                    `json:"stable_character_id,omitempty"`
@@ -745,6 +746,7 @@ type risuWorldlineObservation struct {
 	BranchMarker        string                            `json:"branch_marker"`
 	MarkerIndex         int                               `json:"marker_index"`
 	Messages            []risuWorldlineMessageObservation `json:"messages"`
+	MessageOrigins      *risuWorldlineOriginObservation   `json:"message_origins,omitempty"`
 }
 
 type risuWorldlineMessageObservation struct {
@@ -1194,8 +1196,26 @@ func resolveAssistantObservationTurnIdentities(
 
 func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessionRoutingTurnResolutionRequest, childSessionID string) (vm worldlineViewModel) {
 	observation := req.WorldlineObservation
+	ancestorRead := s.resolveRisuWorldlineParentObservation(ctx, req)
 	durable := currentWorldlineViewModel(ctx, s.Store, childSessionID)
+	defer func() {
+		if ancestorRead != nil {
+			vm.OriginReadRequest = ancestorRead
+			return
+		}
+		if observation == nil || vm.MessageOriginsRecorded || observation.MessageOrigins != nil {
+			return
+		}
+		parent, _, source, ok := parseExactRisuBranchMarker(observation.BranchMarker)
+		if ok {
+			vm.OriginReadRequest = &risuWorldlineOriginReadRequest{ParentHostChatID: parent, SourceMessageID: source, ChildHostChatID: req.HostChatID, ChildMarkerIndex: observation.MarkerIndex}
+		}
+	}()
 	if durable.State == "confirmed" && durable.ForkSourceRole != "" {
+		if observation != nil && observation.MessageOrigins != nil {
+			s.enrichRisuWorldlineOrigins(ctx, childSessionID, req.StableCharacterID, observation)
+			return currentWorldlineViewModel(ctx, s.Store, childSessionID)
+		}
 		return durable
 	}
 	vm = worldlineViewModel{
@@ -1292,11 +1312,6 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 		vm.Reason = "fork_source_message_unresolved"
 		return vm
 	}
-	if strings.TrimSpace(sourceMessage.MessageChatID) != sourceMessageID {
-		vm.State = "conflict"
-		vm.Reason = "fork_source_message_conflict"
-		return vm
-	}
 	if sourceMessage.Disabled || (sourceMessage.Role != "user" && sourceMessage.Role != "char") {
 		vm.Reason = "fork_source_message_unresolved"
 		return vm
@@ -1336,6 +1351,11 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 			return vm
 		}
 		userAnchorMessageID = strings.TrimSpace(anchor.MessageChatID)
+	}
+	// The marker names a message in the parent, not an ID in the child.
+	// Official hosts may either preserve or reissue the child's IDs.
+	if parentAnchor := risuWorldlineParentUserAnchor(observation, parentHostChatID, sourceMessageID); parentAnchor != "" {
+		userAnchorMessageID = parentAnchor
 	}
 	bindingStore, ok := s.Store.(store.SessionRouteBindingStore)
 	if !ok {
@@ -1407,6 +1427,9 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 		matchingTurns = prioritizedWorldlineSourceTurns(
 			history, expectedUserLogicalTurnID, sourceRole, sourceMessageID,
 		)
+		if len(matchingTurns) == 0 {
+			matchingTurns = s.risuWorldlineInheritedSourceTurns(ctx, parentSessionID, parentHostChatID, sourceMessageID, userAnchorMessageID, sourceRole)
+		}
 		vm.CandidateParentID = parentSessionID
 		vm.CandidateForkTurns = matchingTurns
 		assessmentParentSessionID = parentSessionID
@@ -1484,6 +1507,7 @@ func persistRisuWorldlineAssessment(
 	if record.LineageState == "confirmed" {
 		record.ForkTurn = forkTurn
 		record.CopiedFromSessionID = strings.TrimSpace(parentSessionID)
+		record.InheritedItemsJSON = risuWorldlineOriginItems(observation)
 	}
 	saved, err := lineageStore.SaveForkLineageRecord(ctx, record)
 	if err != nil {

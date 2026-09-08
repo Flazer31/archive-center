@@ -1,5 +1,11 @@
 ﻿# JS Adapter Route Coverage Audit — R1
 
+> Historical Archive Center 2.0 R0/R1 contract/evidence, reviewed 2026-09-08.
+> “Current”, “planned” and route/schema counts below refer to that original snapshot.
+> For active Go/Host ownership and implemented routes, use [STRUCTURE](../STRUCTURE.md)
+> and [AI_GUARDRAILS](../AI_GUARDRAILS.md), checked against active source.
+> This notice preserves the original contract; it does not declare a new API or schema.
+
 > **Status**: R1 shadow evidence artifact for progress items `2.0-4k` and `2.0-4m`.
 > This is **not** a product-readiness or green-gate claim. It documents which
 > 0.8 JS adapter bridge routes have corresponding Go surface in 2.0 and at

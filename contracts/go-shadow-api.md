@@ -1,5 +1,11 @@
 # Go Shadow API Contract
 
+> Historical Archive Center 2.0 R0/R1 contract/evidence, reviewed 2026-09-08.
+> “Current”, “planned” and route/schema counts below refer to that original snapshot.
+> For active Go/Host ownership and implemented routes, use [STRUCTURE](../STRUCTURE.md)
+> and [AI_GUARDRAILS](../AI_GUARDRAILS.md), checked against active source.
+> This notice preserves the original contract; it does not declare a new API or schema.
+
 > Scope: `go-service` skeleton as of slice `2.0-1-basic-structure-migration`
 > Status: R0/R1 preparatory; no live traffic
 > Port: `127.0.0.1:28080` (non-conflicting with 0.8 backend)

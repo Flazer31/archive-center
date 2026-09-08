@@ -644,10 +644,13 @@ func (s *chromaStore) doJSON(ctx context.Context, method string, path string, bo
 		return 0, fmt.Errorf("chroma store: %s %s failed: %w", method, path, err)
 	}
 	defer resp.Body.Close()
-	data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if !statusAllowed(resp.StatusCode, okStatuses) {
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		return resp.StatusCode, fmt.Errorf("chroma store: %s %s returned %d: %s", method, path, resp.StatusCode, strings.TrimSpace(string(data)))
 	}
+	// Successful candidate queries include stored embeddings and can exceed
+	// the diagnostic error-body limit. Decode their complete JSON response.
+	data, _ := io.ReadAll(resp.Body)
 	if out != nil && len(bytes.TrimSpace(data)) > 0 {
 		if err := json.Unmarshal(data, out); err != nil {
 			return resp.StatusCode, fmt.Errorf("chroma store: decode %s %s: %w", method, path, err)

@@ -1,4 +1,8 @@
-# Archive Center 4.1.0 설치 안내
+# Archive Center 설치 안내
+
+2026-09-08 저장소의 공개 배포 기준은 [4.2.0](archive-center-4.2.0-release-verification.md)이다.
+아래 명령은 GitHub의 공개 릴리스를 설치한다. 로컬 개발용
+[4.3.0-test.18](archive-center-4.3-test-build-18.md)은 해당 테스트 ZIP으로 적용한다.
 
 Archive Center 백엔드는 운영체제에 맞는 명령어 한 줄로 설치합니다. 설치기가
 운영체제와 CPU를 확인하고, GitHub Release에서 맞는 패키지를 내려받아 SHA-256을
@@ -53,6 +57,13 @@ curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/instal
 `/opt/archive-center/current/Archive Center.js`, 그 외 POSIX 환경에서는
 `$HOME/.archive-center/current/Archive Center.js`에 있습니다.
 
+## 기존 관리형 설치 업데이트
+
+4.1 관리형 설치에서 공개 4.2로의 업데이트는 설정의 **업데이트 확인 → 지금 업데이트**
+경로를 사용한다. 검증된 범위는 [4.2 릴리스 기록](archive-center-4.2.0-release-verification.md)을
+따른다. RisuAI에 설치한 `Archive Center.js`도 별도로 같은 버전으로 갱신한다.
+한 줄 신규 설치 명령으로 기존 설치를 덮어쓰지 않는다.
+
 ## RisuAI·PocketRisu 연결
 
 1. 설치된 패키지의 `Archive Center.js`를 RisuAI 또는 PocketRisu의
@@ -63,10 +74,13 @@ curl -fsSL https://raw.githubusercontent.com/Flazer31/archive-center/main/instal
 4. 메인 모델, 출판사 LLM, 평론가와 임베딩 설정을 저장합니다.
 5. 연결·준비 상태·DB 통계·모델 시험을 확인한 뒤 새 채팅에서 한 턴을
    진행합니다.
-6. HUD에서 원문 저장, 평론가 처리, 기억 생성과 벡터 색인이 완료되는지
-   확인합니다.
+6. HUD에서 응답과 저장 결과를 확인합니다. **이전 턴** 확정 모드에서는 다음 새
+   입력에서 직전 응답의 평론가·저장을 확인하며, 현재 생성 카드에는 저장 목록이 없습니다.
 
 ## 3.9.0에서 4.1.0으로 이전
+
+다음은 당시 3.9 → 4.1 이전 절차의 보존 기록이다. 4.1 이후 관리형 업데이트나
+로컬 test.18 적용을 이 절차와 동일한 것으로 취급하지 않는다.
 
 3.9.0은 4.1.0 자동 업데이트의 출발점이 아닙니다. 기존 프로그램 파일은 새
 설치에 섞지 않고, MariaDB·ChromaDB·로컬 설정만 백업한 뒤 4.1.0을 신규

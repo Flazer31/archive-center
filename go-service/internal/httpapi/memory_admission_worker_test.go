@@ -1326,9 +1326,9 @@ func TestHypaImportLifecycleDoesNotDisableExternalImport(t *testing.T) {
 		t.Fatal(err)
 	}
 	if rec.Code != http.StatusOK ||
-		response["code"] != "critic_config_missing" ||
+		response["code"] != "hypamemory_import" || response["saved"] != float64(1) ||
 		len(st.admissions) != 0 ||
-		st.legacyMemories != 0 ||
+		st.legacyMemories != 1 ||
 		st.legacyEvidence != 0 {
 		t.Fatalf("status=%d response=%+v admissions=%d legacy=%d/%d",
 			rec.Code, response, len(st.admissions),

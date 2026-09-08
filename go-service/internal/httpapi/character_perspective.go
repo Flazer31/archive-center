@@ -137,6 +137,12 @@ func buildCharacterPerspectivePacket(
 			sourceTurn = unit.SourceTurnStart
 		}
 		currentKey := strings.Join([]string{holderID, subjectKey, comparableEntityKey(slot)}, "\x1f")
+		// A secret category and an episodic recollection are collections, not
+		// single-valued state slots. Keep independent claims in those collections.
+		if stringFromMap(payload, "secret_kind") != "" || unit.Subtype == "subjective_memory" {
+			claimKey := extractionFirstNonEmpty(stringFromMap(payload, "secret_id"), normalizeArtifactDedupeText(claim))
+			currentKey += "\x1f" + claimKey
+		}
 		candidatesByKey[currentKey] = append(candidatesByKey[currentKey], perspectiveCandidate{
 			unit:       unit,
 			payload:    payload,
@@ -166,7 +172,7 @@ func buildCharacterPerspectivePacket(
 		}
 		distinct := map[string]bool{}
 		for _, candidate := range latest {
-			distinct[candidate.state+"\x1f"+normalizeArtifactDedupeText(candidate.claim)] = true
+			distinct[perspectiveMemoryStateIdentity(candidate.state)+"\x1f"+normalizeArtifactDedupeText(candidate.claim)] = true
 		}
 		if len(distinct) != 1 {
 			for range latest {
@@ -187,6 +193,7 @@ func buildCharacterPerspectivePacket(
 	})
 
 	lines := []string{}
+	recollections := []prepareTurnPriorityFactSeed{}
 	candidateStates := packet["candidate_states"].(map[string]any)
 	used := 0
 	for _, candidate := range current {
@@ -202,6 +209,24 @@ func buildCharacterPerspectivePacket(
 		line := fmt.Sprintf("- %s | %s / %s: %s", state, subject, slot, claim)
 		if acquisition := strings.TrimSpace(extractionStringFromAny(payload["acquisition_mode"])); acquisition != "" {
 			line += " | acquisition=" + acquisition
+		}
+		line += fmt.Sprintf(" | holder=%s | source_turn=%d | source=%s", holderID, candidate.sourceTurn, candidate.unit.UnitID)
+		// Ordinary experiences use the same scoped candidate selection as other
+		// memories. Their number must not consume the protected-guidance budget.
+		// The existing writer assigns this subtype only to non-secret recollections.
+		if candidate.unit.Subtype == "subjective_memory" {
+			text := strings.TrimPrefix(line, "- ")
+			recollections = append(recollections, prepareTurnPriorityFactSeed{
+				Lane: "subjective_relationship", SourceTable: "precise_memory_units", Tier: "required",
+				Fact:        prepareTurnPriorityMemoryFact{Text: text},
+				SourceRowID: candidate.unit.UnitID, SourceOccurrence: "precise-memory-unit:" + candidate.unit.UnitID,
+				SourceTurn: candidate.sourceTurn, Visibility: "owner_private",
+				PerspectiveOwner: holderID, AllowedViewers: []string{holderID},
+				ProjectionSource: "character_perspective", ParentLineKey: text, SourceFactCount: 1,
+			})
+			lines = append(lines, line)
+			candidateStates[state] = intFromAny(candidateStates[state], 0) + 1
+			continue
 		}
 		lineChars := utf8.RuneCountInString(line)
 		separatorChars := 0
@@ -226,6 +251,7 @@ func buildCharacterPerspectivePacket(
 	packet["status"] = "candidate"
 	packet["candidate_count"] = len(lines)
 	packet["candidate_chars"] = utf8.RuneCountInString(text)
+	packet["_character_perspective_fact_seeds"] = recollections
 	return packet, text
 }
 
@@ -234,6 +260,7 @@ func finalizeCharacterPerspectivePacket(
 	candidateText string,
 	finalMemoryText string,
 ) (map[string]any, string) {
+	delete(packet, "_character_perspective_fact_seeds")
 	if len(packet) == 0 || strings.TrimSpace(candidateText) == "" {
 		return packet, ""
 	}
@@ -244,7 +271,7 @@ func finalizeCharacterPerspectivePacket(
 		if line == "" || line == "[Character Perspective]" {
 			continue
 		}
-		if strings.Contains(finalMemoryText, line) {
+		if strings.Contains(finalMemoryText, strings.TrimPrefix(line, "- ")) {
 			delivered = append(delivered, line)
 			state := strings.TrimSpace(strings.SplitN(strings.TrimPrefix(line, "- "), " |", 2)[0])
 			if normalized, valid := normalizePerspectiveMemoryState(state); valid {

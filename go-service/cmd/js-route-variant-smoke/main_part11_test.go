@@ -152,6 +152,8 @@ if (trace.finalUserInputPreview !== "한얼은 숯불에 손을 다쳤다.") thr
 if (trace.payloadUserRoleTailKind !== "different_user_role_message") throw new Error("different user-role tail was not observed separately: "+JSON.stringify(trace));
 if (!trace.capturedBeforeRequestReturn || !trace.outboundPayloadHash) throw new Error("pre-request fingerprint missing: "+JSON.stringify(trace));
 if (trace.status !== "mismatch" || trace.payloadContentMatch !== false) throw new Error("missing actual user was accepted: "+JSON.stringify(trace));
+if (trace.reasonCode !== "effective_user_text_not_observed" || trace.effectiveUserInputMatch !== false || trace.payloadApplicationMatch !== true) throw new Error("user mismatch was not distinguished from auxiliary application: "+JSON.stringify(trace));
+if (trace.finalProviderPayloadState !== "not_exposed") throw new Error("pre-request observation claimed provider delivery");
 const mismatch = buildFinalPayloadParityTrace(payload, payload, {
   effectiveInputText:"required auxiliary", effectiveUserInput:"actual user",
   injectionResult:{payloadApplicationPlan:auxPlan,payloadApplicationObservation:missingObservation}
@@ -164,6 +166,11 @@ const matched = buildFinalPayloadParityTrace(payload, matchedPayload, {
 });
 if (matched.status !== "ready" || matched.payloadContentMatch !== true) throw new Error("present payload component was rejected: "+JSON.stringify(matched));
 if (!matched.effectiveInputHash || !matched.outboundPayloadHash) throw new Error("non-empty verified input fingerprint missing: "+JSON.stringify(matched));
+const changedPlan = buildFinalPayloadParityTrace(payload, matchedPayload, {
+  effectiveInputText:"actual user\n\nrequired auxiliary", effectiveUserInput:"actual user",
+  injectionResult:{payloadApplicationPlan:{...auxPlan,auxiliary_observation_hash:"or1c_different_plan"},payloadApplicationObservation:{...appliedObservation,reason_code:"exact_injected_blocks_observed"}}
+});
+if (changedPlan.payloadContentMatch !== false || changedPlan.reasonCode !== "payload_plan_observation_mismatch") throw new Error("plan/observation mismatch inherited a successful observation reason: "+JSON.stringify(changedPlan));
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
@@ -224,6 +231,7 @@ func TestEffectiveInputUsesCompletePayloadPlanAndCurrentTurnRuntime(t *testing.T
 		extractArchiveCenterJSFunction(t, src, "applyProviderManagerMemoryPDFPayload"),
 		extractArchiveCenterJSFunction(t, src, "applyGoPayloadApplicationPlan"),
 		extractArchiveCenterJSFunction(t, src, "isBackendEffectiveInputPreview"),
+		extractArchiveCenterJSFunction(t, src, "escapeAttr"),
 		extractArchiveCenterJSFunction(t, src, "composeEffectiveInputFromTransparency"),
 		extractArchiveCenterJSFunction(t, src, "findLastPayloadMessage"),
 		extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace"),
@@ -311,6 +319,11 @@ async function complete(user,it,finalParity) {
   _latestOrchResultForUI={_trace:{_inputTransparency:firstInput,finalPayloadParity:firstParity}};
   const firstTurnHTML=renderEffectiveInputSection();
   assert(firstTurnHTML.includes(user) && !firstTurnHTML.includes("withheld"),"first-turn user-only input was hidden in the UI");
+  assert(firstTurnHTML.includes("dash.preview.verification.ready") && firstTurnHTML.includes("dash.preview.verification.userObserved"),"verified request observation was not distinguished from a backend preview");
+  const changedPreview=Object.assign({},firstInput,{backendEffectiveInputPreview:{contract_version:"effective_input_preview.v1",final_user_text:"later backend preview"}});
+  _latestOrchResultForUI={_trace:{_inputTransparency:changedPreview,finalPayloadParity:firstParity}};
+  const changedPreviewHTML=renderEffectiveInputSection();
+  assert(changedPreviewHTML.includes("effective_input_preview_hash_mismatch") && changedPreviewHTML.includes("dash.preview.verification.userPlanned") && !changedPreviewHTML.includes("dash.preview.verification.userObserved"),"a changed backend preview inherited the previous observation label");
 
   const secondUser="TURN_TWO_CURRENT_MARKER";
   const secondPayload=[{role:"user",content:secondUser}];
@@ -329,13 +342,15 @@ async function complete(user,it,finalParity) {
   const memoryLane="MEMORY_START_"+("memory\uD55C\uAE00\uD83E\uDDED".repeat(180));
   const loreLane="LOREBOOK_FULL_MARKER";
   const guidanceLane="GUIDANCE_START_"+marker;
-  const longAux=[referenceLane,memoryLane,loreLane,guidanceLane].join("\n\n");
+  const specialistNotes="SPECIALIST_INTERPRETATION_MARKER: acquired tools, delivery uncertain.";
+  const longAux=[referenceLane,memoryLane,specialistNotes,loreLane,guidanceLane].join("\n\n");
   const inputContext="INPUT_CONTEXT_FULL_\uC7A5\uBA74";
   assert(longAux.indexOf(marker)>500,"fixture marker must be beyond the old preview boundary");
   const longPlan=plan(longAux,inputContext,"ready");
   longPlan.lanes=[
     {key:"original_work",title:"Original Work Context",text:referenceLane,applied:true,status:"applied"},
     {key:"long_term_memory",title:"Long-term Memory Context",text:memoryLane,applied:true,status:"applied"},
+    {key:"preprocessing_notes",title:"Preprocessing Specialist Notes",text:specialistNotes,applied:true,status:"applied"},
     {key:"lorebook_reference",title:"Lorebook Reference Context",text:loreLane,applied:true,status:"applied"},
     {key:"output_guidance",title:"Output Guidance Context",text:guidanceLane,applied:true,status:"applied"}
   ];
@@ -354,10 +369,13 @@ async function complete(user,it,finalParity) {
   longInput.injection.memoryDeliveryPlan={used_chars:memoryLane.length,delivery_cap_chars:4000,global_cap_chars:4000,classes:[{key:"event_recent",title:"Event and Recent Memories",text:"[Event and Recent Memories]\n"+memoryLane}]};
   _latestOrchResultForUI={_trace:{_inputTransparency:longInput,finalPayloadParity:longParity}};
   const fullLaneHTML=renderEffectiveInputSection();
-  [referenceLane,memoryLane,loreLane,guidanceLane,marker].forEach(function(value) {
+  [referenceLane,memoryLane,specialistNotes,loreLane,guidanceLane,marker].forEach(function(value) {
     assert(fullLaneHTML.includes(value),"full canonical plan lane was not rendered: "+value.slice(0,40));
   });
   assert(!fullLaneHTML.includes(inputContext),"host recent chat was rendered as delivered effective input");
+  assert(fullLaneHTML.includes('dash.preview.payloadBudget.lane.preprocessing_notes'),"specialist notes have no separate edit-check heading");
+  assert((fullLaneHTML.match(/SPECIALIST_INTERPRETATION_MARKER/g)||[]).length===1,"specialist notes were duplicated in edit check");
+  assert(saved.effective_input.includes(specialistNotes),"specialist notes were lost between Host application and effective-input observation");
 
   assert(fullLaneHTML.includes("Event and Recent Memories") && !fullLaneHTML.includes("Long-term Memory Context"),"memory classes were not rendered as separate edit-check panes");
 
@@ -386,7 +404,7 @@ async function complete(user,it,finalParity) {
   assert(!missingBody.client_meta.effective_input_observation,"missing payload blocks were persisted");
   _latestOrchResultForUI={_trace:{_inputTransparency:missingInput,finalPayloadParity:missingParity}};
   const missingHTML=renderEffectiveInputSection();
-  assert(missingHTML.includes("will not be stored as verified effective input"),"payload mismatch warning was not rendered");
+  assert(missingHTML.includes("dash.preview.verification.mismatch") && missingHTML.includes("injected_block_not_observed"),"payload mismatch did not expose its observation reason");
   assert(missingHTML.includes(user) && missingHTML.includes(loreLane) && missingHTML.includes(marker) && !missingHTML.includes(inputContext),"payload mismatch rendered non-delivered host recent chat");
 
   const mismatchPlan=Object.assign({},longPlan,{auxiliary_observation_hash:"or1c_wrong"});
@@ -395,6 +413,7 @@ async function complete(user,it,finalParity) {
   const mismatchParity=parity(firstPayload,mismatchApplied,user,mismatchInput);
   assert(mismatchApplied.injectionResult.payloadApplicationObservation.reason_code==="injected_block_hash_mismatch","hash mismatch fixture was not observed");
   assert(mismatchParity.status==="mismatch" && mismatchParity.payloadContentMatch===false,"hash mismatch was accepted");
+  assert(mismatchParity.reasonCode==="injected_block_hash_mismatch" && mismatchParity.effectiveUserInputMatch===true,"hash mismatch was not separated from current-user matching");
   const mismatchBody=await complete(user,mismatchInput,mismatchParity);
   assert(!mismatchBody.client_meta.effective_input_observation,"hash-mismatched effective input was persisted");
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
@@ -1207,6 +1226,7 @@ class FakeRemoteNode {
     this.button = null;
     this.recoveryButton = null;
     this.surface = null;
+    this.openDetails = 0;
   }
   async setAttribute(name, value) {
     if (!String(name).startsWith("x-")) {
@@ -1282,6 +1302,20 @@ class FakeRemoteNode {
     risuEventListeners.set(listenerId, {type:name, handler, node:this});
     return listenerId;
   }
+  async querySelectorAll(selector) {
+    if (selector !== "details[open]") throw new Error("unexpected HUD selector: " + selector);
+    const count = this.openDetails;
+    return {length: async () => count};
+  }
+  async removeEventListener(type, listenerId) {
+    const listener = risuEventListeners.get(listenerId);
+    if (!listener || listener.node !== this || listener.type !== type) {
+      throw new Error("listener cleanup must use its registering SafeElement");
+    }
+    delete this.listenerIds[type];
+    delete this.listeners[type];
+    risuEventListeners.delete(listenerId);
+  }
   async getBoundingClientRect() {
     if (this.tag === "button") {
       return {left:110, top:10, right:128, bottom:28, width:18, height:18};
@@ -1322,14 +1356,6 @@ const R = {
     return true;
   },
   getRootDocument: async () => rootDocument,
-  async removeRisuEventListener(listenerId) {
-    const listener = risuEventListeners.get(listenerId);
-    if (listener && listener.node.listenerIds[listener.type] === listenerId) {
-      delete listener.node.listenerIds[listener.type];
-      delete listener.node.listeners[listener.type];
-    }
-    risuEventListeners.delete(listenerId);
-  },
   async nativeFetch(url) {
     recoveryStreamCalls.push(String(url || ""));
     let sent = false;
@@ -1496,14 +1522,14 @@ function assert(condition, message) {
   assert(surface, "HUD surface was not created with the Yumi-compatible innerHTML path");
   assert(!nodesByClass.has("mo-turn-workflow-hud-style"), "HUD still injects a stylesheet that RisuAI does not activate");
   assert(surface.attributes.style.includes("top:50%") && surface.attributes.style.includes("translateY(-50%)"), "HUD is not positioned at right center");
-  assert(surface.attributes.style.includes("right:max(5px"), "HUD right safe-area placement is missing");
-  assert(surface.attributes.style.includes("width:min(140px"), "HUD is wider than the compact right rail");
+  assert(surface.attributes.style.includes("right:max(8px"), "HUD right safe-area placement is missing");
+  assert(surface.attributes.style.includes("width:min(224px,calc(100vw - 16px))"), "HUD compact width or viewport clamp is missing");
   assert(surface.card.attributes.style.includes("background:#181C24"), "completed HUD has no opaque fintech panel");
-  assert(surface.card.attributes.style.includes("font-size:10px"), "completed HUD text is not compact");
+  assert(surface.card.attributes.style.includes("font-size:11px"), "completed HUD text is not readable");
   assert(surface.innerHTML.includes("ARCHIVE CENTER"), "completed HUD has no product eyebrow");
-  assert(surface.innerHTML.includes("font-size:22px"), "completed HUD does not promote the total as its primary metric");
-  assert(surface.innerHTML.includes("grid-template-columns:repeat(2,minmax(0,1fr))"), "completed HUD details are not arranged as a compact ledger");
-  assert(surface.innerHTML.includes("linear-gradient(135deg,rgba(93,115,230,.18),rgba(138,85,247,.10)"), "completed HUD total does not use the restrained blue-purple selection gradient");
+  assert(!surface.innerHTML.includes("font-size:22px"), "completed HUD still gives storage counts an oversized heading");
+  assert((surface.innerHTML.match(/<details/g)||[]).length >= 2, "storage and stage details are not collapsed");
+  assert(!surface.innerHTML.includes("<details open"), "completed HUD opens all details by default");
   assert(surface.innerHTML.includes("color:#8B909A"), "completed HUD secondary text does not use the supplied hierarchy");
   assert(surface.innerHTML.includes("전체 작동 확인"), "completed HUD omitted the full stage ledger heading");
   assert(surface.innerHTML.includes("건너뜀 · 0초"), "completed HUD omitted skipped stage status or duration");
@@ -1552,10 +1578,29 @@ function assert(condition, message) {
     logical_turn:55,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
   }), "normal completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD lost card-wide dismissal");
+  assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD has no body dismissal");
+  surface.card.openDetails = 1; // Native summary expansion precedes the trimmed Host click.
   await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML === "", "normal completed HUD card click did not dismiss HUD");
+  assert(surface.innerHTML !== "", "expanding completed HUD details dismissed the card");
+  surface.card.openDetails = 0;
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML !== "", "collapsing completed HUD details dismissed the card");
+  await dispatchRisuEvent("click", {clientX:250, clientY:250});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML !== "", "outside click dismissed the completed HUD");
+  await dispatchRisuEvent("click", {clientX:50, clientY:50});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "completed HUD body did not dismiss HUD");
+  await renderTurnWorkflowHUD({
+    contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-x",revision:1,
+    logical_turn:55,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
+  });
+  await _turnWorkflowHUDRenderChain;
+  await dispatchRisuEvent("click", {clientX:120, clientY:20});
+  await _turnWorkflowHUDRenderChain;
+  assert(surface.innerHTML === "", "completed HUD close button did not dismiss HUD");
 
   const startedAt = new Date(Date.now() - 2200).toISOString();
   assert(consumeTurnWorkflowHUD({
@@ -1780,7 +1825,8 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   await dispatchRisuEvent("click", {clientX:70, clientY:175});
   await _turnWorkflowHUDRenderChain;
-  assert(recoveryBridgeCalls.length === 2, "HTTP-error recovery did not call the backend exactly once");
+  assert(recoveryBridgeCalls.length === 3, "HTTP-error recovery must make one POST and one status refresh");
+  assert(recoveryBridgeCalls[2].path === "/turn-workflow/status?request_id=recoverable-http-error", "recovery refresh queried another workflow");
   assert(surface.innerHTML.includes("recovery_target_unavailable"), "structured backend recovery code was hidden");
   assert(surface.innerHTML.includes("복구할 원본 기억을 확정하지 못했습니다."), "structured backend recovery message was hidden");
   assert(!surface.innerHTML.includes("missing its HUD ViewModel"), "structured 409 was replaced by a missing-ViewModel error");
@@ -2318,7 +2364,7 @@ func TestBeforeRequestNonModelSkipsPrepareTurnRuntime(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture."
 	script := fn + `
 const settings = {enabled: true};
 function debugLog() {}
@@ -2354,7 +2400,7 @@ func TestBeforeRequestModelRunsDecisionThenFullWithoutRollbackReclassificationRu
 		}
 	}
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture."
 	classifyFn := extractArchiveCenterJSFunction(t, src, "classifyLlmFailureReason")
 	gateFn := extractArchiveCenterJSFunction(t, src, "buildLlmGateBlock")
 	traceFn := extractArchiveCenterJSFunction(t, src, "newTurnTrace")
@@ -2502,7 +2548,7 @@ async function runFixture(expectedFresh, expectedContinuity) {
 
 func TestBeforeRequestBuildsObservationOnlySourceEnvelope(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	fn := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture."
 	observationFunction := extractArchiveCenterJSFunction(t, src, "buildPrepareTurnSourceObservations")
 	dotClass := extractArchiveCenterJSFunction(t, src, "statusDotClass")
 	for _, required := range []string{

@@ -200,8 +200,8 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		for _, needle := range []string{
 			"POV-scoped identity continuity",
 			"Lia is Gloria's own protected surface identity/persona",
-			"treat Lia and Gloria as the same internal person",
-			"not two separate characters",
+			"Lia and Gloria refer to the same recorded person",
+			"self/cover-role continuity",
 			"Keep this as POV/private knowledge",
 		} {
 			if !strings.Contains(memoryText, needle) {

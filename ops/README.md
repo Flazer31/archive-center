@@ -1,6 +1,9 @@
 # Ops
 
-Status: Archive Center 3.6 development packaging, preflight and recovery workspace.
+Status (2026-09-08): active packaging, preflight and recovery tools. Latest local
+Windows test package: [4.3.0-test.21](../docs/archive-center-4.3-test-build-21.md).
+Public all-platform release evidence: [4.2.0](../docs/archive-center-4.2.0-release-verification.md).
+The Windows test build does not establish a new Linux/macOS/Termux test release.
 
 This directory is reserved for local deployment, shakedown, packaging, and recovery recipes.
 
@@ -19,20 +22,25 @@ Runtime data directories, logs, caches, secrets, and backups must stay outside t
 - `install-windows.ps1 -Preflight`: emits a JSON Windows preflight report only. It checks managed data paths, Go backend binary/tool availability, local ports, and MariaDB provider resolution without initializing MariaDB, switching authority, or modifying the 0.8 worktree.
 - `install-windows.ps1 -InstallMariaDBRuntime -InstallDir <path>`: downloads the pinned official MariaDB 12.3.2 Windows ZIP, verifies its SHA-256, and installs it outside the Archive Center package using the same blocking installer flow as 3.5. No administrator rights or system service registration is required.
 - `install-windows.ps1 -StageMariaDBProvider -ProviderArchive <zip> -InstallDir <path>`: legacy/offline path for staging a user-supplied MariaDB archive outside the source and package trees.
-- `install-windows.ps1 -VerifyBundle -BundlePath <zip> -Out <report.json>`: verifies that a Windows Archive Center distribution contains the Go backend and required ChromaDB runtime while excluding MariaDB binaries. MariaDB is prepared separately on first start.
-- `build-release-assets.ps1 -PackageVersion 4.1.0 -ForceRefresh`: builds the seven public 4.1 release ZIPs and one aggregate `SHA256SUMS-4.1.0.txt` under `_release-builds/4.1.0`.
-- `build-full-package.ps1 -PackageVersion 4.1.0 -PackageKind managed -Zip -ForceRefresh`: creates the Windows auto-install package under `_dist`. It builds the Go backend and copies the host adapter, prompts, migrations, notices, and launch scripts, but does not bundle MariaDB, Python, ChromaDB, DB, `.env.full.local`, logs, caches, or user data. First launch downloads the verified official MariaDB and CPython runtimes, installs pinned ChromaDB into the per-user runtime directory, and starts the full local stack. The historical script name is retained so updater and operator paths do not fork.
-- `build-posix-managed-packages.ps1 -PackageVersion 4.1.0 -Zip -ForceRefresh`: cross-builds the Linux x64/arm64, macOS Intel/Apple Silicon and Android Termux arm64 managed packages.
+- `install-windows.ps1 -VerifyBundle -BundlePath <zip> -Out <report.json>`: verifies the Go backend and managed runtime installer while rejecting bundled MariaDB and ChromaDB runtimes. The launcher prepares these separately on first start.
+- `build-release-assets.ps1 -PackageVersion 4.2.0`: public-release example for seven ZIPs and aggregate `SHA256SUMS-4.2.0.txt` under `_release-builds/4.2.0`. Building is separate from publishing.
+- `build-full-package.ps1 -OutputRoot _test-builds/4.3.0-test.18 -PackageVersion 4.3.0-test.18 -PackageKind managed -Zip`: test.18 build recipe; use a new output/version for a subsequent package. It builds the Go backend and copies the host adapter, prompts, migrations, notices, and launch scripts, but does not bundle MariaDB, Python, ChromaDB, DB, `.env.full.local`, logs, caches, or user data. First launch downloads the verified official MariaDB and CPython runtimes, installs pinned ChromaDB into the per-user runtime directory, and starts the full local stack. The historical script name is retained so updater and operator paths do not fork.
+- `build-posix-managed-packages.ps1 -PackageVersion 4.2.0 -Zip`: cross-builds the Linux x64/arm64, macOS Intel/Apple Silicon and Android Termux arm64 managed packages.
 - `build-live-test-pack.ps1 -ForceRefresh`: creates a lightweight local experiment folder for MariaDB + ChromaDB source validation. It copies only source, prompts, migrations, `Archive Center.js`, and live-test scripts; it excludes runtime data, caches, DB files, generated binaries, backups, release, and deploy outputs.
 - `windows-launcher-ctrl-c-smoke.ps1`: interactive Windows process-lifetime regression. Run it in an isolated `cmd.exe` console, choose `N` at the first generated Ctrl+C prompt and `Y` at the second, and require the managed child to survive the canceled shutdown before confirmed cleanup.
-- `docs/2.0.1-lightweight-runtime-profiles.md`: defines and now partially implements the 2.0.1 profile-based lightweight runtimes across Windows, Linux, macOS, Termux, NAS/Docker, and remote RisuAI clients. Full local ChromaDB is opt-in for low-resource targets.
-- `docs/2.0.1-feedback-rollup-and-stabilization.md`: tracks the broader 2.0.1 feedback backlog, including RisuAI save churn from the 1.2-second rollback idle watcher, rollback `partial_error` diagnostics, current-chat session attach/rebind, readiness false-green handling, Windows Defender/package hygiene, and provider configuration clarity.
+- [STRUCTURE.md](../STRUCTURE.md): current runtime/profile owners and verification boundaries.
+- [4.3 feedback log](../docs/archive-center-4.3-feedback-work-log.md): current feedback repairs; older 2.0.1 notes are not the active backlog.
 - `start-windows-live.ps1`: source/dev-only launcher for Windows. It uses a separately supplied MariaDB provider, initializes managed data outside the source tree, applies the schema, then starts `archive-center-go` with `AC_STORE_MODE=mariadb_authority`. It is not a release packaging path.
 
 Note: `start-windows-live.ps1` is retained for source/dev verification. For packaged verification, use the managed auto-install package generated by `build-full-package.ps1`, or the source-only live-test pack generated by `build-live-test-pack.ps1`.
 
 MariaDB provider resolution is installer-owned. Preflight may report `installer_managed_required=true`, but `normal_user_manual_mariadb_required` must remain `false` for the normal product path.
 ChromaDB runtime resolution remains profile-aware on POSIX packages. The Windows managed full package is stricter: every local backend profile requires bundled or external ChromaDB, and `client_only` is the only Windows profile that starts no local vector service.
+
+Package Markdown files are generated from the templates in this directory. The
+builder substitutes `__ARCHIVE_CENTER_PACKAGE_VERSION__`; avoid hard-coded test
+numbers in reusable startup instructions. Template edits apply to a later build,
+not to an already verified ZIP. Preserve the package manifest and checksums.
 
 When refreshing a named Windows test build, first stop the Go backend, MariaDB,
 and ChromaDB processes owned by that exact test package. Verify executable paths,

@@ -4,6 +4,449 @@ Use this file as an operational checklist. Treat the active implementation and i
 
 ## 1. Files to Read Before Editing
 
+### 2026-09-08 planning alignment — shared recall and optional Actor expression
+
+The user approved the [reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan).
+It is **PLANNED**, with test.21 as the unchanged runtime/package baseline.
+
+- Base recall is evaluated with preprocessing and Publisher OFF. Optional AI
+  selection has separate evidence of benefit and keeps its accepted text/order
+  and existing no-recommendation or failed-supplement behavior.
+- 5.1-A–5.2 improves shared accessibility, reactivation and scene-cue evidence
+  delivery. 5.1-B and 5.3–5.7 describe optional Actor memory expression. Actor
+  dormancy/partial-expression states do not add rejection or truncation to the
+  ordinary memory path; existing knowledge and privacy scope remains intact.
+- Reuse the six documented cases across versions and the four ON/OFF combinations.
+  Keep storage, retrieved candidates, selection, actual input and displayed use
+  distinct. Compare necessary facts, wrong time/source mixing, irrelevant content
+  and cost; item counts and successful calls alone are not recall-quality proof.
+- Importance/recency separation and test.21 delivery breadth are implemented
+  baselines. Future plans do not authorize new calls, gates, fallback layers,
+  schemas or JavaScript policy. Each implementation still follows the active
+  Go owner, approved scope and the existing test-integrity contract.
+
+### 4.3 test.21 — delivery breadth and shared baseline — 2026-09-08
+
+- The user authorized this four-item bundle. The existing maximum-count setting
+  now means a per-group core priority target. Use existing character budgets for
+  remaining details; do not restore a separate count cutoff. Wire key/value is
+  retained; UI names and `core_priority_memory_delivery.v4` express the new meaning.
+- Keep ordinary admitted `subjective_memory` in typed, holder-scoped normal
+  candidates. Carry source unit/turn and holder/viewers through selection; actual
+  protected knowledge keeps the existing guidance path. Do not classify privacy
+  from prose or promote a character's recollection to objective world truth.
+- Current-field grouping uses source chronology before relevance. Candidate IDs
+  distinguish the source/turn/value; grouping identity remains separate. Preserve
+  first-round IDs so failed supplements retain the previous recommendation, while
+  new sources reach the actual second-round provider input.
+- Empty/failed recommendations use the same Go baseline and rendering order.
+  Preserve accepted AI original text and per-group order without a new cutoff,
+  replacement, retry, third round, schema change or persistent-state mutation.
+- Verify OFF, AI, empty and partial failure together, plus second-round failure,
+  source time and actual final character caps. New regressions must reproduce the
+  old failures. Frozen exports with synthetic metadata are delivery controls,
+  not live database replay or proof of RP quality.
+- See [test.21](docs/archive-center-4.3-test-build-21.md). JavaScript changes only
+  setting labels/help and build identifiers: +10/-10 lines, zero policy growth.
+  Source/regression/package status is verified; live status is implemented_unverified.
+
+The test.21 policy supersedes older hard-K/no-backfill wording below. Preserve all
+unrelated existing behavior and the user's saved prompt/configuration overrides.
+
+### 4.3 test.20 — input presentation and selected-evidence references — 2026-09-08
+
+- `multiAgentModelInput()` is a presentation projection at the existing provider call.
+  Preserve the canonical `input`, original text/ID/order and all source/owner/viewer
+  metadata. Only repeated identical provenance is shared; distinct knowledge holders
+  remain distinct. `model_input` is the exact serialized user message, not a second
+  selection owner. Candidate text limits are not total wire/system prompt limits.
+- Use the same request-local F/S references in AI-selected memory and its notes.
+  P entries describe provenance; they are not fact IDs. Preserve AI reason text and
+  uncertainty as interpretation. Source sharing must not merge separate facts.
+- When changing the rendered memory line, keep `supervisorDeliveredContextItems()`
+  connected to the original fact/complete-summary source. The real Publisher
+  projection must carry note evidence refs and `preprocessing_source_catalog`.
+- Existing K/character budgets, accepted recommendation order/text, public handoffs,
+  no-recommendation Go selection and supplemental failure behavior remain in force.
+  Add no post-hoc cutoff, semantic rejection gate, retry or extra analysis round.
+  The two shared default-prompt refinements keep saved user overrides authoritative.
+- Validate production provider input and final assembly, including Publisher OFF,
+  success/failure, separate private holders and all-empty Go behavior. Frozen
+  round-trip equality is data-preservation evidence, not model-quality evidence.
+- [test.20](docs/archive-center-4.3-test-build-20.md) is implemented/unverified at the
+  live tier. External comparison is awaiting explicit payload/destination approval;
+  do not treat a sandbox-blocked request as a successful provider test. Package
+  creation does not authorize backend startup or changes to settings/chat/data.
+
+### 4.3 test.19 — memory editors and request purpose — 2026-09-08
+
+The five existing specialists collectively prepare memory as continuity editors.
+`prepare_turn_multi_agent.go` owns the shared and role defaults: connect recorded
+history, supplied transitions and present relevance; keep user-directed story
+changes, pace and outcomes separate from archival evidence. Selected text/order,
+independent K, empty-result Go selection and the existing two rounds are unchanged.
+Notes assist the main model with or without the optional Publisher.
+
+`runMultiAgent()` adds `request_reason` beside `from_role` in each existing accepted
+public `related_evidence` item. It is the sender's AI question/interpretation,
+separate from canonical text and provenance. It does not transfer candidate lanes
+or become a fact. Prompts ask for reasons derived from shared public evidence.
+The existing public/owner/viewer/subjective scope is unchanged; this does not prove
+arbitrary AI prose is free of private content. No new filter, call, round or writer
+is added. Recipient findings join final preparation, not another reply round.
+
+The [test.19 record](docs/archive-center-4.3-test-build-19.md) separates failing-before/
+passing-after production-path tests, package identity and the observed UI save.
+Only the six matching old default overrides were reset through the user's UI to
+use backend defaults. Other users' custom prompts remain explicit overrides.
+The new backend must be started by the user before its defaults and handoff run.
+
+### 4.3 test.18 package — 2026-09-08
+
+The [test.18 record](docs/archive-center-4.3-test-build-18.md) packages the following
+HUD, static.v4 scoring, knowledge-continuity and original-Hypa-import source repairs.
+Earlier source-only notes describe evidence at their repair time. The Windows
+package adds active-source/plugin/prompt/migration identity and 53-file/ZIP hash
+verification. It does not establish a running backend, loaded RisuAI or live recall.
+Use the existing package builder and its launcher-owned version; `.env.full.example`
+is the runtime template, while `.env.source.example` is an unchanged source reference.
+The backend differs from test.17, so apply plugin and backend together.
+Package creation does not authorize starting the user's backend or changing their data.
+
+### 4.3 retrieval score retention — 2026-09-08
+
+The active source uses `priority_score.static.v4`; see the
+[source repair and regression record](docs/archive-center-4.3-feedback-work-log.md#retrieval-score-retention-repair).
+`prepare_turn_priority_memory.go` carries an existing aggregate Memory vector
+observation into its complete-summary score. Keep the higher of the existing
+best-child score and the aggregate-vector score. This is a source-level score;
+it must not become every sibling fact's relevance. A lexical parent score is
+not a vector observation. Existing precise-unit scoring still belongs only to
+the matching fact. Summary trace records the observed vector and score origin.
+
+Importance contributes independently of RP recency. Preserve the stored value
+and use `0.60*relevance + 0.25*importance + 0.15*recency` plus existing biases.
+The retained `importance_after_turn_decay` trace field equals importance in v4;
+`importance_decay_policy` is `stored_importance_preserved_recency_separate`.
+Do not reintroduce importance multiplied by age, invent new tiered decay, or
+interpret a high score as current-state validity or an instruction to act.
+K, budgets, source scope, received AI ordering and optional-call behavior stay
+with their existing owners. No extra search, LLM call or canonical writer exists.
+Source/fixture checks and the test.18 package record are verified at their respective
+boundaries; loaded/live behavior remains open.
+
+### 4.3 knowledge continuity first repair — 2026-09-08
+
+The reproduced failures and repair evidence are in the
+[feedback log](docs/archive-center-4.3-feedback-work-log.md#knowledge-continuity-first-repair).
+`character_perspective.go` distinguishes independent secret/episodic claims
+inside category slots; single-valued belief slots retain their current-state
+resolution. `known` and `revealed` describe compatible knowledge of the same
+claim. Original states remain in storage and display. Keep holder isolation,
+actual unknown/known conflicts and source acceptance with their existing owners.
+
+`turn_precise_memory.go` feeds supplied identity-mapping evidence through the
+existing protected per-holder observation writer. `turn_extraction_private.go`
+preserves the supplied identity/secret ID, identity evidence and transition;
+`turn_entity_identity.go` includes explicit identity-scope holders. The default
+Critic prompt describes these fields; no new LLM call or rejection rule is added.
+
+`prepare_turn_memory.go` uses recorded owners/knowers for POV identity, separating
+the owner's cover identity from an informed observer's knowledge. Canonical
+memories passed by the assembly supply current disclosure context. A recorded
+release retires the same secret's obsolete guidance and records the release
+source in delivery lineage. Original/public event rows remain unchanged. A shared
+category alone never identifies the same secret. Legacy matching uses identical
+recorded content; semantic paraphrase resolution is not implemented here.
+
+This repair is included in test.18, with production-owner regressions. It does
+not establish a running backend. Missing old holder records are not automatically
+recreated. Loaded Host, live storage/provider and displayed RP proof remain open.
+
+### 4.3 HypaMemory original import — 2026-09-08
+
+The authorized import contract is one supplied nonempty Hypa summary per memory.
+`handleImportHypamemory()` keeps the original in `turn_summary` and
+`hypamemory_import.original_text`; the Critic's summary is supplemental metadata.
+Use the existing `saveCriticExtractionArtifacts()` writer and negative external
+import namespace. Critic configuration/failure affects analysis, not whether the
+available original is submitted for storage. Do not fabricate extraction rows.
+
+Go resolves occupied import numbers and counts existing original occurrences.
+Repeated equal summaries in one source list remain distinct occurrences;
+reimport consumes the corresponding saved occurrences. Old rows without original
+metadata remain untouched. This does not reconstruct missing originals.
+Keep original metadata out of the general public projection; the memory body
+uses the existing visibility projection. Positive RP source admission is unchanged.
+
+Memory/evidence/KG history readers include negative external imports within the
+existing session segments while retaining positive branch boundaries. Keep the
+range-reader arguments; `mariadb_chat_memory.go` includes negative rows in SQL
+instead of loading a branch's whole positive history. Explorer
+`source=hypamemory` filters before pagination and includes old scoring-labelled
+imports. JS only observes the active chat's `hypaV3Data.summaries`, sends the
+request, renders backend counts and loads the memory filter. The request is
+synchronous; completion text must not claim a background analysis is starting.
+
+Source/fixture evidence and live gaps are recorded in the
+[4.3 feedback log](docs/archive-center-4.3-feedback-work-log.md#hypa-original-import).
+The import does not traverse split chats or replace cold start. It is packaged in
+test.18; application to the user's running backend/RisuAI remains unverified.
+
+### 4.3 status and 4.4 planning — 2026-09-07
+
+Use the [4.3 status summary](docs/archive-center-4.3-status-summary.md) to locate
+current test.18 owners and distinguish source/regression/package records from
+loaded Host, actual provider, payload application and displayed-output evidence.
+Optional role calls, prompts and UI are implemented in source; the original
+world_state first-call error, race-detector and broad live/40M evidence remain open.
+
+The [4.4 file/function plan](docs/archive-center-4.4-refactoring-plan.md) is
+**PLANNED**. At implementation start, capture the then-current 4.3 baseline and
+preserve unrelated dirty edits. Proceed through provider/settings, assembly/HUD,
+then the original semantic-consolidation scope. Refactoring compares existing
+behavior; consolidation has separately documented intended changes. Neither
+comparison creates a new runtime output or persistence rejection condition.
+Keep Go/Host ownership, received AI recommendation text/order, existing
+no-recommendation behavior, source/privacy scope and user creative authority.
+Do not treat this documentation update as a runtime refactor or verification run.
+
+### 4.3 test.18 — compact HUD presentation
+
+The 2026-09-08 UI follow-up, packaged in test.18, narrows the HUD to 224px with 10px padding
+and renders backend preparation details as a total plus two-column timing cards.
+Generated/stored counts use matching two-column label/value tiles and a bordered
+total summary. Keep the existing count values, order and phase visibility owner.
+Preserve native detail expansion and each source value, including zero duration.
+This affects CSS, labels and existing HTML only; no timer or status calculations.
+The earlier test.17 package's 268px layout and loaded Host evidence stay distinct.
+
+Use the existing Host phase projector and renderers for HUD-only changes.
+In `next_user_input`, current generation carries no storage count ledger;
+previous finalization keeps its real counts and omits repeated generation
+timings. Immediate-mode storage counts remain available, including an actual
+zero result. Never infer a successful save or change the backend status from
+`host_generation_finished`; only the projected waiting-stage display changes.
+
+Keep total/preparation/response metrics and the five-role round table visible;
+collapse storage breakdown, stage ledger, supplemental search and backend
+timings. Avoid repeated explanation paragraphs. Normal completed cards follow
+the existing card/X dismissal policy; native detail toggles keep the card open.
+Observe the detail-open count through SafeElement, since trimmed Host clicks
+omit event.target and native toggling moves the centered HUD before async handling.
+Keep warning/error cards X-only and preserve the previous completed card's X.
+Preserve unrelated notice
+dismissal and the existing event/timer/stream owners. Provider Flex capability
+handling remains unchanged when removing the explanatory settings paragraph.
+
+See [test.18](docs/archive-center-4.3-test-build-18.md). JS is required here for
+RisuAI DOM presentation; this change adds no Go workflow, contract, search,
+acceptance, persistence or fallback rule. Verify source regression and isolated
+desktop/mobile rendering separately from loaded RisuAI.
+
+### 4.3 test.16 — production public-projection handoff
+
+`appendPrepareTurnPriorityMemoryFactSeeds()` labels memory-derived public facts
+as `public_projection` unless item metadata overrides it. `runMultiAgent()`
+includes that label in its existing public handoff branch alongside public and
+general. Preserve the existing owner/viewer/subjective scope checks, canonical
+text/order/source metadata and role-specific selection ownership. Related
+evidence provides context; it does not reclassify facts into the receiving lane.
+
+Validate production memory assembly through the registered `/prepare-turn`
+route and inspect the receiving specialist's second HTTP request, not just
+handcrafted public/general candidates. The regression failed before the fix
+and covers Publisher OFF/success/failure, canonical final payload and support.
+Retain public/general and private-scope cases, including projection-labelled
+owner/viewer/subjective evidence. See the [test.16 record](docs/archive-center-4.3-test-build-16.md).
+This is a repair to existing Go delivery, with no new gate, prompt, model call,
+schema, retrieval policy or Host behavior. JS changes are version identifiers.
+Keep actual Host/provider verification distinct; backend restart is user-owned.
+
+### Planned 4.4 / 4.6 / 4.7 state-time follow-up — 2026-09-07
+
+Use the [canonical state-time plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#temporal-state-44647)
+for the repeated mixed-balance case. The supplied test.15 candidates give old
+asset text and a cash field the same latest snapshot turn. Trace the existing
+state merge, row update time, per-field source metadata, recency and candidate
+supply before attributing the result to Publisher or specialist prompting.
+Existing time labels and received-note delivery do not resolve this cause.
+
+4.4 reduces equivalent duplicates and prepares cases; distinct historical
+values retain their source/time differences. Keep A-C behavior-preserving
+refactoring separate from intended state semantics changes. 4.6 owns per-field
+change/effective time and current-state work, explicitly including character
+funds/assets/inventory. 4.7 consumes that evidence in retrieval/ranking and AI
+input; a weight change over the same incorrect source time is not a repair.
+Compare Go selection and AI-assisted selection separately while preserving
+received AI source text/order and the existing no-recommendation behavior.
+
+New-write improvements and legacy recovery have separate evidence. Recover old
+times only from available original/history evidence; retain uncertainty and
+original material otherwise. Case identifiers and balances are fixtures, not
+runtime classifiers. These tests are development evidence, never additional
+output/storage rejection conditions. This remains PLANNED documentation with
+no new API/schema, automatic repair job, provider call, prompt change or build.
+
+### 4.3 test.15 — independently delivered specialist interpretations
+
+Use the existing accepted preprocessing selection as the owner of its reasons
+and unresolved questions. Preserve received text/order, final accepted round,
+and the independently retained lore assessment round. Attach reasons to the
+selected evidence actually delivered; keep AI questions separate from transport
+or search diagnostics. Existing Go baseline selection supplies memory without
+fabricating specialist explanations.
+
+`buildPrepareTurnPreprocessingNotes` is Go-owned request assembly. Preserve
+source references and character visibility/owner/viewer metadata beside each
+interpretation. Notes express AI interpretation, not stored truth, and metadata
+does not establish perfect model compliance. The user's story choices and
+revisions remain authoritative; this task adds no creative prohibitions.
+
+Deliver the same received notes through Publisher support and a separate main
+payload lane, including when Publisher is OFF or fails. Show that lane in Edit
+Check and count its extra input independently of original memory and guidance
+budgets. Keep existing Host application/observation; JavaScript only displays
+Go results. No additional AI calls, rounds, retries, selection re-ranking, new
+acceptance conditions, schema/storage writes or postprocessing belong to this
+slice. Preserve saved user prompts and runtime state. Stop after the test build
+so the user can evaluate the result; fixture success is not live output proof.
+
+### 4.3 test.14 — shared response recovery and usable partial results
+
+Use the existing `repairJSONCandidate` owner for AI-response syntax recovery in
+Critic, Publisher and preprocessing. Preserve quoted narrative/source text and
+the original response. A complete array followed by an explicit sibling key or
+enclosing object close can supply its missing `]`; EOF is not new content.
+Keep existing Publisher/Critic contracts, persistence and failure policy intact.
+Do not turn syntax recovery into inferred facts, guessed IDs or rewritten plans.
+
+Preprocessing fields decode independently. A scalar string can represent one
+string-list item; already decoded items and later readable fields survive type
+errors. Recovery introduces no retries, searches or analysis beyond the existing
+limits. A parsed lore assessment survives unrelated field errors; real provider
+failure and failed supplemental memory recommendations preserve prior behavior.
+HUD call outcomes and final memory selection source are observations, never new
+acceptance conditions or claims of final payload/display application.
+
+Use existing observed lore comment/key/heading for a label next to its short ref.
+Keep original source content, candidate budgets/order and edited prompts. All
+providers and model sizes retain the same settings and transport paths.
+
+The pending-thread candidate path alone uses the already configured Host recent
+conversation query set via `stringsFromAny`. Keep source/session scope, suppression,
+other support lanes and scoring unchanged. Confirm the production assembly and
+specialist input retain an ongoing goal named in recent context and still omit an
+unrelated goal. Broader state-time interpretation and old goal closure remain
+separate from this change. Source and fixture tests do not establish live RP quality.
+
+### 4.3 test.13 — source-time accuracy and recent context
+
+`character_states` is a cumulative snapshot: its row turn can be newer than
+individual retained fields. Keep the original source turn, IDs, text and scoring;
+describe that provenance instead of inventing per-field dates or resolving
+conflicting story facts in Go. Specialist candidates and public cross-role
+handoffs carry the existing `source_table`; `reference_format.source_turn`
+explains snapshot time even with user-edited task prompts. Selected snapshot
+text uses `[state snapshot turn N; fields may be older]` through the existing
+memory renderer and Publisher support path. Other source labels are unchanged.
+
+The UI's existing recent-conversation count supplies completed user/assistant
+conversations to both retrieval and specialist rounds. Keep current input
+separate and preserve observed quantities, uncertainty and transitions. Default
+prompt advice distinguishes an established action from its unknown details;
+user prompt overrides and creative revisions remain authoritative. There is no
+new completion verdict, AI call, search, rejection or persistence path.
+Source/provider-fixture checks are recorded in the preprocessing work log.
+The [test.13 package](docs/archive-center-4.3-test-build-13.md) contains these
+changes with 53 managed file hashes verified; loaded Host remains unverified.
+
+### 4.3 test.12 — supplemental-search latency and timing
+
+Keep the existing per-role search and analysis limits, history/source/perspective
+scope, filters and candidate content. Independent supplemental retrieval runs in
+parallel; merge indexed results in role order and allocate references before
+round two. Preserve first-role duplicate ownership, received AI order/text,
+partial results and existing no-recommendation behavior. Concurrency is not
+permission to add searches, retries, output rejection or a new selection path.
+
+Hydration/assembly uses one request-local mutex around existing shared inputs.
+Each retrieval owns its timing map; only the coordinator writes the final request
+timing and result lists. Measure the supplemental phase by wall time, including
+merge, rather than summing concurrent query durations. Per-query breakdowns are
+health, embedding, vector_search, revision_checks, hydration, assembly_wait and
+assembly. They explain observed work and must not change acceptance decisions.
+
+Reuse typed pristine candidate snapshots from the original assembly, before AI
+substitution/render mutation. Copy nested viewers, identity metadata and member
+IDs. Keep snapshots unexported and request-local; never rebuild them from public
+diagnostic maps that omit private source text. No persistent cache is involved.
+
+The optional HUD `preprocessing_search` field uses the existing ledger/stream and
+timer. Deep-copy query timing maps; omit it when the feature performs no search.
+Expose only counts, role/status and timing, with wall time clearly distinguished
+from overlapping query durations and enclosing backend stages. Verify actual
+registered-route overlap, deterministic second-round inputs, final Go payload,
+OFF, partial failure and production JavaScript rendering/timer behavior.
+Source/fixture success is not live RisuAI/provider or race-detector evidence.
+See [test.12](docs/archive-center-4.3-test-build-12.md).
+
+### 4.3 test.11 — user-directed execution priorities by strength
+
+The later 2026-09-07 user clarification allows stronger response-level direction
+from Strong upward while preserving the user's creative freedom and decisions.
+Keep the selected strength's policy visible to both the Publisher and the main
+response through the existing profile/request/render owners. Weak/Medium remain
+advisory. Strong prioritizes concrete enactment of the user's chosen direction;
+Extreme connects action/reaction/consequence; Maximum organizes the current
+response's development. The user's direction, explicit revisions, pacing and
+decisions take precedence. A quiet scene, an attempted action or an open choice
+can receive concrete depiction on its own terms.
+
+This is prompt and rendering behavior, not an output compliance gate. Preserve
+received item content/order and the existing acceptance, budgets, source scope,
+model/temperature/token configuration, single call and lifecycle behavior.
+Strength remains independent of pressure. Keep the four default Publisher fields
+and existing user prompt overrides. Verify the real Publisher request and final
+payload across strengths/formats, including unchanged item acceptance and None.
+See [test.11](docs/archive-center-4.3-test-build-11.md).
+
+### 4.3 test.10 — user-directed storytelling and preprocessing repair (prior checkpoint)
+
+The 2026-09-07 user clarification governs model-facing guidance: Archive Center
+supplies memory context and optional ideas, while the user chooses and can change
+the story. Rephrasing a prohibition positively does not satisfy this requirement.
+The default Publisher requests `current_arc`, `narrative_goal`, `next_beats` and
+`pressure_level`; it no longer requests forbidden moves, required outcomes or a
+scene mandate. Historical context can inspire new developments and user revisions.
+Keep stored user prompt overrides intact. Existing parsing compatibility and
+canonical persistence/Host acceptance are separate from these creative suggestions.
+
+Verify current `prepare_turn_multi_agent.go` and `prepare_turn_lorebook_reference.go`:
+fact/summary input sharing stays within the existing candidate-text character cap;
+request-local F/S/L references map exactly to supplied IDs and remain stable across
+the two rounds. Preserve valid selection order and source text. Public `general`
+evidence uses the existing public handoff scope, with private ownership unchanged.
+The world role's optional `selected_lorebook_refs` is independent of its fact
+selection: explicit `[]` means no extra AC lorebook text; omission/failed assessment
+keeps the existing Go selection or successful earlier assessment. Its received
+source order survives finalization, including duplicate-content coalescing; native
+Host lorebook text remains Host-owned. Positive configured budgets are supplied
+before selection and excess received selections remain visible with actual usage.
+Feature modes, zero budgets and existing scope/payload-presence handling remain.
+
+Use the existing preprocessing trace to distinguish source candidate counts,
+missing configuration fields, local request failure, actual dispatch and partial
+search. Successful Chroma responses are read completely; bounded HTTP-error bodies
+remain bounded. Do not label a ready hydration as successful dedicated search.
+HUD stage intervals may overlap; `preprocessing_search` is inside
+`injection_assembly`, and `supervisor_llm` is inside `response_assembly`.
+Effective Input distinguishes backend preview from observed pre-request content;
+neither proves the final provider request or displayed effect. The test8 mismatch
+itself remains unconfirmed without its original parity observations.
+
+Evidence and remaining live checks: [test.10](docs/archive-center-4.3-test-build-10.md).
+
 Choose the smallest evidence set that can verify the requested change:
 
 - For implementation, behavior, contract, schema, storage, packaging, or architecture changes, read [`AGENTS.md`](AGENTS.md) and use this file as the operational checklist.
@@ -21,7 +464,7 @@ Read the applicable owner set before changing behavior:
 - For backend startup or route ownership, inspect [`go-service/cmd/archive-center-go/main.go`](go-service/cmd/archive-center-go/main.go), [`go-service/internal/httpapi/server.go`](go-service/internal/httpapi/server.go), and the registered route group.
 - For retrieval or injection, inspect [`group_turn_prepare.go`](go-service/internal/httpapi/group_turn_prepare.go), [`prepare_turn_recall.go`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepare_turn_memory.go`](go-service/internal/httpapi/prepare_turn_memory.go), [`prepare_turn_assembly.go`](go-service/internal/httpapi/prepare_turn_assembly.go), [`prepare_turn_memory_budget.go`](go-service/internal/httpapi/prepare_turn_memory_budget.go), [`prepare_turn_lorebook_reference.go`](go-service/internal/httpapi/prepare_turn_lorebook_reference.go), [`prepare_turn_render.go`](go-service/internal/httpapi/prepare_turn_render.go), and [`output_fidelity_lineage.go`](go-service/internal/httpapi/output_fidelity_lineage.go).
 - For Publisher changes, inspect `runSupervisorLLM()`, `publisherStrengthProfile()`, `buildBoundedSupervisorResult()`, and their callers in [`group_proxy.go`](go-service/internal/httpapi/group_proxy.go), the consumer in [`group_turn_prepare.go`](go-service/internal/httpapi/group_turn_prepare.go), the renderer in [`prepare_turn_render.go`](go-service/internal/httpapi/prepare_turn_render.go), and [`prompts/supervisor_system.txt`](prompts/supervisor_system.txt).
-- For the **planned, not implemented** 4.3 optional multi-agent memory exploration/selection feature, use the [current integrated roadmap](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-memory-selection-43). Extend existing Go retrieval/candidate/selection/provider owners for first-round parallel analysis, explicit missing-evidence requests and at most one supplemental analysis per relevant active specialist (N+M normal analysis calls, 0≤M≤N≤5). Preserve current input authority and existing source/branch/perspective scope in searches and cross-category evidence; analysis prose is not canonical truth. Search limits, unresolved requests and partial model/search failures must not become new output/persistence rejection conditions. Keep available candidates/recommendations in the same Go selection path and count actual retrieval, embedding, analysis and provider re-entry separately. JavaScript remains the Host adapter and the existing Publisher consumes delivered memory. Exclude drafts, output rewriting/polishing, new AI memory writers and a second Publisher; retain existing Critic persistence and leave bundle selection/compression to 4.5. Roadmap fields and version assignment are not evidence of an existing DTO or runtime capability.
+- For the **implemented_unverified** 4.3 optional multi-agent feature, inspect `prepare_turn_multi_agent.go` and its registered settings route and `group_turn_prepare.go` callers alongside the [current integrated roadmap](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-memory-selection-43). Preserve first-round parallel analysis, explicit missing-evidence requests and at most one supplemental analysis per relevant active specialist (N+M normal analysis calls, 0≤M≤N≤5). Preserve current input authority and existing source/branch/perspective scope in searches and cross-category evidence; analysis prose is not canonical truth. Go executes received canonical recommendation text/order without discretionary replacement by its own ranking/prose; categories without recommendations retain ordinary Go selection. Search limits, unresolved requests and partial model/search failures must not become new output/persistence rejection conditions. Count retrieval, embedding, analysis and provider re-entry separately. JavaScript remains the Host adapter and the existing Publisher consumes delivered memory. Exclude drafts, output rewriting/polishing, new AI memory writers and a second Publisher; retain existing Critic persistence and leave bundle selection/compression to 4.5. Source implementation and roadmap fields do not prove loaded Host or actual provider behavior.
 - For Host lorebook changes, inspect `observeLorebookReferenceScope()`, `syncCurrentLorebookReference()`, and `postLorebookReferenceSnapshot()` in [`Archive Center.js`](Archive%20Center.js), [`group_lorebook_reference.go`](go-service/internal/httpapi/group_lorebook_reference.go), [`store/lorebook_reference.go`](go-service/internal/store/lorebook_reference.go), [`store/mariadb_lorebook_reference.go`](go-service/internal/store/mariadb_lorebook_reference.go), and [`migrations/010_lorebook_reference_entries.sql`](migrations/010_lorebook_reference_entries.sql).
 - For completed-turn persistence, inspect [`group_turn_complete.go`](go-service/internal/httpapi/group_turn_complete.go), [`complete_turn_source_acceptance.go`](go-service/internal/httpapi/complete_turn_source_acceptance.go), [`complete_turn_source_revision.go`](go-service/internal/httpapi/complete_turn_source_revision.go), [`complete_turn_idempotency.go`](go-service/internal/httpapi/complete_turn_idempotency.go), [`turn_memory_admission.go`](go-service/internal/httpapi/turn_memory_admission.go), and [`turn_extraction_persist.go`](go-service/internal/httpapi/turn_extraction_persist.go).
 - For deletion, reroll, or worldline work, inspect `reconcileActiveChatTailDeletionWithBackend()`, `onRisuOutput()`, and the request-context handoff in [`Archive Center.js`](Archive%20Center.js); [`group_turn_rollback.go`](go-service/internal/httpapi/group_turn_rollback.go), [`group_turn_range_decision.go`](go-service/internal/httpapi/group_turn_range_decision.go), `resolvePrepareTurnHistoryScope()` in [`group_turn_prepare.go`](go-service/internal/httpapi/group_turn_prepare.go), [`prepare_turn_recall.go`](go-service/internal/httpapi/prepare_turn_recall.go), [`complete_turn_source_revision.go`](go-service/internal/httpapi/complete_turn_source_revision.go), [`group_step23_fork_lineage.go`](go-service/internal/httpapi/group_step23_fork_lineage.go), and the `session_fork_lineage.v2` Store contract.
@@ -31,11 +474,193 @@ Read the applicable owner set before changing behavior:
 - For configuration work, inspect `config.Default()`, `config.Load()`, and `Config.Validate()` in [`go-service/internal/config/config.go`](go-service/internal/config/config.go), plus the plugin defaults and runtime `/config/update` consumer.
 - For API changes, inspect [`go-service/internal/dto/prepare_source_contract.go`](go-service/internal/dto/prepare_source_contract.go), [`go-service/internal/dto/types_gen.go`](go-service/internal/dto/types_gen.go), the registered route, the Go producer/validator, the JavaScript consumer, and production-path contract tests. Verify each contract version independently.
 - For package or installer work, inspect [`ops/build-full-package.ps1`](ops/build-full-package.ps1), [`ops/build-posix-managed-packages.ps1`](ops/build-posix-managed-packages.ps1), the relevant launcher template, [`install-windows.ps1`](install-windows.ps1), and [`install.sh`](install.sh).
+- The historical `4.3.0-test.7` checkpoint changed Go and the plugin for expanded specialist prompts, the Endpoint label and persistent password editors. The current documented package is [test.18](docs/archive-center-4.3-test-build-18.md); consult its record instead of reusing test.7 build arguments. When packaging is requested, plugin version, build channel and packaged backend version must describe the same artifact. Version reported by the backend is launcher configuration, not proof of a changed executable. The user owns backend startup and RisuAI installation. The normal Windows launcher uses the stable user data directory; a newly extracted package is not an isolated database.
+- The user explicitly requested that saved preprocessing API keys remain populated like the Publisher/Critic password fields and that the separate deletion checkbox be removed. The config ViewModel now returns keys for editing with `Cache-Control: no-store`; do not treat this credential-bearing response as a shareable diagnostic. Explicit `api_key`, including an empty string, is the edited value; omission preserves the stored key. Test save/reopen/edit/clear and missing-field preservation. Keep keys out of AI prompt/input assembly and retain existing error scrubbing.
+- For preprocessing Flex settings, retain the existing provider transport owner: OpenAI-compatible `service_tier`, AI Studio `serviceTier`, and Vertex Flex headers. Use each role's persisted processing options for independent connections and the Publisher's options when shared. Preserve hidden values across provider switches without sending an inapplicable independent service-tier option. Verify both analysis rounds, optional sharing, configured temperature/output limit, and unchanged no-recommendation Go selection. Provider-level UI visibility is not proof that every model/account supports Flex; do not invent a model whitelist or silently retry with a different tier.
+- For preprocessing prompt changes, retain Go-owned assembly and persistence. `settings.shared_prompt` is the saved override; empty uses the bundled default, omitted PUT preserves the existing value, and the ViewModel exposes effective/default text separately. Verify the selected common and role prompts reach both rounds from one request settings snapshot. Independent role connections are the new default; preserve explicitly saved Publisher sharing and verify it only shares the connection. Keep the existing no-recommendation Go selection behavior.
+- For preprocessing UI changes, exercise the actual `renderSettingsPanel()` and `loadMemoryPreprocessingPanel()` with `ops/preprocessing-ui-smoke.cjs`, including desktop/mobile dimensions, custom connections, prompt restore, independent role values and hidden-field preservation. Scope CSS to the preprocessing panel; do not reintroduce unstyled classes or let shared form flex rules overlap columns. The local browser fixture is not loaded-RisuAI or real config persistence evidence. Model/API connection sharing must not replace a role's prompt with the Publisher prompt.
+- Settings rendering mounts editable controls before awaiting backend status. Update only the dashboard container for the existing render request, preserving unsaved inputs and its delegated queue action. All bridge requests follow the saved UI `bridgeUrl`; do not substitute localhost or the Risu page domain. Server listener binding is configured separately by the launcher and must remain reachable at the user's selected address. See `docs/archive-center-4.3-test-build-3.md` for the reproduced localhost-only restart regression and its authorized recovery.
 - Fresh-install release helpers must download the published `SHA256SUMS*.txt`, match the exact selected ZIP filename, and verify SHA-256 before extraction or pointer creation. Test both accepted and tampered archives on Windows and POSIX.
 
-- For the **planned 4.3 UI**, place an independent entry under the existing Extensions area beside Persona Capsule, Original Work DB and Lorebook Reference. Use an explicit feature enable setting, default OFF, through the existing Go settings owner. Panel access, model configuration and other extensions must not auto-enable it. OFF preserves existing memory/Publisher behavior with zero feature-specific analysis/search calls; other extensions keep their own settings and data-use scope. This is a future UI/activation contract, not current runtime behavior.
+- For the **implemented 4.3 UI**, preserve the independent entry under Extensions beside Persona Capsule, Original Work DB and Lorebook Reference. `loadMemoryPreprocessingPanel()` uses the existing Go `/config/memory-preprocessing` settings owner and explicit default-OFF setting. Panel access, model configuration and other extensions must not auto-enable it. OFF preserves existing memory/Publisher behavior with zero feature-specific analysis/search calls; other extensions keep their own settings and data-use scope. Local UI/source tests remain distinct from loaded-RisuAI verification.
+
+### 4.3 Vertex processing-option correction — 2026-09-07
+
+- Keep the provider request owner in `proxyApplyLLMGatewayServiceTier()` and
+  `proxyApplyRequestOverrides()`. A valid service-tier value retained in settings
+  must not block a Vertex request or be serialized as `service_tier`/`serviceTier`.
+  Record `vertex_uses_vertex_flex_mode` in the existing skip-reason trace field;
+  keep the saved value and apply Vertex's own Flex headers normally.
+- This correction covers the reported Vertex configuration. Preserve other
+  providers' validation, explicit extra-body overrides and upstream errors. Do
+  not convert Priority/Flex into a different Vertex mode or add retries.
+- Exercise the registered Critic connection-test route and config update through
+  the actual Critic call owner, including retained standard/flex/priority values,
+  ordinary Vertex and both existing Flex modes, unchanged generation settings and
+  settings readback. HTTP/OAuth fixtures do not establish real Google access or
+  loaded RisuAI success. See `docs/archive-center-4.3-test-build-9.md`.
+
+### 4.3 HUD timing checkpoint — 2026-09-07
+
+- Optional preprocessing timing is emitted by the real Go call owner into the
+  existing request HUD ledger. Preserve the original 12 stages, recommendation
+  decisions, parallel call behavior and workflow finalization. OFF omits the
+  field; disabled roles do not acquire timing rows. Show call errors with their
+  time, never turn an error into an apparently successful timing row.
+- Keep prompts, keys, memory text and request bodies out of timing ViewModels.
+  Copy each role's nested call array when cloning snapshots.
+- JavaScript may observe local HUD-start, beforeRequest-return and accepted
+  afterRequest timestamps for display. Keep that observation independent of
+  source acceptance, saving and recovery. The frozen total must exclude subsequent
+  Critic/save and next-input idle time, preserve the initial start over a provider
+  retry, and clear with a new request. Keep the existing HUD timer/stream owners.
+- In next-input mode, retain the finished current-generation card for timing
+  inspection without marking the pending backend workflow completed or altering
+  the previous-turn Critic/save path. Check both finalization modes, hidden OFF
+  display, running and failed rounds, snapshot updates, dismissal/new request and
+  simultaneous clocks. See `docs/archive-center-4.3-test-build-8.md`.
+
+### Planned 4.3 prompt work
+
+Follow the [role-prompt plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-memory-prompts-43)
+when starting 4.3-A. Define five usable role defaults, shared and stage-specific
+instructions, scoped inputs, response examples and expected recommendations/search
+requests before wiring the analysis calls. Keep model assignment distinct from
+role instructions. Extend the existing Go prompt/config/provider owners and
+JavaScript editor; Go owns prompt assembly and recommendation use.
+
+Design bundled defaults and user edits separately, with explicit default restore
+and inspection of the prompt actually applied. Prompt editing or saving must not
+enable the feature or call a model. The existing prompt API writes files and
+`/config/update` is runtime-only; verify the chosen storage and application scope
+instead of assuming durable settings. B/D implement editing and storage, E covers
+restart and role isolation, and F checks actual package-update preservation and
+provider application. Keep these planned requirements distinct from current
+capabilities, and do not turn prompt/result imperfections into new output or
+persistence rejection conditions. This plan adds no runtime implementation.
+
+### Planned 4.3 result fidelity — user instruction, 2026-09-06
+
+The [result-fidelity contract](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-result-fidelity-43)
+prohibits discarding received AI recommendations and replacing them with Go's
+own selection/prose. The user explicitly retains ordinary Go selection when an
+area has no AI recommendation, including an empty recommendation or a failed
+call with no received recommendation. Preserve received text, references/order
+and search requests; distinguish the reason for using Go selection. Do not erase
+received recommendations to manufacture a no-recommendation state. Partial role
+failure must not replace other roles' recommendations or disable the feature.
+
+Provide existing scope and count/size budgets in the input/output contract before
+dispatch. Do not silently truncate a received selection, replace its meaning or
+add rejection conditions after it returns. Preserve raw/partial results and expose
+unresolved references, parsing failures, over-budget results and provider failures
+as concrete unapplied/incomplete states. Keep received recommendations and use
+ordinary Go selection for an area with none, without synthetic AI prose or false
+success. After a failed supplemental call, retain and use its first-round
+recommendation if present; otherwise use Go selection. A completed supplemental
+response with an empty final recommendation also uses Go selection. Keep the
+supplemental failure and the actual selection source visible.
+Do not add new output/persistence/reroll rejection gates or a new result ledger.
+
+4.3-A must specify the bounded delivery and failure-observation contract; C/D wire
+the result to canonical source hydration, payload and Publisher without semantic
+replacement; E/F verify received-result preservation and ordinary Go injection
+when one or all areas have no recommendation, including provider failure.
+Raw-result logging alone does not prove actual delivery fidelity. These are
+planned requirements; no multi-agent runtime implementation is implied.
+
+### 4.3 active preprocessing checkpoint — 2026-09-06
+
+The preceding planned requirements now have an `implemented_unverified` runtime
+slice; see [the implementation record](docs/archive-center-4.3-preprocessing-work-log.md).
+`prepare_turn_multi_agent.go` owns five actual role defaults, durable configuration,
+request-local parallel analyses and one supplemental round. `handlePrepareTurn()`
+uses the existing scoped retrieval/hydration; `prepare_turn_priority_memory.go`
+applies canonical AI selections and retains the request's ordinary Go selections
+for roles without recommendations. The existing Publisher/payload consume that
+final plan. Preserve order and report declared-budget overrun; do not silently
+reapply score/K/size cuts to received recommendations. Existing OFF selection
+and lifecycle owners are unchanged. No new result ledger or canonical AI writer.
+
+`GET/PUT /config/memory-preprocessing` persists under `ARCHIVE_CENTER_DATA_DIR`,
+separate from bundled Go defaults. The POSIX launcher exports its actual data root.
+`loadMemoryPreprocessingPanel()` is Host UI/transport only and adds no JS selection.
+Inspect production regressions in `prepare_turn_multi_agent_test.go`; actual
+loaded-Host/provider/display and native OS evidence remain separate open checks.
+The earlier planned wording describes the design baseline, not absence of this slice.
 
 ## 2. Active Sources of Truth
+
+### 4.3 preceding GitHub feedback fixes (source checkpoint)
+
+Use [the feedback work log](docs/archive-center-4.3-feedback-work-log.md) to locate
+the #5/#6/#4/#10/#7 changes. These are base behavior repairs, independent of the
+planned optional multi-agent feature. Preserve these owner boundaries:
+
+- HUD click cleanup uses the same SafeElement that registered the listener.
+  Retain its target/type/id/options until removal; no additional watcher is needed.
+- Recovery errors carry the current Go HUD when available. The adapter may fetch
+  the existing status endpoint once for the user action; it does not infer a save
+  outcome from transport failure. Confirmed-turn correction and creation order
+  are HUD bookkeeping, not a new persistence or recovery identity.
+- The three free-text precise-memory fields are LONGTEXT in fresh SQL, migration
+  `013`, and Go schema compatibility. Preserve full values and existing pending
+  Critic JSON/hash replay; do not restore `staged` or add text rejection gates.
+- Historical same-source/document delete coalescing advances only after a batch
+  commit, releases the writer between batches, and uses existing indexes to avoid
+  repeated scans. Preserve the existing lease/source/order predicates. It remains
+  called by the existing admin maintenance path, not a new startup purge.
+
+Actual loaded-PocketRisu and packaged-update evidence remains separate from the
+production-function regressions and disposable MariaDB/Chroma integration results.
+
+### 4.3 Gemini 3.8 Flash medium checkpoint
+
+`resolveGeminiThinkingLevelOptions()` projects `none/low/medium/high`, and Go
+`proxyGeminiThinkingLevel()` passes selected medium through native Gemini/Vertex
+and existing gateway adapters. Keep the model-specific addition aligned in these
+existing owners. `none`, preset defaults and other models retain their existing
+behavior. Evidence is production-function/UI and outbound-body regression, not
+a real provider call; see the [work log](docs/archive-center-4.3-feedback-work-log.md).
+
+### 4.3 shared RisuAI / PocketRisu branch identity checkpoint
+
+`branchedfrom` identifies a message in the parent chat. Preserve that marker and
+its navigation meaning. Do not require the copied child row to retain the same
+ID: inspected RisuAI preserves IDs and PocketRisu reissues them. The existing Go
+`resolveRisuWorldlineObservation()` owns both shapes through optional
+`risu_message_origins.v1` metadata in `risu_worldline_observation.v2`.
+
+- Keep the initial output/pre-backfill observation bounded to its existing 2–3
+  marker/source/user rows. Go's `origin_read_request` names the parent and source;
+  the adapter uses official `getCharacterFromIndex` to observe only named chats
+  in that captured character. It transmits IDs, roles, positions and branch
+  markers; it does not transmit conversation bodies or decide lineage.
+- `worldline_message_origins.go` preserves matching IDs and associates reissued
+  IDs using the official inclusive ordered-prefix clone shape. A shifted prefix
+  supplies preserved-ID links and the marker endpoint only. This is optional
+  provenance, not a new completed-turn or output rejection gate. Do not convert
+  it into broad content search or a promise to reconstruct arbitrarily edited
+  historical prefixes.
+- Store the first origin envelope in existing `session_fork_lineage`'s
+  `inherited_items_json`; transactional enrichment preserves confirmed parent,
+  fork point and source coordinates. Existing nonempty provenance remains intact.
+  Ancestors predating origin recording use the same Go resolver and named reads,
+  within the existing 32-level lineage scope. No new schema or background worker.
+- Nested source lookup follows only confirmed parent records and their maps;
+  recall composition keeps the earliest cut encountered along the chain. A user
+  endpoint can identify turn T while inherited completed history ends at T−1.
+- Missing Host snapshots or failed optional metadata transport keep the previous
+  routing response. Do not turn these observations into mandatory output/save
+  conditions. Existing confirmed lineage remains usable after its marker vanishes.
+- An ordinary copy creates no new official branch marker. Keep its existing
+  routing/backfill and explicit DB-copy behavior; editable independent copies of
+  all inherited memories and inherited entity/subjective-memory UI are separate
+  work, not part of this checkpoint.
+
+Source tests and disposable MariaDB HTTP/persistence tests are recorded in the
+[4.3 work log](docs/archive-center-4.3-feedback-work-log.md). Patched loaded-RisuAI
+and loaded-PocketRisu validation remains open (`implemented_unverified`).
 
 | Concern | Treat as authoritative | Do not treat as authoritative |
 | --- | --- | --- |
@@ -47,7 +672,7 @@ Read the applicable owner set before changing behavior:
 | Vector/search index | Chroma adapters under [`internal/vector`](go-service/internal/vector) | Chroma documents as canonical memory or accepted facts |
 | Configuration | `config.Default()` plus `config.Load()`/`Config.Validate()`, with adapter settings supplied through `/config/update` | A generated package example, stale `.env.example`, or the in-memory update response as durable configuration |
 | API contracts | Active Go producers/validators, JavaScript consumers, and contract tests. Current turn contracts include `memory_recall_plan.v1`, priority-disabled legacy `memory_delivery_plan.v1`, priority-enabled auto/custom-budget `memory_delivery_plan.v2`, `payload_application_plan.v1`, opt-in `memory_transport_plan.v1`, transient `memory_transport_payload.v1`, observation-only `memory_injection_baseline.v1`, and `publisher_plan.v2`. | A shared-version assumption, roadmap prose, comments, or a duplicate JavaScript DTO/policy implementation |
-| Fresh/upgrade schema | The complete sorted source migration set through `012_session_fork_lineage_source_role.sql`, interpreted with [`migrations/README.md`](migrations/README.md) and the schema loader | `001_schema.sql` alone; an installed dump; generated package SQL; rewriting or duplicating later migrations into historical migration files |
+| Fresh/upgrade schema | The complete sorted source migration set through `013_precise_memory_text_fields.sql`, interpreted with [`migrations/README.md`](migrations/README.md) and the schema loader | `001_schema.sql` alone; an installed dump; generated package SQL; rewriting or duplicating later migrations into historical migration files |
 
 Edit source inputs, not their outputs. Never edit copied plugin files, binaries, manifests, checksums, copied SQL, or copied prompts directly. Regenerate them through the build scripts.
 
@@ -59,8 +684,8 @@ Edit source inputs, not their outputs. Never edit copied plugin files, binaries,
 | Transport and payload mutation | JavaScript adapter | Send minimal versioned observations, apply the exact backend plan to the real RisuAI payload, render UI, and maintain only unavoidable host-local retry/transient state. |
 | Policy and orchestration | Go backend | Put request ownership, source acceptance, lifecycle meaning, provider orchestration, and stable error/retry decisions in [`internal/httpapi`](go-service/internal/httpapi). |
 | Retrieval and filtering | Go backend | Read through Store/vector interfaces; apply session, source-revision, visibility, private-perspective, tombstone, supersession, and future-turn filters in Go. |
-| Duplicate suppression and ranking | Go backend | Preserve provenance-aware dedupe, exact/lexical eligibility, protected exceptions, relevance ordering, and delivery lineage. With a query, do not restore noneligible nonprotected rows through deep/recent refill. Score admitted facts with relevance, stored importance decayed by RP-turn distance, and RP-turn-distance recency, then rank them within their delivery group. Never use wall-clock age for story/RP recency. Keep lifecycle metadata out of scoring and canonical winner selection: plan, progress, completion, and follow-up facts remain independent score candidates, while Critic transitions remain diagnostic lineage only. Treat structured array ordinals such as `item_1` as projection-local order, not a canonical field identity shared by unrelated source rows; retain source occurrence identity for those facts. Do not re-rank or re-dedupe in JavaScript. |
-| Budgeting | Go backend | Let JavaScript supply host/runtime observations only. When Priority Memory is enabled, let Go form request-local `PriorityFactSeed` units from already admitted source projections before final section rendering, score each recalled `memories.turn_summary` by its highest child fact, and produce `memory_delivery_plan.v2` for both auto and custom modes. Apply the same UI maximum independently to complete turn summaries and to each scored fact lane; do not transfer unused item slots. Direct evidence and protected-secret guidance remain item-count exempt. In custom mode, apply the existing per-class UI character budgets; complete turn summaries and event facts share `event_recent`. Every selected item remains subject to its class budget and the final character envelope, and is included whole or deferred. Never use score or a missing score to reject the current output, display, save, reroll, or recovery. |
+| Duplicate suppression and ranking | Go backend | Preserve provenance-aware dedupe, exact/lexical eligibility, protected exceptions, relevance ordering, and delivery lineage. With a query, do not restore noneligible nonprotected rows through deep/recent refill. Score admitted facts with relevance, stored importance independently of RP-turn-distance recency, and the separate recency term, then rank them within their delivery group. Never use wall-clock age for story/RP recency. Keep lifecycle metadata out of scoring and canonical winner selection: plan, progress, completion, and follow-up facts remain independent score candidates, while Critic transitions remain diagnostic lineage only. Treat structured array ordinals such as `item_1` as projection-local order, not a canonical field identity shared by unrelated source rows; retain source occurrence identity for those facts. Do not re-rank or re-dedupe in JavaScript. |
+| Budgeting | Go backend | Let JavaScript supply host/runtime observations only. When Priority Memory is enabled, let Go form request-local `PriorityFactSeed` units from already admitted source projections before final section rendering, score each recalled `memories.turn_summary` by the higher of its best child fact and observed aggregate-vector score, and produce `memory_delivery_plan.v2` for both auto and custom modes. Apply the same UI maximum independently to complete turn summaries and to each scored fact lane; do not transfer unused item slots. Direct evidence and protected-secret guidance remain item-count exempt. In custom mode, apply the existing per-class UI character budgets; complete turn summaries and event facts share `event_recent`. Every selected item remains subject to its class budget and the final character envelope, and is included whole or deferred. Never use score or a missing score to reject the current output, display, save, reroll, or recovery. |
 | Ordering and context assembly | Go backend | Preserve base order `original_work` → `long_term_memory` → `output_guidance`. In `reference_assist`, insert `lorebook_reference` immediately before `output_guidance`. Keep recent input internal to Publisher/turn analysis and emit an empty payload `input_context_text`. |
 | Opt-in PDF memory representation | Go produces; JavaScript applies the selected transport representation | Use only the completed `payload_application_plan.v1` `long_term_memory` lane. Preserve its exact text/order/hash and every other lane. Direct Google/Gateway modes keep PDF/base64 current-request-only and apply only the matching `inlineData`/`file` shape. The explicit `provider_manager_pdf` experiment instead marks only that lane with one `<pm-pdf>` pair and delegates PDF creation to Provider Manager; it must not build a second Go PDF or modify the external plugin. Do not infer provider/model/plugin state, rerun selection, add a retry, persist the document, or make PDF success a condition for output/save/reroll. |
 | 4.1 baseline and lineage | Go produces; JavaScript observes Host application only | Keep `candidate`, `selected`, `rendered`, `payload-applied`, and `displayed effect` distinct for all nine surfaces. Treat normalized-text matches as duplicate candidates only. Do not turn telemetry into JavaScript selection, automatic suppression, canonical mutation, vector mutation, or a displayed-final claim. |
@@ -99,9 +724,9 @@ Do not add JavaScript business logic because it is faster. If Go can decide from
 16. Preserve worldline isolation. Use only confirmed `session_fork_lineage.v2` to compose ancestor-through-fork and descendant-owned history segments. On unresolved/conflicting/cyclic lineage, fail closed to the bounded current/partial scope; never infer a parent, include parent post-fork data, or leak sibling history.
 17. Preserve missing-role truth. Reuse an existing canonical user row for `stored_pair_recovered`; keep `assistant_only` explicit when no user row exists. Never fabricate a user message to make an old assistant output look paired.
 18. Preserve empty/synthetic-origin truth. The inspected RisuAI Say Nothing branch can create a non-empty stored user row without invoking the input handler. Do not classify `*says nothing*`, a translation, prompt prose, missing `time`, or a plugin name as official auto-continue origin. If Host origin is not exposed, keep it `unobserved`. A missing middle user must not cause an assistant to be reassigned to the previous user or later turns to be silently renumbered; surface a no-write review/normalization state instead.
-19. Preserve the implemented 4.2 Priority Score contract. Keep relevance, stored importance, RP-turn-distance recency, continuity bonus, small structured score biases, canonical/source identity, visibility, perspective owner/viewers, final score, rank, and selection reason attached to each complete fact candidate until the final Go budget owner. Resolve one request query set in Go and use it for both Chroma retrieval and fact scoring. The current query is the explicit Host continuity query when present, otherwise raw user input or the latest non-assistant request message. Add the most recent completed Host conversations up to UI `recent_conversation_reference_count`; keep each conversation's user input and final assistant output together as one independent semantic query, merge duplicate document hits by strongest similarity, and calculate lexical fact relevance per query before retaining the strongest score. This history-reference depth is independent of Chroma result `top_k` and the final per-group core-memory item ceiling. These conversation originals restore retrieval context but must not restore a duplicate Recent Raw Turn block in the final model payload. Never classify continuation by a runtime phrase list or append names/places to saturate the primary query. Use an active, in-scope `precise_memory_unit` vector similarity only for the matching atomic fact, after canonical MariaDB hydration; never copy a parent row's retrieval/selection score or one precise hit to every child fact. Keep the dedicated aggregate `tier=memory` vector search so precise/evidence hits cannot crowd aggregate Memory recall. Aggregate Memory facts and full `memories.turn_summary` candidates may enter the priority pool only from that existing recall result; do not append every loaded session Memory row as a parallel candidate source. For atomic scoring, query the existing `source_table=precise_memory_units` vectors with the same already-created request query vectors and the exact in-scope canonical fact count, independently of final delivery K; this is a scoring pass within the same recall owner, not a second selector or persistence path. Consume the private hit handoff inside prepare-turn and do not expose it in the public response. Speaker, location, and storyline matches are small independent rank signals only, never admission or rejection conditions. Calculate recency from current RP-turn distance with a nonzero floor rather than wall-clock age. Keep reviewed names, aliases, and identity evidence as attributable metadata outside the event/current-state K; metadata may attach once to a selected same-entity fact but failure to attach must not block the fact. Score each recalled complete turn summary by its highest child fact and keep it intact when selected. Apply the same UI K independently to the complete-turn-summary group and to each scored fact lane, without transferring unused slots; direct evidence and protected-secret guidance remain K-exempt. A one-sentence summary and its exactly identical fact are delivered once without consuming a fact slot. Apply auto/custom character budgets in this same Go selector: custom uses the existing per-class UI values, summaries and event facts share `event_recent`, and the final global envelope still applies. K is a maximum, not a request to fill the character budget. Do not reject a fact merely because lexical or semantic relevance is zero or unavailable; score components order candidates but do not form an additional eligibility gate. Do not recreate a JavaScript selector, lane-order fill, character blacklist, or second visibility/perspective gate. Request-scoped current resolution is a fact-level read/delivery projection and must not rewrite source rows. Preserve current input, explicit correction, direct-evidence authority, privacy, branch/revision, and secret guards outside this optional-memory score competition. A protected recollection's usage guard remains attached to its memory as one delivery unit rather than consuming separate K slots. If a source has not moved to `PriorityFactSeed`, keep its complete rendered-line/sentence compatibility path available and diagnose it as `legacy_rendered_line`; do not drop it for lacking a seed or score. Do not use score or missing score to reject normal output, display, persistence, reroll, or recovery. See [`docs/archive-center-4.2-priority-score-memory-plan.md`](docs/archive-center-4.2-priority-score-memory-plan.md).
+19. Preserve the existing Priority Score contract with the authorized 4.3 static.v4 changes. Keep relevance, stored importance, RP-turn-distance recency, continuity bonus, small structured score biases, canonical/source identity, visibility, perspective owner/viewers, final score, rank, and selection reason attached to each complete fact candidate until the final Go budget owner. Resolve one request query set in Go and use it for both Chroma retrieval and fact scoring. The current query is the explicit Host continuity query when present, otherwise raw user input or the latest non-assistant request message. Add the most recent completed Host conversations up to UI `recent_conversation_reference_count`; keep each conversation's user input and final assistant output together as one independent semantic query, merge duplicate document hits by strongest similarity, and calculate lexical fact relevance per query before retaining the strongest score. This history-reference depth is independent of Chroma result `top_k` and the final per-group core-memory item ceiling. These conversation originals restore retrieval context but must not restore a duplicate Recent Raw Turn block in the final model payload. Never classify continuation by a runtime phrase list or append names/places to saturate the primary query. Use an active, in-scope `precise_memory_unit` vector similarity only for the matching atomic fact, after canonical MariaDB hydration; never copy a parent row's retrieval/selection score or one precise hit to every child fact. Keep the dedicated aggregate `tier=memory` vector search so precise/evidence hits cannot crowd aggregate Memory recall. Aggregate Memory facts and full `memories.turn_summary` candidates may enter the priority pool only from that existing recall result; do not append every loaded session Memory row as a parallel candidate source. For atomic scoring, query the existing `source_table=precise_memory_units` vectors with the same already-created request query vectors and the exact in-scope canonical fact count, independently of final delivery K; this is a scoring pass within the same recall owner, not a second selector or persistence path. Consume the private hit handoff inside prepare-turn and do not expose it in the public response. Speaker, location, and storyline matches are small independent rank signals only, never admission or rejection conditions. Calculate recency from current RP-turn distance with a nonzero floor rather than wall-clock age. Keep reviewed names, aliases, and identity evidence as attributable metadata outside the event/current-state K; metadata may attach once to a selected same-entity fact but failure to attach must not block the fact. Score each recalled complete turn summary by the higher of its best child fact and its observed aggregate-vector score; keep it intact when selected. Apply the same UI K independently to the complete-turn-summary group and to each scored fact lane, without transferring unused slots; direct evidence and protected-secret guidance remain K-exempt. A one-sentence summary and its exactly identical fact are delivered once without consuming a fact slot. Apply auto/custom character budgets in this same Go selector: custom uses the existing per-class UI values, summaries and event facts share `event_recent`, and the final global envelope still applies. K is a maximum, not a request to fill the character budget. Do not reject a fact merely because lexical or semantic relevance is zero or unavailable; score components order candidates but do not form an additional eligibility gate. Do not recreate a JavaScript selector, lane-order fill, character blacklist, or second visibility/perspective gate. Request-scoped current resolution is a fact-level read/delivery projection and must not rewrite source rows. Preserve current input, explicit correction, direct-evidence authority, privacy, branch/revision, and secret guards outside this optional-memory score competition. A protected recollection's usage guard remains attached to its memory as one delivery unit rather than consuming separate K slots. If a source has not moved to `PriorityFactSeed`, keep its complete rendered-line/sentence compatibility path available and diagnose it as `legacy_rendered_line`; do not drop it for lacking a seed or score. Do not use score or missing score to reject normal output, display, persistence, reroll, or recovery. See [`docs/archive-center-4.2-priority-score-memory-plan.md`](docs/archive-center-4.2-priority-score-memory-plan.md).
 
-For the active `priority_score.static.v3`, preserve raw stored importance and expose `importance_after_turn_decay = importance * rp_turn_distance_recency`. Use the decayed value in the `0.25` importance term, keep the direct RP-turn recency term, and never substitute wall-clock age. Treat every lifecycle key/transition as diagnostic-only delivery lineage with zero score influence.
+For the active `priority_score.static.v4`, preserve raw stored importance and its contribution to ranking. The existing `importance_after_turn_decay` trace field equals importance; use importance directly in the `0.25` term and RP-turn recency independently in the `0.15` term. Never substitute wall-clock age. Treat every lifecycle key/transition as diagnostic-only delivery lineage with zero score influence.
 
 ## 5. Hook and Turn-Order Rules
 
@@ -167,7 +792,7 @@ Do not move payload mutation to `input` or output persistence to `beforeRequest`
 - Preserve the single MariaDB transaction and per-session lock in `ApplyLorebookReferenceSnapshot()`. Preserve these observed-state rules: complete replaces the exact scope, complete-empty clears it, revoked clears it, and partial/unavailable or older authoritative observations do not replace the newer current projection.
 - Do not inherit complete-turn guarantees for lorebook snapshots. The route creates a fresh snapshot ID and has no durable idempotency key, source-revision fence, retry queue, outbox, or vector update. Do not blindly retry an ambiguous POST. Account for the adapter's in-process same-scope attempt suppression.
 - Treat Host-reference availability outside direct `mariadb_authority` as **UNKNOWN/unavailable** until the selected Store actually implements `LorebookReferenceStore`; current wrapper/noop/read-shadow modes do not expose it.
-- Treat the complete sorted migration inventory through `012` as the fresh-install and upgrade input. `001_schema.sql` is an entry point into that inventory, not a standalone copy of every later migration; absence of a later table definition from `001` is not an update defect or release blocker.
+- Treat the complete sorted migration inventory, currently through `013`, as the fresh-install and upgrade input. `001_schema.sql` is an entry point into that inventory, not a standalone copy of every later migration; absence of a later table definition from `001` is not an update defect or release blocker.
 - Treat Host-reference freshness/TTL and durable snapshot retry/idempotency policy as **UNKNOWN**. Do not repeat the obsolete omission claim: `DeleteSession()` removes lorebook rows and `session-migration.manifest.v4` declares direct/indirect lorebook ownership.
 
 ## 7. Generated and Packaged File Rules
@@ -177,7 +802,7 @@ Do not move payload mutation to `input` or output persistence to `beforeRequest`
 - Treat [`archive-center-runtime.test.cjs`](archive-center-runtime.test.cjs) as a manual test-only harness. It is not an active entry point and is not selected by current CI/core-regression scripts; never use its passing result as proof of loaded RisuAI behavior.
 - Regenerate a public release with [`ops/build-release-assets.ps1`](ops/build-release-assets.ps1); it invokes [`ops/build-full-package.ps1`](ops/build-full-package.ps1) for the two Windows archives and [`ops/build-posix-managed-packages.ps1`](ops/build-posix-managed-packages.ps1) for the five POSIX archives, then writes one aggregate release checksum list.
 - Build packaged `archive-center-go`, `archive-center-updater`, and `mariadb-schema` binaries from their matching `go-service/cmd` sources. Do not treat every command under `go-service/cmd` as a packaged runtime component.
-- Regenerate packaged SQL from every numbered source file in [`migrations`](migrations), packaged prompts from the active files in [`prompts`](prompts), and manifests/checksums from the build scripts. Verify that a current build includes migrations through `012`.
+- Regenerate packaged SQL from every numbered source file in [`migrations`](migrations), packaged prompts from the active files in [`prompts`](prompts), and manifests/checksums from the build scripts. Verify that a current build includes migrations through `013`.
 - Do not add updater rejection rules based on migration filenames, hashes, SQL shape, or differences from an earlier package. Managed migration files may be added, changed, or removed by a package update; after replacement, fresh and upgraded installations both run the resulting complete sorted inventory. Keep database data, runtime data, local environment files, and secrets outside managed-file replacement.
 - Compare generated artifact identity with active source after rebuilding. Treat every package/hash mentioned in a version work log as evidence for that recorded snapshot only, not as current source or loaded-runtime authority.
 - Keep the embedded PDF font and its retained license as matching source/package inputs. The active implementation uses the unmodified Google Fonts Noto Sans KR variable TTF under OFL 1.1; do not substitute a host-installed font or omit `licenses/NotoSansKR-OFL-1.1.txt` from the package.
@@ -212,7 +837,7 @@ Do not move payload mutation to `input` or output persistence to `beforeRequest`
 | Full prepare fails and legacy memory unexpectedly runs | Transport failure was conflated with the post-response compatibility path | `tryPrepareTurn()`, `onBeforeRequest()`, `applyGoPayloadApplicationPlan()`, `orchestrateTurnHelpers()` | Enter legacy reads after a failed or ineligible `/prepare-turn` call | Verify failed source/full calls preserve the original payload; verify legacy reads occur only after an eligible full response lacks a compatible compact Go plan |
 | Publisher guidance is missing, fabricated, or shown as a successful malformed call | Provider output was empty, malformed, schema-invalid, source-unbound, or treated as truth | [`group_proxy.go`](go-service/internal/httpapi/group_proxy.go), [`group_turn_prepare.go`](go-service/internal/httpapi/group_turn_prepare.go), [`prepare_turn_render.go`](go-service/internal/httpapi/prepare_turn_render.go) | Parse prose loosely, retry with altered parameters, fabricate defaults, fall back to v1, or mark malformed/schema-invalid as succeeded | Test one request, strict `publisher_plan.v2`, accepted/rejected source refs, `ready`/`partial`/`valid_empty`/error statuses, malformed Publisher stage `failed`, turn `completed_with_warning`, all strengths, and all render formats |
 | Lorebook entries vanish, duplicate, leak scope, or become facts | The separate snapshot contract, exact scope, no-idempotency boundary, or `reference_only` authority was ignored | Adapter lorebook symbols, [`group_lorebook_reference.go`](go-service/internal/httpapi/group_lorebook_reference.go), [`prepare_turn_lorebook_reference.go`](go-service/internal/httpapi/prepare_turn_lorebook_reference.go), [`mariadb_lorebook_reference.go`](go-service/internal/store/mariadb_lorebook_reference.go) | Read Host data in Go, blindly retry a POST, index it in Chroma, or save it as canonical memory | Test all modes/statuses, exact scope, duplicate text, out-of-order/concurrent snapshots, rollback, unavailable Store, no-promotion, and loaded-Host shapes |
-| Fresh install or package lacks current tables/code | Migration `010`, `011`, or `012` was omitted, `001_schema.sql` lorebook parity was assumed, or a stale package was used | [`migrations`](migrations), schema loader, build scripts, package manifest/hash | Edit packaged SQL or cite a version-log artifact as current | Build from the audited source, verify all migrations/code/plugin inclusion, and run disposable MariaDB fresh-install plus upgrade |
+| Fresh install or package lacks current tables/code | A current migration through `013` was omitted, `001_schema.sql` lorebook parity was assumed, or a stale package was used | [`migrations`](migrations), schema loader, build scripts, package manifest/hash | Edit packaged SQL or cite a version-log artifact as current | Build from the audited source, verify all migrations/code/plugin inclusion, and run disposable MariaDB fresh-install plus upgrade |
 | `N` at the Windows Ctrl+C prompt still stops the backend | Managed children received the console signal before the launcher confirmation, or the generic BAT prompt was mistaken for service ownership | `windows-console-control.ps1`, `Start-ArchiveChildProcess()`, `Wait-ArchiveBackendLifetime()`, Job Object cleanup | Remove kill-on-close, leak children, or restart an already stopped backend after `N` | Generate Ctrl+C in an isolated console; verify the first `N` preserves the same child PID, the next `Y` enters cleanup, and parent loss still kills the managed process group |
 | User content or credentials appear in diagnostics | Debug previews or bridge/provider errors were logged too broadly | Adapter debug logging, proxy/provider error scrubbing, config handling | Log full payloads, DSNs, tokens, keys, or unbounded provider bodies | Test debug on/off with synthetic secrets and verify masking/bounds |
 
@@ -230,9 +855,9 @@ Apply only the relevant rows, but never substitute a test-only implementation fo
 - [ ] For deletion/rollback, test intact output, replacement/supersession, observed deletion, incomplete observation, poisoned counters, wrong route, changed route revision, digest/token replay, exact tail mutation, queued vector cleanup, and loaded-host Timeline behavior. Never treat opening Timeline as deletion proof.
 - [ ] For empty/continuation and missing-role work, test explicit observed empty input, ordinary non-empty input, Host synthetic-origin `unobserved`, a complete synthetic user/assistant pair, deletion of only the middle user, deletion of the whole tail, `stored_pair_recovered`, `assistant_only`, no assistant reassignment, no silent turn renumber, no canonical/Critic/vector/worldline mutation on conflict, and idempotent dry-run/review. Never use literal Say Nothing prose as the classifier.
 - [ ] For worldline changes, test ordinary turns, confirmed parent/child and nested forks, `user` versus `char` fork boundaries, unresolved/conflicting/cyclic/depth-limited lineage, no parent-post-fork/sibling leakage, per-history-session vector search, canonical hydration turn fences, topology/manual repair, and actual loaded-host branch observation.
-- [ ] For schema changes, validate the complete migration inventory through `012`, the schema executable's sorted-sibling behavior, package inclusion, and disposable MariaDB fresh-install and upgrade paths. Verify that managed migration-file changes do not block the updater and that existing database data, runtime data, local environment files, and secrets remain outside managed-file replacement. Do not invent a requirement that later tables be duplicated into `001_schema.sql`.
+- [ ] For schema changes, validate the complete migration inventory through `013`, the schema executable's sorted-sibling behavior, package inclusion, and disposable MariaDB fresh-install and upgrade paths. Verify that managed migration-file changes do not block the updater and that existing database data, runtime data, local environment files, and secrets remain outside managed-file replacement. Do not invent a requirement that later tables be duplicated into `001_schema.sql`.
 - [ ] For retrieval, suppression, budgets, or ordering, test canonical hydration, exact/lexical eligibility, vector-success lexical evaluation, protected exceptions, occurrence-aware dedupe, world-rule collapse, multiplicity-safe character delivery, objective-memory K scope, global character budgets, complete candidate tails until final selection, whole-item deferral, lane order, empty payload `input_context_text`, hashes, and delivered payload lineage. Inspect [`prepare_turn_memory_policy_test.go`](go-service/internal/httpapi/prepare_turn_memory_policy_test.go), [`prepare_turn_memory_budget_test.go`](go-service/internal/httpapi/prepare_turn_memory_budget_test.go), [`output_fidelity_lineage_test.go`](go-service/internal/httpapi/output_fidelity_lineage_test.go), and [`output_fidelity_guide_efficacy_test.go`](go-service/internal/httpapi/output_fidelity_guide_efficacy_test.go).
-- [ ] For an authorized 4.2 Priority Score change, test score propagation through the production Go source-projection→`PriorityFactSeed`→candidate→budget→render path; the Go-owned current query plus completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`, one embedding per pair, independence from Chroma result `top_k` and final per-group core-memory K, strongest-similarity duplicate merge, and fact-scoring text parity without phrase classification; multiple facts from one source row; full recalled `memories.turn_summary` rendering with its highest child fact score; the same K applied independently to the complete-turn-summary group and every scored fact lane; no unused-slot transfer; exact one-sentence summary/fact delivery dedupe without consuming the fact lane's K; custom per-class UI character budgets on the same `memory_delivery_plan.v2` path; shared `event_recent` character budgeting for complete summaries and event facts; a canonically hydrated `precise_memory_unit` similarity reaching only its matching fact without parent/sibling score inheritance; the dedicated aggregate-memory vector search remaining present; no session-wide Memory-row bypass around aggregate recall; a dedicated existing-metadata `source_table=precise_memory_units` scoring search using the same request query vectors and exact canonical candidate count rather than final K; private hit handoff removal before response; stored importance, RP-turn-distance recency floor, independent bounded speaker/location/storyline biases, and deterministic final rank; identity metadata staying attributable but outside event/current-state K; per-fact visibility/perspective/source lineage without a new rejection gate; zero or unavailable relevance remaining rankable rather than becoming a hard rejection; an ordinary short continuation through the same query path; an explicit older-event query still outranking recency when semantically closer; protected recollection content and its guard staying one unit; Korean one-rune particle inflection; high-importance ordering among similarly relevant facts; protection against an unrelated high-importance takeover; no character-budget fill after each group's K; complete item deferral instead of raw JSON or summary truncation; unseeded-source compatibility fallback; factual candidate/count/character diagnostics; current input/direct correction/privacy parity; Text/PDF selected-order/hash parity; and score/rank lineage through payload and displayed-final observation. For compact `/prepare-turn`, verify `trace_preview.vector_recall_query` contains only the six query source/count diagnostics and does not restore the full `recall_result`, query text, embeddings, or vector values. Do not hard-code one fixture's expected numeric score into production or duplicate the ranker in tests.
+- [ ] For an authorized 4.2 Priority Score change, test score propagation through the production Go source-projection→`PriorityFactSeed`→candidate→budget→render path; the Go-owned current query plus completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`, one embedding per pair, independence from Chroma result `top_k` and final per-group core-memory K, strongest-similarity duplicate merge, and fact-scoring text parity without phrase classification; multiple facts from one source row; full recalled `memories.turn_summary` rendering with the higher of its best child score and observed aggregate-vector score; the same K applied independently to the complete-turn-summary group and every scored fact lane; no unused-slot transfer; exact one-sentence summary/fact delivery dedupe without consuming the fact lane's K; custom per-class UI character budgets on the same `memory_delivery_plan.v2` path; shared `event_recent` character budgeting for complete summaries and event facts; a canonically hydrated `precise_memory_unit` similarity reaching only its matching fact without parent/sibling score inheritance; the dedicated aggregate-memory vector search remaining present; no session-wide Memory-row bypass around aggregate recall; a dedicated existing-metadata `source_table=precise_memory_units` scoring search using the same request query vectors and exact canonical candidate count rather than final K; private hit handoff removal before response; stored importance independent of age, RP-turn-distance recency floor, independent bounded speaker/location/storyline biases, and deterministic final rank; identity metadata staying attributable but outside event/current-state K; per-fact visibility/perspective/source lineage without a new rejection gate; zero or unavailable relevance remaining rankable rather than becoming a hard rejection; an ordinary short continuation through the same query path; an explicit older-event query still outranking recency when semantically closer; protected recollection content and its guard staying one unit; Korean one-rune particle inflection; high-importance ordering among similarly relevant facts; protection against an unrelated high-importance takeover; no character-budget fill after each group's K; complete item deferral instead of raw JSON or summary truncation; unseeded-source compatibility fallback; factual candidate/count/character diagnostics; current input/direct correction/privacy parity; Text/PDF selected-order/hash parity; and score/rank lineage through payload and displayed-final observation. For compact `/prepare-turn`, verify `trace_preview.vector_recall_query` contains only the six query source/count diagnostics and does not restore the full `recall_result`, query text, embeddings, or vector values. Do not hard-code one fixture's expected numeric score into production or duplicate the ranker in tests.
 - [ ] For the authorized 4.2 selectable finalization timing, freeze the current `응답 직후` production behavior first and keep it as the default. In `다음 사용자 입력 시`, test that the actual compact `/prepare-turn` policy survives the production orchestration-result handoff into `onAfterRequest()`; then test exactly-once completion of the edited/rerolled Host pair immediately before the new user row; same-row reroll and edit/regenerate replacement; identical-text new-row append; pending last response; restart; Say Nothing; provider retry; session/branch transition; Yumi Translator model-original input; generic backfill convergence; confirmed-memory horizon before the pending pair; current RisuAI recent-context visibility; and a slow/failed previous Critic that never delays the current main response. Verify that this mode alone preserves the previous nonterminal backend HUD ledger while the current prepare starts, opens one additional request-scoped event stream, and renders current original stages 1–6 above previous original stages 7–12 as separate `1/6~6/6` cards. Verify that accepted output closes only the finished current-generation card and that clicking a terminal previous card removes only that card. Verify that `응답 직후` retains both its single primary `1/12~12/12` HUD and same-session supersession behavior. Use the existing `/complete-turn`, Critic, persistence, reprocessing, and vector-outbox owners rather than a duplicate path, and keep source/regression/package/loaded-host/real-DB/provider evidence separate.
 - [ ] For `memory_injection_baseline.v1`, test all nine surfaces and keep candidate/selected/rendered/payload-applied/displayed-effect stages distinct. Verify stable baseline IDs, same-row lane duplication, cross-surface and current-input/recent-context duplicate candidates, no automatic suppression, no canonical/vector mutation, and no live/display claim from source tests alone.
 - [ ] For PDF memory transport, compare Text/Google/Gateway modes against the same completed `payload_application_plan.v1`; verify exact Unicode searchable extraction including required Hangul/Hanja, deterministic multipage output, one transient base64 field, exact Text removal, one provider document block, other lane/current-input preservation, request-owned retry reuse, unload cleanup, no complete-turn persistence, and Text/original-body fail-open for every generation/body/ID mismatch. Rebuild the Windows package and verify a single live backend/MariaDB/Chroma stack. Keep loaded RisuAI/provider body, actual usage and displayed-final proof as separate gates.
@@ -240,7 +865,7 @@ Apply only the relevant rows, but never substitute a test-only implementation fo
 - [ ] For Host lorebook work, test `off`, `search_only`, and `reference_assist`; observed/partial/unavailable/revoked/empty/out-of-order/concurrent snapshots; exact-scope replacement; same-scope attempt suppression; ambiguous retry; transaction rollback; Store-mode availability; conditional lane order; Publisher `reference_only` support; no canonical promotion; no Chroma write; session delete/migration expectations. Use [`group_lorebook_reference_test.go`](go-service/internal/httpapi/group_lorebook_reference_test.go), [`prepare_turn_lorebook_reference_test.go`](go-service/internal/httpapi/prepare_turn_lorebook_reference_test.go), and [`mariadb_lorebook_reference_test.go`](go-service/internal/store/mariadb_lorebook_reference_test.go).
 - [ ] For indexing, test outbox lease/retry/exact-readback/stale compensation, successful contextual embedding context-chunk compaction, failed/empty embedding retry evidence, and every affected direct writer separately. Run [`memory_vector_outbox_processor_test.go`](go-service/internal/httpapi/memory_vector_outbox_processor_test.go), [`group_reference_vectors_test.go`](go-service/internal/httpapi/group_reference_vectors_test.go), and a real Chroma compatibility/readback test when making live-index claims.
 - [ ] For fallback modes, test failed/ineligible source decision, failed full prepare, eligible response without a compact plan, missing/incompatible application plans, intentional-skip protection-only behavior, missing captured afterRequest context, malformed Publisher/Critic output, token exhaustion, lexical fallback, lorebook unavailable/fail-open behavior, provider-config sync, unreachable MariaDB, and main/reference Chroma failure. Verify that transport failure preserves the original payload and does not start legacy reads.
-- [ ] For packaging, rebuild from active source, validate only the three packaged binaries, compare plugin/schema/prompt identity, verify migrations through `012`, manifests/checksums, strict-semver versus display-label behavior, fresh-installer checksum acceptance/rejection, and package smoke/update/rollback checks. Keep package evidence separate from source, loaded-host, database, provider, and release evidence.
+- [ ] For packaging, rebuild from active source, validate only the three packaged binaries, compare plugin/schema/prompt identity, verify migrations through `013`, manifests/checksums, strict-semver versus display-label behavior, fresh-installer checksum acceptance/rejection, and package smoke/update/rollback checks. Keep package evidence separate from source, loaded-host, database, provider, and release evidence.
 - [ ] For Windows launcher lifetime changes, run [`ops/windows-launcher-ctrl-c-smoke.ps1`](ops/windows-launcher-ctrl-c-smoke.ps1) in an isolated console and choose `N` then `Y`. Verify the same managed child PID survives `N`, confirmed cleanup follows `Y`, the package contains the console-control helper, and Job Object parent-loss cleanup remains present.
 - [ ] Before completion, review `git diff`, preserve unrelated dirty files, confirm no generated output was hand-edited, report JavaScript lines added/removed, and list any adapter-side business logic that remains.
 

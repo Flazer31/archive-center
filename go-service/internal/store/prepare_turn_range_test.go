@@ -30,7 +30,7 @@ func TestMariaPrepareTurnRangeQueriesBoundHistoryAndKeepExplicitOldRows(t *testi
 		"importance", "emotional_boost", "evidence", "emotional_intensity",
 		"narrative_significance", "place_wing", "place_room", "created_at",
 	}).AddRow(25, "range-session", 25, `{"turn_summary":"old vector memory"}`, nil, nil, 5.0, 0.0, nil, 0.0, 0.0, nil, nil, time.Now())
-	mock.ExpectQuery(`(?s)FROM memories.*turn_index >= \?.*id IN \(\?\)`).
+	mock.ExpectQuery(`(?s)FROM memories.*WHERE chat_session_id = \?.*AND \(turn_index < 0 OR .*turn_index >= \?.*turn_index <= \?.*id IN \(\?\)`).
 		WithArgs("range-session", 151, 151, 450, 450, int64(25)).
 		WillReturnRows(memoryRows)
 	memories, err := st.ListMemoriesRange(ctx, "range-session", 151, 450, []int64{25})
@@ -44,7 +44,7 @@ func TestMariaPrepareTurnRangeQueriesBoundHistoryAndKeepExplicitOldRows(t *testi
 		"capture_verification", "committed_gate", "lineage_json", "repair_needed", "tombstoned",
 		"superseded_by_id", "created_at",
 	})
-	mock.ExpectQuery(`(?s)FROM direct_evidence_records.*tombstoned = FALSE.*COALESCE\(superseded_by_id, 0\) = 0.*GREATEST\(source_turn_start.*id IN \(\?\)`).
+	mock.ExpectQuery(`(?s)FROM direct_evidence_records.*tombstoned = FALSE.*COALESCE\(superseded_by_id, 0\) = 0.*source_turn_start < 0 OR .*GREATEST\(source_turn_start.*id IN \(\?\)`).
 		WithArgs("range-session", 151, 151, 450, 450, int64(31)).
 		WillReturnRows(evidenceRows)
 	if _, err := st.ListEvidenceRange(ctx, "range-session", 151, 450, []int64{31}); err != nil {
@@ -54,7 +54,7 @@ func TestMariaPrepareTurnRangeQueriesBoundHistoryAndKeepExplicitOldRows(t *testi
 	kgRows := sqlmock.NewRows([]string{
 		"id", "chat_session_id", "subject", "predicate", "object", "valid_from", "valid_to", "source_turn", "created_at",
 	})
-	mock.ExpectQuery(`(?s)FROM kg_triples.*valid_to IS NULL.*source_turn >= \?`).
+	mock.ExpectQuery(`(?s)FROM kg_triples.*WHERE chat_session_id = \?.*source_turn < 0 OR valid_to IS NULL.*source_turn >= \?`).
 		WithArgs("range-session", 151, 151, 450, 450).
 		WillReturnRows(kgRows)
 	if _, err := st.ListKGTriplesRange(ctx, "range-session", 151, 450); err != nil {

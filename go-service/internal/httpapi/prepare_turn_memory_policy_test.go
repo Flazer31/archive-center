@@ -206,7 +206,7 @@ func TestMemorySelectionRowsStayDistinctAndOnlyTheSameRowIsRenderedOnceAcrossLan
 		Recent:   []store.Memory{first},
 		Trace:    map[string]any{},
 	}
-	lines, trace := prepareTurnMemoryLaneLines(selection, nil)
+	lines, trace := prepareTurnMemoryLaneLines(selection, nil, nil)
 	if len(selection.Relevant) != 2 || len(selection.Recent) != 1 {
 		t.Fatalf("rendering changed selected rows: relevant=%d recent=%d", len(selection.Relevant), len(selection.Recent))
 	}
@@ -316,7 +316,7 @@ func TestProtectedDeliveryGroupingKeepsSameKindArtifactsAtDifferentOrdinals(t *t
 	if count != 2 {
 		t.Fatalf("same-kind protected artifacts at separate array ordinals were merged: %#v", groups)
 	}
-	lines, _ := prepareTurnMemoryLaneLines(prepareTurnMemoryLaneSelection{Relevant: []store.Memory{item}}, nil)
+	lines, _ := prepareTurnMemoryLaneLines(prepareTurnMemoryLaneSelection{Relevant: []store.Memory{item}}, nil, nil)
 	if len(lines) != 2 {
 		t.Fatalf("protected artifact render lost a distinct ordinal while preserving private text concealment: %#v", lines)
 	}

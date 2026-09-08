@@ -6,6 +6,7 @@ package main
 func preciseMemorySchemaStatements() []string {
 	statements := splitSQLStatements(preciseMemorySchemaSQL)
 	return append(statements,
+		"ALTER TABLE precise_memory_units MODIFY memory_subtype LONGTEXT NULL, MODIFY relationship_key LONGTEXT NULL, MODIFY reveal_condition LONGTEXT NULL",
 		"ALTER TABLE precise_memory_units DROP CONSTRAINT IF EXISTS chk_precise_memory_kind",
 		"ALTER TABLE precise_memory_units ADD CONSTRAINT chk_precise_memory_kind CHECK (memory_kind IN ('event', 'state', 'utterance', 'observation', 'boundary', 'profile'))",
 	)
@@ -33,14 +34,14 @@ CREATE TABLE IF NOT EXISTS precise_memory_units (
     root_evidence_id           BIGINT UNSIGNED NULL,
     direct_evidence_ids_json   JSON NOT NULL,
     memory_kind                VARCHAR(80) NOT NULL,
-    memory_subtype             VARCHAR(120) NULL,
+    memory_subtype             LONGTEXT NULL,
     payload_json               JSON NOT NULL,
     actor_entity_id            CHAR(36) NULL,
     subject_entity_id          CHAR(36) NULL,
     affected_entity_id         CHAR(36) NULL,
     location_entity_id         CHAR(36) NULL,
     object_entity_id           CHAR(36) NULL,
-    relationship_key           VARCHAR(255) NULL,
+    relationship_key           LONGTEXT NULL,
     truth_scope                VARCHAR(80) NOT NULL,
     epistemic_mode             VARCHAR(80) NOT NULL,
     authority_class            VARCHAR(80) NOT NULL,
@@ -48,7 +49,7 @@ CREATE TABLE IF NOT EXISTS precise_memory_units (
     review_state               VARCHAR(50) NOT NULL,
     visibility                 VARCHAR(80) NOT NULL,
     knowledge_holder_entity_id CHAR(36) NULL,
-    reveal_condition           VARCHAR(255) NULL,
+    reveal_condition           LONGTEXT NULL,
     confidence                 DOUBLE NOT NULL DEFAULT 0,
     idempotency_key            VARCHAR(255) NOT NULL,
     lifecycle_state            VARCHAR(50) NOT NULL DEFAULT 'active',

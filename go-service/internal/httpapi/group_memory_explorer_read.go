@@ -54,7 +54,7 @@ func listExplorerHistoryMemories(ctx context.Context, st store.Store, segments [
 	}
 	items := []store.Memory{}
 	for _, segment := range segments {
-		rows, err := st.ListMemories(ctx, segment.SessionID, segment.FromTurn, segment.ToTurn)
+		rows, err := st.ListMemories(ctx, segment.SessionID, 0, segment.ToTurn)
 		if err != nil {
 			return nil, err
 		}
@@ -302,6 +302,17 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err == nil {
+			if r.URL.Query().Get("source") == "hypamemory" {
+				imported := make([]store.Memory, 0, len(memories))
+				for _, memory := range memories {
+					var summary map[string]any
+					_ = json.Unmarshal([]byte(memory.SummaryJSON), &summary)
+					if summary["hypamemory_import"] != nil || summary["hypamemory_import_score"] != nil {
+						imported = append(imported, memory)
+					}
+				}
+				memories = imported
+			}
 			sort.SliceStable(memories, func(i, j int) bool {
 				if memories[i].TurnIndex != memories[j].TurnIndex {
 					return memories[i].TurnIndex > memories[j].TurnIndex
@@ -321,6 +332,9 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 				end = len(memories)
 			}
 			for _, m := range memories[start:end] {
+				var summary map[string]any
+				_ = json.Unmarshal([]byte(m.SummaryJSON), &summary)
+				importSource := mapFromAny(summary["hypamemory_import"])
 				embeddingModel := strings.TrimSpace(m.EmbeddingModel)
 				if len(parseFloat32JSONList(m.Embedding)) == 0 {
 					embeddingModel = ""
@@ -335,6 +349,7 @@ func (s *Server) handleExplorerMemories(w http.ResponseWriter, r *http.Request) 
 					"source_turn":            m.TurnIndex,
 					"summary_json":           m.SummaryJSON,
 					"summary_preview":        memorySummaryPreview(m.SummaryJSON),
+					"hypamemory_import":      importSource,
 					"importance":             m.Importance,
 					"emotional_intensity":    nullableFloatZero(m.EmotionalIntensity),
 					"narrative_significance": nullableFloatZero(m.NarrativeSignificance),

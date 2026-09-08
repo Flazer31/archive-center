@@ -1645,10 +1645,20 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 	trace["llm_gateway_service_tier_requested"] = tier
 	if !proxyProviderSupportsServiceTier(provider) {
 		trace["llm_gateway_service_tier_applied"] = false
+		if provider == "vertex" {
+			// Provider switches retain the other transport's setting. Vertex
+			// processing is selected separately by VertexFlexMode headers.
+			trace["llm_gateway_service_tier_skip_reason"] = "vertex_uses_vertex_flex_mode"
+			return nil
+		}
 		trace["llm_gateway_service_tier_skip_reason"] = "provider_not_openai_compatible_service_tier"
-		return fmt.Errorf("llm_gateway_service_tier requires provider openai, llmgateway, vercel, neuralwatt, or custom")
+		return fmt.Errorf("llm_gateway_service_tier requires provider openai, llmgateway, vercel, neuralwatt, custom, or gemini")
 	}
-	if existing, exists := body["service_tier"]; exists {
+	bodyKey := "service_tier"
+	if provider == "gemini" {
+		bodyKey = "serviceTier"
+	}
+	if existing, exists := body[bodyKey]; exists {
 		existingText, isString := existing.(string)
 		existingTier, valid := proxyNormalizeLLMGatewayServiceTier(existingText)
 		if !isString || !valid || existingTier == "" || existingTier != tier {
@@ -1660,14 +1670,18 @@ func proxyApplyLLMGatewayServiceTier(body map[string]any, req dto.ProxyPluginMai
 	} else {
 		trace["llm_gateway_service_tier_source"] = "typed_setting"
 	}
-	body["service_tier"] = tier
+	if provider == "gemini" && tier == "default" {
+		body[bodyKey] = "standard"
+	} else {
+		body[bodyKey] = tier
+	}
 	trace["llm_gateway_service_tier_applied"] = true
 	return nil
 }
 
 func proxyProviderSupportsServiceTier(provider string) bool {
 	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "openai", "llmgateway", "vercel", "neuralwatt", "custom":
+	case "openai", "llmgateway", "vercel", "neuralwatt", "custom", "gemini":
 		return true
 	default:
 		return false
@@ -2141,7 +2155,7 @@ func proxyGeminiThinkingLevel(model, level string) string {
 		allowed = map[string]bool{"minimal": true, "high": true}
 	case strings.Contains(model, "gemini-3-pro-preview"):
 		// low/high only
-	case strings.Contains(model, "gemini-3.1-pro"), strings.Contains(model, "gemini-3.7-flash"):
+	case strings.Contains(model, "gemini-3.1-pro"), strings.Contains(model, "gemini-3.7-flash"), strings.Contains(model, "gemini-3.8-flash"):
 		allowed["medium"] = true
 	case regexp.MustCompile(`gemini-3(?:\.5|\.6)?-(?:flash|flash-lite)`).MatchString(model):
 		allowed["minimal"] = true

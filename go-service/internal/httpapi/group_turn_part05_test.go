@@ -299,14 +299,14 @@ func TestPrepareTurnHTTPPrioritizesEachDirectlyRecalledCharacterWithoutPromoting
 	}
 	corePriority := mapFromAny(plan["core_objective_memory"])
 	if plan["contract_version"] != "memory_delivery_plan.v2" ||
-		corePriority["contract_version"] != "core_priority_memory_delivery.v3" ||
+		corePriority["contract_version"] != "core_priority_memory_delivery.v4" ||
 		boolFromAny(plan["unused_k_transfer_between_groups"]) {
 		t.Fatalf("independent priority-group/K contract mismatch: %#v", plan)
 	}
 	for _, rawGroup := range sliceFromAny(corePriority["quota_groups"]) {
 		group := mapFromAny(rawGroup)
-		if intFromAny(group["selected_count"], 0) > intFromAny(group["requested_max_items"], 0) {
-			t.Fatalf("priority group exceeded its independent K: %#v", group)
+		if intFromAny(group["core_priority_target"], 0) != intFromAny(group["requested_max_items"], 0) || intFromAny(group["deferred_by_limit_count"], 0) != 0 {
+			t.Fatalf("priority group retained the retired count ceiling: %#v", group)
 		}
 	}
 	classText := map[string]string{}

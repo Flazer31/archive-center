@@ -1372,7 +1372,7 @@ func TestProxyLLMGatewayInvalidAndConflictingTiersFailBeforeUpstream(t *testing.
 	}{
 		{name: "invalid", tier: "economy", wantError: "must be standard, flex, or priority"},
 		{name: "conflict", tier: "flex", extraBody: `{"service_tier":"priority"}`, wantError: "conflicts with extra_body_json"},
-		{name: "wrong provider", tier: "flex", wantError: "requires provider openai, llmgateway, vercel, neuralwatt, or custom"},
+		{name: "wrong provider", tier: "flex", wantError: "requires provider openai, llmgateway, vercel, neuralwatt, custom, or gemini"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2136,6 +2136,8 @@ func TestProxyReasoningWireUsesProviderAndEndpointTransport(t *testing.T) {
 		wantNoTemperature  bool
 	}{
 		{name: "LLM Gateway Luna", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "gpt-5.6-luna", effort: "low", wantEffort: "low", wantNoTemperature: true},
+		{name: "LLM Gateway Gemini 3.8 medium", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "gemini-3.8-flash", effort: "medium", wantEffort: "medium"},
+		{name: "OpenRouter Gemini 3.8 medium", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "google/gemini-3.8-flash", effort: "medium", wantReasoning: "medium"},
 		{name: "LLM Gateway DeepSeek low", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "low", wantEffort: "low"},
 		{name: "LLM Gateway DeepSeek medium compatibility", provider: "llmgateway", endpoint: "https://api.llmgateway.io/v1", model: "deepseek-v4-pro:0813-cloud", effort: "medium", wantEffort: "high"},
 		{name: "OpenRouter DeepSeek low", provider: "openrouter", endpoint: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-pro", effort: "low", wantReasoning: "low"},
@@ -2659,6 +2661,45 @@ func TestProxyGeminiThinkingUsesModelGenerationContract(t *testing.T) {
 	}
 	if got := proxyGeminiThinkingLevel("gemini-3.6-flash", "minimal"); got != "minimal" {
 		t.Fatalf("Gemini 3.6 Flash minimal thinking level = %q", got)
+	}
+}
+
+func TestProxyGemini38ThinkingLevelReachesPublisherAndCriticWire(t *testing.T) {
+	for _, purpose := range []string{"publisher", "complete_turn_critic"} {
+		for _, effort := range []string{"none", "low", "medium", "high"} {
+			t.Run(purpose+"/"+effort, func(t *testing.T) {
+				oldClient := proxyHTTPClient
+				calls := 0
+				var body map[string]any
+				proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.URL.String() != "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent" {
+						t.Fatalf("target=%s", r.URL)
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Fatal(err)
+					}
+					return &http.Response{StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"candidates":[{"content":{"parts":[{"text":"{}"}]}}]}`))}, nil
+				})}
+				defer func() { proxyHTTPClient = oldClient }()
+				req := dto.ProxyPluginMainRequest{
+					APIKey: strPtr("gemini-test"), Provider: strPtr("gemini"), Model: strPtr("gemini-3.8-flash"), Endpoint: strPtr("https://generativelanguage.googleapis.com/v1beta"),
+					Messages: []any{map[string]any{"role": "user", "content": "return JSON"}}, ReasoningEffort: &effort,
+				}
+				_, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(context.Background(), req, nil, proxyRequestPolicy{JSONResponse: true, Purpose: purpose})
+				if err != nil || status != http.StatusOK || calls != 1 {
+					t.Fatalf("status=%d calls=%d err=%v", status, calls, err)
+				}
+				generation := mapFromAny(body["generationConfig"])
+				if effort == "none" {
+					if _, present := generation["thinkingConfig"]; present {
+						t.Fatalf("none stopped using provider default: %+v", generation)
+					}
+				} else if thinking := mapFromAny(generation["thinkingConfig"]); thinking["thinkingLevel"] != effort {
+					t.Fatalf("selected %s did not reach provider: %+v", effort, generation)
+				}
+			})
+		}
 	}
 }
 
@@ -3835,6 +3876,147 @@ func TestProxyVertexFlexAndExtraBodyOverrides(t *testing.T) {
 	}
 }
 
+func TestVertexRetainedServiceTierAcrossCriticPaths(t *testing.T) {
+	credential := testVertexServiceAccountJSON(t)
+	endpoint := "https://aiplatform.googleapis.com/v1/projects/proj/locations/global/publishers/google/models"
+	model := "gemini-3.5-flash"
+	for _, path := range []string{"connection_test", "configured_critic"} {
+		for _, tier := range []string{"", "standard", "flex", "priority"} {
+			for _, mode := range []string{"off", "provisioned_then_flex", "flex_only"} {
+				t.Run(path+"/tier="+tier+"/vertex="+mode, func(t *testing.T) {
+					srv := setupTestServer()
+					mux := http.NewServeMux()
+					srv.RegisterRoutes(mux)
+					update, err := json.Marshal(map[string]any{
+						"criticProvider": "vertex", "criticEndpoint": endpoint,
+						"criticApiKey": credential, "criticModel": model,
+						"criticLlmGatewayServiceTier": tier, "criticVertexFlexMode": mode,
+						"criticTemperature": 0.35, "criticMaxCompletionTokens": 1536, "criticTimeout": 30,
+					})
+					if err != nil {
+						t.Fatal(err)
+					}
+					updateRec := httptest.NewRecorder()
+					mux.ServeHTTP(updateRec, httptest.NewRequest(http.MethodPost, "/config/update", bytes.NewReader(update)))
+					if updateRec.Code != http.StatusOK {
+						t.Fatalf("config/update status=%d", updateRec.Code)
+					}
+					cfg := srv.completeTurnExtractionConfig(nil).Critic
+					if !cfg.hasConfig() {
+						t.Fatalf("incomplete test configuration: %v", cfg.missingFields())
+					}
+					if cfg.LLMGatewayServiceTier != tier || cfg.VertexFlexMode != mode {
+						t.Fatal("config sync changed saved processing options")
+					}
+
+					oldClient := proxyHTTPClient
+					t.Cleanup(func() { proxyHTTPClient = oldClient })
+					tokenCalls, generationCalls := 0, 0
+					proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+						if r.Method != http.MethodPost {
+							t.Fatalf("unexpected method: %s", r.Method)
+						}
+						responseText := ""
+						switch r.URL.String() {
+						case "https://oauth2.googleapis.com/token":
+							tokenCalls++
+							responseText = `{"access_token":"vertex-token","expires_in":3600}`
+						case endpoint + "/" + model + ":generateContent":
+							generationCalls++
+							if r.Header.Get("Authorization") != "Bearer vertex-token" {
+								t.Fatal("Vertex authentication changed")
+							}
+							wantShared, wantRequest := "", ""
+							if mode != "off" {
+								wantShared = "flex"
+							}
+							if mode == "flex_only" {
+								wantRequest = "shared"
+							}
+							if r.Header.Get("X-Vertex-AI-LLM-Shared-Request-Type") != wantShared ||
+								r.Header.Get("X-Vertex-AI-LLM-Request-Type") != wantRequest {
+								t.Fatal("Vertex processing headers no longer follow its own setting")
+							}
+							var body map[string]any
+							if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+								t.Fatal(err)
+							}
+							for _, key := range []string{"service_tier", "serviceTier", "llm_gateway_service_tier"} {
+								if _, exists := body[key]; exists {
+									t.Fatalf("Vertex body contains inapplicable %s", key)
+								}
+							}
+							gen := mapFromAny(body["generationConfig"])
+							text := "OK"
+							if path == "configured_critic" {
+								if gen["responseMimeType"] != "application/json" ||
+									gen["temperature"] != cfg.Temperature ||
+									intFromAny(gen["maxOutputTokens"], 0) != int(cfg.MaxCompletionTokens) {
+									t.Fatalf("Critic JSON/temperature/output budget changed: %+v", gen)
+								}
+								text = `{"turn_summary":"The traveler kept the key.","importance_score":6}`
+							} else if gen["responseMimeType"] != nil {
+								t.Fatal("connection test unexpectedly became a Critic extraction")
+							}
+							encoded, err := json.Marshal(map[string]any{
+								"candidates": []any{map[string]any{
+									"content":      map[string]any{"parts": []any{map[string]any{"text": text}}},
+									"finishReason": "STOP",
+								}},
+							})
+							if err != nil {
+								t.Fatal(err)
+							}
+							responseText = string(encoded)
+						default:
+							t.Fatalf("unexpected upstream URL: %s", r.URL.String())
+						}
+						return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header),
+							Body: io.NopCloser(strings.NewReader(responseText))}, nil
+					})}
+
+					if path == "connection_test" {
+						payload, err := json.Marshal(map[string]any{
+							"provider": cfg.Provider, "endpoint": cfg.Endpoint, "api_key": cfg.APIKey, "model": cfg.Model,
+							"llm_gateway_service_tier": cfg.LLMGatewayServiceTier, "vertex_flex_mode": cfg.VertexFlexMode,
+							"messages": []any{map[string]any{"role": "user", "content": "Reply with exactly: OK"}},
+						})
+						if err != nil {
+							t.Fatal(err)
+						}
+						rec := httptest.NewRecorder()
+						mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/proxy/plugin-main?connection_test=critic", bytes.NewReader(payload)))
+						var result map[string]any
+						if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+							t.Fatal(err)
+						}
+						if rec.Code != http.StatusOK || result["connection_ok"] != true || result["final_text"] != "OK" {
+							t.Fatalf("connection test failed: status=%d result=%+v", rec.Code, result)
+						}
+					} else {
+						result, trace, err := srv.runCompleteTurnCritic(context.Background(), "vertex-tier-session", 1,
+							"The traveler found the key.", "The traveler kept the key.", nil, nil, cfg)
+						if err != nil || result["turn_summary"] != "The traveler kept the key." {
+							t.Fatalf("configured Critic failed: %v", err)
+						}
+						overrides := mapFromAny(trace["request_overrides"])
+						if tier != "" && (overrides["llm_gateway_service_tier_applied"] != false ||
+							overrides["llm_gateway_service_tier_skip_reason"] != "vertex_uses_vertex_flex_mode") {
+							t.Fatalf("missing retained-setting diagnostic: %+v", overrides)
+						}
+					}
+					if tokenCalls != 1 || generationCalls != 1 {
+						t.Fatalf("token calls=%d generation calls=%d; expected one of each", tokenCalls, generationCalls)
+					}
+					if saved := srv.completeTurnExtractionConfig(nil).Critic; saved.LLMGatewayServiceTier != tier || saved.VertexFlexMode != mode {
+						t.Fatal("sending a request mutated saved processing options")
+					}
+				})
+			}
+		}
+	}
+}
+
 func TestProxyRejectsInvalidExtraHeadersJSON(t *testing.T) {
 	bad := `["not-object"]`
 	_, status, err := performProxyPluginMain(context.Background(), dto.ProxyPluginMainRequest{
@@ -4337,9 +4519,11 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			t.Fatalf("supervisor request body still exposes the legacy proposal vocabulary: %s", userPrompt)
 		}
 		if !strings.Contains(systemPrompt, "Archive Center's Publisher LLM") ||
-			!strings.Contains(systemPrompt, "The current user input is the only command") ||
-			!strings.Contains(systemPrompt, "Use accepted recent context") {
-			t.Fatalf("supervisor system prompt missing memory-guide boundary: %s", systemPrompt)
+			!strings.Contains(systemPrompt, "The user decides the story's direction") ||
+			!strings.Contains(systemPrompt, "The user can adopt, change or disregard") ||
+			!strings.Contains(systemPrompt, "Accepted recent context and memory supply reference material") ||
+			!strings.Contains(systemPrompt, "taking precedence over the earlier record") {
+			t.Fatalf("runtime Publisher request lost user agency or optional memory context: %s", systemPrompt)
 		}
 		for _, forbidden := range []string{"Story Initiative", "max_new_beats", "narrative_stance", "auto_advance_trigger"} {
 			if strings.Contains(systemPrompt, forbidden) || strings.Contains(userPrompt, `"`+forbidden+`"`) {
@@ -4347,10 +4531,15 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 			}
 		}
 		if !strings.Contains(systemPrompt, "publisher_output.v3") ||
-			!strings.Contains(systemPrompt, "cannot decide user or protagonist action") ||
-			!strings.Contains(systemPrompt, "quiet supported scene") ||
-			!strings.Contains(systemPrompt, "Do not add filler or meet a") {
-			t.Fatalf("supervisor prompt missing bounded publisher contract: %s", systemPrompt)
+			!strings.Contains(systemPrompt, "or execution priorities according to strength") ||
+			!strings.Contains(systemPrompt, "an optional tone suggestion") ||
+			!strings.Contains(systemPrompt, "creative additions to that context") {
+			t.Fatalf("runtime Publisher request lost optional creative planning: %s", systemPrompt)
+		}
+		for _, obsolete := range []string{"cannot decide", "Do not", "forbidden_moves", "guardrails", "scene_mandate", "required_outcomes"} {
+			if strings.Contains(systemPrompt, obsolete) {
+				t.Fatalf("runtime default Publisher still requests a prohibition or mandatory outcome %q: %s", obsolete, systemPrompt)
+			}
 		}
 		response := publisherV3OpenAIResponse("input:test", "preserve the current request boundary")
 		return &http.Response{

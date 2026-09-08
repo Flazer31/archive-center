@@ -255,6 +255,7 @@ func normalizeProtectedSecrets(raw any) []any {
 		}
 		out = append(out, map[string]any{
 			"contract_version":         "protected_secret.v1",
+			"secret_id":                strings.TrimSpace(stringFromMap(secret, "secret_id")),
 			"secret_kind":              firstNonEmpty(kind, "other"),
 			"owner":                    owner,
 			"subject":                  subjects,
@@ -310,6 +311,7 @@ func normalizeCharacterIdentityAccuracy(raw any) []any {
 		knowledgeScope := normalizeProtectedSecretKnowledgeScope(identity["knowledge_scope"], owner)
 		out = append(out, map[string]any{
 			"contract_version":       "character_identity_accuracy.v1",
+			"identity_id":            strings.TrimSpace(stringFromMap(identity, "identity_id")),
 			"canonical_entity_key":   normalizeCharacterKey(owner),
 			"canonical_entity_name":  owner,
 			"surface_identity_name":  surface,
@@ -326,6 +328,8 @@ func normalizeCharacterIdentityAccuracy(raw any) []any {
 			"visibility":             extractionFirstNonEmpty(stringFromMap(identity, "visibility"), "internal_support_only"),
 			"knowledge_scope":        knowledgeScope,
 			"source_evidence_turns":  intsFromAny(identity["source_evidence_turns"]),
+			"evidence_excerpt":       strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(identity, "evidence_excerpt"), stringFromMap(identity, "evidence"))),
+			"transition":             normalizeNarrativeTransition(stringFromMap(identity, "transition")),
 			"raw_evidence_rewritten": false,
 		})
 	}

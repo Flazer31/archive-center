@@ -1,5 +1,11 @@
 # MariaDB Truth Schema Plan ? Archive Center 2.0 R0
 
+> Historical Archive Center 2.0 R0/R1 contract/evidence, reviewed 2026-09-08.
+> “Current”, “planned” and route/schema counts below refer to that original snapshot.
+> For active Go/Host ownership and implemented routes, use [STRUCTURE](../STRUCTURE.md)
+> and [AI_GUARDRAILS](../AI_GUARDRAILS.md), checked against active source.
+> This notice preserves the original contract; it does not declare a new API or schema.
+
 > Status: **R0 design contract**  
 > Live MariaDB migration is **explicitly banned** in R0/R1. This document freezes the canonical truth table design based on 0.8 SQLite schema analysis.
 

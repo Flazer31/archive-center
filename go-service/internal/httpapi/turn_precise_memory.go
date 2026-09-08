@@ -527,7 +527,25 @@ func perspectiveMemoryHolderProposals(item map[string]any, defaultState string, 
 
 func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate {
 	out := []preciseMemoryCandidate{}
-	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
+	items := append([]any{}, sliceFromAny(extraction["protected_secrets"])...)
+	// Identity mappings carry the same per-holder knowledge contract. Feed
+	// their supplied evidence through the existing protected-knowledge writer.
+	for _, raw := range sliceFromAny(extraction["character_identity_accuracy"]) {
+		identity := mapFromAny(raw)
+		owner := extractionFirstNonEmpty(stringFromMap(identity, "canonical_entity_name"), stringFromMap(identity, "true_identity_name"))
+		mapping := preciseMemorySemanticPayload(identity, []string{
+			"surface_identity_name", "true_identity_name", "same_entity", "public_role", "true_role", "public_allegiance", "true_allegiance",
+		})
+		items = append(items, map[string]any{
+			"secret_kind": extractionFirstNonEmpty(stringFromMap(identity, "identity_kind"), "identity"),
+			"secret_id":   stringFromMap(identity, "identity_id"),
+			"owner":       owner, "subject": owner,
+			"summary":         "Identity context: " + mustCompactJSON(mapping),
+			"knowledge_scope": identity["knowledge_scope"], "transition": identity["transition"],
+			"disclosure_policy": identity["reveal_policy"], "evidence_excerpt": identity["evidence_excerpt"],
+		})
+	}
+	for _, raw := range items {
 		item := mapFromAny(raw)
 		excerpt := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence")))
 		value := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "summary"), stringFromMap(item, "secret_summary"), stringFromMap(item, "text")))
@@ -555,7 +573,12 @@ func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []pre
 			if _, duplicate := stateIndexesByHolder[key][state]; duplicate {
 				return
 			}
-			conflict := len(stateIndexesByHolder[key]) > 0
+			conflict := false
+			for existingState := range stateIndexesByHolder[key] {
+				if perspectiveMemoryStateIdentity(existingState) != perspectiveMemoryStateIdentity(state) {
+					conflict = true
+				}
+			}
 			if conflict {
 				for _, index := range stateIndexesByHolder[key] {
 					proposals[index].stateConflict = true
@@ -585,7 +608,7 @@ func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []pre
 			holder := proposal.surface
 			state := proposal.epistemicState
 			payload := preciseMemorySemanticPayload(item, []string{
-				"secret_kind", "owner", "subject", "summary", "sensitivity",
+				"secret_kind", "secret_id", "owner", "subject", "summary", "sensitivity",
 				"evidence_strength", "disclosure_policy",
 				"transition", "evidence_excerpt", "source_span_start", "source_span_end",
 			})
@@ -670,6 +693,15 @@ func normalizePerspectiveMemoryState(raw string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// A disclosure and an existing known fact express compatible holder knowledge.
+// Keep their original states in storage and display; compare their meaning here.
+func perspectiveMemoryStateIdentity(state string) string {
+	if state == "revealed" {
+		return "known"
+	}
+	return state
 }
 
 func perspectiveMemoryVisibility(state string) string {

@@ -236,7 +236,7 @@ func (m *mariadbStore) ListMemoriesRange(ctx context.Context, chatSessionID stri
 			narrative_significance, place_wing, place_room, created_at
 		FROM memories
 		WHERE chat_session_id = ?
-			AND (((? <= 0 OR turn_index >= ?) AND (? <= 0 OR turn_index <= ?))`+idClause+`)
+			AND (turn_index < 0 OR ((? <= 0 OR turn_index >= ?) AND (? <= 0 OR turn_index <= ?))`+idClause+`)
 		ORDER BY turn_index ASC, id ASC
 	`, args...)
 	if err != nil {
@@ -563,7 +563,7 @@ func (m *mariadbStore) ListEvidenceRange(ctx context.Context, chatSessionID stri
 			AND tombstoned = FALSE
 			AND COALESCE(superseded_by_id, 0) = 0
 			AND (
-				((? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) >= ?)
+				source_turn_start < 0 OR ((? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) >= ?)
 			 AND (? <= 0 OR GREATEST(source_turn_start, source_turn_end, COALESCE(turn_anchor, 0)) <= ?))`+idClause+`
 			)
 		ORDER BY source_turn_start ASC, id ASC
@@ -649,7 +649,7 @@ func (m *mariadbStore) ListKGTriplesRange(ctx context.Context, chatSessionID str
 		FROM kg_triples
 		WHERE chat_session_id = ?
 			AND (
-				valid_to IS NULL OR valid_to = 0
+				source_turn < 0 OR valid_to IS NULL OR valid_to = 0
 				OR ((? <= 0 OR source_turn >= ?) AND (? <= 0 OR source_turn <= ?))
 			)
 		ORDER BY id ASC

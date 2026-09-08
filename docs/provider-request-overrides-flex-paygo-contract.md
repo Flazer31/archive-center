@@ -2,7 +2,27 @@
 
 Status: Archive Center backend and adapter implemented; live provider verification pending
 
-Last updated: 2026-07-31
+Last updated: 2026-09-08 (Archive Center source follow-up). Earlier external-provider
+references and the separate Output Quality Layer notes retain their original scope.
+
+## Current Archive Center 4.3 follow-up
+
+The local [test.18](archive-center-4.3-test-build-18.md) includes provider transport
+repairs and five optional preprocessing roles. Each role can use its own provider,
+endpoint, model, key, temperature, token limit, reasoning and Flex settings, or
+explicitly inherit the Publisher connection. The configuration owner is
+[prepare_turn_multi_agent.go](../go-service/internal/httpapi/prepare_turn_multi_agent.go);
+outgoing transport is owned by
+[proxy_provider.go](../go-service/internal/httpapi/proxy_provider.go).
+
+A retained OpenAI-compatible service-tier setting does not reject a Vertex call:
+Go records `vertex_uses_vertex_flex_mode` and uses `vertex_flex_mode` for Vertex
+headers. This covers the shared provider path used by Publisher, Critic and
+preprocessing calls. Gemini uses `serviceTier`; OpenAI-compatible providers use
+`service_tier`. These are implemented request mappings, not proof that every
+provider/model/account accepts Flex or that a live request received Flex billing.
+See the [4.3 work log](archive-center-4.3-preprocessing-work-log.md) for configuration
+and regression evidence. No live provider call was made for this document refresh.
 
 ## Purpose
 
@@ -372,7 +392,8 @@ Backend request field:
 The field name remains backward-compatible with the earlier LLM Gateway-only
 setting. The Go provider owner normalizes it and writes the upstream
 OpenAI-compatible `service_tier` field for provider `openai`, `llmgateway`,
-`vercel`, or `custom`:
+`vercel`, `neuralwatt`, or `custom`. Native `gemini` uses `serviceTier` and maps
+standard to `standard` rather than `default`:
 
 | UI value | Upstream value |
 |---|---|
@@ -382,12 +403,13 @@ OpenAI-compatible `service_tier` field for provider `openai`, `llmgateway`,
 
 Rules:
 
-- The typed tier is accepted only with provider `openai`, `llmgateway`,
-  `vercel`, or `custom`.
-- `standard` is omitted so the provider keeps its normal default. Only an
-  explicit Flex or Priority selection is forwarded. Provider applicability,
-  normalization, and conflicts are owned by Go; JavaScript uses its provider
-  list only to present the relevant settings row.
+- The typed tier transport supports `openai`, `llmgateway`, `vercel`,
+  `neuralwatt`, `custom` and native `gemini`. Vertex uses the separate header mode;
+  an old retained tier setting is skipped with a trace rather than rejecting Vertex.
+- An empty typed setting adds no tier. Normal settings may omit the standard
+  choice; a direct typed `standard` request is normalized to the upstream value
+  in the table (or `standard` for Gemini). Provider applicability, normalization
+  and conflicts are owned by Go; JavaScript presents the relevant settings row.
 - Invalid values and a conflicting `extra_body_json.service_tier` fail before
   an upstream request.
 - Existing untyped `extra_body_json.service_tier` remains usable when the

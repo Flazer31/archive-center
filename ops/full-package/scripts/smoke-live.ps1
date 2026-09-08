@@ -99,7 +99,7 @@ $search = Invoke-Json POST "/search" @{
     top_k = 5
 }
 $rollback = Invoke-Json DELETE "/rollback/1?chat_session_id=$SessionId&req_source=full_package_smoke"
-$sessionDelete = Invoke-Json DELETE "/sessions/$SessionId"
+$sessionDelete = Invoke-Json DELETE "/sessions/${SessionId}?req_source=timeline_manual_delete&reason=full_package_smoke"
 
 $report = [ordered]@{
     generated_at = [DateTimeOffset]::UtcNow.ToString("o")

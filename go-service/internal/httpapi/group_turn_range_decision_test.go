@@ -722,6 +722,10 @@ func (s *durableSessionIdentityBindingStore) SaveForkLineageRecord(_ context.Con
 		}
 		if (s.lineage[index].LineageState == "confirmed" && s.lineage[index].ContractVersion == record.ContractVersion) ||
 			s.lineage[index].ImportedAt.After(record.ImportedAt) {
+			if s.lineage[index].LineageState == "confirmed" && record.LineageState == "confirmed" &&
+				(s.lineage[index].InheritedItemsJSON == "" || s.lineage[index].InheritedItemsJSON == "[]") {
+				s.lineage[index].InheritedItemsJSON = record.InheritedItemsJSON
+			}
 			return s.lineage[index], nil
 		}
 		record.ID = s.lineage[index].ID

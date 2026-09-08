@@ -115,7 +115,10 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		}
 	}
 	skip := map[string]bool{
-		"turn_summary": true, "summary": true, "scene_summary": true,
+		// Retain the import provenance canonically; project its turn_summary
+		// through the same public/private handling as every other memory.
+		"hypamemory_import": true,
+		"turn_summary":      true, "summary": true, "scene_summary": true,
 		"core_meaning": true, "emotional_shift": true,
 		"evidence_excerpts": true,
 		"belief_updates":    true, "protected_secrets": true,

@@ -122,7 +122,11 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 	rawTurnSummary := extraction["turn_summary"]
 	summary := normalizeCriticTurnSummary(rawTurnSummary)
-	if summary == "" && (isStructuredCriticTurnSummaryValue(rawTurnSummary) || looksLikeStructuredCriticPayloadText(extractionStringFromAny(rawTurnSummary))) {
+	if original, ok := mapFromAny(extraction["hypamemory_import"])["original_text"].(string); ok {
+		// Host-imported text is source material, not a Critic JSON response.
+		summary = original
+		extraction["turn_summary"] = original
+	} else if summary == "" && (isStructuredCriticTurnSummaryValue(rawTurnSummary) || looksLikeStructuredCriticPayloadText(extractionStringFromAny(rawTurnSummary))) {
 		if fallback := strings.Join(strings.Fields(content), " "); fallback != "" {
 			summary = fallback
 			extraction["turn_summary"] = fallback

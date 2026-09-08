@@ -68,7 +68,9 @@ type prepareTurnLorebookReferenceResult struct {
 	DeliveryCount                int              `json:"delivery_count"`
 	DeliveryChars                int              `json:"delivery_chars"`
 	PublisherCount               int              `json:"publisher_count"`
+	SelectionSource              string           `json:"selection_source,omitempty"`
 	candidates                   []prepareTurnLorebookCandidate
+	preprocessingRefs            *[]string
 	deliveryText                 string
 	delivered                    []prepareTurnLorebookDeliveredItem
 }
@@ -126,6 +128,17 @@ func finalizePrepareTurnLorebookReference(
 		budgetChars = 0
 	}
 	result.BudgetChars = budgetChars
+	aiSelection := result.preprocessingRefs != nil
+	result.SelectionSource = "go_default"
+	selectedRanks := map[string]int{}
+	if aiSelection {
+		result.SelectionSource = "ai"
+		for rank, ref := range *result.preprocessingRefs {
+			if _, exists := selectedRanks[ref]; !exists {
+				selectedRanks[ref] = rank
+			}
+		}
+	}
 
 	observed := make([]prepareTurnLorebookObservedText, 0, len(messages)+len(deliveredContextTexts)+1)
 	if strings.TrimSpace(rawUserInput) != "" {
@@ -153,20 +166,42 @@ func finalizePrepareTurnLorebookReference(
 	candidateLines := []string{}
 	groups := []selectedGroup{}
 	groupIndexes := map[string]int{}
-	for candidateIndex, candidate := range result.candidates {
+	candidateIndexes := make([]int, len(result.candidates))
+	for index := range candidateIndexes {
+		candidateIndexes[index] = index
+	}
+	if aiSelection {
+		sort.SliceStable(candidateIndexes, func(i, j int) bool {
+			left, leftSelected := selectedRanks[result.candidates[candidateIndexes[i]].EntryRef]
+			right, rightSelected := selectedRanks[result.candidates[candidateIndexes[j]].EntryRef]
+			if leftSelected != rightSelected {
+				return leftSelected
+			}
+			return left < right
+		})
+	}
+	for _, candidateIndex := range candidateIndexes {
+		candidate := result.candidates[candidateIndex]
 		text := strings.TrimSpace(candidate.Entry.Content)
 		if text == "" {
 			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "deferred_empty_content", "", false)
 			continue
 		}
 		candidateLines = append(candidateLines, "- "+text)
+		if aiSelection {
+			if _, selected := selectedRanks[candidate.EntryRef]; !selected {
+				result.DeferredCount++
+				setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_ai_not_selected", "", false)
+				continue
+			}
+		}
 		if source := prepareTurnLorebookPayloadPresenceSource(text, observed); source != "" {
 			result.AlreadyPresentCount++
 			result.DeferredCount++
 			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_already_present", source, false)
 			continue
 		}
-		if len(candidate.MatchedKeys) == 0 && candidate.ContextOverlap == 0 {
+		if !aiSelection && len(candidate.MatchedKeys) == 0 && candidate.ContextOverlap == 0 {
 			result.NoContextMatchCount++
 			result.DeferredCount++
 			setPrepareTurnLorebookCandidateDisposition(result, candidateIndex, "excluded_no_context_match", "", false)
@@ -195,6 +230,9 @@ func finalizePrepareTurnLorebookReference(
 		result.CandidateChars = len([]rune(header + "\n" + strings.Join(candidateLines, "\n")))
 	}
 	sort.SliceStable(groups, func(i, j int) bool {
+		if aiSelection {
+			return false // Groups already follow the received reference order.
+		}
 		if groups[i].KeyMatched != groups[j].KeyMatched {
 			return groups[i].KeyMatched
 		}
@@ -211,8 +249,8 @@ func finalizePrepareTurnLorebookReference(
 	}
 	frontierGroups := make([]selectedGroup, 0, len(groups))
 	for _, group := range groups {
-		insideFrontier := group.ContextOverlap == strongestContextOverlap
-		if hasKeyMatchedGroup {
+		insideFrontier := aiSelection || group.ContextOverlap == strongestContextOverlap
+		if !aiSelection && hasKeyMatchedGroup {
 			insideFrontier = group.KeyMatched
 		}
 		if insideFrontier {
@@ -236,6 +274,8 @@ func finalizePrepareTurnLorebookReference(
 	if len(groups) == 0 {
 		result.Status = "empty"
 		switch {
+		case aiSelection && len(selectedRanks) == 0:
+			result.ReasonCode = "lorebook_ai_selected_empty"
 		case result.AlreadyPresentCount > 0 && result.NoContextMatchCount == 0:
 			result.ReasonCode = "lorebook_relevant_context_already_present"
 		case result.NoContextMatchCount > 0:
@@ -280,7 +320,7 @@ func finalizePrepareTurnLorebookReference(
 		} else {
 			additional++
 		}
-		if used+additional > budgetChars {
+		if used+additional > budgetChars && !aiSelection {
 			budgetDeferred++
 			result.DeferredCount++
 			for _, candidateIndex := range group.CandidateIndexes {
@@ -322,6 +362,42 @@ func finalizePrepareTurnLorebookReference(
 	result.deliveryText = header + "\n" + strings.Join(lines, "\n")
 	result.Status = "ready"
 	result.ReasonCode = "lorebook_reference_delivered"
+}
+
+// Supplies existing scene-matched reference text to the optional world specialist.
+// Canonical memory, the Host lorebook, and the ordinary selection remain unchanged.
+func prepareTurnLorebookPreprocessingCandidates(result prepareTurnLorebookReferenceResult) []map[string]any {
+	items := []map[string]any{}
+	if result.Mode != prepareTurnLorebookModeReferenceAssist || result.ScopeStatus != "observed" || result.Status == "unavailable" {
+		return items
+	}
+	ordered := append([]prepareTurnLorebookCandidate(nil), result.candidates...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		leftKey, rightKey := len(ordered[i].MatchedKeys) > 0, len(ordered[j].MatchedKeys) > 0
+		if leftKey != rightKey {
+			return leftKey
+		}
+		return ordered[i].ContextOverlap > ordered[j].ContextOverlap
+	})
+	for _, candidate := range ordered {
+		if len(candidate.MatchedKeys) == 0 && candidate.ContextOverlap == 0 {
+			continue
+		}
+		label := strings.TrimSpace(candidate.Entry.Comment)
+		if label == "" {
+			label = strings.TrimSpace(candidate.Entry.Key)
+		}
+		if label == "" {
+			label = strings.TrimSpace(strings.TrimLeft(strings.SplitN(strings.TrimSpace(candidate.Entry.Content), "\n", 2)[0], "#"))
+		}
+		items = append(items, map[string]any{
+			"id": candidate.EntryRef, "text": strings.TrimSpace(candidate.Entry.Content),
+			"label":        compactPrepareTurnLine(label, 160),
+			"matched_keys": candidate.MatchedKeys, "context_overlap": candidate.ContextOverlap,
+			"authority": "reference_only",
+		})
+	}
+	return items
 }
 
 func setPrepareTurnLorebookCandidateDisposition(result *prepareTurnLorebookReferenceResult, candidateIndex int, disposition, observedSource string, delivered bool) {

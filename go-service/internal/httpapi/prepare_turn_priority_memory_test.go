@@ -56,8 +56,8 @@ func Test42PriorityMemoryProductionAssemblyKeepsStoredScoreThroughPayloadPlan(t 
 	if !strings.Contains(finalText, "casual conversation") || strings.Contains(finalText, "unrelated harbor") {
 		t.Fatalf("independent summary/fact K did not keep the next related fact ahead of unrelated memory: %q", finalText)
 	}
-	if intFromAny(plan["turn_summary_selected_count"], 0) != 1 || intFromAny(plan["priority_fact_selected_count"], 0) != 1 || boolFromAny(plan["low_score_backfill_after_k"]) {
-		t.Fatalf("independent summary/fact K contract mismatch: %#v", plan)
+	if intFromAny(plan["turn_summary_selected_count"], 0) != 2 || intFromAny(plan["priority_fact_selected_count"], 0) != 0 || !boolFromAny(plan["low_score_backfill_after_k"]) {
+		t.Fatalf("core target / remaining character budget contract mismatch: %#v", plan)
 	}
 
 	foundStoredImportance := false
@@ -110,7 +110,7 @@ func Test42PriorityMemorySelectsCompleteTurnSummaryByHighestChildFactScore(t *te
 	}
 }
 
-func Test42PriorityMemoryUsesIndependentKPerFactLane(t *testing.T) {
+func Test43PriorityMemoryUsesIndependentCoreTargetPerFactLane(t *testing.T) {
 	out := &prepareTurnInjectionAssembly{
 		CharacterObjectiveText: "[Character Objective States]\n- Mira guards the sealed archive door.\n- Rook catalogs a distant observatory.",
 		CanonWorldText:         "[Item, Location, and World States]\n- archive_door status: sealed\n- desert_observatory status: mapped",
@@ -124,8 +124,8 @@ func Test42PriorityMemoryUsesIndependentKPerFactLane(t *testing.T) {
 	if !strings.Contains(finalText, "Mira guards") || !strings.Contains(finalText, "archive_door status: sealed") {
 		t.Fatalf("one global K still prevented independent fact lanes from contributing: %q", finalText)
 	}
-	if intFromAny(plan["priority_fact_selected_count"], 0) != 2 {
-		t.Fatalf("each populated fact lane did not receive one K slot: %#v", plan["core_objective_memory"])
+	if intFromAny(plan["priority_fact_selected_count"], 0) != 4 {
+		t.Fatalf("core target prevented remaining details from using space: %#v", plan["core_objective_memory"])
 	}
 	if boolFromAny(plan["unused_k_transfer_between_groups"]) {
 		t.Fatalf("unused K was transferable between groups: %#v", plan)
@@ -192,8 +192,8 @@ func Test42PriorityMemoryProductionAssemblyPreservesTypedSourceScores(t *testing
 	)
 	plan := assembly.MemoryDeliveryPlan
 	finalText := extractionStringFromAny(plan["final_text"])
-	if !strings.Contains(finalText, "must return") || strings.Contains(finalText, "may polish") {
-		t.Fatalf("stored pending-thread priority did not control global K: %q", finalText)
+	if !strings.Contains(finalText, "must return") || !strings.Contains(finalText, "may polish") || strings.Index(finalText, "must return") >= strings.Index(finalText, "may polish") {
+		t.Fatalf("stored pending-thread priority did not order the core before the additional detail: %q", finalText)
 	}
 	found := false
 	for _, raw := range prepareTurnMemoryLineageSlice(plan["priority_items"]) {
@@ -426,7 +426,7 @@ func Test42PriorityMemoryLifecycleMetadataCannotPreemptFinalScore(t *testing.T) 
 		"_priority_memory_current_turn": 100,
 	})
 	finalText := extractionStringFromAny(plan["final_text"])
-	if !strings.Contains(finalText, "resumed in the current scene") || strings.Contains(finalText, "completed long ago") {
+	if !strings.Contains(finalText, "resumed in the current scene") || !strings.Contains(finalText, "completed long ago") || strings.Index(finalText, "resumed in the current scene") >= strings.Index(finalText, "completed long ago") {
 		t.Fatalf("lifecycle rank still overrode the higher final score: %q items=%#v", finalText, plan["priority_items"])
 	}
 	items := prepareTurnMemoryLineageSlice(plan["priority_items"])
@@ -439,9 +439,9 @@ func Test42PriorityMemoryLifecycleMetadataCannotPreemptFinalScore(t *testing.T) 
 		t.Fatalf("higher-scoring current fact was not selected: %#v", items)
 	}
 	deferred := mapFromAny(items[1])
-	if extractionStringFromAny(deferred["selection_reason"]) != "priority_memory_lane_max_items" ||
+	if extractionStringFromAny(deferred["selection_status"]) != "selected" ||
 		extractionStringFromAny(deferred["lifecycle_transition"]) != "complete" {
-		t.Fatalf("terminal lifecycle fact was not kept until ordinary K selection: %#v", items)
+		t.Fatalf("older lifecycle fact was not retained after the higher-scoring core fact: %#v", items)
 	}
 }
 
@@ -484,7 +484,7 @@ func Test42PriorityMemoryLifecycleTransitionDoesNotChangeScore(t *testing.T) {
 	}
 }
 
-func Test42PriorityMemoryTurnDistanceDecaysStoredImportance(t *testing.T) {
+func Test43PriorityMemoryTurnDistancePreservesImportance(t *testing.T) {
 	out := &prepareTurnInjectionAssembly{Counts: map[string]any{}}
 	out.PriorityFactSeeds = []prepareTurnPriorityFactSeed{
 		{
@@ -508,11 +508,15 @@ func Test42PriorityMemoryTurnDistanceDecaysStoredImportance(t *testing.T) {
 	}
 	recent, old := mapFromAny(items[0]), mapFromAny(items[1])
 	if !strings.Contains(extractionStringFromAny(recent["complete_text"]), "recent") ||
-		extractionFloatFromAny(recent["importance_after_turn_decay"], 0) <= extractionFloatFromAny(old["importance_after_turn_decay"], 0) ||
 		extractionFloatFromAny(recent["final_score"], 0) <= extractionFloatFromAny(old["final_score"], 0) {
-		t.Fatalf("RP-turn distance did not make the equally relevant recent fact more important: %#v", items)
+		t.Fatalf("separate recency contribution did not favor the otherwise equal recent fact: %#v", items)
 	}
-	if plan["importance_decay_policy"] != "stored_importance_times_rp_turn_distance_recency" {
+	for _, item := range []map[string]any{recent, old} {
+		if extractionFloatFromAny(item["importance_after_turn_decay"], -1) != out.PriorityFactSeeds[0].Importance {
+			t.Fatalf("age changed the importance contribution: %#v", item)
+		}
+	}
+	if plan["importance_decay_policy"] != "stored_importance_preserved_recency_separate" {
 		t.Fatalf("importance decay policy mismatch: %#v", plan)
 	}
 }
@@ -565,7 +569,7 @@ func Test42PriorityMemoryScoresAtomicSentencesWithoutParentScoreLeak(t *testing.
 		priorityMemoryTestContext(1),
 	)
 	plan := assembly.MemoryDeliveryPlan
-	if intFromAny(plan["priority_candidate_count"], 0) != 3 || intFromAny(plan["priority_fact_selected_count"], 0) != 1 ||
+	if intFromAny(plan["priority_candidate_count"], 0) != 3 || intFromAny(plan["priority_fact_selected_count"], 0) != 2 ||
 		intFromAny(plan["turn_summary_selected_count"], 0) != 1 {
 		t.Fatalf("one stored row was not projected as one complete summary plus two atomic facts: %#v", plan)
 	}
@@ -810,7 +814,7 @@ func Test42PriorityMemoryShortContinueUsesLatestAcceptedAssistantForFactAffinity
 		"_priority_memory_query": query,
 	})
 	finalText := extractionStringFromAny(plan["final_text"])
-	if !strings.Contains(finalText, "Mira kept the silver latch") || strings.Contains(finalText, "Rook") {
+	if !strings.Contains(finalText, "Mira kept the silver latch") || !strings.Contains(finalText, "Rook") || strings.Index(finalText, "Mira kept the silver latch") >= strings.Index(finalText, "Rook") {
 		t.Fatalf("short continuation did not reuse the latest accepted dialogue context precisely: %q items=%#v", finalText, plan["priority_items"])
 	}
 	if plan["relevance_query_source"] != "assembly_context" {
@@ -835,7 +839,7 @@ func Test42PriorityMemoryProductionAssemblyCarriesLatestAcceptedAssistantIntoSho
 		context,
 	)
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
-	if !strings.Contains(finalText, "Mira kept the silver latch") || strings.Contains(finalText, "Rook") {
+	if !strings.Contains(finalText, "Mira kept the silver latch") || !strings.Contains(finalText, "Rook") || strings.Index(finalText, "Mira kept the silver latch") >= strings.Index(finalText, "Rook") {
 		t.Fatalf("production assembly lost or broadened short-continuation affinity: %q items=%#v", finalText, assembly.MemoryDeliveryPlan["priority_items"])
 	}
 	if !boolFromAny(assembly.Counts["previous_assistant_used_for_priority_fact_affinity"]) || boolFromAny(assembly.Counts["previous_assistant_raw_used_for_search"]) {
@@ -1304,7 +1308,7 @@ func Test42PriorityMemoryFactVectorSeparatesSamePersonAndPlaceEvents(t *testing.
 		context,
 	)
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
-	if !strings.Contains(finalText, "편지를 내밀었다") || strings.Contains(finalText, "처음 만났다") {
+	if !strings.Contains(finalText, "편지를 내밀었다") || !strings.Contains(finalText, "처음 만났다") || strings.Index(finalText, "편지를 내밀었다") >= strings.Index(finalText, "처음 만났다") {
 		t.Fatalf("same-character/location hard negative beat the current event: %q items=%#v", finalText, assembly.MemoryDeliveryPlan["priority_items"])
 	}
 	foundSemantic := false
@@ -1338,7 +1342,7 @@ func Test42PriorityMemoryExplicitOldEventQueryCanStillWin(t *testing.T) {
 	}
 	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, perspective)
 	finalText := extractionStringFromAny(plan["final_text"])
-	if !strings.Contains(finalText, "배상문을 처음 만났다") || strings.Contains(finalText, "편지를 내밀었다") {
+	if !strings.Contains(finalText, "배상문을 처음 만났다") || !strings.Contains(finalText, "편지를 내밀었다") || strings.Index(finalText, "배상문을 처음 만났다") >= strings.Index(finalText, "편지를 내밀었다") {
 		t.Fatalf("explicit old-event request was erased by recency: %q items=%#v", finalText, plan["priority_items"])
 	}
 }
@@ -1372,5 +1376,109 @@ func Test42PriorityMemoryIdentityMetadataAttachesWithoutConsumingK(t *testing.T)
 	}
 	if intFromAny(plan["identity_metadata_count"], 0) < 2 || intFromAny(plan["priority_candidate_count"], 0) != 1 {
 		t.Fatalf("identity metadata still counted as event facts: %#v", plan)
+	}
+}
+
+func Test43PriorityAggregateVectorReachesSummaryWithoutBoostingSiblingFacts(t *testing.T) {
+	const sid = "semantic-summary-repair"
+	for _, k := range []int{1, 5} {
+		t.Run(fmt.Sprintf("K%d", k), func(t *testing.T) {
+			memories := []store.Memory{{ID: 701, ChatSessionID: sid, TurnIndex: 10, Importance: .9,
+				SummaryJSON: `{"turn_summary":"Mira unmasked herself before Rowan, ending the masquerade. A harbor vendor arranged empty baskets.","narrative_events":[{"event":"Mira unmasked herself before Rowan, ending the masquerade.","actor":"Mira","visibility":"public"},{"event":"A harbor vendor arranged empty baskets.","visibility":"public"}]}`}}
+			for i := 0; i < 2*k+1; i++ {
+				raw, err := json.Marshal(map[string]any{"turn_summary": fmt.Sprintf("Rowan reviews notice number %d about the identity of a visiting merchant.", i)})
+				if err != nil {
+					t.Fatal(err)
+				}
+				memories = append(memories, store.Memory{ID: int64(710 + i), ChatSessionID: sid, TurnIndex: 80 + i, Importance: .5, SummaryJSON: string(raw)})
+			}
+			original, err := json.Marshal(memories)
+			if err != nil {
+				t.Fatal(err)
+			}
+			similarity := .97
+			hits := []map[string]any{{"id": "memory:" + sid + ":701", "tier": "memory", "source_table": "memories", "source_row_id": "701", "chat_session_id": sid, "similarity": similarity, "similarity_source": "cosine_from_query_and_stored_embedding"}}
+			shadow := map[string]any{"status": "ready", "memory_search_result": "ok", "search_result": "ok", "memory_search_results": hits, "search_results": hits}
+			query := "What does Rowan know about the hidden identity?"
+			assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+				k, 30000, query, "default", nil, shadow, nil, map[string]any{
+					"_priority_memory_enabled": true, "_priority_memory_max_items": k,
+					"_priority_memory_current_turn": 100, "_priority_memory_query": query,
+				})
+			plan := assembly.MemoryDeliveryPlan
+			if !strings.Contains(extractionStringFromAny(plan["final_text"]), "unmasked herself") {
+				t.Errorf("retrieved disclosure lost in final memory: %s", plan["final_text"])
+			}
+			foundSummary, foundSibling := false, false
+			for _, raw := range prepareTurnMemoryLineageSlice(plan["turn_summary_items"]) {
+				item := mapFromAny(raw)
+				if strings.Contains(extractionStringFromAny(item["complete_text"]), "unmasked herself") {
+					foundSummary = true
+					if item["selection_status"] != "selected" || extractionFloatFromAny(item["source_vector_similarity"], 0) != similarity || item["score_source"] != "aggregate_memory_vector_similarity" {
+						t.Errorf("summary lost its own vector observation: %#v", item)
+					}
+				}
+			}
+			for _, raw := range prepareTurnMemoryLineageSlice(plan["priority_items"]) {
+				item := mapFromAny(raw)
+				if strings.Contains(extractionStringFromAny(item["complete_text"]), "harbor vendor") {
+					foundSibling = true
+					lineage := mapFromAny(item["score_lineage"])
+					if extractionFloatFromAny(item["relevance_score"], 0) >= similarity || boolFromAny(lineage["source_selection_score_used_as_fact_relevance"]) {
+						t.Errorf("aggregate similarity leaked into unrelated sibling: %#v", item)
+					}
+				}
+			}
+			if !foundSummary || !foundSibling {
+				t.Fatal("fixture did not expose both source summary and sibling candidate")
+			}
+			after, err := json.Marshal(memories)
+			if err != nil || !bytes.Equal(original, after) {
+				t.Fatal("selection mutated the supplied canonical memories")
+			}
+		})
+	}
+}
+
+func Test43PriorityLexicalParentScoreIsNotAnAggregateVector(t *testing.T) {
+	memories := []store.Memory{{ID: 733, ChatSessionID: "lexical-summary", TurnIndex: 9, Importance: .6, SummaryJSON: `{"turn_summary":"Mira sealed the archive door."}`}}
+	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		5, 30000, "Mira sealed the archive door.", "default", nil, nil, nil, priorityMemoryTestContext(5))
+	items := prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryPlan["turn_summary_items"])
+	if len(items) == 0 {
+		t.Fatal("fixture produced no summary")
+	}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		if boolFromAny(item["source_vector_similarity_observed"]) || item["score_source"] == "aggregate_memory_vector_similarity" {
+			t.Errorf("lexical source score was presented as vector similarity: %#v", item)
+		}
+	}
+}
+
+func Test43PriorityAllImportanceValuesRemainIndependentOfAge(t *testing.T) {
+	for points := 1; points <= 10; points++ {
+		t.Run(fmt.Sprintf("points_%d", points), func(t *testing.T) {
+			importance := float64(points) / 10
+			for _, current := range []int{2, 100, 10000} {
+				out := &prepareTurnInjectionAssembly{Counts: map[string]any{}}
+				out.PriorityFactSeeds = []prepareTurnPriorityFactSeed{{
+					Lane: "event_recent", SourceTable: "memories", Tier: "required", SourceTurn: 1,
+					Importance: importance, ImportancePresent: true, SemanticSimilarity: .8, SemanticSimilarityObserved: true,
+					Fact: prepareTurnPriorityMemoryFact{Text: "Mira remembers the promise.", FamilyKey: "promise", ValueKey: "promise", Structured: true},
+				}}
+				plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+					"_priority_memory_enabled": true, "_priority_memory_max_items": 1, "_priority_memory_current_turn": current,
+				})
+				items := prepareTurnMemoryLineageSlice(plan["priority_items"])
+				if len(items) != 1 {
+					t.Fatalf("missing scoring fixture at turn %d", current)
+				}
+				item := mapFromAny(items[0])
+				if extractionFloatFromAny(item["importance_score"], -1) != importance || extractionFloatFromAny(item["importance_after_turn_decay"], -1) != importance {
+					t.Errorf("turn %d reduced the stored importance or its contribution: %#v", current, item)
+				}
+			}
+		})
 	}
 }

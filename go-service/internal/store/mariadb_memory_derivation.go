@@ -1433,12 +1433,10 @@ func (m *mariadbStore) CoalesceInactiveMemoryVectorDeleteOperations(
 	if chatSessionID == "" {
 		return 0, fmt.Errorf("chat session id is required")
 	}
-	m.memoryDerivationWriteMu.Lock()
-	defer m.memoryDerivationWriteMu.Unlock()
 	now = nonZeroTime(now)
-	var total int64
+	var total, afterID int64
 	for {
-		staleRejected, err := m.coalesceInactiveMemoryVectorDeleteBatch(ctx, chatSessionID, now)
+		staleRejected, err := m.coalesceInactiveMemoryVectorDeleteBatch(ctx, chatSessionID, now, &afterID)
 		if err != nil {
 			return total, err
 		}
@@ -1453,7 +1451,14 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 	ctx context.Context,
 	chatSessionID string,
 	now time.Time,
+	afterID *int64,
 ) (int64, error) {
+	// Each batch keeps the existing duplicate/lease rules, but releases the
+	// writer between commits so a large historical backlog cannot monopolize it.
+	// The indexed join and scalar MIN avoid MariaDB's EXISTS semijoin plan,
+	// which otherwise scans/sorts the historical outbox again for every batch.
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, err
@@ -1466,11 +1471,11 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 	}()
 	rows, err := tx.QueryContext(ctx, `
 		SELECT o.id
-		FROM memory_vector_outbox o
-		JOIN memory_source_revisions s
+		FROM memory_vector_outbox o FORCE INDEX (PRIMARY)
+		STRAIGHT_JOIN memory_source_revisions s FORCE INDEX (uq_memory_source_revision)
 		  ON s.chat_session_id = o.chat_session_id
 		 AND s.source_revision = o.source_revision
-		WHERE o.chat_session_id = ?
+		WHERE o.chat_session_id = ? AND o.id > ?
 		  AND o.operation = 'delete'
 		  AND o.required_source_state = 'inactive'
 		  AND s.lifecycle_state <> 'active'
@@ -1487,9 +1492,9 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 		      AND active_lease.status = 'leased'
 		      AND active_lease.lease_until > ?
 		  )
-		  AND EXISTS (
-		    SELECT 1
-		    FROM memory_vector_outbox keep
+		  AND (
+		    SELECT MIN(keep.id)
+		    FROM memory_vector_outbox keep FORCE INDEX (idx_memory_vector_document)
 		    WHERE keep.chat_session_id = o.chat_session_id
 		      AND keep.source_revision = o.source_revision
 		      AND keep.document_id = o.document_id
@@ -1506,11 +1511,11 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 		        OR keep.created_at < o.created_at
 		        OR (keep.created_at = o.created_at AND keep.id < o.id)
 		      )
-		  )
+		  ) IS NOT NULL
 		ORDER BY o.id
 		LIMIT ?
 		FOR UPDATE
-	`, chatSessionID, now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize)
+	`, chatSessionID, *afterID, now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize)
 	if err != nil {
 		return 0, err
 	}
@@ -1522,6 +1527,10 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 			return 0, err
 		}
 		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return 0, err
 	}
 	if err := rows.Close(); err != nil {
 		return 0, err
@@ -1560,6 +1569,8 @@ func (m *mariadbStore) coalesceInactiveMemoryVectorDeleteBatch(
 		return 0, err
 	}
 	committed = true
+	// Re-scanning completed batches makes old duplicate cleanup quadratic.
+	*afterID = ids[len(ids)-1]
 	return affected, nil
 }
 

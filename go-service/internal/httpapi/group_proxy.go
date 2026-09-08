@@ -238,10 +238,16 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	guideMode := normalizeNarrativeGuideMode(extractionStringFromAny(supervisorPack["guide_mode"]))
 	modelSupportPacket := publisherModelSupportPacket(mapFromAny(supervisorPack["support_packet"]))
 	modelExecutionContract := publisherModelExecutionContract(mapFromAny(supervisorPack["response_execution_contract"]))
+	strengthProfile := publisherStrengthProfile(extractionStringFromAny(supervisorPack["guide_strength"]))
+	modelStrengthPolicy := map[string]any{}
+	for _, key := range []string{"strength", "guidance_application", "user_authority", "response_instruction"} {
+		modelStrengthPolicy[key] = strengthProfile[key]
+	}
 	payload := map[string]any{
 		"chat_session_id":             sid,
 		"guide_mode":                  guideMode,
 		"guide_strength":              extractionStringFromAny(supervisorPack["guide_strength"]),
+		"guide_strength_policy":       modelStrengthPolicy,
 		"guide_focus":                 supervisorPack["guide_focus"],
 		"supervisor_support_packet":   modelSupportPacket,
 		"response_execution_contract": modelExecutionContract,
@@ -251,7 +257,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	supportPacket := modelSupportPacket
 	currentTurnChars := providerCallJSONComponentChars(supportPacket["current_input"])
 	auxiliaryMemoryChars := 0
-	for _, key := range []string{"accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context"} {
+	for _, key := range []string{"accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context", "delivered_preprocessing_notes"} {
 		auxiliaryMemoryChars += providerCallJSONComponentChars(supportPacket[key])
 	}
 	lorebookReferenceChars := providerCallJSONComponentChars(supportPacket["delivered_lorebook_reference"])
@@ -261,8 +267,8 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	}
 	supportPacketChars := providerCallJSONComponentChars(modelSupportPacket)
 	supportPacketTextChars := publisherModelTextChars(modelSupportPacket)
-	executionContractChars := providerCallJSONComponentChars(modelExecutionContract)
-	executionInstructionChars := publisherModelInstructionChars(modelExecutionContract)
+	executionContractChars := providerCallJSONComponentChars(modelExecutionContract) + providerCallJSONComponentChars(modelStrengthPolicy)
+	executionInstructionChars := publisherModelInstructionChars(modelExecutionContract) + len([]rune(extractionStringFromAny(modelStrengthPolicy["user_authority"]))) + len([]rune(extractionStringFromAny(modelStrengthPolicy["response_instruction"])))
 	callLedger := newProviderCallBudgetLedger("publisher", systemPrompt, userPrompt, providerCallBudgetComponents{
 		CurrentTurnChars:                      currentTurnChars,
 		AuxiliaryMemoryChars:                  auxiliaryMemoryChars,
@@ -409,13 +415,17 @@ func publisherModelSupportPacket(packet map[string]any) map[string]any {
 		out["current_input"] = current
 	}
 	lanes := map[string][]string{
-		"accepted_recent_context":      {"source_ref", "final_text", "role", "authority"},
-		"delivered_memory":             {"source_ref", "final_text", "protected_guard", "authority"},
-		"delivered_character_memory":   {"source_ref", "final_text", "class", "kind", "privacy_guard", "authority"},
-		"delivered_context":            {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
-		"delivered_lorebook_reference": {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
+		"accepted_recent_context":       {"source_ref", "final_text", "role", "authority"},
+		"delivered_memory":              {"source_ref", "final_text", "protected_guard", "authority"},
+		"delivered_character_memory":    {"source_ref", "final_text", "class", "kind", "privacy_guard", "authority"},
+		"delivered_context":             {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
+		"delivered_lorebook_reference":  {"source_ref", "source_refs", "final_text", "class", "kind", "source_scope", "authority"},
+		"delivered_preprocessing_notes": {"source_refs", "final_text", "role", "round", "kind", "authority", "evidence_ref", "evidence_id", "scope_refs"},
 	}
 	for lane, keys := range lanes {
+		if lane == "delivered_preprocessing_notes" && packet[lane] == nil {
+			continue
+		}
 		items := make([]any, 0)
 		for _, raw := range outputFidelityLineageSlice(packet[lane]) {
 			if item := publisherModelSupportItem(mapFromAny(raw), keys); len(item) > 0 {
@@ -423,6 +433,9 @@ func publisherModelSupportPacket(packet map[string]any) map[string]any {
 			}
 		}
 		out[lane] = items
+	}
+	if catalog := packet["preprocessing_source_catalog"]; catalog != nil {
+		out["preprocessing_source_catalog"] = catalog
 	}
 	return out
 }
@@ -440,9 +453,14 @@ func publisherModelSupportItem(item map[string]any, keys []string) map[string]an
 func publisherModelExecutionContract(contract map[string]any) map[string]any {
 	out := map[string]any{
 		"planner_support_language": extractionStringFromAny(contract["planner_support_language"]),
-		"concealment_active":       boolFromAny(mapFromAny(contract["concealment_guard"])["active"]),
 	}
-	for _, key := range []string{"must_preserve", "must_respond", "must_account", "must_not_assert"} {
+	for _, field := range [][2]string{
+		{"must_preserve", "continuity_context"},
+		{"must_respond", "response_focus"},
+		{"must_account", "development_opportunities"},
+		{"must_not_assert", "continuity_anchors"},
+	} {
+		key := field[0]
 		rawItems := contract[key]
 		if wrapped := mapFromAny(rawItems); len(wrapped) > 0 {
 			rawItems = wrapped["items"]
@@ -455,14 +473,14 @@ func publisherModelExecutionContract(contract map[string]any) map[string]any {
 				items = append(items, projected)
 			}
 		}
-		out[key] = items
+		out[field[1]] = items
 	}
 	return out
 }
 
 func publisherModelTextChars(packet map[string]any) int {
 	total := 0
-	for _, lane := range []string{"current_input", "accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context", "delivered_lorebook_reference"} {
+	for _, lane := range []string{"current_input", "accepted_recent_context", "delivered_memory", "delivered_character_memory", "delivered_context", "delivered_lorebook_reference", "delivered_preprocessing_notes"} {
 		values := outputFidelityLineageSlice(packet[lane])
 		if lane == "current_input" {
 			values = []any{packet[lane]}
@@ -479,7 +497,7 @@ func publisherModelTextChars(packet map[string]any) int {
 
 func publisherModelInstructionChars(contract map[string]any) int {
 	total := 0
-	for _, key := range []string{"must_preserve", "must_respond", "must_account", "must_not_assert"} {
+	for _, key := range []string{"continuity_context", "response_focus", "development_opportunities", "continuity_anchors"} {
 		for _, raw := range outputFidelityLineageSlice(contract[key]) {
 			total += len([]rune(extractionStringFromAny(mapFromAny(raw)["instruction"])))
 		}
@@ -535,11 +553,14 @@ func publisherStrengthProfile(strength string) map[string]any {
 		"persistent_carry":            false,
 		"pressure_independent":        true,
 		"item_policy":                 "supported_items_only_no_filler",
+		"user_authority":              "The user's latest direction, explicit setting revisions, chosen actions and pacing take precedence at every strength. Adapt conflicting guidance to that intent. The main response freely chooses wording, staging, NPC portrayal and creative developments; the user's choices remain theirs. Strength is independent of pressure: quiet scenes, pauses and failed attempts can receive concrete depiction at any level.",
 	}
 	if strength == "none" {
 		profile["publisher_call"] = "none"
 		profile["roles"] = []string{}
 		profile["guidance_explicitness"] = "disabled"
+		profile["guidance_application"] = "disabled"
+		profile["response_instruction"] = "Narrative guidance is disabled."
 		return profile
 	}
 	profile["publisher_call"] = "single_source_backed"
@@ -547,14 +568,24 @@ func publisherStrengthProfile(strength string) map[string]any {
 	switch strength {
 	case "medium":
 		profile["guidance_explicitness"] = "balanced"
+		profile["guidance_application"] = "connected_recommendations"
+		profile["response_instruction"] = "Use the guidance as connected recommendations for the current response, linking reaction, detail and continuity to the user's direction. Adapt or leave aside recommendations as useful to the scene."
 	case "strong":
 		profile["guidance_explicitness"] = "direct"
+		profile["guidance_application"] = "response_priorities"
+		profile["response_instruction"] = "Treat compatible guidance as execution priorities for this response. Give the user's chosen action concrete enactment and an observable scene or NPC response. Realize these priorities in a way that serves the user's chosen direction and pace."
 	case "extreme":
 		profile["guidance_explicitness"] = "ordered"
+		profile["guidance_application"] = "response_priorities"
+		profile["response_instruction"] = "Treat compatible guidance as execution priorities for this response. Connect the user's chosen action, the scene or NPC reaction, and its immediate consequence within this response, at the user's chosen pace. A pause or failed attempt can have an observable response and consequence of its own."
 	case "maximum":
 		profile["guidance_explicitness"] = "execution_brief"
+		profile["guidance_application"] = "response_priorities"
+		profile["response_instruction"] = "Carry compatible guidance through this response as a clear execution brief. Where suited to the user's direction and pace, shape an opening, development and landing around the chosen action, reactions and immediate consequences. Give each compatible priority a visible realization, with creative staging and the user's subsequent choices left open."
 	default:
 		profile["guidance_explicitness"] = "gentle"
+		profile["guidance_application"] = "optional_hints"
+		profile["response_instruction"] = "Use the guidance as brief optional hints for continuity, behavior and subtext. Adopt, adapt or leave aside each hint as useful to the user's direction."
 	}
 	return profile
 }
@@ -626,6 +657,7 @@ func normalizePublisherResponseContent(resp map[string]any) (string, map[string]
 
 func parsePublisherJSONObject(content string) (map[string]any, error) {
 	content = strings.TrimSpace(strings.TrimPrefix(content, "\ufeff"))
+	content = repairJSONCandidate(content)
 	if content == "" {
 		return nil, fmt.Errorf("publisher JSON is empty")
 	}

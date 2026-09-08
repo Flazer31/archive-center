@@ -47,17 +47,19 @@ type step23ForkLineageRecordResponse struct {
 }
 
 type worldlineViewModel struct {
-	ContractVersion      string `json:"contract_version"`
-	State                string `json:"state"`
-	CurrentSessionID     string `json:"current_session_id"`
-	ParentSessionID      string `json:"parent_session_id,omitempty"`
-	ForkTurn             int    `json:"fork_turn,omitempty"`
-	ForkSourceMessageID  string `json:"fork_source_message_id,omitempty"`
-	ForkSourceRole       string `json:"fork_source_role,omitempty"`
-	InheritedThroughTurn int    `json:"inherited_through_turn"`
-	Reason               string `json:"reason"`
-	CandidateParentID    string `json:"candidate_parent_session_id,omitempty"`
-	CandidateForkTurns   []int  `json:"candidate_fork_turns,omitempty"`
+	ContractVersion        string                          `json:"contract_version"`
+	State                  string                          `json:"state"`
+	CurrentSessionID       string                          `json:"current_session_id"`
+	ParentSessionID        string                          `json:"parent_session_id,omitempty"`
+	ForkTurn               int                             `json:"fork_turn,omitempty"`
+	ForkSourceMessageID    string                          `json:"fork_source_message_id,omitempty"`
+	ForkSourceRole         string                          `json:"fork_source_role,omitempty"`
+	InheritedThroughTurn   int                             `json:"inherited_through_turn"`
+	Reason                 string                          `json:"reason"`
+	CandidateParentID      string                          `json:"candidate_parent_session_id,omitempty"`
+	CandidateForkTurns     []int                           `json:"candidate_fork_turns,omitempty"`
+	MessageOriginsRecorded bool                            `json:"message_origins_recorded,omitempty"`
+	OriginReadRequest      *risuWorldlineOriginReadRequest `json:"origin_read_request,omitempty"`
 }
 
 type worldlineTopologyViewModel struct {
@@ -753,14 +755,15 @@ func worldlineViewModelFromRecord(record store.ForkLineageRecord) worldlineViewM
 		}
 	}
 	vm := worldlineViewModel{
-		ContractVersion:     worldlineViewModelContract,
-		State:               state,
-		CurrentSessionID:    strings.TrimSpace(record.ChatSessionID),
-		ForkSourceMessageID: strings.TrimSpace(record.ForkSourceMessageID),
-		ForkSourceRole:      strings.TrimSpace(record.ForkSourceRole),
-		Reason:              reason,
-		CandidateParentID:   strings.TrimSpace(detail.CandidateParentID),
-		CandidateForkTurns:  append([]int(nil), detail.CandidateForkTurns...),
+		ContractVersion:        worldlineViewModelContract,
+		State:                  state,
+		CurrentSessionID:       strings.TrimSpace(record.ChatSessionID),
+		ForkSourceMessageID:    strings.TrimSpace(record.ForkSourceMessageID),
+		ForkSourceRole:         strings.TrimSpace(record.ForkSourceRole),
+		Reason:                 reason,
+		CandidateParentID:      strings.TrimSpace(detail.CandidateParentID),
+		CandidateForkTurns:     append([]int(nil), detail.CandidateForkTurns...),
+		MessageOriginsRecorded: readRisuWorldlineOrigins(record.InheritedItemsJSON) != nil,
 	}
 	if state == "confirmed" {
 		vm.ParentSessionID = strings.TrimSpace(record.CopiedFromSessionID)

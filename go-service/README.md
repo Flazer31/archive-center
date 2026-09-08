@@ -1,6 +1,10 @@
 # Go Service
 
-Status: Archive Center 3.5 live backend.
+Status (2026-09-08): active Archive Center 4.3 source, packaged in the local
+Windows `4.3.0-test.21` build. The public release record remains 4.2.0.
+This identifies the source/package, not a running backend or a loaded RisuAI plugin.
+See the [current status](../docs/archive-center-4.3-status-summary.md) and
+[test.21 verification](../docs/archive-center-4.3-test-build-21.md).
 
 This directory contains the Go-primary Archive Center backend. In the packaged
 `live` profile it owns request planning, memory and source selection, prompt
@@ -16,7 +20,7 @@ RisuAI host adapter.
 - `internal/httpapi/` - RisuAI bridge, turn lifecycle, memory, source and
   diagnostic HTTP handlers.
 - `internal/store/` - MariaDB canonical persistence.
-- `migrations/` - Versioned MariaDB schema.
+- [`../migrations/`](../migrations/README.md) - Versioned MariaDB schema, beside `go-service`.
 
 ## Runtime Boundary
 
@@ -49,9 +53,11 @@ data ownership boundary.
 
 ## Validation
 
-Use workspace-local Go cache/temp directories when the default cache is not
-writable, then run:
+From `source/go-service`, use a writable Go cache/temp directory when needed, then run:
 
 ```powershell
 go test ./... -count=1
 ```
+
+See the [test map](../tests/README.md) for Host regressions and the distinction
+between fixture checks and tests requiring MariaDB, ChromaDB or a real provider.

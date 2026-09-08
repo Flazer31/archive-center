@@ -1543,7 +1543,7 @@ func parseJSONFromLLMContent(content string) (map[string]any, error) {
 		}
 	}
 
-	structuralRepair := repairStructuralJSONQuotes(normalizeLLMJSONText(content))
+	structuralRepair := repairJSONCandidate(normalizeLLMJSONText(content))
 	repairedCandidate, repairExtractErr := extractJSONCandidateFromLLMContent(structuralRepair)
 	if repairExtractErr != nil {
 		if err != nil {
@@ -1625,9 +1625,66 @@ func normalizeLLMJSONText(content string) string {
 }
 
 func repairJSONCandidate(candidate string) string {
-	repaired := replaceJSONLiteralsOutsideStrings(candidate)
+	// Shared syntax recovery for model responses. Quoted source text stays intact;
+	// role-specific field types and acceptance remain with their existing owners.
+	repaired := replaceJSONLiteralsOutsideStrings(repairStructuralJSONQuotes(candidate))
+	repaired = repairJSONMissingArrayClosers(repaired)
 	repaired = removeJSONTrailingCommasOutsideStrings(repaired)
 	return strings.TrimSpace(repaired)
+}
+
+// Recover an omitted ] when a complete array is followed by an explicit object
+// field or its enclosing }. EOF is not a boundary: truncated values stay partial.
+func repairJSONMissingArrayClosers(input string) string {
+	var b strings.Builder
+	b.Grow(len(input))
+	stack := []int{}
+	inString, escaped := false, false
+	for i := 0; i < len(input); i++ {
+		ch := input[i]
+		if inString {
+			b.WriteByte(ch)
+			if escaped {
+				escaped = false
+			} else if ch == '\\' {
+				escaped = true
+			} else if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+		if (ch == ',' || ch == '}') && len(stack) >= 2 && input[stack[len(stack)-1]] == '[' && input[stack[len(stack)-2]] == '{' {
+			boundary := ch == '}'
+			if ch == ',' {
+				rest := input[i+1:]
+				decoder := json.NewDecoder(strings.NewReader(rest))
+				var key string
+				if decoder.Decode(&key) == nil {
+					boundary = strings.HasPrefix(strings.TrimSpace(rest[decoder.InputOffset():]), ":")
+				}
+			}
+			arrayStart := stack[len(stack)-1]
+			if boundary && json.Valid([]byte(input[arrayStart:i]+"]")) {
+				b.WriteByte(']')
+				stack = stack[:len(stack)-1]
+			}
+		}
+		switch ch {
+		case '"':
+			inString = true
+		case '[', '{':
+			stack = append(stack, i)
+		case ']', '}':
+			if len(stack) > 0 {
+				open := input[stack[len(stack)-1]]
+				if (ch == ']' && open == '[') || (ch == '}' && open == '{') {
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+		b.WriteByte(ch)
+	}
+	return b.String()
 }
 
 func repairStructuralJSONQuotes(input string) string {

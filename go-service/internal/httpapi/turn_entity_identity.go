@@ -441,11 +441,13 @@ func (p *entityIdentityProjection) persistPerspectiveRoleIdentities(ctx context.
 			))
 		}
 	}
-	for _, raw := range sliceFromAny(extraction["protected_secrets"]) {
-		scope := mapFromAny(mapFromAny(raw)["knowledge_scope"])
-		for _, key := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
-			for _, value := range stringsFromAny(scope[key]) {
-				add(value)
+	for _, field := range []string{"protected_secrets", "character_identity_accuracy"} {
+		for _, raw := range sliceFromAny(extraction[field]) {
+			scope := mapFromAny(mapFromAny(raw)["knowledge_scope"])
+			for _, key := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
+				for _, value := range stringsFromAny(scope[key]) {
+					add(value)
+				}
 			}
 		}
 	}

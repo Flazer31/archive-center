@@ -100,11 +100,12 @@ Return one sparse JSON object. Use supported memory surface names as top-level k
 - Omitting `subjective_entity_memories` remains valid for an objective-only or third-party-only turn with no distinct grounded perspective.
 - Use `owner_entity_role=protagonist` for the player/persona and `owner_entity_role=npc`, usually `owner_visibility=owner_private`, for private NPC memories. Keep NPC-only memories out of persona capsules.
 - Subjective memories are support-only and cannot overwrite world truth, canonical memory, evidence, KG, character state, or rules. NPC-private memory affects only that NPC until revealed.
-- `protected_secrets` covers private affection, guilt, shame, mistakes, lies, hidden plans/identity/role/allegiance/lineage/succession, protected power, or equivalent knowledge. Preserve owner, subject, sensitivity, evidence strength, knowledge scope, and disclosure policy when useful.
-- Use `transition=reveal` only for a directly evidenced targeted reveal. Matching subjective memory should carry `secret_guard:true` and a restrictive reveal policy. Stored secret truth never authorizes spontaneous confession, public narration, or unrelated-character discovery.
+- `protected_secrets`: private feelings, mistakes, plans, identities, roles, allegiance, lineage or powers. Keep owner, subject, sensitivity, evidence strength, knowledge scope and disclosure policy.
+- `transition=reveal` records a source-observed disclosure. Its recipient may also appear in `known_by`. Matching subjective memory keeps `secret_guard:true` and its recorded disclosure policy.
 
 [Identity And Persona]
-- `character_identity_accuracy` records evidence-bound same-person, cover/disguise, hidden role/allegiance, successor, lineage, or protected-power mappings. Include surface/true identity, kind, knowledge scope, and reveal policy when supported; never hard-code aliases or force revelation.
+- `character_identity_accuracy`: same-person, cover, role/allegiance, successor, lineage or power mappings, with surface/true identity, kind, knowledge scope and reveal policy.
+- For both fields, place the supporting current-turn quote in `evidence_excerpt` and `evidence_excerpts`; retain a supplied `identity_id` or `secret_id`. `revealed_to` records disclosure recipients.
 - `persona_capsule_candidates` is optional proposal-only `support_only_persona_recollection` and requires later user/operator approval. Use only protagonist/player recollections that may carry to another session, loop, regression, reincarnation, isekai, or same-character continuation.
 - A capsule candidate is not canonical truth, KG, state, or rule. It may include memory text, source turn, importance, emotional weight, portability, mode, tags, evidence, and injection policy. Mark identity-carryover secrets with `secret_guard=true`. Automatic capsule creation is disabled.
 

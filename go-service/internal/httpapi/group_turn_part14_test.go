@@ -99,6 +99,7 @@ func TestPrepareTurnReadsOnlyConfirmedWorldlineOwnedHistory(t *testing.T) {
 			"branch-2": {
 				{ID: 5, ChatSessionID: "branch-2", TurnIndex: 9, SummaryJSON: `{"turn_summary":"NESTED_COPIED_PREFIX_MUST_NOT_DUPLICATE"}`, Importance: 10},
 				{ID: 6, ChatSessionID: "branch-2", TurnIndex: 10, SummaryJSON: `{"turn_summary":"NESTED_CHILD_OWNED_MEMORY brass observatory door"}`, Importance: 10},
+				{ID: 7, ChatSessionID: "branch-2", TurnIndex: -1, SummaryJSON: `{"turn_summary":"HYPAMEMORY_ORIGINAL brass observatory oath engraved on the key","hypamemory_import":{"original_text":"HYPAMEMORY_ORIGINAL brass observatory oath engraved on the key"}}`, Importance: 10},
 			},
 		},
 		chatBySession: map[string][]store.ChatLog{},
@@ -147,7 +148,7 @@ func TestPrepareTurnReadsOnlyConfirmedWorldlineOwnedHistory(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	allText := extractionStringFromAny(response["injection_text"]) + "\n" + extractionStringFromAny(response["input_context_text"])
-	for _, marker := range []string{"ROOT_INHERITED_MEMORY", "BRANCH_ONE_OWNED_MEMORY", "NESTED_CHILD_OWNED_MEMORY"} {
+	for _, marker := range []string{"ROOT_INHERITED_MEMORY", "BRANCH_ONE_OWNED_MEMORY", "NESTED_CHILD_OWNED_MEMORY", "HYPAMEMORY_ORIGINAL"} {
 		if !strings.Contains(allText, marker) {
 			t.Fatalf("confirmed history marker %q missing from prepare-turn payload: %q", marker, allText)
 		}

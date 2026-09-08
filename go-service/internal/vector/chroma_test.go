@@ -3,6 +3,7 @@ package vector
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -294,6 +295,96 @@ func TestChromaStoreUpsertSearchCountDelete(t *testing.T) {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("missing request %q in:\n%s", want, joined)
 		}
+	}
+}
+
+func TestChromaSearchAcceptsLargeSuccessfulResponse(t *testing.T) {
+	const count, dimensions = 128, 2048
+	embedding := make([]float32, dimensions)
+	for i := range embedding {
+		embedding[i] = 0.1234567
+	}
+	ids, documents := make([]string, count), make([]string, count)
+	metadatas := make([]map[string]any, count)
+	embeddings := make([][]float32, count)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("precise_memory:large-session:unit-%d", i)
+		documents[i] = fmt.Sprintf("Complete canonical evidence %d", i)
+		metadatas[i] = map[string]any{"chat_session_id": "large-session", "source_table": "precise_memory_units", "source_row_id": fmt.Sprintf("unit-%d", i)}
+		embeddings[i] = embedding
+	}
+	payload, err := json.Marshal(map[string]any{
+		"ids": [][]string{ids}, "documents": [][]string{documents},
+		"metadatas": [][]map[string]any{metadatas}, "embeddings": [][][]float32{embeddings},
+	})
+	if err != nil || len(payload) <= 1<<20 {
+		t.Fatalf("fixture must exceed the former response limit: bytes=%d err=%v", len(payload), err)
+	}
+	var queryBody map[string]any
+	requests := []string{}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/collections/archive_center_vectors"):
+			_, _ = w.Write([]byte(`{"id":"large-collection","name":"archive_center_vectors"}`))
+		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/collections/large-collection/query"):
+			if err := json.NewDecoder(r.Body).Decode(&queryBody); err != nil {
+				t.Errorf("decode query: %v", err)
+				http.Error(w, "invalid query", http.StatusBadRequest)
+				return
+			}
+			_, _ = w.Write(payload)
+		default:
+			t.Errorf("unexpected Chroma request: %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	defer ts.Close()
+	store, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	docs, err := store.Search(context.Background(), "large-session", embedding, count, `source_table == "precise_memory_units"`)
+	if err != nil {
+		t.Fatalf("Search must decode the full successful response (%d bytes): %v", len(payload), err)
+	}
+	if len(docs) != len(ids) {
+		t.Fatalf("Search returned %d of %d candidates", len(docs), len(ids))
+	}
+	for i, doc := range docs {
+		if doc.ID != ids[i] || doc.DocumentText != documents[i] || doc.SourceRowID != metadatas[i]["source_row_id"] || !reflect.DeepEqual(doc.Embedding, embedding) || !doc.SimilarityAvailable || doc.Similarity < 0.999 {
+			t.Fatalf("candidate %d lost canonical text, metadata or embedding", i)
+		}
+	}
+	wantWhere := map[string]any{"$and": []any{map[string]any{"chat_session_id": "large-session"}, map[string]any{"source_table": "precise_memory_units"}}}
+	if len(requests) != 2 || queryBody["n_results"] != float64(count) || !reflect.DeepEqual(queryBody["where"], wantWhere) || !reflect.DeepEqual(queryBody["include"], []any{"metadatas", "documents", "distances", "embeddings"}) {
+		t.Fatalf("search changed the requested scope, count or call count: requests=%v query=%#v", requests, queryBody)
+	}
+}
+
+func TestChromaErrorResponseRemainsBounded(t *testing.T) {
+	const tail = "error-body-tail-must-not-be-included"
+	payload := strings.Repeat("e", 1<<20) + tail
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v2/failed-query" {
+			t.Errorf("unexpected Chroma request: %s %s", r.Method, r.URL.Path)
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer ts.Close()
+	raw, err := NewChromaStore(ts.URL, "archive_center_vectors", "/api/v2")
+	if err != nil {
+		t.Fatalf("NewChromaStore: %v", err)
+	}
+	status, err := raw.(*chromaStore).doJSON(context.Background(), http.MethodGet, "/failed-query", nil, nil, http.StatusOK)
+	if status != http.StatusServiceUnavailable || err == nil {
+		t.Fatalf("HTTP error was not preserved: status=%d err=%v", status, err)
+	}
+	want := "chroma store: GET /failed-query returned 503: " + strings.Repeat("e", 1<<20)
+	if err.Error() != want || strings.Contains(err.Error(), tail) {
+		t.Fatalf("HTTP error body limit changed: got %d bytes, want %d", len(err.Error()), len(want))
 	}
 }
 

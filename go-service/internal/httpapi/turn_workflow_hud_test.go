@@ -721,6 +721,52 @@ func TestTurnWorkflowHUDAttemptIsScopedToLogicalTurnAndSupersedesCompletedAttemp
 	}
 }
 
+func TestTurnWorkflowHUDCorrectsEstimatedTurnBeforeRecovery(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("original", "session", 7)
+	ledger.complete("original")
+	ledger.begin("reroll", "session", 8)
+	ledger.setLogicalTurn("reroll", 7)
+	view, _ := ledger.snapshot("reroll")
+	if view.LogicalTurn != 7 || view.BackendTurn != 7 || view.Attempt != 2 {
+		t.Fatalf("HUD retained its prepare estimate: %+v", view)
+	}
+	ledger.setLogicalTurn("reroll", 7)
+	view, _ = ledger.snapshot("reroll")
+	if view.Attempt != 2 {
+		t.Fatalf("same confirmed turn incremented attempt: %d", view.Attempt)
+	}
+	ledger.complete("reroll")
+	next := ledger.begin("next", "session", 8)
+	if next.Attempt != 1 {
+		t.Fatalf("estimate consumed next turn attempt: %d", next.Attempt)
+	}
+	ledger.setLogicalTurn("reroll", 8)
+	if ledger.latestByTurn[turnWorkflowHUDAttemptKey("session", 8)] != "next" {
+		t.Fatal("late correction displaced the newer workflow")
+	}
+}
+
+func TestTurnWorkflowHUDUnavailableRecoveryReturnsCurrentSnapshot(t *testing.T) {
+	ledger := newTurnWorkflowHUDLedger()
+	ledger.begin("obsolete", "session", 7)
+	ledger.begin("current", "session", 7)
+	s := &Server{TurnWorkflows: ledger}
+	request := httptest.NewRequest(http.MethodPost, "/turn-workflow/recovery", strings.NewReader(`{"contract_version":"`+turnWorkflowHUDRecoveryRequestContractVersion+`","request_id":"obsolete","action_id":"`+turnWorkflowHUDRecoveryRetryDerivedTurn+`"}`))
+	response := httptest.NewRecorder()
+	s.handleTurnWorkflowHUDRecovery(response, request)
+	var body struct {
+		Code string                   `json:"code"`
+		View turnWorkflowHUDViewModel `json:"turn_workflow_hud"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if response.Code != http.StatusConflict || body.Code != "recovery_action_unavailable" || body.View.Status != "invalidated" || body.View.RequestID != "obsolete" || body.View.Error != nil {
+		t.Fatalf("stale recovery response: status=%d body=%s", response.Code, response.Body.String())
+	}
+}
+
 func TestTurnWorkflowHUDWaitSnapshotReturnsOnRevision(t *testing.T) {
 	ledger := newTurnWorkflowHUDLedger()
 	started := ledger.begin("request-wait", "session-wait", 1)

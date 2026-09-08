@@ -322,29 +322,40 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 	}
 	extractionCfg := s.completeTurnExtractionConfig(req.ClientMeta)
 	llmTrace := completeTurnLLMConfigTrace(extractionCfg)
-	if !extractionCfg.Critic.hasConfig() {
-		writeJSON(w, http.StatusOK, map[string]any{
-			"status":           "error",
-			"code":             "critic_config_missing",
-			"detail":           "Critic provider settings are required for HypaMemory import.",
-			"chat_session_id":  sid,
-			"total":            len(req.Summaries),
-			"succeeded":        0,
-			"failed":           len(req.Summaries),
-			"llm_config_trace": llmTrace,
-			"warnings":         []string{"critic_config_missing"},
-		})
-		return
-	}
-
 	now := time.Now().UTC()
 	succeeded := 0
+	saved := 0
+	alreadyImported := 0
+	analysisSucceeded, analysisFailed, analysisSkipped := 0, 0, 0
 	failed := 0
 	skipped := 0
 	errorDetails := []string{}
 	warnings := []string{}
 	criticTraces := []map[string]any{}
 	scoringTraces := []map[string]any{}
+	itemResults := []map[string]any{}
+	// External imports keep their own negative turn namespace. A source number
+	// is an import hint, not permission to replace another summary at that number.
+	usedTurns := map[int]bool{}
+	existingByOriginal := map[string][]store.Memory{}
+	existing, inventoryErr := s.Store.ListMemories(r.Context(), sid, 0, 0)
+	if inventoryErr != nil {
+		warnings = append(warnings, "hypamemory_inventory_read_failed")
+	}
+	nextTurn := -1
+	for _, memory := range existing {
+		usedTurns[memory.TurnIndex] = true
+		if memory.TurnIndex <= nextTurn {
+			nextTurn = memory.TurnIndex - 1
+		}
+		var stored map[string]any
+		if json.Unmarshal([]byte(memory.SummaryJSON), &stored) == nil {
+			original, _ := mapFromAny(stored["hypamemory_import"])["original_text"].(string)
+			if original != "" {
+				existingByOriginal[original] = append(existingByOriginal[original], memory)
+			}
+		}
+	}
 	artifactCounts := map[string]int{
 		"memories":         0,
 		"direct_evidence":  0,
@@ -362,12 +373,33 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 
 	for idx, summary := range req.Summaries {
 		summary.ApplyDefaults()
+		itemResult := map[string]any{"index": idx + 1}
+		itemResults = append(itemResults, itemResult)
 		text := strings.TrimSpace(summary.Text)
 		if text == "" {
 			skipped++
+			itemResult["status"] = "empty"
+			continue
+		}
+		// Consume one saved occurrence per incoming occurrence: two equal source
+		// summaries in the same import remain two records, including on reimport.
+		if matches := existingByOriginal[summary.Text]; len(matches) > 0 {
+			memory := matches[0]
+			existingByOriginal[summary.Text] = matches[1:]
+			alreadyImported++
+			succeeded++
+			itemResult["status"], itemResult["memory_id"], itemResult["source_turn"] = "existing", memory.ID, memory.TurnIndex
 			continue
 		}
 		turnIndex := hypaImportTurnIndex(summary, idx)
+		if usedTurns[turnIndex] {
+			for usedTurns[nextTurn] {
+				nextTurn--
+			}
+			turnIndex = nextTurn
+		}
+		usedTurns[turnIndex] = true
+		itemResult["source_turn"] = turnIndex
 		tags := []string{}
 		for _, tag := range summary.Tags {
 			if cleaned := strings.TrimSpace(tag); cleaned != "" {
@@ -384,27 +416,54 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 		if len(tags) > 0 {
 			hints = append(hints, "tags="+strings.Join(tags, ", "))
 		}
-		score, scoringTrace, scoringErr := s.scoreHypaMemoryImport(r.Context(), sid, summary, idx, turnIndex, extractionCfg.Critic)
-		if scoringErr != nil {
-			warnings = append(warnings, fmt.Sprintf("hypamemory_import_score_failed[%d]: %v", idx, scoringErr))
-			score = fallbackHypaMemoryImportScore(summary)
-			scoringTrace = map[string]any{"status": "fallback", "error": scoringErr.Error(), "score": score.mapValue()}
+		score := fallbackHypaMemoryImportScore(summary)
+		if extractionCfg.Critic.hasConfig() {
+			var scoringTrace map[string]any
+			var scoringErr error
+			score, scoringTrace, scoringErr = s.scoreHypaMemoryImport(r.Context(), sid, summary, idx, turnIndex, extractionCfg.Critic)
+			if scoringErr != nil {
+				warnings = append(warnings, fmt.Sprintf("hypamemory_import_score_failed[%d]: %v", idx, scoringErr))
+				score = fallbackHypaMemoryImportScore(summary)
+			}
+			scoringTraces = append(scoringTraces, map[string]any{"index": idx, "turn_index": turnIndex, "trace": scoringTrace})
 		}
-		scoringTraces = append(scoringTraces, map[string]any{"index": idx, "turn_index": turnIndex, "trace": scoringTrace})
 		hints = append(hints, "hypamemory_import_score="+mustCompactJSON(score.mapValue()))
 		content := strings.Join(hints, "; ") + "\n" + text
 
-		extraction, trace, err := s.runCompleteTurnCritic(r.Context(), sid, turnIndex, "HypaMemory import summary", content, nil, nil, extractionCfg.Critic)
-		if trace != nil {
-			criticTraces = append(criticTraces, map[string]any{"index": idx, "turn_index": turnIndex, "trace": trace})
+		extraction := map[string]any{}
+		analysisStatus := "not_configured"
+		if extractionCfg.Critic.hasConfig() {
+			analyzed, trace, err := s.runCompleteTurnCritic(r.Context(), sid, turnIndex, "HypaMemory import summary", content, nil, nil, extractionCfg.Critic)
+			if trace != nil {
+				criticTraces = append(criticTraces, map[string]any{"index": idx, "turn_index": turnIndex, "trace": trace})
+			}
+			if err != nil {
+				analysisStatus = "failed"
+				analysisFailed++
+				warnings = append(warnings, fmt.Sprintf("hypamemory_analysis_failed[%d]: %v", idx, err))
+			} else {
+				extraction = analyzed
+				analysisStatus = "succeeded"
+				analysisSucceeded++
+			}
+		} else {
+			analysisSkipped++
 		}
-		if err != nil {
-			failed++
-			errorDetails = append(errorDetails, fmt.Sprintf("summary[%d]: %v", idx, err))
-			continue
+		if extraction == nil {
+			extraction = map[string]any{}
 		}
+		// The imported summary is the memory body. Critic output enriches it;
+		// its shorter summary never replaces the source supplied by the Host.
+		extraction["hypamemory_import"] = map[string]any{
+			"original_text": summary.Text, "source_order": idx + 1,
+			"source_turn_index": summary.SourceTurnIndex, "tags": summary.Tags,
+			"category": summary.Category, "analysis_status": analysisStatus,
+			"critic_summary": extraction["turn_summary"],
+		}
+		extraction["turn_summary"] = summary.Text
 		applyHypaMemoryImportScore(extraction, score)
 		result := s.saveCriticExtractionArtifacts(r.Context(), sid, turnIndex, extraction, content, extractionCfg.Embedder, now)
+		itemResult["analysis_status"] = analysisStatus
 		artifactCounts["memories"] += result.Memories
 		artifactCounts["direct_evidence"] += result.Evidence
 		artifactCounts["kg_triples"] += result.KGTriples
@@ -419,22 +478,27 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 		artifactCounts["vectors"] += result.VectorsUpserted
 		warnings = append(warnings, result.Warnings...)
 		if result.Errors > 0 {
-			failed++
 			errorDetails = append(errorDetails, result.ErrorDetails...)
+		}
+		if result.Memories == 0 {
+			failed++
+			itemResult["status"] = "save_failed"
 			continue
 		}
+		itemResult["status"] = "saved"
+		saved++
 		succeeded++
 	}
 
 	status := "ok"
-	if failed > 0 {
+	if failed > 0 || analysisFailed > 0 || len(errorDetails) > 0 {
 		status = "partial_error"
 	}
 	if succeeded == 0 && failed > 0 {
 		status = "error"
 	}
-	detail := fmt.Sprintf("HypaMemory import processed: %d/%d succeeded", succeeded, len(req.Summaries))
-	auditDetails := map[string]any{"total": len(req.Summaries), "succeeded": succeeded, "failed": failed, "skipped": skipped, "artifact_counts": artifactCounts}
+	detail := fmt.Sprintf("HypaMemory import completed: %d read, %d saved, %d existing, %d failed, %d empty", len(req.Summaries), saved, alreadyImported, failed, skipped)
+	auditDetails := map[string]any{"total": len(req.Summaries), "succeeded": succeeded, "saved": saved, "existing": alreadyImported, "failed": failed, "skipped": skipped, "analysis_succeeded": analysisSucceeded, "analysis_failed": analysisFailed, "analysis_skipped": analysisSkipped, "artifact_counts": artifactCounts, "items": itemResults}
 	_ = s.Store.SaveAuditLog(r.Context(), &store.AuditLog{
 		ChatSessionID: sid,
 		EventType:     "hypamemory_import",
@@ -445,21 +509,27 @@ func (s *Server) handleImportHypamemory(w http.ResponseWriter, r *http.Request) 
 		CreatedAt:     now,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":           status,
-		"code":             "hypamemory_import",
-		"detail":           detail,
-		"chat_session_id":  sid,
-		"total":            len(req.Summaries),
-		"succeeded":        succeeded,
-		"failed":           failed,
-		"skipped":          skipped,
-		"artifact_counts":  artifactCounts,
-		"errors":           errorDetails,
-		"warnings":         warnings,
-		"llm_config_trace": llmTrace,
-		"critic_traces":    criticTraces,
-		"scoring_traces":   scoringTraces,
-		"scoring_policy":   hypaMemoryImportScoringPolicyVersion,
+		"status":             status,
+		"code":               "hypamemory_import",
+		"detail":             detail,
+		"chat_session_id":    sid,
+		"total":              len(req.Summaries),
+		"succeeded":          succeeded,
+		"saved":              saved,
+		"existing":           alreadyImported,
+		"analysis_succeeded": analysisSucceeded,
+		"analysis_failed":    analysisFailed,
+		"analysis_skipped":   analysisSkipped,
+		"items":              itemResults,
+		"failed":             failed,
+		"skipped":            skipped,
+		"artifact_counts":    artifactCounts,
+		"errors":             errorDetails,
+		"warnings":           warnings,
+		"llm_config_trace":   llmTrace,
+		"critic_traces":      criticTraces,
+		"scoring_traces":     scoringTraces,
+		"scoring_policy":     hypaMemoryImportScoringPolicyVersion,
 	})
 }
 

@@ -1,4 +1,4 @@
-# Archive Center 4.2.0
+# Archive Center
 
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
@@ -14,6 +14,25 @@ HUD 표시도 보완했습니다.
 
 변경 사항은 [4.2.0 릴리스 안내](docs/archive-center-4.2.0-release-notes.md), 구현과
 검증 이력은 [4.2 작업 기록](docs/archive-center-4.2-work-log.md)에 정리되어 있습니다.
+
+## 현재 버전과 작업 문서
+
+2026-09-08 저장소 기준: 공개 배포 기록은 **4.2.0**, 활성 개발 소스와 로컬 Windows
+테스트 패키지는 **4.3.0-test.21**이다. 아래 GitHub 설치·업데이트 안내는 공개 릴리스를
+사용하며 로컬 테스트 빌드를 설치하는 명령이 아니다.
+
+- [4.3 현황과 남은 확인](docs/archive-center-4.3-status-summary.md)
+- [test.21 파일·적용 안내·검증 기록](docs/archive-center-4.3-test-build-21.md)
+- [소스 구조와 기능 소유자](STRUCTURE.md), [작업 규칙](AI_GUARDRAILS.md)
+- [4.1–9.0 통합 로드맵](../_archive/future-reference/4.1-9.0-integrated-roadmap.md), [4.4 실행 계획](docs/archive-center-4.4-refactoring-plan.md)
+- [검사 위치](tests/README.md), [빌드·설치 도구](ops/README.md)
+
+4.3에는 선택적으로 사용하는 5개 전처리 담당, 기본 기억의 의미 점수 전달·중요도 보존,
+인물별 지식 연결 보정, 하이파 원문별 가져오기와 간결한 HUD가 포함된다. test.21은
+분류별 핵심 우선 수를 확보한 뒤 남은 문자 예산에 세부사항을 담고, 일반 주관 기억을
+정상 선정으로 돌린다. 현재 필드의 출처 시점과 검색 순위를 분리하며, 전처리 추가 검색의
+새 출처를 보존한다. 기본 기억 보완은 전처리·출판사를 끈 상태에도 적용된다.
+패키지와 회귀 검증, 실제 RisuAI의 기억·출력 효과 검증은 각 기록에서 구분한다.
 
 ## Runtime Architecture
 

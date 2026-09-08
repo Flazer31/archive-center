@@ -817,7 +817,7 @@ func TestBeforeRequestSessionRouteFailureKeepsRisuPayloadRuntime(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest")
+	beforeRequest := extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture."
 	script := beforeRequest + `
 const SESSION_FALLBACK = "default";
 const settings = {enabled:true};
@@ -1648,8 +1648,8 @@ func TestRegisteredRequestCallbacksDetachExactBeforeRequestContext(t *testing.T)
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
-		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
+		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
+		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
 		extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch"),
 	}, "\n")
@@ -1861,7 +1861,7 @@ func TestOverlappingBeforeRequestContextsFailClosedWithoutOwnershipMixing(t *tes
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
+		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 	}, "\n")
 	script := functions + `
 let _activeFinalConfirmationRequestContext=null;
@@ -2004,7 +2004,7 @@ func TestFailOnceProviderRetryUsesProductionBeforeRequestFastPath(t *testing.T) 
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
 		extractArchiveCenterJSFunction(t, src, "reapplyFinalConfirmationRetryPayload"),
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
-		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest"),
+		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 	}, "\n")
 	script := functions + `
 const settings={enabled:true,debug:false};
@@ -2136,6 +2136,7 @@ func TestSameRequestRetryHUDKeepsStageSixUntilStageSevenArrives(t *testing.T) {
 	functions := strings.Join([]string{
 		extractArchiveCenterJSFunction(t, src, "rememberTurnWorkflowHUDHostWarning"),
 		extractArchiveCenterJSFunction(t, src, "consumeTurnWorkflowHUD"),
+		extractArchiveCenterJSFunction(t, src, "retainTurnWorkflowHUDHostTiming"),
 		extractArchiveCenterJSFunction(t, src, "renderTurnWorkflowHUDSameRequestRetry"),
 	}, "\n")
 	script := functions + `
@@ -2183,7 +2184,7 @@ func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *tes
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest"),
+		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
 	}, "\n")
 	script := functions + `

@@ -1118,8 +1118,8 @@ func TestMariaDBCoalescesOnlyUnleasedInactiveSameRevisionDocumentDeletes(t *test
 	now := time.Date(2026, 8, 26, 3, 0, 0, 0, time.UTC)
 
 	mock.ExpectBegin()
-	mock.ExpectQuery(`(?s)SELECT o.id.*o.chat_session_id = \?.*o.operation = 'delete'.*o.required_source_state = 'inactive'.*s.lifecycle_state <> 'active'.*NOT EXISTS \(.*active_lease.source_revision = o.source_revision.*active_lease.document_id = o.document_id.*active_lease.lease_until > \?.*EXISTS \(.*keep.source_revision = o.source_revision.*keep.document_id = o.document_id.*LIMIT \?.*FOR UPDATE`).
-		WithArgs("session", now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize).
+	mock.ExpectQuery(`(?s)SELECT o.id.*o.chat_session_id = \?.*o.operation = 'delete'.*o.required_source_state = 'inactive'.*s.lifecycle_state <> 'active'.*NOT EXISTS \(.*active_lease.source_revision = o.source_revision.*active_lease.document_id = o.document_id.*active_lease.lease_until > \?.*SELECT MIN\(keep.id\).*keep.source_revision = o.source_revision.*keep.document_id = o.document_id.*LIMIT \?.*FOR UPDATE`).
+		WithArgs("session", int64(0), now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(102).AddRow(103))
 	mock.ExpectExec(`(?s)UPDATE memory_vector_outbox.*SET status = 'stale_rejected'.*WHERE id IN \(\?,\?\).*status IN.*lease_until <= \?`).
 		WithArgs("duplicate_delete_operation_key_4_0_4", now, int64(102), int64(103), now).
@@ -1132,6 +1132,60 @@ func TestMariaDBCoalescesOnlyUnleasedInactiveSameRevisionDocumentDeletes(t *test
 	}
 	if got != 2 {
 		t.Fatalf("stale rejected=%d, want 2", got)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBDeleteCoalescingAdvancesOnlyCommittedCursor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	now := time.Now().UTC()
+	rows := sqlmock.NewRows([]string{"id"})
+	var lastID int64
+	for i := 0; i < memoryVectorDeleteCoalesceBatchSize; i++ {
+		lastID = int64(i*2 + 10)
+		rows.AddRow(lastID)
+	}
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT o.id.*o.id > \?`).
+		WithArgs("session", int64(0), now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize).
+		WillReturnRows(rows)
+	mock.ExpectExec("UPDATE memory_vector_outbox").WillReturnResult(sqlmock.NewResult(0, memoryVectorDeleteCoalesceBatchSize))
+	mock.ExpectCommit()
+	mock.ExpectBegin()
+	mock.ExpectQuery(`(?s)SELECT o.id.*o.id > \?`).
+		WithArgs("session", lastID, now, now, now, now, now, now, memoryVectorDeleteCoalesceBatchSize).
+		WillReturnRows(sqlmock.NewRows([]string{"id"}))
+	mock.ExpectCommit()
+	count, err := st.CoalesceInactiveMemoryVectorDeleteOperations(context.Background(), "session", now)
+	if err != nil || count != memoryVectorDeleteCoalesceBatchSize {
+		t.Fatalf("count=%d err=%v", count, err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBDeleteCoalescingReportsInterruptedRows(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	st := &mariadbStore{db: db}
+	failure := errors.New("query interrupted during duplicate scan")
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT o.id").WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(7).RowError(0, failure))
+	mock.ExpectRollback()
+	count, err := st.CoalesceInactiveMemoryVectorDeleteOperations(context.Background(), "session", time.Now().UTC())
+	if !errors.Is(err, failure) || count != 0 {
+		t.Fatalf("count=%d err=%v", count, err)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatal(err)

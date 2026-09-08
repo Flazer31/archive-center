@@ -180,6 +180,26 @@ const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgatewa
 const REASONING_PRESET_OPTIONS = ["auto","gpt","gemini","claude","glm","custom"];
 ` + strings.Join(blocks, "\n") + `
 function assert(value, message) { if (!value) throw new Error(message); }
+for (const [provider, endpoint, model] of [
+  ["gemini", "https://generativelanguage.googleapis.com/v1beta", "gemini-3.8-flash"],
+  ["vertex", "https://aiplatform.googleapis.com/v1/projects/project/locations/global/publishers/google/models", "gemini-3.8-flash"],
+  ["llmgateway", "https://api.llmgateway.io/v1", "gemini-3.8-flash"],
+  ["openrouter", "https://openrouter.ai/api/v1", "google/gemini-3.8-flash"],
+]) {
+  const controls = resolveReasoningControls(provider, "auto", model, endpoint);
+  assert(JSON.stringify(controls.effortOptions) === JSON.stringify(["none","low","medium","high"]), provider + ": " + JSON.stringify(controls));
+  const effort = normalizeReasoningEffortForControls("medium", controls);
+  assert(effort === "medium", provider + " lost selected medium");
+  const payload = {};
+  applyReasoningFieldsToPayload(payload, controls, "auto", effort, 0);
+  assert(payload.reasoning_effort === "medium", provider + ": " + JSON.stringify(payload));
+  const nonePayload = {};
+  applyReasoningFieldsToPayload(nonePayload, controls, "auto", "none", 0);
+  assert(nonePayload.reasoning_effort === (controls.mode === "gateway_reasoning_effort" ? "none" : undefined), provider + " changed none semantics");
+}
+assert(JSON.stringify(resolveGeminiThinkingLevelOptions("gemini-3-pro-preview")) === JSON.stringify(["none","low","high"]), "3 Pro options changed");
+assert(resolveGeminiThinkingLevelOptions("gemini-3.6-flash").includes("minimal"), "3.6 Flash minimal disappeared");
+assert(resolveGeminiThinkingLevelOptions("gemini-3.7-flash").includes("medium"), "3.7 Flash medium disappeared");
 const ollama = resolveReasoningControls("ollama", "auto", "deepseek-v4-pro:0813-cloud", "http://127.0.0.1:11434");
 assert(ollama.mode === "ollama_reasoning_effort", JSON.stringify(ollama));
 assert(JSON.stringify(ollama.effortOptions) === JSON.stringify(["none","low","medium","high"]), JSON.stringify(ollama));

@@ -4,14 +4,448 @@
 
 | Field | Value |
 | --- | --- |
-| Review date | 2026-09-05 (release evidence refresh) |
+| Review date | 2026-09-08 (test.21 runtime baseline; planned reliable recall, shared reactivation and optional Actor expression aligned separately) |
 | Branch | `work/4.2.0` |
 | Commit | 4.1 public parent `574c2d5b`; 4.2 source/regression checkpoints `43bc20a1` and `c2f1a2d5`; public `v4.2.0` release source `4257081c217e57b7e570592fb1090b484255c013`, including the fact-semantic relevance correction. |
 | Repository root | active `source/` worktree |
-| Inspection scope | Second-pass refresh of the clean active worktree: RisuAI adapter, Go service, route registration and call sites, configuration, schema/migrations, MariaDB write surfaces, persistence/vector lifecycle, representative tests, build/package scripts, and inactive/generated copies |
+| Local test build | [`4.3.0-test.21`](docs/archive-center-4.3-test-build-21.md): broader budgeted Go selection, ordinary subjective memories, current-field time resolution and supplemental source references. Plugin and Go backend are packaged together; user owns startup. |
+| Current work summary | [4.3 status through test.21](docs/archive-center-4.3-status-summary.md), including this presentation/reference repair and preceding optional specialists, retrieval, knowledge, Hypa, provider, guide and HUD work. |
+| Next-version plan | [Reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan): 4.4 deduplication → 4.5 context bundles → 4.6 time/state → 4.7 retrieval → 4.8–4.9 related recall → 5.1-A–5.2 shared reactivation. [4.4 execution plan](docs/archive-center-4.4-refactoring-plan.md) and [state-time handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#temporal-state-44647) retain their scopes. Actor expression is optional. All follow-up work is **PLANNED**; runtime ownership and behavior are unchanged. |
+| Inspection scope | New red-to-green regressions, Go 35 packages, fixed-content delivery comparison, and source/package/53-file/ZIP verification. Loaded test.21 and final RP quality remain open. |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |
 | Evidence level | Source/regression, seven public 4.2.0 packages, tagged-source Windows/Ubuntu/macOS CI, and an isolated Windows public 4.1-to-4.2 managed update with real MariaDB/Chroma fixture preservation are verified within the [release record](docs/archive-center-4.2.0-release-verification.md). Earlier bounded PDF/Provider Manager observations remain limited to their stated artifacts. Loaded-RisuAI verification of the release, live recall quality, Google AI Studio/LLM Gateway behavior, usage comparison, long-session generalization, and full native-device coverage remain open. |
 | Confidence | **VERIFIED** within each explicitly cited source/regression/package/backend-live/public-release tier; **UNKNOWN** for the remaining loaded-host, provider body/usage/display, and native-device behavior in section 20. |
+
+### 2026-09-08 planning alignment — reliable recall before optional expression
+
+The integrated roadmap now distinguishes 5.1-A–5.2 shared recall/accessibility
+from 5.1-B and 5.3–5.7 optional Actor memory expression. Shared recall returns
+useful evidence through the existing Go selection/budget and host application
+owners with preprocessing and Publisher OFF as well as ON. Actor dormancy and
+partial-expression states are not extra filters on ordinary memory delivery.
+
+The six common cases cover old important events, small details, similar events,
+state changes, alternative cues and ordinary RP. Follow candidate retrieval,
+selection, actual input and output use separately; compare all four specialist/
+Publisher ON/OFF combinations and existing no-recommendation/failure behavior.
+This is a planning-only update: test.21 remains implemented_unverified in live
+RisuAI, and no new runtime field, API, selection policy or package is introduced.
+
+### 2026-09-08 test.21 common memory delivery repair
+
+- `character_perspective.go::buildCharacterPerspectivePacket()` retains already
+  scoped ordinary `subjective_memory` as typed request-local fact seeds, carrying
+  holder, source unit and turn. `group_turn_prepare.go` passes these to
+  `prepare_turn_assembly.go`, which places them in normal `subjective_relationship`
+  selection. Existing actual protected knowledge retains its own guidance path.
+  `finalizeCharacterPerspectivePacket()` observes only delivered records and removes
+  the internal seed field before exporting the packet.
+- `prepare_turn_priority_memory.go::buildPrepareTurnPriorityMemoryDeliveryPlan()`
+  uses the existing integer setting as a core priority target per summary/fact group.
+  Groups take core turns; remaining group heads use score order within existing
+  global/lane character budgets. AI groups retain their explicit order. The legacy
+  wire key is unchanged; `core_priority_memory_delivery.v4` describes the new meaning.
+- `prepareTurnBuildPriorityCandidates()` resolves an existing current-field group
+  by source turn before relevance score. Current-field identity and evidence ID are
+  separate: source ref, turn and value distinguish updated candidates, allowing the
+  existing supplemental merge to retain both sources for round two. This is not
+  per-field temporal extraction or a historical-state graph.
+- Preprocessing consumes the same source pool; no recommendation/failed roles use
+  the captured Go selection. Empty recommendations retain the ordinary rendering
+  order. Accepted AI text/order stays intact, including prior recommendations after
+  supplemental failure. Character budgets are declared to AI before selection;
+  Go does not add a post-hoc cut to accepted AI recommendations.
+- Validation: [test.21](docs/archive-center-4.3-test-build-21.md), new four-group
+  regressions that failed before repair, all 35 Go packages and frozen supplied
+  content across OFF/AI/empty/partial failure. Frozen source metadata is explicitly
+  synthetic; live MariaDB/Chroma/provider/RisuAI quality remains unverified.
+
+Earlier dated sections describe their respective builds. The test.21 policy above
+supersedes their hard-K/no-backfill wording; their other boundaries remain intact.
+
+### 2026-09-08 test.20 preprocessing presentation and evidence references
+
+`prepare_turn_multi_agent.go::multiAgentModelInput()` projects the existing canonical
+input at `callMultiAgent()` only. Current input/recent conversation come first.
+Repeated complete provenance becomes P entries; unique metadata stays inline.
+Source time, private owner/viewers, original text/IDs and candidate order are retained.
+The original `input` still owns canonical reference resolution; `model_input` and
+character counts describe the actual serialized user message. This does not change
+candidate admission, K, provider configuration, call count or failure behavior.
+
+`multiAgentSelectionReferences()` retains the calls' F/S/L mapping. The existing
+priority renderer labels AI-selected facts/complete summaries with F/S references;
+`buildPrepareTurnPreprocessingNotes()` uses the same references for interpretations
+and shares their scope catalog. Go-baseline memory text remains unchanged.
+`prepare_turn_planner.go::supervisorDeliveredContextItems()` maps the actual rendered
+fact and complete-summary lines to original sources. `group_turn_prepare.go` attaches
+notes/catalog; `group_proxy.go::publisherModelSupportPacket()` carries their references
+and catalog to the real Publisher input. No recommendation is re-ranked or rewritten.
+The shared default prompt reviews exact evidence in the existing second round;
+saved custom prompts keep their priority. There is no new narrative restriction.
+
+The [test.20 record](docs/archive-center-4.3-test-build-20.md) separates red/green
+production regressions, ten frozen input-preservation comparisons and package proof
+from actual model behavior. External replay is pending explicit transmission approval;
+loaded-RisuAI and displayed RP quality remain unverified. User settings/data were
+not changed and the user's backend was not started. JS changed four version lines only.
+
+### 2026-09-08 test.19 memory editor prompts and handoff purpose
+
+`prepare_turn_multi_agent.go::multiAgentSharedPrompt` and `multiAgentRolePrompts`
+define five complementary memory editors: event causality, character condition,
+perspective/relationship/secrets, setting/objects and ongoing threads. Reasons
+connect recorded evidence and supplied transitions to the present scene; the user
+owns creative direction. The main writer receives context even with Publisher OFF.
+
+`runMultiAgent()` sends the existing accepted public handoff with a separate
+`request_reason` attributed by `from_role`. Original `text`, ID/ref and source
+metadata remain canonical; the request purpose is AI interpretation. The recipient
+examines its own category in the existing second round. Selection lanes, source
+scope, search limits, no-recommendation Go selection and final note assembly are
+unchanged. There is no added reply round, persistence path or prose validation gate.
+
+The [test.19 record](docs/archive-center-4.3-test-build-19.md) covers production-owner
+regressions, the new Windows backend/package and settings-save observations. Saved
+custom prompts still override defaults; the user's six fields matched old defaults
+and were saved empty through the UI to follow backend defaults after restart.
+Loaded test.19, real provider behavior and RP quality remain unverified.
+
+### 2026-09-08 test.18 packaging
+
+The [test.18 record](docs/archive-center-4.3-test-build-18.md) packages the following
+source changes. Their original source-only notes below describe evidence at repair
+time; test.18 adds package verification, not a backend launch or loaded-RisuAI claim.
+The existing `ops/build-full-package.ps1` builds the active Go service and helpers,
+copies the active plugin/prompts/migrations and sets launcher/runtime-template version.
+The new backend hash differs from test.17. Existing packages and user data are preserved.
+
+### 2026-09-08 narrow HUD and preparation tiles
+
+Active `Archive Center.js` uses a 224px viewport-clamped HUD and 10px card padding.
+`turnWorkflowHUDTimingHTML()` keeps preparation details collapsed, with the total
+above a two-column grid of small timing cards. The existing count-ledger styles
+also render generated/stored categories as matching two-column label/value tiles,
+with a bordered total summary. Count values, order and phase visibility are unchanged.
+`attachTurnWorkflowHUDDismiss()` observes native detail-open count changes through
+the official SafeElement API before applying card-coordinate dismissal. Normal
+completed cards follow existing card/X policy, including the previous-slot X;
+warning/error cards retain X-only dismissal. No listener, observer or timer is added.
+Existing stage
+values, AI round table, elapsed timer, Host observation and backend states retain
+their owners. This is UI rendering only; no policy, provider or storage changes.
+See the [UI record](docs/archive-center-4.3-preprocessing-work-log.md) for isolated
+Edge viewport/zoom checks and the existing production UI regressions. The test.17
+package still contains its earlier 268px layout; loaded RisuAI proof is separate.
+
+### 2026-09-08 retrieval score retention
+
+`prepare_turn_priority_memory.go` is the direct owner of the v4 scoring change.
+`appendPrepareTurnPriorityMemoryFactSeeds()` carries existing aggregate-vector
+provenance into candidates; `prepareTurnBuildPriorityTurnSummaries()` compares
+the aggregate-vector score with the existing best-child score. The chosen score
+and observed source vector are exposed by `prepareTurnPrioritySummaryMap()`.
+Sibling facts retain their own relevance. `prepareTurnPriorityScore()` is shared
+by fact and summary ranking and keeps stored importance separate from RP recency.
+There is no new retrieval, storage, provider, Host or fallback path.
+
+See the [repair record](docs/archive-center-4.3-feedback-work-log.md#retrieval-score-retention-repair)
+for the failing-before/passing-after source regressions, unchanged historical
+comparison fixtures and full Go suite. K, budgets and received AI selection order
+are preserved. This change is packaged in test.18; live DB/vector,
+loaded RisuAI and displayed RP evidence remain separate. State-time/commitment
+resolution and paraphrased knowledge links are still planned follow-up work.
+
+### 2026-09-08 knowledge continuity first repair
+
+`turn_extraction_private.go` retains supplied secret/identity IDs and identity
+evidence/transition metadata. `turn_entity_identity.go` resolves explicit
+identity-scope holders through the existing identity projection.
+`turn_precise_memory.go::protectedSecretPerspectiveMemoryCandidates()` feeds
+identity mappings into the same evidence-bound per-holder observation writer as
+protected secrets. The default Critic prompt describes the matching output fields.
+
+`character_perspective.go::buildCharacterPerspectivePacket()` separates independent
+secret and subjective claims within category slots. Supplied secret IDs or the
+recorded claim distinguish those items; ordinary single-valued belief slots retain
+latest-state behavior. Known/revealed states of one claim are compatible in both
+candidate creation and reading, while original labels remain intact.
+
+`prepare_turn_memory.go` distinguishes identity owners from informed observers
+and no longer matches an arbitrary POV against itself. The assembly passes its
+canonical memory context into protected-guidance grouping so an available later
+disclosure can release the same secret's past guidance. Delivery lineage records
+`released_by_later_disclosure` with the disclosure row/turn. Separate secrets,
+other sessions and later private states retain their guidance; canonical rows and
+their public event projections are not rewritten.
+
+See the [repair and reinspection record](docs/archive-center-4.3-feedback-work-log.md#knowledge-continuity-first-repair).
+Production-owner regressions pass and test.18 includes the repair. The running
+backend and user DB were not changed by the build. Absent historical holder observations are not backfilled. Legacy
+paraphrases without a shared ID are not semantically merged by this repair.
+
+### 2026-09-08 HypaMemory original import
+
+`Archive Center.js::importHypaMemory()` reads the current Host chat's
+`hypaV3Data.summaries` and uses the existing `POST /import/hypamemory` route.
+`group_audit_feedback_import.go::handleImportHypamemory()` stores each nonempty
+original as one memory using `turn_extraction_persist.go::saveCriticExtractionArtifacts()`.
+The canonical JSON keeps the exact original in `turn_summary` and
+`hypamemory_import.original_text`, plus source order/index/tags/category and
+analysis status. The Critic's shorter `turn_summary` moves to
+`hypamemory_import.critic_summary`; its other analysis fields remain supplemental.
+No table, background job, extra LLM pass or raw RP chat-log row was added.
+
+Go allocates an unused negative import number when the supplied number is occupied.
+Reimport matches stored original occurrences, preserving multiple equal entries
+without adding them again. Existing imports lacking original metadata are not
+guessed, rewritten or deleted. Failed/unconfigured Critic analysis still submits
+the actual original to the existing memory writer. Counts distinguish new saves,
+existing records, storage failures, empty inputs and analysis outcomes.
+
+`group_turn_prepare.go` memory/evidence/KG readers and
+`group_memory_explorer_read.go` retain negative external-import rows inside the
+existing session history scope and keep positive turn bounds.
+`store/mariadb_chat_memory.go` includes negative import rows in the existing range
+queries without widening the positive branch range. Explorer's
+`source=hypamemory` filter runs before pagination, recognizing both new metadata
+and the old `hypamemory_import_score` marker. JS provides All/HypaMemory controls
+and an expandable original. `memory_search_text.go` excludes the provenance copy
+from public projection so it cannot bypass the memory body's visibility handling.
+Source preservation does not mean every imported summary is injected each turn.
+
+See the [implementation and verification log](docs/archive-center-4.3-feedback-work-log.md#hypa-original-import).
+The actual split-chat data, loaded Host, MariaDB/Chroma import and final recall
+remain unverified for this change. The repair is packaged in test.18; no backend
+was started by packaging.
+
+### 2026-09-07 test.17 compact HUD
+
+`projectTurnWorkflowHUDPhaseView()` projects existing stages for
+`next_user_input`: the current generation has no storage count ledger; the
+previous finalization retains its counts without repeating generation timings.
+Accepted Host response timing renders the current waiting stage as received,
+while the original backend view and pending-save lifecycle remain unchanged.
+
+`turnWorkflowHUDTimingHTML()` renders total/preparation/response metrics and a
+five-row role table (round 1 / round 2 / AI or Go). Search and backend timings,
+`turnWorkflowHUDStageLedgerHTML()` and `turnWorkflowHUDCountLedgerHTML()` use
+collapsed details. Completed/error cards dismiss through X so expanding details
+does not dismiss them; informational notice dismissal is unchanged. Existing
+timer, stream, event cleanup and request-slot owners remain in use.
+
+The root width is 268px with a viewport clamp. Removed three timing explanations
+and the preprocessing Flex helper paragraph. No provider capability, model
+prompt, Go schema, storage or inference behavior changed. Source/browser fixture
+checks and package evidence are in [test.17](docs/archive-center-4.3-test-build-17.md);
+actual loaded RisuAI remains a separate check.
+
+### 2026-09-07 test.16 public memory handoff
+
+The existing `appendPrepareTurnPriorityMemoryFactSeeds()` producer in
+`prepare_turn_priority_memory.go` supplies `public_projection` source visibility.
+`runMultiAgent()` in `prepare_turn_multi_agent.go` now includes that value in the
+existing public handoff branch; owner/viewer/subjective restrictions are unchanged.
+The receiving role gets canonical ID/ref/text/source table/source ref/source turn
+in `related_evidence`. These references remain context, not a transfer of lane
+selection ownership. No persistence, source-time or retrieval changes are involved.
+
+`Test43MultiAgentHTTPPrepareDeliversSelectedCanonicalMemoryAndPublisherSupport`
+now runs memory rows through production assembly and the registered prepare route,
+then observes the second specialist HTTP input and selected memory in the final
+injection and Publisher support. It failed before the repair in all three
+Publisher modes. `Test43MultiAgentGeneralPublicHandoffKeepsPrivateScope` retains
+public/general behavior and checks projection-labelled owner/viewer/subjective
+scope. Source/fixture/package evidence is recorded in [test.16](docs/archive-center-4.3-test-build-16.md);
+loaded RisuAI, real providers and final story behavior remain unverified.
+JS is unchanged except four version identifiers; backend startup is user-owned.
+
+### 2026-09-07 test.15 state-time observation and planned ownership
+
+The supplied trace gives both `cash: 51냥 5푼` and the `61냥` asset description
+the same `character_states:2709` source and turn 115; recent conversation records
+46냥 5푼. The existing state writer merges prior fields and stamps the new row
+turn. `prepare_turn_assembly.go` supplies that row turn as source metadata;
+`prepare_turn_priority_memory.go` propagates it to fact seeds and uses it for
+recency. Increasing the recency weight alone cannot distinguish their ages.
+This is a storage/source-time/candidate issue, not resolved by the implemented
+snapshot caveat or independent specialist-note delivery.
+
+The canonical roadmap assigns duplicate reduction and comparison cases to 4.4,
+per-field change/effective time and current state (including character funds,
+assets and inventory) to 4.6, and consumption by retrieval/ranking/AI input to
+4.7. New-write correctness and evidence-based legacy recovery are separate;
+unavailable old field times remain unknown. These are plans, with no new schema,
+runtime acceptance rule, migration or implementation in this documentation update.
+See the [current observations](docs/archive-center-4.3-status-summary.md) for evidence limits.
+
+### 2026-09-07 test.15 independent specialist interpretations
+
+`buildPrepareTurnPreprocessingNotes()` in `prepare_turn_multi_agent.go` projects
+received `reasons` and `unresolved` from the existing accepted analysis. Memory
+reasons follow selected fact/summary order and reference actual delivered items;
+lore reasons follow the separately retained lore assessment and its round.
+Failed supplements retain matching first-round interpretations. Go baseline
+selection does not invent AI reasons. Source references, visibility, perspective
+owners and allowed viewers accompany interpretations; these remain advisory AI
+text rather than canonical facts or a semantic secrecy guarantee.
+
+After final memory/lore assembly and before Publisher, `handlePrepareTurn()`
+attaches `memory_preprocessing_notes.v1` to the memory plan and its items to
+`supervisor_support_packet.delivered_preprocessing_notes`. `group_proxy.go`
+includes these items in the actual Publisher input and observed input size.
+`prepare_turn_render.go` adds a separate `preprocessing_notes` payload lane,
+independent of Publisher availability and narrative budget. Extra characters
+are observed using `budget_mode: additional_observed`; original memory budgets
+and text are unchanged. OFF adds no specialist lane.
+
+JavaScript only localizes and renders the lane and its observed extra input.
+Existing Host application and effective-input observation carry its text.
+There are no additional AI calls, rounds, storage/schema changes, new acceptance
+rules or postprocessing. Default prompts explain this use while saved edited
+specialist prompts remain intact. This bounded slice ends with a user test build;
+live RisuAI delivery, model interpretation and displayed story quality remain open.
+
+### 2026-09-07 test.14 shared response recovery
+
+`repairJSONCandidate()` in `turn_extraction_critic.go` is shared by Critic,
+Publisher (`parsePublisherJSONObject`) and preprocessing. Existing quote,
+literal and trailing-comma handling is reused; `repairJSONMissingArrayClosers`
+recovers a missing `]` before an explicit sibling object field or enclosing `}`.
+Quoted source content and original provider responses are retained. EOF does
+not synthesize missing text or values. Publisher/Critic contract interpretation,
+ordinary failure handling and canonical persistence retain their existing owners.
+
+`parseMultiAgentRecommendation()` decodes each field independently, accepts a
+single string in a string-list field and preserves complete IDs from interrupted
+lists. A type error in reasons no longer hides later selections/search requests.
+Local recovery adds no model calls or search rounds. A parsed lore selection
+survives an unrelated field error; an actual provider failure retains the earlier
+lore assessment. Existing failed-supplement memory selection behavior is retained.
+
+The existing preprocessing HUD records `repaired`, `partial` and
+`no_recommendation` call outcomes and the final memory `selection_source`.
+JavaScript renders these backend decisions, keeping receipt separate from final
+selection and from actual payload delivery. Lore candidates carry their observed
+comment/key/heading beside their L ref; original text, IDs and order are unchanged.
+Default response instructions request concise explanations and short references,
+without changing saved prompts, model choice or user narrative authority.
+
+The pending-thread support lane now uses the existing configured Host conversation
+query set as context before scoring. Previously an implicit current instruction
+could exclude an explicitly named ongoing goal from all specialist candidates.
+It accepts the in-process `[]string` representation via `stringsFromAny` and keeps
+other lanes, stored rows, suppression, scope and scoring owners unchanged.
+Source/provider-fixture evidence and live gaps are in the preprocessing work log.
+
+### 2026-09-07 test.13 source-time accuracy
+
+`saveCharacterAndStateArtifacts()` merges existing character fields, so a
+`character_states` row turn dates the snapshot, not every retained field's event.
+`multiAgentInput()` and `runMultiAgent()` public handoffs now expose the existing
+candidate `source_table` alongside unchanged IDs/text/turns. The input's existing
+`reference_format` describes snapshot time and completed recent conversations.
+`buildPrepareTurnPriorityMemoryDeliveryPlan()` labels these selected rows
+`[state snapshot turn N; fields may be older]`; source facts, scores and selection
+remain with their existing owners. The label reaches the existing Publisher
+support packet and memory payload without a new state resolver.
+
+`handlePrepareTurn()` uses `RecentConversationMessages` and the existing
+`recent_conversation_reference_count` for the retrieval request and both
+specialist rounds. Each completed conversation keeps observed user/assistant
+content together. Default specialist/Publisher advice distinguishes known
+completion from unknown details, with user revisions and custom prompts retained.
+Regressions cover source/quantity preservation, both rounds with a configured
+count, public/private handoff, and the actual Publisher request. This is source
+and fixture evidence. The test.13 package includes these changes; loaded Host
+and real-provider output verification remain separate.
+
+### 2026-09-07 test.12 supplemental-search latency and observation
+
+`runMultiAgent()` in `prepare_turn_multi_agent.go` runs the already-requested
+supplemental searches concurrently after round one. Each active role retains its
+existing one-query limit. Indexed result slots merge facts/summaries in original
+role order, preserving duplicate ownership and request-local aliases before round
+two. AI selection, source scope, search filters/limits and existing partial-failure
+behavior stay with their existing owners.
+
+The `handlePrepareTurn()` callback in `group_turn_prepare.go` uses the same scoped
+retrieval path. External retrieval overlaps; a request-local mutex serializes
+hydration and assembly of the existing shared request inputs. No service-wide
+lock, persistent cache or new selection policy is introduced.
+`buildPrepareTurnPriorityMemoryDeliveryPlan()` captures typed, unexported pristine
+candidate/summary snapshots before rendering metadata or AI selection changes.
+`multiAgentCandidatePool()` copies these snapshots rather than resolving the same
+assembly again. Private text and nested slices remain request-scoped; these
+internal fields are excluded from JSON.
+
+`prepareTurnVectorShadowWithPreciseCandidateLimits()` records local `health`,
+`embedding`, `vector_search` and `revision_checks` intervals. The callback adds
+`hydration`, `assembly_wait` and `assembly`. Each query's `breakdown_ms` is distinct
+from the whole supplemental phase's `search_duration_ms`; the latter alone supplies
+the existing `backend_timing.stages_ms.preprocessing_search` stage. That stage
+remains inside `injection_assembly`, not an additive sibling of it.
+
+The existing `turn_workflow_hud.v3` ledger has an optional `preprocessing_search`
+ViewModel: status, UTC started_at, duration_ms, query_count, completed_count and
+ordered queries (role, status, duration_ms, breakdown_ms). It is omitted for OFF
+or no searches. Snapshots deep-copy query timing maps and contain no question,
+prompt, key or memory text. Partial/failed search states are diagnostics only.
+`turnWorkflowHUDTimingHTML()` and `applyTurnWorkflowHUDStack()` render it through
+the existing DOM/timer owners, without changing Host lifecycle or persistence.
+
+See [test.12 evidence](docs/archive-center-4.3-test-build-12.md) and the
+[preprocessing-only example comparison](docs/archive-center-4.3-preprocessing-comparison.md).
+
+### 2026-09-07 test.11 user-directed guide strength
+
+The user's subsequent clarification permits response execution priorities from
+`strong` upward. The user retains authority over story direction, revisions,
+pacing and their character's choices. Weak gives optional hints; Medium gives
+connected recommendations; Strong asks for concrete enactment; Extreme connects
+action, reaction and consequence; Maximum gives a current-response execution brief.
+
+`publisherStrengthProfile()` owns the model-facing application descriptions.
+`runSupervisorLLM()` sends the selected policy to the Publisher, and
+`supervisorSceneProposalGuidanceItems()` carries it into the same single guidance
+block in compact, standard and explicit formats. Stronger guidance changes the
+requested depiction, not accepted items, source order, privacy, model parameters,
+call count, budgets, output acceptance or persistence. Pressure remains independent.
+The default four-field Publisher contract and saved user prompt files are retained.
+See [test.11](docs/archive-center-4.3-test-build-11.md) for verification scope.
+
+### 2026-09-07 test.10 preprocessing and creative guidance (prior checkpoint)
+
+`prompts/supervisor_system.txt` and `publisherModelExecutionContract()` now present
+historical memory as context and new developments as optional creative ideas.
+User direction, including explicit changes to prior setting or relationships,
+takes precedence. The default asks for four advisory fields, while existing
+Publisher parsing continues to accept earlier response contracts. This changes
+model-facing guidance, not completed-turn acceptance or canonical writers.
+
+`multiAgentInput()` shares candidate text space between facts and turn summaries
+(and between world facts and lorebook references). Request-local F/S/L aliases
+remain stable across the two rounds and resolve to exact canonical references.
+`runMultiAgent()` records candidate availability, unresolved references, partial
+search and actual dispatch separately. Received valid memory selections retain
+their original order and text; absent recommendations retain Go baseline behavior.
+
+`handlePrepareTurn()` supplies existing scoped, scene-matched lorebook candidates
+to the world specialist. `finalizePrepareTurnLorebookReference()` consumes its
+optional selection directly, including explicit empty selection and selected
+source order. A missing assessment retains ordinary Go reference selection.
+First-round lore assessment survives a failed/unassessed supplement. Host lorebook
+content and canonical stores are unchanged. Source-turn labels survive fact
+rendering, so a historical “tomorrow” retains a visible origin.
+
+`chromaStore.doJSON()` reads complete successful JSON responses instead of cutting
+them at 1 MiB; existing bounded HTTP error reads remain. Search diagnostics now
+retain scrubbed errors and distinguish partial results from hydration. The Host
+HUD renders existing backend stage durations for the matching request without
+adding overlapping intervals. Effective Input identifies backend preview,
+pre-request observations and mismatch reasons separately, with no new output or
+persistence rejection condition. See [test.10](docs/archive-center-4.3-test-build-10.md)
+for source/fixture/package evidence and unverified live outcomes.
 
 Status words used in this document have strict meanings:
 
@@ -23,9 +457,199 @@ Status words used in this document have strict meanings:
 
 **VERIFIED.** The worktree was clean at the audit baseline. The recorded HEAD is the source-evidence boundary for this revision. A clean tree, generated package, branch name, or previous copy is not evidence of a built, loaded, released, or live state. The permanent ownership rules were checked against [AGENTS.md](AGENTS.md) and [the host/backend boundary](docs/permanent-risu-host-backend-boundary.md), but implementation files and their actual callers remain the primary evidence. Line anchors are convenience links; path and symbol identity are the durable citation.
 
+### 2026-09-07 Vertex retained service-tier correction
+
+`proxyApplyLLMGatewayServiceTier()` leaves a valid retained service-tier setting
+unapplied for Vertex, with `llm_gateway_service_tier_applied=false` and the existing
+skip-reason field set to `vertex_uses_vertex_flex_mode`. `VertexFlexMode` remains
+the owner of Vertex Flex headers. Stored settings are not changed, and no tier
+is silently substituted. Other provider validation, explicit extra-body handling,
+upstream errors and retry behavior remain unchanged.
+
+The same Go request builder serves `/proxy/plugin-main?connection_test=critic`,
+runtime-configured Critic calls, Publisher calls and shared preprocessing
+connections. No additional JavaScript provider policy was introduced. The new
+`TestVertexRetainedServiceTierAcrossCriticPaths` exercises the registered config
+and connection-test routes and `runCompleteTurnCritic()` against HTTP boundary
+fixtures. See the test.9 record for the reproduced error and verification limits.
+
+### 2026-09-07 HUD preprocessing and response timing
+
+`callMultiAgent()` publishes each enabled role's call start/result to the existing
+request-scoped `turnWorkflowHUDLedger`. Its optional `preprocessing` ViewModel
+contains ordered roles, round status/duration and each role's summed call time;
+it contains no credentials, prompts or memory text. The existing event stream and
+12 workflow stages remain the owners; no additional status request or stage is
+created. OFF produces no preprocessing field. Snapshots copy nested timing arrays.
+
+JavaScript renders/localizes this Go projection and updates running clocks through
+the existing HUD timer. Host-only `host_timing` records HUD priming, first
+`beforeRequest` return and the accepted `afterRequest` response observation using
+one Host clock. Its display durations include request/retry waiting, not merely
+provider computation, and stop at response receipt, excluding later Critic/save
+and next-input waiting. They do not accept, persist or finalize a turn.
+The current card retains its response timings until dismissal or the next request;
+in next-input mode this is a finished generation presentation of the pending
+backend workflow. Existing previous-turn finalization remains unchanged.
+
+Source/provider-boundary/Host-fixture checks are recorded in the test.8 document;
+loaded RisuAI verification of these timing fields remains open.
+
+### 2026-09-07 preprocessing role prompts and password editing
+
+The five Go-bundled role prompts now specify scene analysis, domain-specific
+evidence distinctions, missing-evidence search, cross-role boundaries and complete
+supplemental recommendations. Existing shared instructions, stored user overrides,
+candidate access, selection behavior and round count are unchanged. The updated
+defaults are used for empty role overrides or after an explicit restore/save.
+Their delivery to both analysis rounds is tested; model selection quality is not
+established by these transport tests.
+
+At the user's request, `GET/PUT /config/memory-preprocessing` returns stored API
+keys to the password editors instead of blanking them after every save. These
+configuration responses contain credentials and use `Cache-Control: no-store`.
+The separate `has_api_key`/`clear_api_key` fields and deletion checkbox are removed.
+An explicit `api_key` value replaces the key, including an empty string to clear
+it; an omitted key preserves the existing value. The UI labels the address
+`Endpoint`, preserves saved keys on reopen, and continues to use password inputs.
+Keys are not added to specialist prompts or inputs. Go remains the persistence
+owner. See the test.7 record for tests and packaging evidence.
+
+### 2026-09-06 preprocessing Flex and provider controls
+
+Role settings persist `llm_gateway_service_tier` and `vertex_flex_mode`. Independent
+connections pass their applicable options through `completeTurnLLMConfig` and the
+existing proxy override owner; sharing keeps the Publisher's processing options.
+Changing provider hides irrelevant controls while preserving their stored values.
+Go only applies the independent service-tier value to a supported transport, so
+a retained OpenAI-compatible tier does not break a later Vertex/Claude selection.
+`proxyApplyLLMGatewayServiceTier()` now also supports AI Studio (`gemini`) using
+top-level `serviceTier`, with `standard` for the default tier; OpenAI-compatible
+requests retain `service_tier` and Vertex retains its existing Flex headers.
+No model whitelist, model-capability lookup, extra AI retry or tier downgrade was
+added. Exact model/account eligibility remains with the provider; UI visibility
+follows the existing settings convention of provider-level controls.
+
+`loadMemoryPreprocessingPanel()` uses the standard provider list, provider-specific
+Flex selectors and always-visible per-role temperature/max-output-token fields.
+Both analysis rounds retain each role's generation controls even during Publisher
+connection sharing. HTTP-boundary and responsive browser checks are recorded in
+the test.6 document; live provider billing and loaded RisuAI remain unverified.
+
+### 2026-09-06 editable common prompt and independent AI connections
+
+`multiAgentSettings.SharedPrompt` stores the user's common prompt override in the
+existing preprocessing settings file. An empty value uses the bundled Go default;
+GET exposes the effective `shared_prompt` and `default_shared_prompt` separately.
+PUT omission preserves the saved override for older clients, while an explicit
+empty value restores the default. `callMultiAgent()` uses the same settings snapshot
+for first and supplemental rounds: chosen common prompt, assigned role prompt,
+then the existing round task. A custom common prompt replaces the bundled common
+text rather than appending another hidden copy. Prompt assembly remains Go-owned.
+
+New role settings default to independent provider/address/model/key connections.
+Explicitly saved Publisher sharing remains preserved and optional; it shares the
+connection while retaining the specialist prompt. The UI edits and restores both
+common and individual prompts. Failed saves preserve unsaved edits and report the
+failure. HTTP-boundary tests verify five separate connections and both prompt
+rounds; browser fixtures verify editing, restore, save, failure and responsive
+layout. See the test.5 record for evidence and remaining live validation.
+
+### 2026-09-06 preprocessing UI correction
+
+The previous preprocessing form used undefined `mo-input`, `mo-label` and `mo-card`
+classes. `loadMemoryPreprocessingPanel()` now renders styled role cards using scoped
+CSS in `PANEL_CSS`, existing form conventions, separate connection and prompt sections,
+and stacked mobile layout. Shared Publisher connections show the configured model;
+custom fields remain in the DOM with their values preserved while hidden/disabled.
+Each role retains its own prompt editor and restore action. Go still constructs
+each call from shared rules plus that role's prompt; connection sharing does not
+share the Publisher's prompt. `ops/preprocessing-ui-smoke.cjs` executes the production
+panel and loader in a local browser with mocked config transport, covering layout
+and independent edit/save behavior. It does not access an installed RisuAI or start
+the backend. See the test.4 record for screenshots and verification boundaries.
+
+### 2026-09-06 settings loading correction
+
+`renderSettingsPanel()` mounts and binds the editable form before requesting the
+Go dashboard ViewModel. Completion updates only `#mo-dashboard`, using the existing
+render request identity; settings are not recomposed or overwritten. Its queue
+action uses the existing dashboard container for event delegation. Failed status
+requests retain the existing unavailable presentation. `bridgeFetch()` continues
+to use the saved `settings.bridgeUrl` without host/domain substitution. Listener
+binding belongs to the server launcher, not the browser's destination setting.
+The user's configured Tailscale address became unreachable after the preceding
+localhost-only restart; the explicitly approved Tailscale binding restored the
+loaded PocketRisu preprocessing panel. See the test.3 record for evidence scope.
+
+### 2026-09-06 preprocessing implementation checkpoint
+
+**Implemented; loaded-Host/provider validation open.** Five optional specialists
+now run stage-wise in parallel through `prepare_turn_multi_agent.go`, called by
+`handlePrepareTurn()` after existing scoped candidate assembly and before final
+memory/Publisher preparation. Existing retrieval performs at most one requested
+search per active role; relevant roles receive one supplemental analysis. Canonical
+recommendations retain their order, with explicit over-budget observation. An area
+without AI recommendations retains this request's ordinary Go selection. The
+existing `prepare_turn_priority_memory.go` renderer, payload and Publisher consume
+the result; no new memory writer or output editing path was added.
+
+`GET/PUT /config/memory-preprocessing` stores backend-wide user settings and prompt
+overrides in the stable data directory. Defaults are compiled into Go; key values
+are returned only as part of the editable configuration, with the current test.7
+password-editing contract described above. `loadMemoryPreprocessingPanel()` renders the independent
+Extensions tab and transports edits. The POSIX launcher exports its data root for
+the same persistence contract. See [implementation and verification details](docs/archive-center-4.3-preprocessing-work-log.md).
+The PLANNED 4.3 descriptions below are retained design requirements; this checkpoint
+supersedes their earlier statements that no runtime/UI exists. Live release proof
+must still be recorded separately.
+
+### 2026-09-06 shared-host lineage repair checkpoint
+
+**Implemented; loaded-host verification open.** The 4.3 feedback work now includes
+the RisuAI/PocketRisu message-ID difference. `resolveRisuWorldlineObservation()`
+keeps `branchedfrom`'s parent source ID and no longer equates it with a copied
+child ID. `worldline_message_origins.go` consumes optional
+`risu_message_origins.v1` metadata, resolves the parent's user anchor, records
+child→parent message IDs and follows those mappings for nested branches.
+`resolvePrepareTurnHistoryScope()` preserves the earlier cut when a child forks
+inside its parent's inherited prefix.
+
+The initial `onRisuOutput()` / `preflightActiveChatBackfillIdentity()` observation
+remains 2–3 rows. Go can request a named parent prefix through the existing
+session-routing response; `observeRisuWorldlineMessageOrigins()` reads the official
+Host `getCharacterFromIndex` snapshot, freezes/transports ID/role/index metadata
+and existing branch markers, and applies the returned routing result. Older
+ancestor maps are filled through the same resolver and named reads, at most the
+existing 32-level lineage scope. Once recorded, ordinary observations do not
+request the prefix again. Optional read/transport failures retain the prior route.
+
+Persistence uses a versioned origin envelope in the existing
+`session_fork_lineage.inherited_items_json`. `saveAutomaticForkLineageRecord()` can
+enrich empty metadata transactionally without rewriting a confirmed lineage tuple.
+No memory body, vector, Host message ID or marker is rewritten by this operation.
+Ordered-prefix association is based on the inspected official clone operations;
+arbitrarily edited or unavailable old snapshots are not fully reconstructed.
+Ordinary copy routing and explicit session-copy operations retain their existing
+meaning; independent inherited-memory editing is separate work.
+
+Evidence and upstream SHAs: [4.3 feedback work log](docs/archive-center-4.3-feedback-work-log.md).
+Production Go/JS regressions and an isolated real MariaDB HTTP/storage roundtrip
+passed. These do not establish that the patched artifact is loaded in either Host.
+
+### 2026-09-06 Gemini 3.8 Flash medium checkpoint
+
+**Implemented; loaded-host/provider verification open.**
+`resolveGeminiThinkingLevelOptions()` and Go `proxyGeminiThinkingLevel()` now
+recognize `gemini-3.8-flash` as supporting medium. Publisher/Critic settings expose
+`none/low/medium/high`; native and gateway request owners retain selected medium.
+Only the existing model lists changed; `none` and preset defaults remain unchanged.
+Production JS and Go outbound-body regressions passed with mocked external
+boundaries. See the [4.3 feedback work log](docs/archive-center-4.3-feedback-work-log.md).
+
 ## 2. System Purpose
 
-**VERIFIED source/regression.** The active source identifies itself as Archive Center 4.2.0 release source: a RisuAI plugin plus a Go HTTP service. It preserves the 4.1 request lifecycle and adds Go-owned priority selection plus a user-selectable turn-finalization policy. Already admitted source projections create request-local `PriorityFactSeed` units before final memory-section rendering; each unit carries its own text, relevance, source identity, and visibility/perspective lineage. Recalled `memories.turn_summary` values form a separate complete-summary group scored by their highest child fact. The UI core-memory maximum is applied independently to that group and each scored fact lane, while existing per-class character budgets and the final character envelope remain Go-owned. One Go-owned request query set—current continuity/input plus recent completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`—is used by both Chroma retrieval and fact scoring. This conversation-reference depth is independent of Chroma result `top_k` and final per-group core-memory K. Aggregate Memory candidates remain bounded by the existing `tier=memory` recall result instead of all loaded session rows. In-scope canonical `precise_memory_units` determine the atomic scoring search count; their existing Chroma documents are queried by `source_table` with the same query vectors, then canonically hydrated from MariaDB so each similarity contributes only to its matching fact rather than every child of a parent Memory row. The plugin observes RisuAI lifecycle and Host coordinates, applies a backend-produced payload plan, and transports accepted finality; it does not calculate memory rank or own canonical persistence. The backend resolves the current input and session route, retrieves and assembles memory/context, produces the priority delivery/payload plan, optionally obtains a bounded `publisher_plan.v2`, validates completed-turn source lineage, writes through the selected Store, and maintains a derived Chroma search index. MariaDB remains canonical only in `mariadb_authority`; Chroma remains derived. Evidence: [plugin metadata](Archive%20Center.js), [`registerRisuLifecycleHooks()`](Archive%20Center.js), [`prepareTurnLoadGeneralPreciseMemoryUnits()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnRetrievalQueries()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), and [`handleCompleteTurn()`](go-service/internal/httpapi/group_turn_complete.go). Package and live-host/provider proof are separate.
+**VERIFIED source/regression.** The active source identifies itself as Archive Center 4.3.0-test.18 source: a RisuAI plugin plus a Go HTTP service. It preserves the 4.1 request lifecycle and adds Go-owned priority selection plus a user-selectable turn-finalization policy. Already admitted source projections create request-local `PriorityFactSeed` units before final memory-section rendering; each unit carries its own text, relevance, source identity, and visibility/perspective lineage. Recalled `memories.turn_summary` values form a separate complete-summary group scored by the higher of their best child fact and observed aggregate-vector score. The UI core-memory maximum is applied independently to that group and each scored fact lane, while existing per-class character budgets and the final character envelope remain Go-owned. One Go-owned request query set—current continuity/input plus recent completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`—is used by both Chroma retrieval and fact scoring. This conversation-reference depth is independent of Chroma result `top_k` and final per-group core-memory K. Aggregate Memory candidates remain bounded by the existing `tier=memory` recall result instead of all loaded session rows. In-scope canonical `precise_memory_units` determine the atomic scoring search count; their existing Chroma documents are queried by `source_table` with the same query vectors, then canonically hydrated from MariaDB so each similarity contributes only to its matching fact rather than every child of a parent Memory row. The plugin observes RisuAI lifecycle and Host coordinates, applies a backend-produced payload plan, and transports accepted finality; it does not calculate memory rank or own canonical persistence. The backend resolves the current input and session route, retrieves and assembles memory/context, produces the priority delivery/payload plan, optionally obtains a bounded `publisher_plan.v2`, validates completed-turn source lineage, writes through the selected Store, and maintains a derived Chroma search index. MariaDB remains canonical only in `mariadb_authority`; Chroma remains derived. Evidence: [plugin metadata](Archive%20Center.js), [`registerRisuLifecycleHooks()`](Archive%20Center.js), [`prepareTurnLoadGeneralPreciseMemoryUnits()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnRetrievalQueries()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), and [`handleCompleteTurn()`](go-service/internal/httpapi/group_turn_complete.go). Package and live-host/provider proof are separate.
 
 **VERIFIED.** The system also exposes store-backed administration, memory explorer, session migration, narrative/persona, original-work reference-library, Host lorebook-reference, timeline/dashboard, status projection, source-discovery/canon-pack, and managed-update routes. These are registered by [`Server.RegisterRoutes()`](go-service/internal/httpapi/server.go#L203-L233). Their presence in source proves route implementation, not plugin invocation, production enablement, canonical-truth authority, or live data quality.
 
@@ -74,7 +698,7 @@ flowchart LR
 
 ```text
 source/
-├── Archive Center.js              active RisuAI adapter source (4.2.0 release)
+├── Archive Center.js              active RisuAI adapter source (4.3.0-test.1 local test)
 ├── go-service/                    active Go backend source
 │   ├── cmd/                       service, package, operator, audit, and smoke executables
 │   ├── internal/config/           environment parsing and mode validation
@@ -106,7 +730,7 @@ source/
 | [`go-service/internal/httpapi`](go-service/internal/httpapi) | **VERIFIED.** Active HTTP handlers, prepare/complete orchestration, retrieval, workers, runtime ViewModels. | Backend `main()` through `RegisterRoutes()`/`StartMemoryWorkers()`, plus tests. |
 | [`go-service/internal/store`](go-service/internal/store) | **VERIFIED.** Active Store contracts plus MariaDB/noop/fixture implementations. | HTTP policy and workers. |
 | [`go-service/internal/vector`](go-service/internal/vector) | **VERIFIED.** Active Chroma and fake vector adapters. | Retrieval, vector outbox worker, and direct projection/admin/migration/reference index paths. |
-| [`migrations`](migrations) | **VERIFIED.** The directory contains `001_schema.sql` plus numbered migrations through `012_session_fork_lineage_source_role.sql`. New and upgraded installations use the same sorted complete inventory; later tables such as the four lorebook-reference tables remain owned by `010` and need not be duplicated into `001`. The updater accepts managed migration files that are added, changed, or removed. | `cmd/mariadb-schema`, installers, updater, package builders. |
+| [`migrations`](migrations) | **VERIFIED.** The directory contains `001_schema.sql` plus numbered migrations through `013_precise_memory_text_fields.sql`. `013` widens subtype, relationship key and reveal condition to LONGTEXT without changing identity indexes. New and upgraded installations use the same sorted complete inventory; later tables such as the four lorebook-reference tables remain owned by `010` and need not be duplicated into `001`. The updater accepts managed migration files that are added, changed, or removed. | `cmd/mariadb-schema`, installers, updater, package builders. |
 | [`go-service/internal/httpapi/group_lorebook_reference.go`](go-service/internal/httpapi/group_lorebook_reference.go), [`prepare_turn_lorebook_reference.go`](go-service/internal/httpapi/prepare_turn_lorebook_reference.go), [`go-service/internal/store/lorebook_reference.go`](go-service/internal/store/lorebook_reference.go), [`mariadb_lorebook_reference.go`](go-service/internal/store/mariadb_lorebook_reference.go) | **VERIFIED.** Active Host lorebook snapshot route, non-canonical Store contract, lifecycle, exact/key/lexical search, budget, and optional lane delivery. | `RegisterRoutes()`, `tryPrepareTurn()`, direct MariaDB authority Store. |
 | [`prompts/critic_system.txt`](prompts/critic_system.txt), [`prompts/supervisor_system.txt`](prompts/supervisor_system.txt) | **VERIFIED.** Backend prompt inputs. Files containing `복사본` or backup names are not active defaults. | Go prompt loader and package builders. |
 | [`archive-center-runtime.test.cjs`](archive-center-runtime.test.cjs) | **VERIFIED** test-only manual harness; **OBSOLETE** as active-runtime evidence. It is not imported by the plugin/backend and is not selected by current CI/core-regression scripts. | Explicit manual Node invocation only. |
@@ -127,7 +751,7 @@ source/
 | Pre-model adapter | `Archive Center.js` | `onBeforeRequest()` | `addRisuReplacer("beforeRequest", ...)` | Capture immutable request/finality coordinates, make source-decision/full `/prepare-turn` calls, attach the request's orchestration result, and apply the backend plan to the writable payload | [`onBeforeRequest()`](Archive%20Center.js), [`captureFinalConfirmationRequestContext()`](Archive%20Center.js), [`applyGoPayloadApplicationPlan()`](Archive%20Center.js) | VERIFIED |
 | Yumi Translator 1.4.2 read compatibility | `Archive Center.js` | `getCurrentActiveChatSourceObservationMessages()`, `buildYumiV1ArchiveReadContext()` | The existing `beforeRequest` path observes an active-chat assistant message containing a complete `yumi-tr:v1` marker range | Build a non-mutating Archive-only message copy from Yumi's matching `$__yumi_tr.<id>` `scriptstate` record so Publisher, continuity, language trace, and `/prepare-turn` read the model original while Risu display and outbound payload keep their existing behavior. Plain JSON, `u:` JSON, and `z:` gzip records are supported; missing/malformed metadata retains the visible translation text without blocking the turn. | [`buildYumiV1ArchiveReadContext()`](Archive%20Center.js), [`onBeforeRequest()`](Archive%20Center.js) | VERIFIED source/regression against the inspected Yumi Translator 1.4.2 reference; loaded plugin order/behavior UNKNOWN |
 | PDF transport adapters | `Archive Center.js` | `applyProviderManagerMemoryPDFPayload()`, `registerMemoryTransportBodyInterceptor()`, `onMemoryTransportBodyInterceptor()` | Provider Manager marker mode runs inside the existing `beforeRequest` payload application; direct modes use `Risuai.registerBodyIntercepter(...)` during `init()` and unregister during unload | Replace only the Go-selected long-term-memory Text with one explicit Provider Manager manual PDF range or one provider-specific document block; observe application without deciding selection or persistence | [`applyGoPayloadApplicationPlan()`](Archive%20Center.js), [`applyProviderManagerMemoryPDFPayload()`](Archive%20Center.js), [`onMemoryTransportBodyInterceptor()`](Archive%20Center.js) | VERIFIED source/regression/package/backend-readiness; loaded Host/provider UNKNOWN |
-| 4.2 Priority Memory | `go-service/internal/httpapi/prepare_turn_priority_memory.go` | `appendPrepareTurnPriorityFactSeeds()`, `prepareTurnBuildPriorityTurnSummaries()`, `buildPrepareTurnPriorityMemoryDeliveryPlan()` | Priority-enabled auto/custom-budget `/prepare-turn` assembly after existing source eligibility/projection | Form request-local atomic facts before final section rendering; consume the same effective continuity query as Chroma; apply a canonically hydrated precise-unit vector score only to its matching fact; retain per-fact score/source/visibility/perspective lineage; use small speaker/location/storyline rank biases, RP-turn-distance recency, and stored importance decayed by that turn recency; keep identity metadata outside fact K and the parent retrieval score diagnostic-only; keep lifecycle diagnostic-only; resolve non-lifecycle current identity per fact while retaining source occurrence for facts whose structured path contains an array ordinal such as `item_1`; score each recalled complete turn summary by its highest child fact; apply the same K independently to the complete-summary group and each scored fact lane without slot transfer; apply existing per-class and final character budgets; and render `memory_delivery_plan.v2`. An unseeded source remains readable through `legacy_rendered_line` fallback. | [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityCandidates()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression/package; loaded live quality UNKNOWN |
+| Priority Memory (4.3 static.v4) | `go-service/internal/httpapi/prepare_turn_priority_memory.go` | `appendPrepareTurnPriorityFactSeeds()`, `prepareTurnBuildPriorityTurnSummaries()`, `buildPrepareTurnPriorityMemoryDeliveryPlan()` | Priority-enabled auto/custom-budget `/prepare-turn` assembly after existing source eligibility/projection | Form request-local atomic facts before final section rendering; consume the same effective continuity query as Chroma; apply a canonically hydrated precise-unit vector score only to its matching fact; retain per-fact score/source/visibility/perspective lineage; use small speaker/location/storyline rank biases, RP-turn-distance recency, and independently weighted stored importance; keep identity metadata outside fact K; use an observed aggregate-vector score for its complete summary without copying it into sibling fact relevance; keep lifecycle diagnostic-only; resolve non-lifecycle current identity per fact while retaining source occurrence for facts whose structured path contains an array ordinal such as `item_1`; score each recalled complete turn summary by the higher of its best child fact and observed aggregate-vector score; apply the same K independently to the complete-summary group and each scored fact lane without slot transfer; apply existing per-class and final character budgets; and render `memory_delivery_plan.v2`. An unseeded source remains readable through `legacy_rendered_line` fallback. | [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityCandidates()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression/package; loaded live quality UNKNOWN |
 | Selectable turn finalization | `Archive Center.js`, `group_turn_prepare.go` | `onAfterRequest()`, `maybeStartNextInputFinalizationPipeline()`, `buildTurnFinalizationPolicy()` | Go-confirmed setting selects the default immediate path or the explicit next-user-input path | Preserve immediate 4.1 completion or carry the exact previous Host row to the same non-blocking `/complete-turn` owner on the next new user row | [`onAfterRequest()`](Archive%20Center.js), [`buildTurnFinalizationPolicy()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression; loaded Host/real DB UNKNOWN |
 | Optional Host lorebook sync | `Archive Center.js` | `observeLorebookReferenceScope()`, `syncCurrentLorebookReference()`, `postLorebookReferenceSnapshot()` | `tryPrepareTurn()` when mode is not `off`, manual refresh, scope/settings change | Observe the official Host API and transport one scoped snapshot; do not decide recall/delivery | [`tryPrepareTurn()`](Archive%20Center.js#L15735), [`syncCurrentLorebookReference()`](Archive%20Center.js#L15661) | VERIFIED source; UNKNOWN loaded Host |
 | Host output observation | `Archive Center.js` | `onRisuOutput()` | `addRisuChatListener("output", ...)` | Observe bounded `branchedfrom` markers, freeze stable host coordinates, and transport `risu_worldline_observation.v2`; never accepts finality or completes a turn | [`onRisuOutput()` and registration](Archive%20Center.js) | VERIFIED source; UNKNOWN loaded Host |
@@ -165,7 +789,7 @@ source/
 | --- | --- | --- | --- | --- |
 | Plugin implementation | Canonical source | [`Archive Center.js`](Archive%20Center.js) | Copied plugin in package directories | Package copies are generated. |
 | Backend implementation | Canonical source | [`go-service`](go-service) | Compiled executables | Binaries are not editable source. |
-| Fresh/upgrade DB schema | Canonical source inputs | The complete sorted [`migrations`](migrations) set through `012_session_fork_lineage_source_role.sql`, interpreted by the schema loader | Installed MariaDB tables | New and upgraded installations run the resulting complete inventory. Managed migration files may be added, changed, or removed by an update; later contents do not need to be copied back into `001_schema.sql`. |
+| Fresh/upgrade DB schema | Canonical source inputs | The complete sorted [`migrations`](migrations) set through `013_precise_memory_text_fields.sql`, interpreted by the schema loader | Installed MariaDB tables | New and upgraded installations run the resulting complete inventory. Managed migration files may be added, changed, or removed by an update; later contents do not need to be copied back into `001_schema.sql`. |
 | Generated artifacts | Generated | Package/build scripts | `_dist*`, `_release*`, `_test-builds` | Rebuild; do not patch in place. |
 | Package manifests | Generated release evidence | Build scripts | `PACKAGE_FILE_MANIFEST.json`, `PACKAGE_MIGRATION_UPDATE.json`, release status | Existence does not prove a package was tested or released. |
 | Configuration defaults | Canonical code defaults | [`config.Default()`](go-service/internal/config/config.go#L172-L206) and plugin defaults | Environment, package-rewritten examples, runtime `/config/update` snapshot | Runtime provider config is memory-only; response says `persisted: false`. |
@@ -306,7 +930,7 @@ sequenceDiagram
 | Optional PDF transport | After the existing plan is complete, Go exposes the exact selected `long_term_memory` and remaining auxiliary Text. Direct Google/Gateway modes additionally receive a transient searchable Go PDF. Explicit Provider Manager mode emits no PDF bytes; JavaScript wraps only the selected lane in one manual `<pm-pdf>` range and Provider Manager creates the document. Retry normalizes and reapplies that range once. | [`buildPrepareTurnMemoryTransport()`](go-service/internal/httpapi/prepare_turn_memory_transport.go), [`pdfmemory.Generate()`](go-service/internal/pdfmemory/generator.go), [`applyProviderManagerMemoryPDFPayload()`](Archive%20Center.js), [`onMemoryTransportBodyInterceptor()`](Archive%20Center.js) | VERIFIED source/regression/package/backend-readiness; loaded Host/provider UNKNOWN |
 | Ranking/coverage | Query eligibility requires exact phrase or sufficient lexical overlap, with a protected structured-anchor exception. Exact phrase/relevance outrank importance; noneligible, nonprotected rows do not deep/recent-fill. Lexical evaluation still runs after vector success. | [`prepareTurnMemoryRecallEvidence()`](go-service/internal/httpapi/prepare_turn_recall.go#L592), [`selectPrepareTurnMemoryLanesWithVector()`](go-service/internal/httpapi/prepare_turn_recall.go#L880-L1293) | VERIFIED |
 | Budgeting | JavaScript supplies settings/runtime-token observations, while Go remains the final owner. Priority-enabled auto and custom modes both build `memory_delivery_plan.v2`. The UI core-memory maximum is applied independently to complete recalled turn summaries and to each scored fact lane, and unused item slots do not transfer. A turn summary and event facts share the existing `event_recent` character budget; every other lane uses its existing UI class budget in custom mode. Auto mode and zero custom values retain the final global envelope as the available class cap. Reviewed names, aliases, and identity evidence remain attributable metadata and can be attached once to a selected fact for the same canonical entity without taking another K slot; inability to fit metadata never blocks that fact. K is a ceiling rather than a target. Direct evidence and protected secret authority remain outside K. Every item is delivered whole or deferred. | [`estimateAdaptiveInjectionBudgetParts()`](Archive%20Center.js), [`buildPrepareTurnMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_memory_budget.go), [`prepareTurnPriorityDeliveryCaps()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression |
-| Priority score lineage | `priority_score.static.v3` consumes `PriorityFactSeed` units built from existing admitted projections. It retains fact text, the request query-set source, per-fact relevance, stored source importance, importance after RP-turn decay, RP-turn-distance recency, continuity bonus, small independent speaker/location/storyline score biases, final score, deterministic rank, source occurrence, visibility/perspective scope, projection source, lifecycle diagnostics, and selected/deferred/superseded reason. Each recalled `memories.turn_summary` is also traced as a complete summary candidate with the highest child-fact score, representative fact ID, and all member fact IDs. When a matching canonical `precise_memory_unit` vector hit exists, that fact's strongest similarity across the request query set is the relevance owner; one hit is consumed by one matching fact and is never copied to sibling facts from the same parent Memory row. Speaker `0.04`, location `0.05`, and storyline `0.06` biases have a combined `0.12` ceiling and only adjust rank—they do not admit, reject, or suppress a memory. Recency uses only distance from the current RP turn with a 32-turn half-life and `0.20` floor; wall-clock pauses never age story memory. Stored importance is multiplied by that turn recency before receiving its `0.25` weight, so equally relevant recent facts receive both stronger recency and less-decayed importance. AI-produced lifecycle metadata does not replace fact identity, change final score, or select a canonical winner: plan, progress, completion, and follow-up expressions remain independent candidates. Completion-like wording supplies no hidden lifecycle rank or continuity bonus. A parent row's retrieval score remains diagnostic only. Relevance zero or an unavailable semantic score remains a sortable score observation rather than a `no_current_context_affinity` rejection. Unseeded source text is sentence-split only as a compatibility fallback and remains deliverable. Request-scoped current resolution changes only non-lifecycle fact-level delivery projection and never deletes source rows. Plan diagnostics distinguish summary and fact candidate/selection counts and expose per-group K outcomes. | [`prepareTurnPrioritySemanticFactFromPreciseUnit()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnPriorityStructuredBias()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnPriorityTurnDistanceRecency()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityCandidates()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression; loaded payload/display effect live UNKNOWN |
+| Priority score lineage | `priority_score.static.v4` consumes `PriorityFactSeed` units built from existing admitted projections. It retains fact text, the request query-set source, per-fact relevance, stored source importance, the retained importance_after_turn_decay field (equal to importance in v4), RP-turn-distance recency, continuity bonus, small independent speaker/location/storyline score biases, final score, deterministic rank, source occurrence, visibility/perspective scope, projection source, lifecycle diagnostics, and selected/deferred/superseded reason. Each recalled `memories.turn_summary` is also traced as a complete summary candidate with the higher of its best child-fact score and observed aggregate-vector score, score origin, representative fact ID, and all member fact IDs. When a matching canonical `precise_memory_unit` vector hit exists, that fact's strongest similarity across the request query set is the relevance owner; one hit is consumed by one matching fact and is never copied to sibling facts from the same parent Memory row. Speaker `0.04`, location `0.05`, and storyline `0.06` biases have a combined `0.12` ceiling and only adjust rank—they do not admit, reject, or suppress a memory. Recency uses only distance from the current RP turn with a 32-turn half-life and `0.20` floor; wall-clock pauses never age story memory. Stored importance receives its `0.25` weight independently of turn recency; equally relevant and important recent facts benefit only from the separate recency term. AI-produced lifecycle metadata does not replace fact identity, change final score, or select a canonical winner: plan, progress, completion, and follow-up expressions remain independent candidates. Completion-like wording supplies no hidden lifecycle rank or continuity bonus. A parent row's aggregate-vector score contributes to its complete summary and remains diagnostic for individual fact relevance. Relevance zero or an unavailable semantic score remains a sortable score observation rather than a `no_current_context_affinity` rejection. Unseeded source text is sentence-split only as a compatibility fallback and remains deliverable. Request-scoped current resolution changes only non-lifecycle fact-level delivery projection and never deletes source rows. Plan diagnostics distinguish summary and fact candidate/selection counts and expose per-group K outcomes. | [`prepareTurnPrioritySemanticFactFromPreciseUnit()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnPriorityStructuredBias()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnPriorityTurnDistanceRecency()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityCandidates()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go) | VERIFIED source/regression; loaded payload/display effect live UNKNOWN |
 | Lorebook reference search/delivery | In non-off modes, Go searches only the exact persisted Host scope by exact phrase, key, and lexical overlap. `search_only` traces candidates without delivery. `reference_assist` requires a fully observed scope, direct key/always-active activation, remaining reference budget, and exact-duplicate suppression; delivered support is `reference_only`. | [`prepareTurnLorebookReferenceSearch()`](go-service/internal/httpapi/prepare_turn_lorebook_reference.go#L403), [`finalizePrepareTurnLorebookReference()`](go-service/internal/httpapi/prepare_turn_lorebook_reference.go#L103) | VERIFIED |
 | Ordering/render | Go fixes base auxiliary order as `original_work`, `long_term_memory`, `output_guidance`; `reference_assist` inserts `lorebook_reference` immediately before `output_guidance`. Go concatenates exact lane text and emits hashes. It intentionally renders `input_context_text` as empty because RisuAI already carries recent chat; the internal input-context value remains available only for Publisher/turn analysis. Go does **not** choose the host message index. | [`buildPrepareTurnPayloadApplicationPlan()`](go-service/internal/httpapi/prepare_turn_render.go), [`attachPrepareTurnLorebookReferenceLane()`](go-service/internal/httpapi/prepare_turn_render.go) | VERIFIED |
 | Plugin application | JavaScript rejects a missing/mismatched plan. For a valid plan it inserts only the single `auxiliary_text` system block at a JavaScript-selected host position and records `payload_application_observation.v1`. There is no active `injectInputContextBeforeUser()` path. | [`applyGoPayloadApplicationPlan()`](Archive%20Center.js), [`injectAuxiliaryBlock()`](Archive%20Center.js) | VERIFIED |
@@ -386,7 +1010,7 @@ flowchart TD
     P -->|"yes"| R["Derived index consistent"]
 ```
 
-**VERIFIED.** **Canonical store.** In `mariadb_authority`, MariaDB owns accepted raw chat/effective input, source revisions, admitted memories/evidence/precise units, KG and typed projections, identity links, session route/fork lineage, audits, job ledgers, and vector outbox state. Separately, the migration directory extends through `012_session_fork_lineage_source_role.sql`; `010` creates four non-canonical Host-reference tables and `011`/`012` add worldline lineage. `mariadb-schema` treats either the migration directory or `001_schema.sql` as the entry point for loading every sibling SQL file in sorted order, so the four tables do not need to be duplicated into `001`.
+**VERIFIED.** **Canonical store.** In `mariadb_authority`, MariaDB owns accepted raw chat/effective input, source revisions, admitted memories/evidence/precise units, KG and typed projections, identity links, session route/fork lineage, audits, job ledgers, and vector outbox state. The current 4.3 migration directory extends through `013_precise_memory_text_fields.sql`; `010` creates four non-canonical Host-reference tables, `011`/`012` add worldline lineage, and `013` widens the precise-memory text fields. `mariadb-schema` treats either the migration directory or `001_schema.sql` as the entry point for loading every sibling SQL file in sorted order, so the four tables do not need to be duplicated into `001`.
 
 **VERIFIED.** **Transaction boundary.** [`CommitMemoryAdmission()`](go-service/internal/store/mariadb_memory_admission.go#L26-L53) retries deadlock-class transaction errors. [`commitMemoryAdmissionOnce()`](go-service/internal/store/mariadb_memory_admission.go#L116-L233) starts a `READ COMMITTED` transaction, locks/checks the source revision, preserves an already committed result for idempotent replay, writes the core memory/evidence/precise-unit projections and outbox rows, updates admission state, and commits those operations atomically. It does not include the separately saved raw pair, effective input/feedback/audits, KG, narrative, character, status, or other typed projections.
 
@@ -489,7 +1113,7 @@ Source-to-output rules:
 
 **VERIFIED.** `Archive Center 3.4-C.js`, timestamped `Archive Center.js.codex-backup-*`, and `prompts/critic_system.pre-first-compression-20260808.txt` are **OBSOLETE** historical copies for active runtime defaults. The inert `_step18MarkerSurface` historical evidence object has been removed. `AC Recomposer Agent.js` is an optional, separately installed consumer of the active transient Recomposer bridge, but no package-copy/autoload step was found; live installation is **UNKNOWN**. Other standalone Recomposer/quality-layer copies remain **INFERRED** separate/legacy.
 
-**VERIFIED.** A newly run package builder inventories and copies all active migrations through `012`. No existing `_test-builds`, `_dist`, `_release`, or packaged copy is source authority, even if a version log records its hashes. `build-full-package.ps1` always rewrites the copied display label and `AC_BUILD_VERSION`, but rewrites plugin `//@version` and `const VERSION` only for strict `x.y.z`; verify source, package, loaded plugin, runtime endpoint, and published release identity separately.
+**VERIFIED.** A newly run package builder inventories and copies all active migrations, currently through `013`. No existing `_test-builds`, `_dist`, `_release`, or packaged copy is source authority, even if a version log records its hashes. `build-full-package.ps1` always rewrites the copied display label and `AC_BUILD_VERSION`, but rewrites plugin `//@version` and `const VERSION` only for strict `x.y.z`; verify source, package, loaded plugin, runtime endpoint, and published release identity separately.
 
 ## 16. Failure and Fallback Behavior
 
@@ -540,7 +1164,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 | 11 | Fallback reported as normal success — **VERIFIED** risk | MariaDB connectivity is not pinged, so `/ready` can report ready before the first failed query. | Readiness must verify the authority DB, and degraded states must remain explicit. | Unreachable-MariaDB preflight/readiness regression. |
 | 12 | Suppression hides valid memory — **VERIFIED** guard | Go emits delivery lineage, reasons, counts, and deferred/suppressed state. | Never dedupe/suppress without stable, inspectable reason/source refs. | Coverage, protected-memory, dedupe, and lineage tests. |
 | 13 | Async race, duplicate, or partial commit — **VERIFIED** mixed boundary | Source fences, idempotency, terminal replacement-failure records, the core-admission transaction, leases, and outbox-managed vector exact-readback provide guards; raw pair/source registration, post-admission projections, and direct vector writes remain separate and can diverge or report `partial_commit`. | Never leave a failed non-committed replacement as the active pending revision; do not describe the whole turn or whole index as atomic; preserve durable diagnostics and add reconciliation for separate writers where required. | Raw-row failure, non-tail replacement, new-key replay of a terminal failed revision, deadlock, stale source, post-admission/direct-vector failure, and worker-crash tests. |
-| 14 | Configuration drift — **VERIFIED** risk | Source defaults and templates are aligned at 4.1.0, but package builders still rewrite copies and a stale generated package can advertise another version. | Validate source defaults, templates, package rewrite, and runtime status together. | Package smoke test and `/version`/`/ready` identity comparison. |
+| 14 | Configuration drift — **VERIFIED** risk | The source config default and `.env.example` retain 4.2.0; active JS is test.18. The package builder sets the runtime template/launcher to test.18 while `.env.source.example` remains a source reference. A displayed version alone does not identify executable contents. | Validate source defaults, templates, package rewrite, and runtime status together. | Package smoke test and `/version`/`/ready` identity comparison. |
 | 15 | Roadmap described as implementation — **VERIFIED** risk | Active source uses `memory_recall_plan.v1`, `memory_delivery_plan.v1`, `payload_application_plan.v1`, and `publisher_plan.v2`. Older integrated roadmap prose still proposes recall/injection v2, while the current 4.0 roadmap retains v1 delivery/application. | Classify each contract independently from its active producer, validator, consumer, and caller; do not infer a shared version. | Contract-version grep, negative compatibility tests, and end-to-end payload evidence. |
 | 16 | Obsolete code mistaken as active — **VERIFIED** risk | Old plugin copies and inert marker surfaces can be mistaken for active runtime; the unreferenced JavaScript budget assembler has now been removed. | Prove activation/import/caller/package copy before using a file or symbol as evidence. | Entry-point, call-site, and build-input inventory. |
 | 17 | Schema/API/plugin/docs inconsistency — **VERIFIED** risk | `trace_preview.would_call_llm` is hard-coded false even when Publisher may have run; some route comments still say shadow while authority mode is included. | Version and test observable contracts; update comments/docs with code. | Publisher-called trace test and authority route response test. |
@@ -555,7 +1179,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **VERIFIED.** Fragile payload-fidelity boundary: Go owns auxiliary lane text/order/hashes; JavaScript owns actual message insertion and currently the auxiliary index policy. Any change to placement, role, text, lane order, hashes, native-context interaction, or effective-input rewrite needs backend unit tests and actual outbound-payload capture. Representative tests: [`output_fidelity_lineage_test.go`](go-service/internal/httpapi/output_fidelity_lineage_test.go) and [`output_fidelity_guide_efficacy_test.go`](go-service/internal/httpapi/output_fidelity_guide_efficacy_test.go).
 - **VERIFIED.** **Memory lane selection and budgets.** Protected coverage, vector/lexical refill, private scope, hierarchy escalation, and final text dedupe are coupled across `prepare_turn_memory*.go`, `prepare_turn_recall.go`, and render code.
 - **VERIFIED.** Fragile raw-to-derived durability boundary: the raw user row, raw assistant row, source registration, core admission, and post-admission projections span multiple operations. Test recoverable prefixes and `partial_commit`, not only common-admission rollback, with disconnection, deadlock, reroll, duplicate key, and partial provider/write failure.
-- **VERIFIED.** **MariaDB schema compatibility.** Migrations extend through `012`, and package launchers invoke the directory-loading schema tool so both new and upgraded installations receive the complete sorted inventory. `001_schema.sql` is not required to duplicate every later additive table. Verify fresh install, upgrade, and package application through the full inventory; never rewrite historical numbered migrations merely to collapse them into `001`.
+- **VERIFIED.** **MariaDB schema compatibility.** Migrations extend through `013`, and package launchers invoke the directory-loading schema tool so both new and upgraded installations receive the complete sorted inventory. `001_schema.sql` is not required to duplicate every later additive table. Verify fresh install, upgrade, and package application through the full inventory; never rewrite historical numbered migrations merely to collapse them into `001`.
 - **VERIFIED.** Fragile vector lifecycle: outbox-managed core documents have durable lease/retry, exact-readback, and stale compensation, while normal world-rule/status plus admin/migration/reference/compatibility mutations use direct or route-specific paths. Test real Chroma compatibility, every direct writer's failure/reconciliation behavior, private-memory exclusion, deletion, and contextualized embedding batching without treating the outbox guarantee as global.
 - **VERIFIED.** **Runtime config synchronization.** Provider config is process-memory state and workers defer until synced. Restart/rebind behavior needs live tests.
 - **VERIFIED.** **Readiness limitation.** Main/reference Chroma semantics are checked separately, but MariaDB authority readiness does not prove connectivity. Add/maintain a real database connectivity check.
@@ -570,6 +1194,12 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 ## 19. Implemented vs Planned Features
 
 ### Currently implemented
+
+- **4.3 preceding feedback checkpoint — implemented_unverified:** [GitHub #5/#6/#4/#10/#7 work log](docs/archive-center-4.3-feedback-work-log.md). Existing Go delete coalescing now advances through committed ID batches using existing indexes and releases its writer between batches; its admin-maintenance caller and original source/lease/causal eligibility remain unchanged. Precise subtype/relationship/reveal text is LONGTEXT through fresh SQL, `013` and Go compatibility. Pending/committed Critic result preservation and stored-JSON hash replay remain Go-owned. HUD recovery returns/refreshes the current Go ViewModel; Go corrects estimated display turns using the canonical owner's result and transient creation order, while JS removes click handlers through their registering SafeElement. Source regressions and isolated real MariaDB/Chroma tests passed. Later test packages and multi-agent implementation are indexed in the [current 4.3 summary](docs/archive-center-4.3-status-summary.md); this earlier checkpoint does not establish patched loaded-PocketRisu behavior.
+
+- **4.3 optional preprocessing — implemented_unverified:** `prepare_turn_multi_agent.go` owns `handleMultiAgentSettings()`, persisted common/role prompts and role connections, `callMultiAgent()` and `runMultiAgent()`. `group_turn_prepare.go` connects scoped candidates, first-round parallel analysis, bounded supplemental retrieval/analysis, received recommendations and the existing Publisher/payload owners. `loadMemoryPreprocessingPanel()` in `Archive Center.js` exposes the independent, default-OFF Extensions entry. New settings default to independent connections; saved Publisher sharing remains optional. OFF preserves existing Go preparation without feature-specific calls. See the [implementation record](docs/archive-center-4.3-preprocessing-work-log.md) and the [test.18 package record](docs/archive-center-4.3-test-build-18.md); actual Host/provider/output verification remains separately scoped.
+
+- **4.3 result fidelity — VERIFIED source/regression, live delivery UNKNOWN:** Go preserves received canonical recommendation text/order, uses its ordinary selection for categories without recommendations, retains first-round results after supplemental failure, and distinguishes a successful empty final selection. Source/perspective/privacy scope and predeclared budgets remain with existing owners. The [result-fidelity contract](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-result-fidelity-43) is implemented in source; the original plan wording is not proof of final Host application or displayed effect.
 
 - **VERIFIED:** 4.1.0 RisuAI `input`, `beforeRequest`, `afterRequest`, bounded worldline `output`, and unload hook registration.
 - **VERIFIED:** Go `/prepare-turn` current-input decision, canonical/vector retrieval, exact/lexical eligibility, source-revision hydration, provenance-aware suppression, `memory_recall_plan.v1`, priority-disabled legacy `memory_delivery_plan.v1`, priority-enabled auto/custom-budget `memory_delivery_plan.v2`, lane/priority budgeting and ordering, lineage, and `payload_application_plan.v1` rendering.
@@ -590,7 +1220,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **VERIFIED:** Explicit reviewed character/item identity preview/merge/unmerge; staged `session-normalize.v1` with mixed-conflict repair and missing unambiguous identity repair; `session-migration.manifest.v4`; session deletion with transactional lorebook/identity/child-fork-lineage cleanup and queued vector convergence.
 - **VERIFIED:** Active-chat/backfill resolution classifies `paired`, `stored_pair_recovered`, and `assistant_only`; it reuses an existing stored user row when available and does not fabricate user input for assistant-only history. Explicit normalization reports assistant-only candidates separately.
 - **VERIFIED:** The long-memory candidate renderers retained by 4.1.0 no longer apply their former fixed per-item caps before the final Go delivery plan; successful contextualized embeddings discard bulky context chunks before outbox persistence, while failed/empty embeddings keep them for retry.
-- **VERIFIED source/Go regression/package:** 4.2 priority-enabled auto/custom-budget preparation emits `memory_delivery_plan.v2` with `priority_score.static.v3`. Existing eligible source projections produce request-local atomic facts with per-fact relevance and source/visibility/perspective lineage. One effective query set is shared with Chroma; its recent completed-conversation depth is independently configurable from Chroma result `top_k` and final per-group fact K. A canonically hydrated precise-unit vector hit scores only its matching fact, parent retrieval score remains diagnostic, speaker/location/storyline matches are bounded score-only biases, and recency uses only RP-turn distance with a floor. Stored importance is multiplied by RP-turn recency before its score weight, so old importance decays without wall-clock time. Story/RP memory does not age while the user is away. Recalled `memories.turn_summary` rows form a separate complete-summary group scored by the highest child fact. The same UI K is applied independently to that group and every scored fact lane without unused-slot transfer; one-sentence exact summary/fact duplicates render once without consuming fact K. Existing custom per-class character budgets apply in the same Go selector, and summaries share `event_recent` with event facts. Identity metadata stays outside fact K, while current resolution operates on facts; array ordinals retain source occurrence so unrelated rows cannot supersede one another merely because both rendered as `item_1`. Lifecycle-bearing plan/progress/completion/follow-up facts remain independent candidates; transitions are diagnostic only and do not affect score. Protected recollection guards remain attached to their memory, unseeded sources keep a non-rejecting rendered-line fallback, and diagnostics distinguish summary/fact candidates and group outcomes. The existing Publisher/Text/PDF paths consume the same final selection, while recent conversation remains search context rather than duplicate payload content. This changes neither source projection, canonical source rows, Chroma authority, JavaScript lifecycle, nor persistence. The current Windows 4.2.0 test package includes this correction; loaded/live quality verification remains open.
+- **VERIFIED source/Go regression; package evidence is version-specific:** Current priority-enabled auto/custom-budget preparation emits `memory_delivery_plan.v2` with `priority_score.static.v4`. Existing eligible source projections produce request-local atomic facts with per-fact relevance and source/visibility/perspective lineage. One effective query set is shared with Chroma; its recent completed-conversation depth is independently configurable from Chroma result `top_k` and final per-group fact K. A canonically hydrated precise-unit vector hit scores only its matching fact; aggregate-vector score contributes to its complete summary while staying diagnostic for individual facts; speaker/location/storyline matches are bounded score-only biases, and recency uses only RP-turn distance with a floor. Stored importance contributes independently of RP-turn recency; age no longer reduces both terms. Story/RP memory does not age while the user is away. Recalled `memories.turn_summary` rows form a separate complete-summary group scored by the higher of the best child fact and observed aggregate-vector score. The same UI K is applied independently to that group and every scored fact lane without unused-slot transfer; one-sentence exact summary/fact duplicates render once without consuming fact K. Existing custom per-class character budgets apply in the same Go selector, and summaries share `event_recent` with event facts. Identity metadata stays outside fact K, while current resolution operates on facts; array ordinals retain source occurrence so unrelated rows cannot supersede one another merely because both rendered as `item_1`. Lifecycle-bearing plan/progress/completion/follow-up facts remain independent candidates; transitions are diagnostic only and do not affect score. Protected recollection guards remain attached to their memory, unseeded sources keep a non-rejecting rendered-line fallback, and diagnostics distinguish summary/fact candidates and group outcomes. The existing Publisher/Text/PDF paths consume the same final selection, while recent conversation remains search context rather than duplicate payload content. This changes neither source projection, canonical source rows, Chroma authority, JavaScript lifecycle, nor persistence. The 4.2 package records its earlier static.v3 behavior; the 4.3 static.v4 correction is included in test.18. Loaded/live quality verification remains open.
 - **VERIFIED source/Go regression:** Critic thread/state JSON now carries one stable `lifecycle_key`. A structured completion emits `complete`/`resolve`, and `state_deltas.resolved_threads` updates the matching stored `pending_threads` row to `resolved`. Delivery deliberately does not let that AI-produced key collapse different stage facts or let a terminal transition preempt relevance, importance, or RP-turn recency. The key is hashed for the physical thread key so non-Latin titles do not collapse through the legacy ASCII `stableKey`. Legacy records without the key retain their exact-title compatibility path; this is a bounded persistence lifecycle repair plus low-confidence delivery lineage, not the planned 4.5 general lifecycle ontology.
 - **VERIFIED source/Go regression:** Administrative canonical vector replay is vector-only after core admission. It does not append active states, canonical state layers, pending threads, storylines, or other post-admission projections. A repeated resolved-thread save is idempotent. Existing polluted rows are not silently deleted; rebuild requires an explicit affected-session reset/cold start.
 - **VERIFIED source/regression:** 4.2 selectable finalization preserves `응답 직후` by default and implements explicit `다음 사용자 입력 시` through a Go-confirmed policy carried across the actual compact/legacy orchestration-result handoff plus the existing `/complete-turn`; the previous Critic is non-blocking and no parallel persistence owner was added.
@@ -607,9 +1237,11 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 
 ### Planned
 
-- **PLANNED UI contract for 4.3:** Add an independent entry in the existing Extensions area alongside Persona Capsule, Original Work DB and Lorebook Reference (`extensionsFamilyActive` / `extensionsSubtabsHtml()` in `Archive Center.js`). Its explicit enable setting defaults to OFF; model configuration, opening the panel or enabling another extension does not enable it. OFF retains existing Go memory/Publisher behavior with zero feature-specific analysis/search calls. Other extensions retain their own enable settings and data-use scope. This entry and its activation wiring are not implemented yet.
+- **PLANNED — 4.4 behavior-preserving refactoring:** Follow the [file/function plan](docs/archive-center-4.4-refactoring-plan.md) and [integrated 4.4 scope](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#refactoring-consolidation-44). Record the actual starting 4.3 dirty baseline; consolidate existing provider-option mapping and repeated UI/HUD mechanics, type internal assembly inputs and private retrieval results, and measure unused supplemental rendering/repeated input work. Strengthen independent SQL test expectations before any related storage-function move. Shared UI settings and fake-vector read recording are unreproduced concurrency risks, not confirmed data contamination. Preserve active compatibility callers and existing acceptance, privacy, recommendation, settings and lifecycle behavior.
 
-- **PLANNED, not implemented:** The [current integrated roadmap](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#multi-agent-memory-selection-43) assigns optional category-specific multi-agent memory exploration and selection preprocessing to 4.3. Existing Go owners will prepare shared/scoped candidates, call up to five configured specialists in parallel, execute their missing-evidence requests through existing retrieval, and pass permitted cross-category evidence to the specialists needing one supplemental analysis. Normal analysis calls are N+M with 0≤M≤N≤5; retrieval/embedding, Publisher and actual provider re-entry are counted separately. Go applies available recommendations before final memory budgeting; the existing Publisher consumes delivered memory. Draft generation/rewriting and output polishing are excluded, and existing Critic persistence remains unchanged. Linked-fact review does not implement 4.5 bundle selection/compression or 4.8–4.9 typed relations/local graphs. This is a planning assignment, not an active route, DTO or runtime capability. The former 4.3–4.9 plan moves to 4.4–4.10; 5.0–9.0 stays numbered as before.
+- **PLANNED — 4.4 semantic consolidation:** The original cross-surface claim/event grouping remains 4.4-D, after the refactoring slices. Its intended changes to representative delivery and source coverage require separate cases from refactoring parity. Define the connection to 4.3 before implementation; already-received AI recommendations must not be silently rewritten or replaced. Source-linked compact bundles remain 4.5, with typed relations/local-graph work assigned later in the integrated roadmap.
+
+- **UNKNOWN — remaining 4.3 validation:** Role prompts, UI and calls are no longer merely planned. Their loaded-Host application, actual managed-update setting preservation, provider/Flex acceptance, output effect and timing remain limited to the evidence in the [4.3 summary](docs/archive-center-4.3-status-summary.md). The original `world_state` first-call failure is unresolved without its error record; race-detector and 40M performance proof remain open.
 
 - **OBSOLETE:** `memory_recall_plan.v2` remains only in the older [integrated 3.6–4.1 roadmap](docs/3.6-4.1-precision-long-term-memory-roadmap.md). The reconciled planning index preserves the active `memory_recall_plan.v1`, `memory_delivery_plan.v1`, and `payload_application_plan.v1` contracts; it does not authorize a v2 migration.
 - **OBSOLETE:** The “lineage-aware retrieval and invalidation are deferred” statement in [`4.0-risu-worldline-observation-design.md`](docs/4.0-risu-worldline-observation-design.md) is outdated for retrieval: current prepare-turn Store/vector reads use confirmed fork-boundary history segments. Do not infer that every invalidation or live-host case is complete from that retrieval implementation.
@@ -628,7 +1260,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 ## 20. Open Questions and Unverified Areas
 
 1. **UNKNOWN:** Which exact plugin artifact is currently loaded in a real RisuAI instance, and whether the current input/beforeRequest/afterRequest/output callbacks exhibit the source-defined lifecycle there.
-2. **UNKNOWN:** Whether the intended `mariadb_authority` deployment has applied the complete migration inventory through `012` and preserves canonical, identity, worldline, and Host-reference data across restart, rollback, reroll, deletion, migration, and recovery.
+2. **UNKNOWN:** Whether the intended `mariadb_authority` deployment has applied the current 4.3 migration inventory through `013` and preserves canonical, identity, worldline, and Host-reference data across restart, rollback, reroll, deletion, migration, and recovery. Earlier 4.2 release evidence remains scoped to its then-current inventory.
 3. **UNKNOWN:** Whether the configured Chroma version, session/reference collections, embedder, and outbox exact-readback behavior pass against the intended deployment OS/provider, and whether direct world-rule/status/admin/migration/reference/compatibility mutations reconcile after failure.
 4. **UNKNOWN:** Whether the active `publisher_plan.v2` and Critic provider combinations respect timeouts, malformed-response handling, and bounded prompt contracts in production.
 5. **UNKNOWN:** Whether complete-turn and vector/reprocessing queues drain correctly during long sessions, process crashes, network partitions, and restart.

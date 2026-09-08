@@ -359,6 +359,45 @@ func automaticForkLineageFixture(importedAt time.Time) ForkLineageRecord {
 	}
 }
 
+func TestWorldline43ConfirmedLineageOnlyEnrichesEmptyOriginMetadata(t *testing.T) {
+	for _, existingJSON := range []string{"", "[]", `[{"contract_version":"risu_message_origins.v1","items":[]}]`} {
+		t.Run(existingJSON, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			m := &mariadbStore{db: db}
+			at := time.Date(2026, 9, 6, 0, 0, 0, 0, time.UTC)
+			existing := automaticForkLineageFixture(at)
+			existing.InheritedItemsJSON = existingJSON
+			incoming := existing
+			incoming.CopiedFromSessionID = "must-not-replace-parent"
+			incoming.ForkTurn = 99
+			incoming.InheritedItemsJSON = `[{"contract_version":"risu_message_origins.v1","parent_host_chat_id":"parent","items":[{"child_message_id":"new","parent_message_id":"old","role":"char"}]}]`
+			expected := existing
+			mock.ExpectBegin()
+			mock.ExpectQuery("(?s)FROM session_fork_lineage.*FOR UPDATE").WithArgs(existing.ChatSessionID, existing.IdempotencyKey).WillReturnRows(forkLineageRows().AddRow(forkLineageRowValues(existing, 93, at)...))
+			if existingJSON == "" || existingJSON == "[]" {
+				expected.InheritedItemsJSON = incoming.InheritedItemsJSON
+				mock.ExpectExec("UPDATE session_fork_lineage SET inherited_items_json = \\? WHERE id = \\?").WithArgs(incoming.InheritedItemsJSON, int64(93)).WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectQuery("(?s)FROM session_fork_lineage.*WHERE chat_session_id = \\? AND idempotency_key = \\?").WithArgs(existing.ChatSessionID, existing.IdempotencyKey).WillReturnRows(forkLineageRows().AddRow(forkLineageRowValues(expected, 93, at)...))
+			mock.ExpectCommit()
+			got, err := m.SaveForkLineageRecord(context.Background(), incoming)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.InheritedItemsJSON != expected.InheritedItemsJSON || got.CopiedFromSessionID != existing.CopiedFromSessionID || got.ForkTurn != existing.ForkTurn {
+				t.Fatalf("got=%+v", got)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func forkLineageRows() *sqlmock.Rows {
 	return sqlmock.NewRows([]string{
 		"id", "contract_version", "lineage_state", "chat_session_id",
@@ -378,7 +417,7 @@ func forkLineageRowValues(record ForkLineageRecord, id int64, importedAt time.Ti
 		id, record.ContractVersion, record.LineageState, record.ChatSessionID,
 		nil, nil, nil, record.CopiedFromSessionID, record.ForkTurn,
 		record.ForkSourceMessageID, forkSourceRole, record.IdempotencyKey, importedAt,
-		nil, record.ProvenanceSource, record.InheritanceMode, nil,
+		nil, record.ProvenanceSource, record.InheritanceMode, nullableString(record.InheritedItemsJSON),
 		record.CreatedAt, record.CreatedAt,
 	}
 }

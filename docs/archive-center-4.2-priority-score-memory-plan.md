@@ -9,6 +9,11 @@ payload·Critic 복구 X·최신 UI 모양은 각각 별도 live gate로 남음
 
 기준일: 2026-09-05
 
+후속 기준(2026-09-08): 아래는 4.2 구현·패키지의 당시 기록이다. 활성 4.3 소스는
+[`priority_score.static.v4`](archive-center-4.3-feedback-work-log.md#retrieval-score-retention-repair)로
+원본 의미 검색 점수를 완전한 턴 요약 선정에 반영하고 중요도와 최근성의 기여를 분리했다.
+이 후속 source/회귀 결과를 기존 4.2 배포본이나 test.17 패키지의 작동으로 해석하지 않는다.
+
 ## 1. 사용자 체감 목표
 
 4.2의 목표는 기억을 많이 넣거나 정확성 조건을 더 쌓는 것이 아니다. 이미 저장된 기억 후보의

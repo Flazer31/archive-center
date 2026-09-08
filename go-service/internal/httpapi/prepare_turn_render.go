@@ -39,7 +39,7 @@ func normalizePublisherGuidanceFormat(value string) string {
 	}
 }
 
-func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryText, inputContextText string, injectionEnabled, inputContextEnabled bool, memoryBudget, referenceBudget, narrativeBudget int, guidanceItems []prepareTurnGuidanceItem, supervisorCallStatus string) map[string]any {
+func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryText, inputContextText string, injectionEnabled, inputContextEnabled bool, memoryBudget, referenceBudget, narrativeBudget int, guidanceItems []prepareTurnGuidanceItem, supervisorCallStatus string, preprocessingNotes ...map[string]any) map[string]any {
 	if narrativeBudget < 0 {
 		narrativeBudget = 0
 	}
@@ -101,10 +101,20 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 	lanes := []map[string]any{
 		prepareTurnPayloadLane("original_work", "Original Work Context", referenceText, referenceBudget, injectionEnabled && referenceText != "", nil),
 		prepareTurnPayloadLane("long_term_memory", "Long-term Memory Context", memoryText, memoryBudget, injectionEnabled && memoryText != "", nil),
-		prepareTurnPayloadLane("output_guidance", "Output Guidance Context", narrativeText, narrativeBudget, injectionEnabled && narrativeText != "", appliedGuidanceRefs),
 	}
+	if len(preprocessingNotes) > 0 {
+		notes := preprocessingNotes[0]
+		if text := extractionStringFromAny(notes["final_text"]); text != "" {
+			lane := prepareTurnPayloadLane("preprocessing_notes", "Preprocessing Specialist Notes", text, 0, injectionEnabled, stringsFromAny(notes["source_refs"]))
+			lane["authority"], lane["budget_mode"] = "ai_interpretation", "additional_observed"
+			lanes = append(lanes, lane)
+		}
+	}
+	lanes = append(lanes, prepareTurnPayloadLane("output_guidance", "Output Guidance Context", narrativeText, narrativeBudget, injectionEnabled && narrativeText != "", appliedGuidanceRefs))
 	auxiliaryParts := []string{}
+	laneOrder := []string{}
 	for _, lane := range lanes {
+		laneOrder = append(laneOrder, extractionStringFromAny(lane["key"]))
 		if applied, _ := lane["applied"].(bool); applied {
 			if text, _ := lane["text"].(string); strings.TrimSpace(text) != "" {
 				auxiliaryParts = append(auxiliaryParts, text)
@@ -134,7 +144,7 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 			"chars":        len([]rune(rawUserInput)),
 			"content_hash": prepareTurnTextHash(rawUserInput),
 		},
-		"lane_order":          []string{"original_work", "long_term_memory", "output_guidance"},
+		"lane_order":          laneOrder,
 		"lanes":               lanes,
 		"auxiliary_text":      auxiliaryText,
 		"auxiliary_chars":     len([]rune(auxiliaryText)),
@@ -195,7 +205,11 @@ func attachPrepareTurnLorebookReferenceLane(plan map[string]any, text string, bu
 		}
 	}
 	auxiliary := strings.Join(parts, "\n\n")
-	plan["lane_order"] = []string{"original_work", "long_term_memory", "lorebook_reference", "output_guidance"}
+	laneOrder := []string{}
+	for _, lane := range lanes {
+		laneOrder = append(laneOrder, extractionStringFromAny(lane["key"]))
+	}
+	plan["lane_order"] = laneOrder
 	plan["lanes"] = lanes
 	plan["auxiliary_text"] = auxiliary
 	plan["auxiliary_chars"] = len([]rune(auxiliary))
@@ -301,6 +315,9 @@ func prepareTurnOriginalWorkPayloadBudgetStats(candidateRecall, selectedRecall r
 
 func prepareTurnLorebookPayloadBudgetStats(result prepareTurnLorebookReferenceResult) prepareTurnPayloadBudgetLaneStats {
 	reasons := map[string]int{}
+	if aiNotSelected := result.FinalDispositionCounts["excluded_ai_not_selected"]; aiNotSelected > 0 {
+		reasons["lorebook_ai_not_selected"] = aiNotSelected
+	}
 	if result.AlreadyPresentCount > 0 {
 		reasons["lorebook_already_present_in_payload"] = result.AlreadyPresentCount
 	}
@@ -459,6 +476,9 @@ func attachPrepareTurnPayloadBudgetLedger(plan map[string]any, configuredCaps ma
 			"final_delivery_count": finalCount, "final_delivery_chars": finalChars,
 			"excluded_count": laneExcluded, "exclusion_reasons": reasons,
 		})
+		if mode := lane["budget_mode"]; mode != nil {
+			lanes[len(lanes)-1]["budget_mode"] = mode
+		}
 	}
 	bodyChars := len([]rune(extractionStringFromAny(plan["auxiliary_text"])))
 	interLaneSeparatorChars := maxInt(0, bodyChars-laneContentChars)
@@ -653,20 +673,24 @@ func supervisorSceneProposalGuidanceItems(result map[string]any, guidanceFormat 
 		sourceRefs = appendUniqueStringValues(sourceRefs, itemRefs...)
 	}
 	sections := []string{}
+	strengthProfile := publisherStrengthProfile(extractionStringFromAny(proposal["guide_strength"]))
+	strength := extractionStringFromAny(strengthProfile["strength"])
+	application := extractionStringFromAny(strengthProfile["guidance_application"])
 	bookAuthorHeader := "[Book Author]"
 	directorHeader := "[Director]"
 	switch guidanceFormat {
 	case "compact":
-		sections = append(sections, "[PG|scope=current_response|user_input=authority]")
+		sections = append(sections, "[PG|scope=current_response|strength="+strength+"|guidance="+application+"|user_input=authority]")
 		bookAuthorHeader = "[BA]"
 		directorHeader = "[D]"
 	case "explicit":
-		sections = append(sections, "[PUBLISHER_PLAN]\nSCOPE=CURRENT_RESPONSE; USER_INPUT=AUTHORITATIVE; AUTHORITY=PROPOSAL_ONLY")
+		sections = append(sections, "[PUBLISHER_PLAN]\nSCOPE=CURRENT_RESPONSE; STRENGTH="+strings.ToUpper(strength)+"; GUIDANCE="+strings.ToUpper(application)+"; USER_INPUT=AUTHORITATIVE")
 		bookAuthorHeader = "[BOOK_AUTHOR]"
 		directorHeader = "[DIRECTOR]"
 	default:
-		sections = append(sections, "[Publisher Guidance]", "Use this only to shape the current response. The user input and supplied continuity remain authoritative.")
+		sections = append(sections, "[Publisher Guidance]", "Current-response strength: "+strength+"; application: "+application+". User input has priority.")
 	}
+	sections = append(sections, extractionStringFromAny(strengthProfile["user_authority"]), extractionStringFromAny(strengthProfile["response_instruction"]))
 	if len(bookAuthorLines) > 0 {
 		sections = append(sections, bookAuthorHeader+"\n"+strings.Join(bookAuthorLines, "\n"))
 	}
@@ -694,6 +718,9 @@ type prepareTurnInjectionBlock struct {
 }
 
 type prepareTurnInjectionAssembly struct {
+	Preprocessing             *multiAgentSelection
+	priorityCandidates        []prepareTurnPriorityMemoryCandidate
+	priorityTurnSummaries     []prepareTurnPriorityTurnSummaryCandidate
 	Text                      string
 	SagaText                  string
 	ChapterText               string

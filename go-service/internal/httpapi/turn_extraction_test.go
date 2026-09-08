@@ -18,6 +18,34 @@ func TestParseJSONFromLLMContentPreservesCurlyQuotesInsideValidString(t *testing
 	}
 }
 
+func Test43SharedJSONFormatRecovery(t *testing.T) {
+	parsers := map[string]func(string) (map[string]any, error){
+		"critic":    parseJSONFromLLMContent,
+		"publisher": parsePublisherJSONObject,
+	}
+	for name, parse := range parsers {
+		t.Run(name, func(t *testing.T) {
+			for _, raw := range []string{
+				`{"items":["first","note":"Keep literal ,] and “quoted words”.","count":2}`,
+				`{"items":["first"}`,
+				`{"items":["first",],"note":"unchanged",}`,
+			} {
+				got, err := parse(raw)
+				if err != nil {
+					t.Fatalf("local format recovery failed: %v", err)
+				}
+				items, _ := got["items"].([]any)
+				if len(items) != 1 || items[0] != "first" {
+					t.Fatalf("source items changed: %#v", got)
+				}
+				if strings.Contains(raw, "Keep literal") && got["note"] != "Keep literal ,] and “quoted words”." {
+					t.Fatalf("source prose changed: %#v", got)
+				}
+			}
+		})
+	}
+}
+
 func TestParseJSONFromLLMContentRepairsStructuralCurlyQuotesOnly(t *testing.T) {
 	raw := "{“turn_summary”: “He called it ‘iron wheel’.”, “importance_score”: 7}"
 	got, err := parseJSONFromLLMContent(raw)

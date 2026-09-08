@@ -281,8 +281,9 @@ function formatLanguageContextBlock() { return ""; }
 function t(key) {
   const labels = {
     "dash.preview.payloadBudget.title":"Payload Ledger",
-    "dash.preview.payloadBudget.actual":"Delivered",
-    "dash.preview.payloadBudget.planned":"Planned delivery",
+    "dash.preview.payloadBudget.actual":"Auxiliary input observed in request",
+    "dash.preview.payloadBudget.planned":"Backend assembly preview",
+    "dash.preview.verification.userPlanned":"User input used by backend",
     "dash.preview.payloadBudget.configured":"Configured",
     "dash.preview.payloadBudget.effective":"Effective",
     "dash.preview.payloadBudget.assembly":"Assembly",
@@ -362,9 +363,10 @@ currentTrace = {_inputTransparency: {
 const canonicalPayloadPlanBeforeRender = JSON.stringify(currentTrace._inputTransparency.injection.payloadApplicationPlan);
 const canonicalMemoryPlanBeforeRender = JSON.stringify(currentTrace._inputTransparency.injection.memoryDeliveryPlan);
 html = renderEffectiveInputSection();
-assert(html.includes('<BLOCK title="Actual User Input">ACTUAL USER</BLOCK>'), "actual user pane is missing");
+assert(html.includes('<BLOCK title="User input used by backend">ACTUAL USER</BLOCK>'), "unobserved backend user preview was presented as observed input");
+assert(html.includes('dash.preview.verification.unobserved'), "missing parity observation was presented as verified delivery");
 assert(html.includes('<BLOCK title="Priority and Base Rules">PRIORITY</BLOCK>'), "priority pane is missing");
-assert(html.includes('<BLOCK title="Payload Ledger">') && html.includes('Delivered 14200 / Configured 21000 chars') && html.includes('Assembly 120 chars'), "backend payload ledger summary is missing");
+assert(html.includes('<BLOCK title="Payload Ledger">') && html.includes('Auxiliary input observed in request 14200 / Configured 21000 chars') && html.includes('Assembly 120 chars'), "auxiliary observation scope was not distinguished from final provider delivery");
 assert(html.includes('Memory 8500 / 9000 chars') && html.includes('Candidate 9800 → Selected 8500 → Final 8500') && html.includes('memory_char_budget=2'), "backend lane ledger was not rendered verbatim");
 assert(!html.includes('Auxiliary Context Budget'), "legacy memory-only budget summary survived");
 let previousPaneIndex = -1;
@@ -654,7 +656,7 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 		`<option value="maximum"`,
 		`guide_strength: settings.narrativeGuideStrength || "weak"`,
 		`publisher_guidance_format: settings.publisherGuidanceFormat || DEFAULT_SETTINGS.publisherGuidanceFormat`,
-		`Higher strength makes current-response priorities and execution order more explicit`,
+		`Strong and above require the response to carry out guidance aligned with the user's direction`,
 		`a quiet scene may remain quiet`,
 		`coreObjectiveMemoryMaxItems: 5`,
 		`core_objective_memory_max_items: sanitizeTopKSetting(`,
@@ -726,7 +728,6 @@ func TestArchiveCenterJSClaudePromptCacheMarkers(t *testing.T) {
 		`testBody.claude_prompt_cache_mode = testClaudePromptCacheMode`,
 		`extraBodyJson: sanitizeProviderOverrideJsonSetting(`,
 		`if (extraBody) payload.extra_body_json = extraBody;`,
-		`const BUILD_NOTES = "Archive Center 4.2.0 priority-scored memory packs and selectable turn finalization"`,
 		`비용: 5분 캐시 쓰기 1.25배, 1시간 쓰기 2배, 캐시 읽기 0.1배`,
 	}
 	for _, needle := range required {
@@ -859,7 +860,7 @@ func TestSeq01NarrativeGuideAutoTraceDashboardAndLegacyCleanupMarkers(t *testing
 		`guideModeBasis: (supervisorResult && supervisorResult._guideModeBasis) || "manual"`,
 		`const guideModeDashboardState = lastGuideSupervisor && lastGuideSupervisor.guideMode`,
 		`guide_mode_state: guideModeDashboardState`,
-		`renderDashboardViewModel(dashboardViewModel, dashLabel)`,
+		`renderDashboardViewModel(vm, dashLabel)`,
 		`delete merged.projectMainProvider; delete merged.projectMainModel;`,
 		`delete merged.projectSupervisorProvider; delete merged.projectSupervisorModel;`,
 		`delete merged.projectCriticProvider; delete merged.projectCriticModel;`,

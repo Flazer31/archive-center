@@ -635,14 +635,14 @@ func TestPrepareTurnStoreBackedAssembly(t *testing.T) {
 	priorityPlan := mapFromAny(injectionPack["memory_delivery_plan"])
 	corePriority := mapFromAny(priorityPlan["core_objective_memory"])
 	if priorityPlan["contract_version"] != "memory_delivery_plan.v2" ||
-		corePriority["contract_version"] != "core_priority_memory_delivery.v3" ||
-		boolFromAny(priorityPlan["unused_k_transfer_between_groups"]) || priorityPlan["low_score_backfill_after_k"] != false {
+		corePriority["contract_version"] != "core_priority_memory_delivery.v4" ||
+		boolFromAny(priorityPlan["unused_k_transfer_between_groups"]) || priorityPlan["low_score_backfill_after_k"] != true {
 		t.Fatalf("independent priority-group selection contract mismatch: %#v", priorityPlan)
 	}
 	for _, rawGroup := range sliceFromAny(corePriority["quota_groups"]) {
 		group := mapFromAny(rawGroup)
-		if intFromAny(group["selected_count"], 0) > intFromAny(group["requested_max_items"], 0) {
-			t.Fatalf("priority group exceeded its independent K: %#v", group)
+		if intFromAny(group["core_priority_target"], 0) != intFromAny(group["requested_max_items"], 0) || intFromAny(group["deferred_by_limit_count"], 0) != 0 {
+			t.Fatalf("priority group retained the retired count ceiling: %#v", group)
 		}
 	}
 	if _, ok := injectionPack["budget_decisions"].(map[string]any); !ok {

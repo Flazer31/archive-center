@@ -134,6 +134,38 @@ type turnWorkflowHUDNotice struct {
 	StageKey   string `json:"stage_key,omitempty"`
 }
 
+// Optional, request-local timing only. These calls do not add workflow stages.
+type turnWorkflowHUDPreprocessingCall struct {
+	Round      int       `json:"round"`
+	Status     string    `json:"status"`
+	StartedAt  time.Time `json:"started_at"`
+	DurationMS int64     `json:"duration_ms"`
+}
+
+type turnWorkflowHUDPreprocessingRole struct {
+	SelectionSource string                             `json:"selection_source,omitempty"`
+	Role            string                             `json:"role"`
+	LabelKey        string                             `json:"label_key"`
+	DurationMS      int64                              `json:"duration_ms"`
+	Calls           []turnWorkflowHUDPreprocessingCall `json:"calls"`
+}
+
+type turnWorkflowHUDPreprocessingSearchQuery struct {
+	Role        string             `json:"role"`
+	Status      string             `json:"status"`
+	DurationMS  int64              `json:"duration_ms"`
+	BreakdownMS map[string]float64 `json:"breakdown_ms,omitempty"`
+}
+
+type turnWorkflowHUDPreprocessingSearch struct {
+	Status         string                                    `json:"status"`
+	StartedAt      time.Time                                 `json:"started_at"`
+	DurationMS     int64                                     `json:"duration_ms"`
+	QueryCount     int                                       `json:"query_count"`
+	CompletedCount int                                       `json:"completed_count"`
+	Queries        []turnWorkflowHUDPreprocessingSearchQuery `json:"queries"`
+}
+
 type turnWorkflowHUDFact struct {
 	Key         string `json:"key"`
 	Owner       string `json:"owner"`
@@ -216,34 +248,36 @@ type turnWorkflowHUDRecoveryRequest struct {
 }
 
 type turnWorkflowHUDViewModel struct {
-	ContractVersion  string                          `json:"contract_version"`
-	RequestID        string                          `json:"request_id"`
-	ChatSessionID    string                          `json:"chat_session_id"`
-	LogicalTurn      int                             `json:"logical_turn"`
-	HostTurn         int                             `json:"host_turn,omitempty"`
-	BackendTurn      int                             `json:"backend_turn,omitempty"`
-	TurnAlignment    turnWorkflowHUDTurnAlignment    `json:"turn_alignment"`
-	Attempt          int                             `json:"attempt"`
-	Revision         int64                           `json:"revision"`
-	Status           string                          `json:"status"`
-	Severity         string                          `json:"severity"`
-	DismissalPolicy  string                          `json:"dismissal_policy"`
-	StartedAt        time.Time                       `json:"started_at"`
-	UpdatedAt        time.Time                       `json:"updated_at"`
-	EndedAt          *time.Time                      `json:"ended_at,omitempty"`
-	CurrentStage     *turnWorkflowHUDStage           `json:"current_stage,omitempty"`
-	Stages           []turnWorkflowHUDStage          `json:"stages"`
-	Counts           []turnWorkflowHUDCount          `json:"counts"`
-	Facts            []turnWorkflowHUDFact           `json:"facts"`
-	MemorySelection  *turnWorkflowHUDMemorySelection `json:"memory_selection,omitempty"`
-	Warnings         []turnWorkflowHUDNotice         `json:"warnings"`
-	Error            *turnWorkflowHUDError           `json:"error,omitempty"`
-	DisplayMode      string                          `json:"display_mode,omitempty"`
-	TitleKey         string                          `json:"title_key,omitempty"`
-	MessageKey       string                          `json:"message_key,omitempty"`
-	NoticeCode       string                          `json:"notice_code,omitempty"`
-	NoticeKind       string                          `json:"notice_kind,omitempty"`
-	PresentationTone string                          `json:"presentation_tone,omitempty"`
+	ContractVersion     string                              `json:"contract_version"`
+	RequestID           string                              `json:"request_id"`
+	ChatSessionID       string                              `json:"chat_session_id"`
+	LogicalTurn         int                                 `json:"logical_turn"`
+	HostTurn            int                                 `json:"host_turn,omitempty"`
+	BackendTurn         int                                 `json:"backend_turn,omitempty"`
+	TurnAlignment       turnWorkflowHUDTurnAlignment        `json:"turn_alignment"`
+	Attempt             int                                 `json:"attempt"`
+	Revision            int64                               `json:"revision"`
+	Status              string                              `json:"status"`
+	Severity            string                              `json:"severity"`
+	DismissalPolicy     string                              `json:"dismissal_policy"`
+	StartedAt           time.Time                           `json:"started_at"`
+	UpdatedAt           time.Time                           `json:"updated_at"`
+	EndedAt             *time.Time                          `json:"ended_at,omitempty"`
+	CurrentStage        *turnWorkflowHUDStage               `json:"current_stage,omitempty"`
+	Stages              []turnWorkflowHUDStage              `json:"stages"`
+	Counts              []turnWorkflowHUDCount              `json:"counts"`
+	Facts               []turnWorkflowHUDFact               `json:"facts"`
+	MemorySelection     *turnWorkflowHUDMemorySelection     `json:"memory_selection,omitempty"`
+	Preprocessing       []turnWorkflowHUDPreprocessingRole  `json:"preprocessing,omitempty"`
+	PreprocessingSearch *turnWorkflowHUDPreprocessingSearch `json:"preprocessing_search,omitempty"`
+	Warnings            []turnWorkflowHUDNotice             `json:"warnings"`
+	Error               *turnWorkflowHUDError               `json:"error,omitempty"`
+	DisplayMode         string                              `json:"display_mode,omitempty"`
+	TitleKey            string                              `json:"title_key,omitempty"`
+	MessageKey          string                              `json:"message_key,omitempty"`
+	NoticeCode          string                              `json:"notice_code,omitempty"`
+	NoticeKind          string                              `json:"notice_kind,omitempty"`
+	PresentationTone    string                              `json:"presentation_tone,omitempty"`
 }
 
 type turnWorkflowHUDRecoveryTarget struct {
@@ -258,6 +292,7 @@ type turnWorkflowHUDEntry struct {
 	changed                  chan struct{}
 	attemptKey               string
 	sequence                 uint64
+	creationSequence         uint64
 	recoveryTarget           turnWorkflowHUDRecoveryTarget
 	finalizesAtNextUserInput bool
 }
@@ -394,6 +429,7 @@ func (l *turnWorkflowHUDLedger) beginWithFinalizationTiming(requestID, sessionID
 	close(l.entryAdded)
 	l.entryAdded = make(chan struct{})
 	l.advanceSequenceLocked(entry)
+	entry.creationSequence = entry.sequence
 	l.resolveAttemptLocked(entry, now)
 	l.activeBySession[sessionID] = requestID
 	snapshot := cloneTurnWorkflowHUDView(entry.view)
@@ -410,13 +446,33 @@ func (l *turnWorkflowHUDLedger) setLogicalTurn(requestID string, logicalTurn int
 	if entry == nil {
 		return
 	}
-	if entry.attemptKey != "" {
+	if entry.view.LogicalTurn == logicalTurn {
 		return
+	}
+	now := time.Now().UTC()
+	key := turnWorkflowHUDAttemptKey(entry.view.ChatSessionID, logicalTurn)
+	if entry.attemptKey != "" && entry.attemptKey != key {
+		// The prepare estimate is only HUD bookkeeping. Complete-turn supplies
+		// the existing canonical owner's resolved turn, including rerolls.
+		if l.latestByTurn[entry.attemptKey] == entry.view.RequestID {
+			delete(l.latestByTurn, entry.attemptKey)
+			if l.attemptByTurn[entry.attemptKey] == entry.view.Attempt {
+				l.attemptByTurn[entry.attemptKey]--
+			}
+		}
+		entry.attemptKey = ""
 	}
 	entry.view.LogicalTurn = logicalTurn
 	entry.view.BackendTurn = logicalTurn
 	syncTurnWorkflowHUDAlignment(&entry.view)
-	now := time.Now().UTC()
+	latest := l.entries[l.latestByTurn[key]]
+	if entry.view.Status == "invalidated" || (latest != nil && latest.creationSequence > entry.creationSequence) {
+		// A delayed HUD correction must not supersede a newer request. This
+		// updates presentation only; recovery retains its bound source revision.
+		entry.attemptKey = key
+		l.touchLocked(entry, now)
+		return
+	}
 	l.resolveAttemptLocked(entry, now)
 	l.touchLocked(entry, now)
 }
@@ -1164,6 +1220,75 @@ func (l *turnWorkflowHUDLedger) setMemorySelection(requestID string, selection t
 	l.touchLocked(entry, time.Now().UTC())
 }
 
+func (l *turnWorkflowHUDLedger) recordPreprocessingCall(requestID, role string, call turnWorkflowHUDPreprocessingCall, selectionSource ...string) {
+	if l == nil || requestID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[requestID]
+	if entry == nil {
+		return
+	}
+	index := -1
+	for i := range entry.view.Preprocessing {
+		if entry.view.Preprocessing[i].Role == role {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		entry.view.Preprocessing = append(entry.view.Preprocessing, turnWorkflowHUDPreprocessingRole{Role: role, LabelKey: "turn_hud.preprocessing." + role})
+		index = len(entry.view.Preprocessing) - 1
+	}
+	item := &entry.view.Preprocessing[index]
+	if len(selectionSource) > 0 {
+		item.SelectionSource = selectionSource[0]
+	}
+	replaced := false
+	for i := range item.Calls {
+		if item.Calls[i].Round == call.Round {
+			item.Calls[i] = call
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		item.Calls = append(item.Calls, call)
+	}
+	item.DurationMS = 0
+	for _, attempt := range item.Calls {
+		item.DurationMS += attempt.DurationMS
+	}
+	// Concurrent completions must not change the five roles' display order.
+	order := func(role string) int {
+		for i, key := range multiAgentRoles {
+			if key == role {
+				return i
+			}
+		}
+		return len(multiAgentRoles)
+	}
+	sort.SliceStable(entry.view.Preprocessing, func(i, j int) bool {
+		return order(entry.view.Preprocessing[i].Role) < order(entry.view.Preprocessing[j].Role)
+	})
+	l.touchLocked(entry, time.Now().UTC())
+}
+
+func (l *turnWorkflowHUDLedger) recordPreprocessingSearch(requestID string, search turnWorkflowHUDPreprocessingSearch) {
+	if l == nil || requestID == "" {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[requestID]
+	if entry == nil {
+		return
+	}
+	entry.view.PreprocessingSearch = cloneTurnWorkflowHUDPreprocessingSearch(&search)
+	l.touchLocked(entry, time.Now().UTC())
+}
+
 func (l *turnWorkflowHUDLedger) complete(requestID string) {
 	l.completeWithNotice(requestID, "", "", "")
 }
@@ -1749,6 +1874,11 @@ func turnWorkflowHUDCountIndex(counts []turnWorkflowHUDCount, key string) int {
 
 func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDViewModel {
 	out := source
+	out.PreprocessingSearch = cloneTurnWorkflowHUDPreprocessingSearch(source.PreprocessingSearch)
+	out.Preprocessing = append([]turnWorkflowHUDPreprocessingRole(nil), source.Preprocessing...)
+	for i := range out.Preprocessing {
+		out.Preprocessing[i].Calls = append([]turnWorkflowHUDPreprocessingCall(nil), source.Preprocessing[i].Calls...)
+	}
 	out.Stages = append([]turnWorkflowHUDStage(nil), source.Stages...)
 	out.Counts = cloneTurnWorkflowHUDCounts(source.Counts)
 	out.Facts = append([]turnWorkflowHUDFact(nil), source.Facts...)
@@ -1771,6 +1901,23 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 		out.Error = &errorCopy
 	}
 	return out
+}
+
+func cloneTurnWorkflowHUDPreprocessingSearch(source *turnWorkflowHUDPreprocessingSearch) *turnWorkflowHUDPreprocessingSearch {
+	if source == nil {
+		return nil
+	}
+	out := *source
+	out.Queries = append([]turnWorkflowHUDPreprocessingSearchQuery(nil), source.Queries...)
+	for i := range out.Queries {
+		if source.Queries[i].BreakdownMS != nil {
+			out.Queries[i].BreakdownMS = make(map[string]float64, len(source.Queries[i].BreakdownMS))
+			for key, elapsed := range source.Queries[i].BreakdownMS {
+				out.Queries[i].BreakdownMS[key] = elapsed
+			}
+		}
+	}
+	return &out
 }
 
 func cloneTurnWorkflowHUDMemorySelection(source *turnWorkflowHUDMemorySelection) *turnWorkflowHUDMemorySelection {
@@ -1994,7 +2141,11 @@ func (s *Server) handleTurnWorkflowHUDRecovery(w http.ResponseWriter, r *http.Re
 	}
 	action, actionOK := turnWorkflowHUDRecoveryActionByID(view.Error, req.ActionID)
 	if !actionOK || req.ActionID != turnWorkflowHUDRecoveryRetryDerivedTurn {
-		writeError(w, http.StatusConflict, "recovery_action_unavailable", "turn workflow recovery action is unavailable")
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"status": "error", "code": "recovery_action_unavailable",
+			"error":             "turn workflow recovery action is unavailable",
+			"turn_workflow_hud": view,
+		})
 		return
 	}
 	if action.Status != "available" {

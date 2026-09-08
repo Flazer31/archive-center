@@ -8,6 +8,12 @@ sibling `.sql` file in sorted order. Fresh and existing installations therefore
 use the same complete set; `001_schema.sql` does not have to repeat tables or
 columns that are owned by later files.
 
+`013_precise_memory_text_fields.sql` addresses GitHub #6 by widening the three
+unindexed Critic-derived text fields in `precise_memory_units` to LONGTEXT.
+Fresh schema and the Go compatibility pass use the same types. Existing text and
+stored Critic results are retained; applying the migration again is safe. See
+the [4.3 feedback verification](../docs/archive-center-4.3-feedback-work-log.md).
+
 `002_canon_pack_storage.sql` is the reviewed Archive Center 3.1 additive
 Canon Pack storage migration. Its statements are also registered in the
 canonical fresh-install schema and the production `mariadb-schema`

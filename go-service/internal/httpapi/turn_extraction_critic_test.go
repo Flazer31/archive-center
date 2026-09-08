@@ -1138,6 +1138,24 @@ func TestCriticCompleteJSONIsKeptEvenWhenProviderReportsTokenLimit(t *testing.T)
 	}
 }
 
+func Test43CriticSyntaxRecoveryUsesOneCallAndKeepsExtraction(t *testing.T) {
+	oldClient := proxyHTTPClient
+	calls := 0
+	const response = `{"turn_summary":"Mina kept the key.","evidence_excerpts":["Mina kept the key.","importance_score":6}`
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"choices":[{"message":{"content":%s}}]}`, strconv.Quote(response))))}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+	srv := &Server{Cfg: config.Default(), Store: store.NewNoopStore()}
+	result, trace, err := srv.runCompleteTurnCritic(context.Background(), "session", 1, "Mina found the key.", "Mina kept the key.", nil, nil, completeTurnLLMConfig{
+		Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key", Model: "test", TimeoutMs: 2000, RetryBudget: newLLMRetryBudget(2),
+	})
+	if err != nil || calls != 1 || stringFromMap(result, "turn_summary") != "Mina kept the key." || intFromAny(result["importance_score"], 0) != 6 {
+		t.Fatalf("repaired extraction changed or triggered another call: calls=%d err=%v result=%+v trace=%+v", calls, err, result, trace)
+	}
+}
+
 func TestCriticMissingOptionalSurfacesKeepsIndependentSummaryWithoutSecondCall(t *testing.T) {
 	oldClient := proxyHTTPClient
 	callCount := 0

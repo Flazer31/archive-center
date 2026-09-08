@@ -9,7 +9,7 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
-func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
+func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, canonicalMemories []store.Memory, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
 	lines := []string{}
 	trace := newPrepareTurnMemoryLanguageTrace(languageContext)
 	finalRenderDuplicates := 0
@@ -20,7 +20,7 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 	}
-	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroups(selection)
+	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroups(selection, canonicalMemories...)
 	emittedMemories := map[string]bool{}
 	appendLane := func(label string, items []store.Memory) bool {
 		appendedAny := false
@@ -53,6 +53,13 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 				groups = []prepareTurnProtectedDeliveryGroup{{Memory: item}}
 			}
 			for _, group := range groups {
+				if group.Disclosure != nil {
+					lineage := prepareTurnMemoryDeliveryLineageItem(item, label, laneRank, selection, "", group.CoverageKey, false, "released_by_later_disclosure", nil, perspectiveContext)
+					lineage["disclosure_source_row_id"] = prepareTurnMemorySourceRowID(*group.Disclosure)
+					lineage["disclosure_source_turn"] = group.Disclosure.TurnIndex
+					lineageItems = append(lineageItems, lineage)
+					continue
+				}
 				renderItem := group.Memory
 				lineText, lineTrace := prepareTurnMemoryInjectionLineText(renderItem, summary, languageContext, perspectiveContext)
 				updatePrepareTurnMemoryLanguageTrace(trace, lineTrace)
@@ -146,9 +153,10 @@ type prepareTurnProtectedDeliveryGroup struct {
 	SourceRowIDs    []any
 	ProtectedItems  []any
 	ProtectionField string
+	Disclosure      *store.Memory
 }
 
-func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSelection) (map[string][]prepareTurnProtectedDeliveryGroup, map[string]bool) {
+func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSelection, canonicalMemories ...store.Memory) (map[string][]prepareTurnProtectedDeliveryGroup, map[string]bool) {
 	selected := map[string]bool{}
 	selectedItems := []store.Memory{}
 	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
@@ -166,6 +174,37 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 	candidates := selection.ProtectedCandidates
 	if len(candidates) == 0 {
 		candidates = selectedItems
+	}
+	// Resolve the current disclosure of the same recorded secret before
+	// rendering historical guards. Canonical rows themselves remain unchanged.
+	type disclosure struct {
+		turn    int
+		guarded bool
+		source  store.Memory
+	}
+	latestDisclosure := map[string]disclosure{}
+	for _, source := range [][]store.Memory{canonicalMemories, candidates, selectedItems} {
+		for _, item := range source {
+			parsed := parseJSONMap(item.SummaryJSON)
+			for _, field := range []string{"protected_secrets", "character_identity_accuracy"} {
+				policyKey := "disclosure_policy"
+				if field == "character_identity_accuracy" {
+					policyKey = "reveal_policy"
+				}
+				for _, raw := range sliceFromAny(parsed[field]) {
+					protectedItem := mapFromAny(raw)
+					key := prepareTurnProtectedKnowledgeKey(item.ChatSessionID, field, protectedItem)
+					if key == "" {
+						continue
+					}
+					next := disclosure{turn: item.TurnIndex, guarded: protectedSecretRequiresGuard(protectedItem, policyKey), source: item}
+					previous, found := latestDisclosure[key]
+					if !found || next.turn > previous.turn || (next.turn == previous.turn && !next.guarded) {
+						latestDisclosure[key] = next
+					}
+				}
+			}
+		}
 	}
 	groups := map[string]*prepareTurnProtectedDeliveryGroup{}
 	members := map[string]bool{}
@@ -204,6 +243,10 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 			group = &prepareTurnProtectedDeliveryGroup{CoverageKey: groupKey, ProtectionField: field}
 			groups[groupKey] = group
 			order = append(order, groupKey)
+		}
+		if latest, found := latestDisclosure[prepareTurnProtectedKnowledgeKey(item.ChatSessionID, field, protectedItem)]; found && !latest.guarded {
+			source := latest.source
+			group.Disclosure = &source
 		}
 		if len(group.ProtectedItems) == 0 {
 			group.ProtectedItems = append(group.ProtectedItems, protectedItem)
@@ -251,6 +294,30 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 		out[group.Representative] = append(out[group.Representative], *group)
 	}
 	return out, members
+}
+
+func prepareTurnProtectedKnowledgeKey(sessionID, field string, item map[string]any) string {
+	for _, name := range []string{"secret_id", "identity_id", "artifact_id"} {
+		if id := strings.TrimSpace(stringFromMap(item, name)); id != "" {
+			return strings.Join([]string{sessionID, field, name, id}, "\x1f")
+		}
+	}
+	// Legacy rows have no persistent secret ID. An identical recorded claim
+	// identifies a repeated secret; a shared category alone does not.
+	if field == "protected_secrets" {
+		claim := normalizeArtifactDedupeText(extractionFirstNonEmpty(stringFromMap(item, "summary"), stringFromMap(item, "secret_summary"), stringFromMap(item, "text")))
+		if claim == "" {
+			return ""
+		}
+		return strings.Join([]string{sessionID, field, comparableEntityKey(stringFromMap(item, "owner")), normalizeProtectedSecretToken(stringFromMap(item, "secret_kind")), mustCompactJSON(stringsFromAny(item["subject"])), claim}, "\x1f")
+	}
+	surface := extractionFirstNonEmpty(stringFromMap(item, "surface_identity_name"), stringFromMap(item, "public_identity_name"), stringFromMap(item, "alias_name"))
+	owner := extractionFirstNonEmpty(stringFromMap(item, "true_identity_name"), stringFromMap(item, "canonical_entity_name"), stringFromMap(item, "real_identity_name"))
+	if surface == "" || owner == "" {
+		return ""
+	}
+	facts := preciseMemorySemanticPayload(item, []string{"identity_kind", "same_entity", "public_role", "true_role", "public_allegiance", "true_allegiance"})
+	return strings.Join([]string{sessionID, field, comparableEntityKey(owner), comparableEntityKey(surface), mustCompactJSON(facts)}, "\x1f")
 }
 
 func appendUniquePrepareTurnSourceRowID(items []any, value any) []any {
@@ -717,7 +784,12 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 			continue
 		}
 		relations = appendUniqueMemorySearchText(relations, fmt.Sprintf("%s is %s's own protected surface identity/persona", surface, trueName))
-		samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("treat %s and %s as the same internal person, not two separate characters", surface, trueName))
+		samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("%s and %s refer to the same recorded person", surface, trueName))
+		if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey) {
+			samePersonRules = appendUniqueMemorySearchText(samePersonRules, "the recorded surface name is this POV's self/cover-role continuity")
+		} else {
+			samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("%s knows this identity relationship about %s", povName, trueName))
+		}
 		if kind := normalizeProtectedSecretToken(stringFromMap(identity, "identity_kind")); kind != "" {
 			kinds = appendUniqueMemorySearchText(kinds, kind)
 		}
@@ -738,7 +810,6 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 	parts := []string{
 		"POV-scoped identity continuity: " + strings.Join(relations, "; ") + ".",
 		fmt.Sprintf("For current_pov=%s, %s.", povName, strings.Join(samePersonRules, "; ")),
-		"If this POV references the surface identity, read it as self/cover-role continuity rather than a separate external character.",
 		"Keep this as POV/private knowledge; do not reveal it to characters outside knowledge_scope without current reveal evidence.",
 	}
 	if len(kinds) == 0 {
@@ -755,9 +826,22 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 }
 
 func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKey string) bool {
+	if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey) {
+		return true
+	}
+	scope := mapFromAny(identity["knowledge_scope"])
+	for _, field := range []string{"known_by", "revealed_to"} {
+		for _, candidate := range stringsFromAny(scope[field]) {
+			if prepareTurnPerspectiveNameMatches(povName, povKey, candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func prepareTurnPerspectiveOwnsIdentity(identity map[string]any, povName, povKey string) bool {
 	candidates := []string{
-		povName,
-		povKey,
 		stringFromMap(identity, "canonical_entity_name"),
 		stringFromMap(identity, "true_identity_name"),
 		stringFromMap(identity, "surface_identity_name"),
@@ -765,8 +849,6 @@ func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKe
 		stringFromMap(identity, "alias_name"),
 	}
 	candidates = append(candidates, stringsFromAny(identity["aliases"])...)
-	scope := mapFromAny(identity["knowledge_scope"])
-	candidates = append(candidates, stringsFromAny(scope["known_by"])...)
 	for _, candidate := range candidates {
 		if prepareTurnPerspectiveNameMatches(povName, povKey, candidate) {
 			return true

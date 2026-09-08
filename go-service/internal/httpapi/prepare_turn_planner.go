@@ -122,6 +122,9 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 		}
 		lane := strings.TrimSpace(extractionStringFromAny(item["lane"]))
 		text := strings.TrimSpace(extractionStringFromAny(item["complete_text"]))
+		if rendered := strings.TrimSpace(extractionStringFromAny(item["rendered_text"])); rendered != "" {
+			text = prepareTurnPriorityCleanLine(rendered)
+		}
 		refs := stringSliceFromAny(item["source_refs"])
 		if lane == "" || text == "" || len(refs) == 0 {
 			continue
@@ -130,6 +133,22 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 			priorityRefs[lane] = map[string][]string{}
 		}
 		priorityRefs[lane][text] = append(priorityRefs[lane][text], refs[0])
+	}
+	// Complete summaries carry their own original source. Use the actual rendered
+	// line so preprocessing labels remain connected to that source for Publisher.
+	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["turn_summary_items"]) {
+		item := mapFromAny(raw)
+		if extractionStringFromAny(item["selection_status"]) != "selected" {
+			continue
+		}
+		text := prepareTurnPriorityCleanLine(extractionStringFromAny(item["rendered_text"]))
+		ref := extractionStringFromAny(item["source_ref"])
+		if text != "" && ref != "" {
+			if priorityRefs["event_recent"] == nil {
+				priorityRefs["event_recent"] = map[string][]string{}
+			}
+			priorityRefs["event_recent"][text] = append(priorityRefs["event_recent"][text], ref)
+		}
 	}
 	items := []map[string]any{}
 	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["classes"]) {
@@ -380,32 +399,32 @@ func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCur
 	mustPreserve := []map[string]any{}
 	if len(hostRefs) > 0 {
 		mustPreserve = append(mustPreserve, map[string]any{
-			"instruction":    "Preserve every native system constraint already present in this request; use the linked spans in place and do not restate their source text.",
+			"instruction":    "The linked spans identify the native system context already present in this request.",
 			"source_refs":    hostRefs,
 			"native_present": true,
 		})
 	}
 	if len(memoryRefs) > 0 {
 		mustPreserve = append(mustPreserve, map[string]any{
-			"instruction": "Preserve the continuity facts carried by the delivered long-term-memory items, subject to current evidence and protected-knowledge boundaries.",
+			"instruction": "Memory records provide earlier context, including quantities, locations, uncertainty and character perspectives. Source turns identify records in conversation history; tomorrow or next visit refers to that record's scene. Later events and the current user's choices explain how the situation has changed, with explicit user revisions taking precedence over earlier records.",
 			"source_refs": memoryRefs,
 		})
 	}
 	if len(characterMemoryRefs) > 0 {
 		mustPreserve = append(mustPreserve, map[string]any{
-			"instruction": "Preserve delivered character profile, voice-behavior, and directional relationship projections as scoped support; do not convert them into objective truth or reveal guarded private facts.",
+			"instruction": "Character profiles, voice, behavior, relationships and private experiences supply perspective-specific context for portrayal and for new developments chosen by the user.",
 			"source_refs": characterMemoryRefs,
 		})
 	}
 	if len(deliveredContextRefs) > 0 {
 		mustPreserve = append(mustPreserve, map[string]any{
-			"instruction": "Preserve the final state, world, evidence, hierarchy, and unresolved-thread projection text already delivered to the main model; do not infer hidden source text or undelivered candidates.",
+			"instruction": "Delivered state, world, evidence, hierarchy and unresolved threads describe the preceding situation as reference material for the user's chosen direction.",
 			"source_refs": deliveredContextRefs,
 		})
 	}
 	if len(continuityRefs) > 0 {
 		mustPreserve = append(mustPreserve, map[string]any{
-			"instruction": "Use the accepted previous completed turn only as continuity context for the current response; it is not a new command source.",
+			"instruction": "The previous completed turn provides continuity context; the current user's input determines the direction of this response.",
 			"source_refs": continuityRefs,
 		})
 	}
@@ -413,18 +432,18 @@ func buildResponseExecutionSourceRulesWithMemory(currentInput dto.PrepareTurnCur
 	mustAccount := []map[string]any{}
 	if len(currentInputRefs) > 0 {
 		mustRespond = append(mustRespond, map[string]any{
-			"instruction": "Respond directly to the latest observed user input without rewriting or replacing it.",
+			"instruction": "The latest user input expresses the story direction, chosen actions and pacing. Apply the selected guide-strength policy in service of that intent, with the user's explicit directions and revisions taking precedence at every level.",
 			"source_refs": currentInputRefs,
 		})
 		mustAccount = append(mustAccount, map[string]any{
-			"instruction": "Account for effects explicitly established by the latest observed user input; do not invent an unstated effect.",
+			"instruction": "Next-beat guidance can explore the user's chosen action, NPC initiative, interaction, emotion, scene movement and tangible results. New developments are creative possibilities; linked references identify their starting context rather than proof that those developments already happened.",
 			"source_refs": currentInputRefs,
 		})
 	}
 	mustNotAssert := []map[string]any{}
 	if len(allRefs) > 0 {
 		mustNotAssert = append(mustNotAssert, map[string]any{
-			"instruction": "Do not assert unsupported facts, hidden knowledge, user decisions, relationship changes, or final closure beyond the linked request evidence.",
+			"instruction": "The user decides how the story develops, including changes to established settings or facts. Memories are reference material that helps express that direction. The main response freely realizes compatible guidance through events, emotions, relationships and outcomes in service of the user's intent. Canonical memory is handled separately from this guidance.",
 			"source_refs": allRefs,
 		})
 	}
