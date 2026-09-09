@@ -514,7 +514,7 @@ func multiAgentReadIDs(d *json.Decoder) ([]string, error) {
 
 type multiAgentHUDRequestKey struct{}
 
-func (s *Server) callMultiAgent(ctx context.Context, role string, settings multiAgentSettings, round int, input map[string]any) (call multiAgentCall) {
+func (s *Server) callMultiAgent(ctx context.Context, role string, settings multiAgentSettings, round int, input map[string]any, sessionIDs ...string) (call multiAgentCall) {
 	started := time.Now()
 	requestID, _ := ctx.Value(multiAgentHUDRequestKey{}).(string)
 	timing := turnWorkflowHUDPreprocessingCall{Round: round, Status: "running", StartedAt: started.UTC()}
@@ -586,7 +586,11 @@ func (s *Server) callMultiAgent(ctx context.Context, role string, settings multi
 	}
 	// JSON is instructed in the prompt; do not reuse Publisher/Critic schemas.
 	call.Dispatched = true
-	upstream, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, proxyRequestPolicy{Purpose: "memory_preprocessing"})
+	sessionID := ""
+	if len(sessionIDs) > 0 {
+		sessionID = sessionIDs[0]
+	}
+	upstream, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, proxyRequestPolicy{Purpose: "memory_preprocessing", SessionID: sessionID})
 	call.Raw, _, _ = normalizePublisherResponseContent(upstream)
 	call.Usage = upstream["usage"]
 	var parseErr error
@@ -1008,7 +1012,7 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 			if len(scopedContext) > 0 {
 				input["scope"] = scope
 			}
-			r.Calls = []multiAgentCall{s.callMultiAgent(ctx, r.Role, cfg, 1, input)}
+			r.Calls = []multiAgentCall{s.callMultiAgent(ctx, r.Role, cfg, 1, input, req.ChatSessionID)}
 			r.Selection = r.Calls[0].Result
 			r.SelectionRound = 1
 		}(i)
@@ -1189,7 +1193,7 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 				}
 			}
 			input["previous_result"], input["related_evidence"], input["search_results"] = r.Selection, related[r.Role], ownSearches
-			call := s.callMultiAgent(ctx, r.Role, cfg, 2, input)
+			call := s.callMultiAgent(ctx, r.Role, cfg, 2, input, req.ChatSessionID)
 			r.Calls = append(r.Calls, call)
 			if call.Error == "" || (!multiAgentHasSelection(r.Selection) && multiAgentHasSelection(call.Result)) {
 				r.Selection = call.Result

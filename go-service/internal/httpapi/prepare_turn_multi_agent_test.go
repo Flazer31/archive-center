@@ -468,6 +468,8 @@ func Test43MultiAgentFlexProviderTransportAndGenerationSettings(t *testing.T) {
 		{name: "Vertex provisioned then Flex", provider: "vertex", vertexMode: "provisioned_then_flex", wantSharedHeader: "flex"},
 		{name: "Vertex off", provider: "vertex", vertexMode: "off"},
 		{name: "Claude ignores inactive individual tier", provider: "claude", tier: "flex"},
+		{name: "OpenCode Go ignores inactive individual tier", provider: "opencode-go", tier: "flex"},
+		{name: "OpenCode Go ignores inactive individual tier", provider: "opencode-go", tier: "flex"},
 		{name: "OpenCode ignores inactive individual tier", provider: "opencode", tier: "flex"},
 		{name: "OpenRouter ignores inactive individual tier", provider: "openrouter", tier: "flex"},
 	} {
@@ -894,5 +896,63 @@ func Test43MultiAgentHTTPPrepareDeliversSelectedCanonicalMemoryAndPublisherSuppo
 				t.Fatal("specialist-notes budget lane is missing")
 			}
 		})
+	}
+}
+
+func TestOpenCodeGoPreprocessingSessionBothRounds(t *testing.T) {
+	var mu sync.Mutex
+	sessions := []string{}
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.0" {
+			t.Error("missing client identity")
+		}
+		mu.Lock()
+		sessions = append(sessions, r.Header.Get("x-opencode-session"))
+		mu.Unlock()
+		var b map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+			t.Error(err)
+			return
+		}
+		messages := sliceFromAny(b["messages"])
+		content := stringFromMap(mapFromAny(messages[1]), "content")
+		answer := `{"selected_ids":[]}`
+		if !strings.Contains(content, "previous_result") {
+			answer = `{"search_requests":["Find the missing evidence"]}`
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answer}}}})
+	}))
+	defer provider.Close()
+	cfg := defaultMultiAgentSettings()
+	cfg.Enabled = true
+	for _, role := range multiAgentRoles {
+		c := cfg.Roles[role]
+		c.Provider, c.Endpoint, c.Model, c.APIKey = "opencode-go", provider.URL+"/v1/chat/completions", "kimi-k2.7-code", "fixture-key"
+		c.UsePublisher = false
+		cfg.Roles[role] = c
+	}
+	srv := &Server{}
+	for _, sid := range []string{"chat-A", "chat-B"} {
+		result := srv.runMultiAgent(context.Background(), cfg, dto.PrepareTurnRequest{ChatSessionID: sid}, nil, nil, 2000, 5, nil,
+			func(string) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, map[string]any) {
+				return nil, nil, map[string]any{"status": "no_matches"}
+			})
+		if result.AnalysisCalls != len(multiAgentRoles)*2 {
+			t.Fatalf("calls=%d", result.AnalysisCalls)
+		}
+	}
+	n := len(multiAgentRoles) * 2
+	if len(sessions) != n*2 || sessions[0] == "" {
+		t.Fatalf("session headers=%v", sessions)
+	}
+	for _, got := range sessions[:n] {
+		if got != sessions[0] {
+			t.Fatal("first/second round changed session")
+		}
+	}
+	for _, got := range sessions[n:] {
+		if got == sessions[0] || got != sessions[n] {
+			t.Fatal("new chat session not propagated")
+		}
 	}
 }

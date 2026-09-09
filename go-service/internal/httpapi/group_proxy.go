@@ -318,7 +318,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
 	// Publisher planning is exactly one provider request. A rejected request is
 	// reported explicitly; it is never retried with a different parameter set.
-	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher"})
+	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher", SessionID: sid})
 	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
 	observeProviderJSONResponsePolicy(callLedger, upstream)
 	if err != nil {
@@ -1268,7 +1268,7 @@ func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
 	} else {
 		retryBudget = newLLMRetryBudget(s.runtimeConfigSnapshot().LLMRetryCount)
 	}
-	resp, status, err := performProxyPluginMainWithRetryBudget(r.Context(), req, retryBudget)
+	resp, status, err := performProxyPluginMainWithRetryBudgetAndPolicy(r.Context(), req, retryBudget, proxyRequestPolicy{SessionID: r.URL.Query().Get("chat_session_id")})
 	if connectionTest {
 		writeJSON(w, http.StatusOK, buildProxyConnectionTestViewModel(req, resp, status, err))
 		return

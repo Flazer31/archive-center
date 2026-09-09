@@ -35,6 +35,7 @@ const (
 type proxyRequestPolicy struct {
 	JSONResponse bool
 	Purpose      string
+	SessionID    string
 }
 
 type proxyEmptyContentError struct {
@@ -113,8 +114,8 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	}
 
 	switch provider {
-	case "opencode":
-		// Zen exposes native APIs per model. An explicit API endpoint takes
+	case "opencode", "opencode-go":
+		// Zen/Go exposes native APIs per model. An explicit API endpoint takes
 		// precedence over the model's documented default transport.
 		path := ""
 		if parsed, err := url.Parse(endpoint); err == nil {
@@ -131,7 +132,7 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 				endpoint += ":generateContent"
 			}
 			return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
-		case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "qwen3.5-"), strings.HasPrefix(modelID, "qwen3.6-"), strings.HasPrefix(modelID, "qwen3.7-"):
+		case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "qwen3."), provider == "opencode-go" && strings.HasPrefix(modelID, "minimax-"):
 			return proxyCallClaude(ctx, req, endpoint+"/messages", apiKey, model, policy)
 		case strings.HasPrefix(modelID, "gemini-"):
 			return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
@@ -216,7 +217,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || ((reasoningTransport == "custom" || reasoningTransport == "opencode") && reasoningFamily == "deepseek_v4") {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || ((reasoningTransport == "custom" || reasoningTransport == "opencode" || reasoningTransport == "opencode-go") && reasoningFamily == "deepseek_v4") {
 		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
@@ -282,7 +283,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			managedReasoning[key], _ = json.Marshal(value)
 		}
 	}
-	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false, policy)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
@@ -433,11 +434,11 @@ func proxyCallOpenAIResponses(ctx context.Context, req dto.ProxyPluginMainReques
 	case "none", "minimal", "low", "medium", "high", "xhigh":
 		body["reasoning"] = map[string]any{"effort": reasoningEffort}
 	}
-	if provider == "opencode" && strings.HasPrefix(strings.ToLower(model), "gpt-") && reasoningEffort != "" && reasoningEffort != "none" {
+	if (provider == "opencode" || provider == "opencode-go") && strings.HasPrefix(strings.ToLower(model), "gpt-") && reasoningEffort != "" && reasoningEffort != "none" {
 		delete(body, "temperature")
 	}
 	managedReasoning, _ := json.Marshal(body["reasoning"])
-	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false, policy)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
@@ -660,11 +661,21 @@ func proxyCallClaude(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 		"x-api-key":         apiKey,
 		"anthropic-version": "2023-06-01",
 	}
-	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, "claude", false)
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, "claude", false, policy)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
-	if policyErr := proxyApplyClaudeJSONResponsePolicy(body, overrideTrace, policy); policyErr != nil {
+	// OpenCode's non-Claude Messages routes share the wire format, not
+	// Anthropic's structured-output capability. Keep their JSON prompt contract
+	// and any explicitly configured output fields without adding output_config.
+	jsonPolicy := policy
+	requestProvider := strings.ToLower(stringPtrValue(req.Provider, ""))
+	if (requestProvider == "opencode" || requestProvider == "opencode-go") && !strings.HasPrefix(strings.ToLower(model), "claude-") {
+		jsonPolicy.JSONResponse = false
+		overrideTrace["json_response_requested"] = policy.JSONResponse
+		overrideTrace["json_response_source"] = "prompt_contract"
+	}
+	if policyErr := proxyApplyClaudeJSONResponsePolicy(body, overrideTrace, jsonPolicy); policyErr != nil {
 		return map[string]any{"_proxy_request_overrides": overrideTrace}, http.StatusBadRequest, &proxyLocalRequestError{
 			Stage: "request_build",
 			Cause: policyErr,
@@ -734,7 +745,7 @@ func proxyCallGemini(ctx context.Context, req dto.ProxyPluginMainRequest, endpoi
 	if vertex {
 		geminiProvider = "vertex"
 	}
-	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, geminiProvider, vertex)
+	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, geminiProvider, vertex, policy)
 	if overrideErr != nil {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{Stage: "request_build", Cause: overrideErr}
 	}
@@ -1475,7 +1486,7 @@ func proxyDoNeuralWattFlex(ctx context.Context, target string, headers map[strin
 	return http.StatusOK, data, "", nil
 }
 
-func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, req dto.ProxyPluginMainRequest, provider string, vertex bool) (map[string]any, error) {
+func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, req dto.ProxyPluginMainRequest, provider string, vertex bool, policies ...proxyRequestPolicy) (map[string]any, error) {
 	trace := map[string]any{}
 	headerJSON := strings.TrimSpace(stringPtrValue(req.ExtraHeadersJSON, ""))
 	if headerJSON != "" {
@@ -1488,6 +1499,25 @@ func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, 
 		trace["extra_header_keys"] = applied
 		if len(blocked) > 0 {
 			trace["extra_header_blocked"] = blocked
+		}
+	}
+
+	if strings.EqualFold(stringPtrValue(req.Provider, ""), "opencode-go") {
+		sid := "archive-center-auxiliary"
+		if len(policies) > 0 && strings.TrimSpace(policies[0].SessionID) != "" {
+			sid = strings.TrimSpace(policies[0].SessionID)
+		}
+		digest := sha256.Sum256([]byte(sid))
+		hasSession, hasAgent := false, false
+		for key := range headers {
+			hasSession = hasSession || strings.EqualFold(key, "x-opencode-session")
+			hasAgent = hasAgent || strings.EqualFold(key, "User-Agent")
+		}
+		if !hasSession {
+			headers["x-opencode-session"] = fmt.Sprintf("archive-center-%x", digest[:16])
+		}
+		if !hasAgent {
+			headers["User-Agent"] = "ArchiveCenter/4.3.0"
 		}
 	}
 
@@ -1991,6 +2021,8 @@ func proxyProviderBaseURL(provider, endpoint string) string {
 		return "https://openrouter.ai/api/v1"
 	case "opencode":
 		return "https://opencode.ai/zen/v1"
+	case "opencode-go":
+		return "https://opencode.ai/zen/go/v1"
 	case "llmgateway":
 		return "https://api.llmgateway.io/v1"
 	case "vercel":

@@ -131,7 +131,7 @@ func TestArchiveCenterJSDeepSeekV4ReasoningMarkers(t *testing.T) {
 		`/(^|\/)deepseek[-_]?v4($|[-_:])/`,
 		`function resolveReasoningTransport(provider, endpoint)`,
 		`transport === "ollama" && family !== "none"`,
-		`["custom", "opencode"].includes(transport) && family === "deepseek_v4"`,
+		`["custom", "opencode", "opencode-go"].includes(transport) && family === "deepseek_v4"`,
 		`mode: "gateway_reasoning_effort"`,
 		`mode: "deepseek_v4_reasoning_effort"`,
 		`const deepSeekV4EffortOptions = transport === "neuralwatt"`,
@@ -176,7 +176,7 @@ func TestArchiveCenterJSReasoningControlsUseProviderAndEndpointRuntime(t *testin
 		extractJSFunctionBlockForTest(t, src, "function applyReasoningFieldsToPayload("),
 	}
 	script := `
-const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgateway","vercel","neuralwatt","vertex","copilot","ollama","opencode","custom"];
+const LLM_PROVIDER_OPTIONS = ["openai","claude","gemini","openrouter","llmgateway","vercel","neuralwatt","vertex","copilot","ollama","opencode","opencode-go","custom"];
 const REASONING_PRESET_OPTIONS = ["auto","gpt","gemini","claude","glm","custom"];
 ` + strings.Join(blocks, "\n") + `
 function assert(value, message) { if (!value) throw new Error(message); }
@@ -226,6 +226,8 @@ assert(!neuralWattFlash.effortOptions.includes("low"), JSON.stringify(neuralWatt
 assert(normalizeReasoningEffortForControls("low", neuralWattFlash) === "high", "NeuralWatt Flash low was not mapped to its documented high tier");
 const openCodeClaude = resolveReasoningControls("opencode", "auto", "claude-sonnet-4-6", "");
 assert(openCodeClaude.mode === "claude_adaptive" && openCodeClaude.effortOptions.includes("medium"), JSON.stringify(openCodeClaude));
+const goDeepSeek = resolveReasoningControls("opencode-go", "auto", "deepseek-v4-pro", "");
+assert(goDeepSeek.effortOptions.includes("low"), JSON.stringify(goDeepSeek));
 const openCodeDeepSeek = resolveReasoningControls("opencode", "auto", "deepseek-v4-pro", "");
 assert(openCodeDeepSeek.mode === "gateway_reasoning_effort" && openCodeDeepSeek.effortOptions.includes("low"), JSON.stringify(openCodeDeepSeek));
 const customGatewayDeepSeek = resolveReasoningControls("custom", "auto", "deepseek-v4-pro", "https://opencode.ai/zen/v1");

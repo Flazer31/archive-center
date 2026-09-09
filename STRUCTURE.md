@@ -1,14 +1,21 @@
 # Archive Center Repository Structure
 
-## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen
+## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen / Go
 
 Source version is 4.3.0 (stable); publication and package execution evidence is
 tracked in [release verification](docs/archive-center-4.3.0-release-verification.md).
 `proxy_provider.go::callProxyProviderWithPolicy` routes the explicit `opencode`
-provider through existing model-native adapters. Explicit API endpoints retain
+and `opencode-go` providers through existing model-native adapters. Explicit API endpoints retain
 priority. `proxyProviderBaseURL` supplies the Zen default; OpenRouter retains its
 existing default and transport. JS changes are provider options, endpoint hints
-and reasoning controls only. Shared provider tests cover Publisher, Critic and
+and reasoning controls, plus the existing direct proxy's optional
+`chat_session_id` query observation. Go carries the existing session ID from
+Publisher/Critic/preprocessing into an internal request policy and hashes it for
+Go's `x-opencode-session` header. Go identifies itself as ArchiveCenter/4.3.0;
+configured extra headers retain precedence. Calls without a chat use an auxiliary
+identifier. These identifiers never enter memory ownership or prompts.
+MiniMax/Qwen Messages routes keep the prompt JSON contract without adding
+Claude-specific structured-output fields. Shared provider tests cover Publisher, Critic and
 preprocessing purposes with an external HTTP fixture, not live provider proof.
 No memory policy, storage schema, lifecycle or fallback is added in this slice.
 

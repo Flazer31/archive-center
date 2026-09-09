@@ -9,7 +9,7 @@
 - 출판사 가이드 강도와 편집자 결과 전달, JSON 형식 보정·부분 결과 활용을 보완했습니다. 사용자의 입력과 창작 결정권을 유지합니다.
 - 하이파 가져오기는 요약 원문 1개를 기억 1개로 보존합니다. 대량 턴 삭제, 긴 기억 저장, 분기·재분기와 PocketRisu 메시지 ID 재발급, 이전 턴 확정 전 분기, 콜드 스타트의 상속 구간·번역 제외 처리를 수정했습니다.
 - HUD는 작은 카드와 펼칠 수 있는 상세 정보로 정리했습니다. 저장하지 않은 턴에는 빈 저장 통계를 표시하지 않습니다.
-- Gemini 3.8 Flash medium 추론과 Vertex 설정 전달을 보완했습니다. **OpenCode Zen**을 추가하고 기존 **OpenRouter** 연결도 회귀 검증했습니다.
+- Gemini 3.8 Flash medium 추론과 Vertex 설정 전달을 보완했습니다. **OpenCode Zen·Go**를 추가하고 기존 **OpenRouter** 연결도 회귀 검증했습니다.
 
 ## 설치와 업데이트
 
@@ -28,9 +28,14 @@ OpenCode Zen의 기본 Endpoint는 `https://opencode.ai/zen/v1`이며 API 키와
 Zen은 모델별 API 형식을 사용하므로 Go가 기존 Chat Completions·Responses·Claude·Gemini 호출기로 연결합니다.
 전체 API Endpoint를 직접 입력하면 그 형식을 우선합니다.
 OpenRouter는 `https://openrouter.ai/api/v1`과 `google/gemini-3.8-flash` 같은 OpenRouter ID를 사용합니다.
-OpenCode Go 구독형은 이번 Zen 기본값과 별개입니다.
+OpenCode Go는 별도 제공자 항목이며 기본 Endpoint는 `https://opencode.ai/zen/go/v1`입니다.
+출판사·평론가·전처리에 동일하게 설정할 수 있고, 대화별 세션 헤더를 전달합니다.
+Go의 MiniMax·Qwen은 Messages, GPT는 Responses, Kimi·GLM·DeepSeek는 Chat Completions로 연결합니다.
+Go 공식 안내는 코딩 에이전트 트래픽을 대상으로 합니다. Archive Center는 자체 클라이언트명으로 요청하며,
+RP 용도에 대한 서비스 수용 여부와 실제 구독 계정 호출은 검증하지 않았습니다.
 
 근거: [OpenCode Zen API](https://opencode.ai/docs/zen/#endpoints),
+[OpenCode Go API](https://opencode.ai/docs/go/),
 [OpenRouter API](https://openrouter.ai/docs/quickstart) (2026-09-09 확인).
 새 제공자의 실제 유료 API 호출은 별도 검증이며, 자동 검사는 외부 HTTP 응답 fixture를 사용합니다.
 

@@ -180,17 +180,18 @@ func TestProxyResolveVertexProjectIDRejectsMissingProjectID(t *testing.T) {
 
 func TestProxyProviderBaseURLDefaults(t *testing.T) {
 	wants := map[string]string{
-		"openai":     "https://api.openai.com/v1",
-		"openrouter": "https://openrouter.ai/api/v1",
-		"opencode":   "https://opencode.ai/zen/v1",
-		"llmgateway": "https://api.llmgateway.io/v1",
-		"vercel":     "https://ai-gateway.vercel.sh/v1",
-		"neuralwatt": "https://api.neuralwatt.com/v1",
-		"copilot":    "https://api.githubcopilot.com",
-		"ollama":     "http://127.0.0.1:11434",
-		"claude":     "https://api.anthropic.com",
-		"gemini":     "https://generativelanguage.googleapis.com/v1beta",
-		"vertex":     "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models",
+		"openai":      "https://api.openai.com/v1",
+		"openrouter":  "https://openrouter.ai/api/v1",
+		"opencode":    "https://opencode.ai/zen/v1",
+		"opencode-go": "https://opencode.ai/zen/go/v1",
+		"llmgateway":  "https://api.llmgateway.io/v1",
+		"vercel":      "https://ai-gateway.vercel.sh/v1",
+		"neuralwatt":  "https://api.neuralwatt.com/v1",
+		"copilot":     "https://api.githubcopilot.com",
+		"ollama":      "http://127.0.0.1:11434",
+		"claude":      "https://api.anthropic.com",
+		"gemini":      "https://generativelanguage.googleapis.com/v1beta",
+		"vertex":      "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models",
 	}
 	for provider, want := range wants {
 		if got := proxyProviderBaseURL(provider, ""); got != want {
@@ -4653,6 +4654,13 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 		{"explicit chat", "opencode", "gpt-5.6-luna", "https://relay.example/zen/v1/chat/completions", "https://relay.example/zen/v1/chat/completions", "chat", "Authorization", "low"},
 		{"explicit messages", "opencode", "qwen3.7-plus", "https://opencode.ai/zen/v1/messages", "https://opencode.ai/zen/v1/messages", "claude", "x-api-key", ""},
 		{"explicit Gemini model", "opencode", "gemini-3.8-flash", "https://opencode.ai/zen/v1/models/gemini-3.8-flash", "https://opencode.ai/zen/v1/models/gemini-3.8-flash:generateContent", "gemini", "x-goog-api-key", "medium"},
+		{"Go DeepSeek", "opencode-go", "deepseek-v4-pro", "", "https://opencode.ai/zen/go/v1/chat/completions", "chat", "Authorization", "low"},
+		{"Go Kimi", "opencode-go", "kimi-k2.7-code", "", "https://opencode.ai/zen/go/v1/chat/completions", "chat", "Authorization", ""},
+		{"Go GLM", "opencode-go", "glm-5.2", "", "https://opencode.ai/zen/go/v1/chat/completions", "chat", "Authorization", ""},
+		{"Go GPT", "opencode-go", "gpt-5.6-luna", "", "https://opencode.ai/zen/go/v1/responses", "responses", "Authorization", "low"},
+		{"Go MiniMax", "opencode-go", "minimax-m2.7", "", "https://opencode.ai/zen/go/v1/messages", "claude", "x-api-key", ""},
+		{"Go Qwen", "opencode-go", "qwen3.8-max", "", "https://opencode.ai/zen/go/v1/messages", "claude", "x-api-key", ""},
+		{"Go explicit chat", "opencode-go", "minimax-m2.7", "https://relay.example/v1/chat/completions", "https://relay.example/v1/chat/completions", "chat", "Authorization", ""},
 		{"OpenRouter default", "openrouter", "google/gemini-3.8-flash", "", "https://openrouter.ai/api/v1/chat/completions", "chat", "Authorization", "medium"},
 		{"OpenRouter override", "openrouter", "anthropic/claude-sonnet-4.6", "https://relay.example/api/v1", "https://relay.example/api/v1/chat/completions", "chat", "Authorization", "medium"},
 	}
@@ -4673,6 +4681,13 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 					}
 					if r.Header.Get(tc.auth) != wantAuth {
 						t.Fatal("missing provider authentication")
+					}
+					if tc.provider == "opencode-go" {
+						if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.0" || !strings.HasPrefix(r.Header.Get("x-opencode-session"), "archive-center-") {
+							t.Fatal("Go client/session headers missing")
+						}
+					} else if r.Header.Get("x-opencode-session") != "" {
+						t.Fatal("Go header leaked to another provider")
 					}
 					var b map[string]any
 					if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
@@ -4697,6 +4712,9 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 							t.Fatalf("tokens=%v", b)
 						}
 					case "claude":
+						if !strings.HasPrefix(tc.model, "claude-") && b["output_config"] != nil {
+							t.Fatal("Claude-specific structured output sent to a non-Claude Messages route")
+						}
 						if b["system"] != "Return JSON" || b["max_tokens"] != float64(2048) {
 							t.Fatalf("messages body=%v", b)
 						}
@@ -4722,7 +4740,7 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 				result, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
 					Provider: &tc.provider, Endpoint: &tc.endpoint, Model: &tc.model, APIKey: strPtr("fixture-key"), Temperature: &temp, MaxTokens: int64Ptr(2048), MaxCompletionTokens: int64Ptr(2048), ReasoningEffort: &tc.effort,
 					Messages: []any{map[string]any{"role": "system", "content": "Return JSON"}, map[string]any{"role": "user", "content": "Fixture input"}},
-				}, proxyRequestPolicy{JSONResponse: true, Purpose: purpose})
+				}, proxyRequestPolicy{JSONResponse: true, Purpose: purpose, SessionID: "wire-fixture-chat"})
 				if err != nil || status != 200 || calls != 1 {
 					t.Fatalf("status=%d calls=%d error=%v", status, calls, err)
 				}
@@ -4732,5 +4750,54 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestOpenCodeGoSessionHeadersAcrossCalls(t *testing.T) {
+	old := proxyHTTPClient
+	defer func() { proxyHTTPClient = old }()
+	headers := []http.Header{}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		headers = append(headers, r.Header.Clone())
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}`))}, nil
+	})}
+	req := dto.ProxyPluginMainRequest{Provider: strPtr("opencode-go"), Model: strPtr("kimi-k2.7-code"), APIKey: strPtr("fixture-key"), Messages: []any{map[string]any{"role": "user", "content": "fixture"}}}
+	for _, purpose := range []string{"publisher", "complete_turn_critic", "memory_preprocessing"} {
+		_, status, err := performProxyPluginMainWithPolicy(context.Background(), req, proxyRequestPolicy{Purpose: purpose, SessionID: "chat-A"})
+		if err != nil || status != 200 {
+			t.Fatalf("status=%d err=%v", status, err)
+		}
+	}
+	body, _ := json.Marshal(req)
+	srv := &Server{}
+	for _, sid := range []string{"chat-A", "chat-B"} {
+		w := httptest.NewRecorder()
+		srv.handleProxyPluginMain(w, httptest.NewRequest(http.MethodPost, "/proxy/plugin-main?chat_session_id="+sid, bytes.NewReader(body)))
+		if w.Code != 200 {
+			t.Fatalf("status=%d body=%s", w.Code, w.Body.String())
+		}
+	}
+	req.ExtraHeadersJSON = strPtr(`{"x-opencode-session":"explicit-session","User-Agent":"ArchiveCenterFixture/1.0"}`)
+	_, _, err := performProxyPluginMainWithPolicy(context.Background(), req, proxyRequestPolicy{SessionID: "chat-A"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(headers) != 6 {
+		t.Fatalf("calls=%d", len(headers))
+	}
+	sid := headers[0].Get("x-opencode-session")
+	if sid == "" || strings.Contains(sid, "chat-A") {
+		t.Fatal("session header missing or raw chat ID exposed")
+	}
+	for _, h := range headers[1:4] {
+		if h.Get("x-opencode-session") != sid {
+			t.Fatal("same conversation changed session header")
+		}
+	}
+	if headers[4].Get("x-opencode-session") == sid {
+		t.Fatal("different conversations share session header")
+	}
+	if headers[5].Get("x-opencode-session") != "explicit-session" || headers[5].Get("User-Agent") != "ArchiveCenterFixture/1.0" {
+		t.Fatal("explicit headers replaced")
 	}
 }
