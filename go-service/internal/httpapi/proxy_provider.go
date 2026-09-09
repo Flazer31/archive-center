@@ -113,6 +113,33 @@ func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainReq
 	}
 
 	switch provider {
+	case "opencode":
+		// Zen exposes native APIs per model. An explicit API endpoint takes
+		// precedence over the model's documented default transport.
+		path := ""
+		if parsed, err := url.Parse(endpoint); err == nil {
+			path = strings.TrimRight(parsed.Path, "/")
+		}
+		modelID := strings.ToLower(model)
+		switch {
+		case strings.HasSuffix(path, "/chat/completions"), strings.HasSuffix(path, "/responses"):
+			return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, policy, retryBudget)
+		case strings.HasSuffix(path, "/messages"):
+			return proxyCallClaude(ctx, req, endpoint, apiKey, model, policy)
+		case strings.Contains(path, "/models/"):
+			if !strings.Contains(path, ":") {
+				endpoint += ":generateContent"
+			}
+			return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
+		case strings.HasPrefix(modelID, "claude-"), strings.HasPrefix(modelID, "qwen3.5-"), strings.HasPrefix(modelID, "qwen3.6-"), strings.HasPrefix(modelID, "qwen3.7-"):
+			return proxyCallClaude(ctx, req, endpoint+"/messages", apiKey, model, policy)
+		case strings.HasPrefix(modelID, "gemini-"):
+			return proxyCallGemini(ctx, req, endpoint, apiKey, model, false, policy)
+		case strings.HasPrefix(modelID, "gpt-"), strings.HasPrefix(modelID, "grok-"), strings.HasPrefix(modelID, "muse-spark-"):
+			return proxyCallOpenAIResponses(ctx, req, endpoint+"/responses", apiKey, model, provider, policy)
+		default:
+			return proxyCallOpenAILike(ctx, req, endpoint, apiKey, model, provider, policy, retryBudget)
+		}
 	case "claude":
 		return proxyCallClaude(ctx, req, endpoint, apiKey, model, policy)
 	case "gemini":
@@ -189,7 +216,7 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || (reasoningTransport == "custom" && reasoningFamily == "deepseek_v4") {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || ((reasoningTransport == "custom" || reasoningTransport == "opencode") && reasoningFamily == "deepseek_v4") {
 		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
@@ -405,6 +432,9 @@ func proxyCallOpenAIResponses(ctx context.Context, req dto.ProxyPluginMainReques
 	switch reasoningEffort {
 	case "none", "minimal", "low", "medium", "high", "xhigh":
 		body["reasoning"] = map[string]any{"effort": reasoningEffort}
+	}
+	if provider == "opencode" && strings.HasPrefix(strings.ToLower(model), "gpt-") && reasoningEffort != "" && reasoningEffort != "none" {
+		delete(body, "temperature")
 	}
 	managedReasoning, _ := json.Marshal(body["reasoning"])
 	overrideTrace, overrideErr := proxyApplyRequestOverrides(headers, body, req, provider, false)
@@ -1959,6 +1989,8 @@ func proxyProviderBaseURL(provider, endpoint string) string {
 		return "https://api.openai.com/v1"
 	case "openrouter":
 		return "https://openrouter.ai/api/v1"
+	case "opencode":
+		return "https://opencode.ai/zen/v1"
 	case "llmgateway":
 		return "https://api.llmgateway.io/v1"
 	case "vercel":

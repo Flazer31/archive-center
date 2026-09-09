@@ -1430,6 +1430,12 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 		if len(matchingTurns) == 0 {
 			matchingTurns = s.risuWorldlineInheritedSourceTurns(ctx, parentSessionID, parentHostChatID, sourceMessageID, userAnchorMessageID, sourceRole)
 		}
+		if len(matchingTurns) == 0 {
+			if turn := s.risuWorldlineObservedSourceTurn(ctx, observation, parentSessionID, parentHostChatID, sourceMessageID, append(parentSources, history...)); turn > 0 {
+				matchingTurns = []int{turn}
+				confirmedReason = "official_branch_marker_observed_prefix_validated"
+			}
+		}
 		vm.CandidateParentID = parentSessionID
 		vm.CandidateForkTurns = matchingTurns
 		assessmentParentSessionID = parentSessionID
@@ -1438,7 +1444,9 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 			vm.Reason = "parent_fork_source_history_unresolved"
 			return vm
 		case 1:
-			confirmedReason = "official_branch_marker_historical_source_validated"
+			if confirmedReason != "official_branch_marker_observed_prefix_validated" {
+				confirmedReason = "official_branch_marker_historical_source_validated"
+			}
 		default:
 			vm.State = "conflict"
 			vm.Reason = "parent_fork_source_history_ambiguous"

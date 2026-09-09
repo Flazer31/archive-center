@@ -468,6 +468,8 @@ func Test43MultiAgentFlexProviderTransportAndGenerationSettings(t *testing.T) {
 		{name: "Vertex provisioned then Flex", provider: "vertex", vertexMode: "provisioned_then_flex", wantSharedHeader: "flex"},
 		{name: "Vertex off", provider: "vertex", vertexMode: "off"},
 		{name: "Claude ignores inactive individual tier", provider: "claude", tier: "flex"},
+		{name: "OpenCode ignores inactive individual tier", provider: "opencode", tier: "flex"},
+		{name: "OpenRouter ignores inactive individual tier", provider: "openrouter", tier: "flex"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			oldClient := proxyHTTPClient
@@ -603,6 +605,7 @@ func Test43MultiAgentRecoveryUsesExistingRoundsAndReportsOutcome(t *testing.T) {
 		{"later_selection", `{"reasons":false,"selected_ids":["F1"]}`, "", "partial", "ai"},
 		{"empty", `{"selected_ids":[]}`, "", "no_recommendation", "go_default"},
 		{"syntax_search", `{"selected_ids":[],"search_requests":["where is the key?","unresolved":["date"]}`, `{"selected_ids":["F1"]}`, "repaired", "ai"},
+		{"object_questions", `{"selected_ids":["F1"],"search_requests":[{"question":"where is the key?"}]}`, `{"selected_ids":["F1"],"search_requests":[{"query":"who has the key?"}]}`, "repaired", "ai"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls, searches := 0, 0

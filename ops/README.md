@@ -1,7 +1,9 @@
 # Ops
 
-Status (2026-09-08): active packaging, preflight and recovery tools. Latest local
-Windows test package: [4.3.0-test.21](../docs/archive-center-4.3-test-build-21.md).
+Current source: **4.3.0 stable**, release verification in progress. See [release record](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+
+Previous test-package snapshot (2026-09-09): active packaging, preflight and recovery tools. Latest local
+Windows test package: [4.3.0-test.23](../docs/archive-center-4.3-test-build-23.md).
 Public all-platform release evidence: [4.2.0](../docs/archive-center-4.2.0-release-verification.md).
 The Windows test build does not establish a new Linux/macOS/Termux test release.
 
@@ -24,7 +26,7 @@ Runtime data directories, logs, caches, secrets, and backups must stay outside t
 - `install-windows.ps1 -StageMariaDBProvider -ProviderArchive <zip> -InstallDir <path>`: legacy/offline path for staging a user-supplied MariaDB archive outside the source and package trees.
 - `install-windows.ps1 -VerifyBundle -BundlePath <zip> -Out <report.json>`: verifies the Go backend and managed runtime installer while rejecting bundled MariaDB and ChromaDB runtimes. The launcher prepares these separately on first start.
 - `build-release-assets.ps1 -PackageVersion 4.2.0`: public-release example for seven ZIPs and aggregate `SHA256SUMS-4.2.0.txt` under `_release-builds/4.2.0`. Building is separate from publishing.
-- `build-full-package.ps1 -OutputRoot _test-builds/4.3.0-test.18 -PackageVersion 4.3.0-test.18 -PackageKind managed -Zip`: test.18 build recipe; use a new output/version for a subsequent package. It builds the Go backend and copies the host adapter, prompts, migrations, notices, and launch scripts, but does not bundle MariaDB, Python, ChromaDB, DB, `.env.full.local`, logs, caches, or user data. First launch downloads the verified official MariaDB and CPython runtimes, installs pinned ChromaDB into the per-user runtime directory, and starts the full local stack. The historical script name is retained so updater and operator paths do not fork.
+- `build-full-package.ps1 -OutputRoot _test-builds/4.3.0-test.23 -PackageVersion 4.3.0-test.23 -PackageKind managed -Zip`: test.23 build recipe; use a new output/version for a subsequent package. It builds the Go backend and copies the host adapter, prompts, migrations, notices, and launch scripts, but does not bundle MariaDB, Python, ChromaDB, DB, `.env.full.local`, logs, caches, or user data. First launch downloads the verified official MariaDB and CPython runtimes, installs pinned ChromaDB into the per-user runtime directory, and starts the full local stack. The historical script name is retained so updater and operator paths do not fork.
 - `build-posix-managed-packages.ps1 -PackageVersion 4.2.0 -Zip`: cross-builds the Linux x64/arm64, macOS Intel/Apple Silicon and Android Termux arm64 managed packages.
 - `build-live-test-pack.ps1 -ForceRefresh`: creates a lightweight local experiment folder for MariaDB + ChromaDB source validation. It copies only source, prompts, migrations, `Archive Center.js`, and live-test scripts; it excludes runtime data, caches, DB files, generated binaries, backups, release, and deploy outputs.
 - `windows-launcher-ctrl-c-smoke.ps1`: interactive Windows process-lifetime regression. Run it in an isolated `cmd.exe` console, choose `N` at the first generated Ctrl+C prompt and `Y` at the second, and require the managed child to survive the canceled shutdown before confirmed cleanup.

@@ -477,6 +477,11 @@ async function flush(){for(let i=0;i<8;i++) await Promise.resolve();}
   if(!sameRow.owned || sameRow.started || sameRow.reason!=="same_user_row_reroll_or_edit") throw new Error("same-row reroll was finalized: "+JSON.stringify(sameRow));
   if(backfillCalls!==0) throw new Error("same-row reroll reached persistence");
 
+  const childRow=beginNextInputFinalizationPipeline("child-session",{userMessageIndex:2},{hostChatId:"child-chat"});
+  if(childRow.owned || childRow.started || childRow.reason!=="no_pending_previous_turn") throw new Error("child input consumed parent's marker: "+JSON.stringify(childRow));
+  await flush();
+  if(backfillCalls!==0 || !_nextInputFinalizations.has("session-1")) throw new Error("parent pending marker changed after child input");
+
   const rerolledContext={...firstContext,requestId:"request-b"};
   if(!queueNextInputFinalization(rerolledContext,{persistence_content_hash:computeOrchestrationDirtyHashOr1c("final B")})) throw new Error("rerolled marker was not queued");
   if(_nextInputFinalizations.get("session-1").requestId!=="request-b") throw new Error("reroll did not replace pending marker");

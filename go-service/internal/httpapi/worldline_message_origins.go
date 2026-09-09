@@ -97,6 +97,98 @@ func risuWorldlineParentUserAnchor(observation *risuWorldlineObservation, parent
 	return ""
 }
 
+// A branch copies a Host prefix even when the parent's last complete-turn call
+// has not run yet. Resolve that prefix's turn coordinate without admitting the
+// response, running a Critic, or changing next-input finalization ownership.
+func (s *Server) risuWorldlineObservedSourceTurn(ctx context.Context, observation *risuWorldlineObservation, parentID, parentHostID, sourceID string, sources []store.MemorySourceRevision) int {
+	messages := risuWorldlineParentMessages(observation, parentHostID, sourceID)
+	if len(messages) == 0 {
+		return 0
+	}
+	type position struct {
+		message risuWorldlineMessageObservation
+		ordinal int
+		logical string
+	}
+	positions := make([]position, 0, len(messages))
+	completed, userID := 0, ""
+	for _, message := range messages {
+		if message.Disabled {
+			continue
+		}
+		ordinal := completed + 1
+		switch message.Role {
+		case "user":
+			userID = message.MessageChatID
+		case "char":
+			if userID != "" {
+				completed++
+			}
+			ordinal = completed // the leading character greeting remains turn zero
+		default:
+			continue
+		}
+		logical := completeTurnLogicalTurnID(parentID, completeTurnSourceObservation{
+			HostChatID: parentHostID, HostChatIDState: "observed", UserMessageChatID: userID, UserMessageChatIDState: "observed",
+		})
+		positions = append(positions, position{message, ordinal, logical})
+	}
+	if len(positions) == 0 || positions[len(positions)-1].message.MessageChatID != sourceID {
+		return 0
+	}
+	target := positions[len(positions)-1].ordinal
+	byMessage, byLogical := map[string][]store.MemorySourceRevision{}, map[string][]store.MemorySourceRevision{}
+	for _, source := range sources {
+		byMessage[source.SourceMessageID] = append(byMessage[source.SourceMessageID], source)
+		byLogical[source.LogicalTurnID] = append(byLogical[source.LogicalTurnID], source)
+	}
+	// Stored coordinates account for existing offsets and earlier deleted rows.
+	// Only positions inside the observed prefix participate; parent future rows
+	// cannot supply an anchor or extend the child's cut.
+	for index := len(positions) - 1; index >= 0; index-- {
+		p := positions[index]
+		var candidates []store.MemorySourceRevision
+		if p.message.Role == "char" && p.message.MessageChatID != "" {
+			candidates = byMessage[p.message.MessageChatID]
+		}
+		if len(candidates) == 0 {
+			candidates = byLogical[p.logical]
+		}
+		if turns := uniqueWorldlineSourceTurns(candidates); len(turns) == 1 {
+			return turns[0] + target - p.ordinal
+		}
+	}
+	// A parent's first owned response can be pending. Its existing inherited
+	// endpoint still establishes the coordinate, including reissued child IDs.
+	parent := currentWorldlineViewModel(ctx, s.Store, parentID)
+	if parent.State == "confirmed" {
+		if fs, ok := s.Store.(store.ForkLineageStore); ok {
+			records, _ := fs.ListForkLineageRecords(ctx, parentID, "", 0)
+			for _, record := range records {
+				origins := readRisuWorldlineOrigins(record.InheritedItemsJSON)
+				if origins == nil || record.LineageState != "confirmed" {
+					continue
+				}
+				for _, origin := range origins.Items {
+					if origin.ParentMessageID != parent.ForkSourceMessageID {
+						continue
+					}
+					for _, p := range positions {
+						if p.message.MessageChatID == origin.ChildMessageID {
+							return parent.ForkTurn + target - p.ordinal
+						}
+					}
+				}
+			}
+		}
+	}
+	resolved := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
+		Mode: "pair", ObservedPairOrdinal: target,
+		Baseline: s.resolveDurableSessionRoutingBaseline(ctx, parentID, nil),
+	})
+	return resolved.TurnIndex
+}
+
 func risuWorldlineOriginItems(observation *risuWorldlineObservation) string {
 	if observation == nil || observation.MessageOrigins == nil {
 		return ""

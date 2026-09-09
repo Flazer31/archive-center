@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -842,4 +843,165 @@ func updateTestZip(t *testing.T, targetVersion string, contractOverrides map[str
 		t.Fatal(err)
 	}
 	return out.Bytes()
+}
+
+// Set both paths to public old/new package ZIPs for release-candidate checks.
+// Only the external GitHub boundary is simulated; package bytes, the HTTP
+// update owner and the previous release's updater executable are real.
+func TestReleaseCandidateUpgradeFromPublishedPackage(t *testing.T) {
+	oldPath, newPath := os.Getenv("AC_RELEASE_OLD_ZIP"), os.Getenv("AC_RELEASE_NEW_ZIP")
+	if oldPath == "" || newPath == "" {
+		t.Skip("release ZIP paths not supplied")
+	}
+	if runtime.GOOS != "windows" {
+		t.Skip("previous Windows updater requires Windows")
+	}
+	oldZip, err := zip.OpenReader(oldPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oldZip.Close()
+	temp := t.TempDir()
+	for _, f := range oldZip.File {
+		name := filepath.Join(temp, filepath.FromSlash(f.Name))
+		if f.FileInfo().IsDir() {
+			if err := os.MkdirAll(name, 0755); err != nil {
+				t.Fatal(err)
+			}
+			continue
+		}
+		if err := os.MkdirAll(filepath.Dir(name), 0755); err != nil {
+			t.Fatal(err)
+		}
+		in, err := f.Open()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := io.ReadAll(in)
+		in.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(name, b, 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := ""
+	if err := filepath.WalkDir(temp, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.Name() == "PACKAGE_FILE_MANIFEST.json" {
+			root = filepath.Dir(path)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if root == "" {
+		t.Fatal("old manifest absent")
+	}
+	oldManifest, err := os.ReadFile(filepath.Join(root, "PACKAGE_FILE_MANIFEST.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(oldManifest, &m); err != nil {
+		t.Fatal(err)
+	}
+	oldVersion := m["package_version"].(string)
+	oldJS, err := os.ReadFile(filepath.Join(root, "Archive Center.js"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sentinels := map[string]string{".env.full.local": "AC_API_KEY=fixture-preserved\n", "data/mariadb/sentinel.txt": "canonical fixture", "data/chromadb/sentinel.txt": "vector fixture", "data/memory-preprocessing.json": `{"enabled":true,"roles":{"event_recent":{"provider":"openrouter","api_key":"fixture-role-key"}}}`}
+	for name, value := range sentinels {
+		path := filepath.Join(root, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(value), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	candidate, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restore := updateHTTPClient
+	defer func() { updateHTTPClient = restore }()
+	assetName := filepath.Base(newPath)
+	updateHTTPClient = &http.Client{Transport: updateRoundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.String() {
+		case "https://api.github.com/repos/Flazer31/archive-center/releases/latest":
+			return textResponse(200, `{"tag_name":"v4.3.0","assets":[{"name":`+strconv.Quote(assetName)+`,"browser_download_url":"https://release.test/candidate.zip"}]}`)
+		case "https://release.test/candidate.zip":
+			return bytesResponse(200, candidate)
+		default:
+			t.Fatalf("unexpected download: %s", r.URL)
+			return nil, nil
+		}
+	})}
+	cfg := config.Default()
+	cfg.BuildVersion = oldVersion
+	cfg.UpdateStagingDir = filepath.Join(root, ".updates")
+	srv := NewServer(cfg)
+	shutdown := 0
+	srv.RequestShutdown = func(code int) { shutdown = code }
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	stage := func() {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest("POST", "/update/apply", strings.NewReader(`{}`)))
+		if rec.Code != 200 || shutdown != 75 || !rec.Flushed {
+			t.Fatalf("ack=%d exit=%d body=%s", rec.Code, shutdown, rec.Body.String())
+		}
+	}
+	stage()
+	runner := filepath.Join(root, ".updates", "runner", "previous-release-updater.exe")
+	if err := os.MkdirAll(filepath.Dir(runner), 0755); err != nil {
+		t.Fatal(err)
+	}
+	binary, err := os.ReadFile(filepath.Join(root, "bin", "archive-center-updater.exe"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(runner, binary, 0755); err != nil {
+		t.Fatal(err)
+	}
+	invoke := func(action string) {
+		t.Helper()
+		out, err := exec.Command(runner, action, "--root", root).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v %s", action, err, out)
+		}
+		t.Logf("%s: %s", action, out)
+	}
+	verify := func() {
+		t.Helper()
+		for name, value := range sentinels {
+			b, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(name)))
+			if err != nil || string(b) != value {
+				t.Fatalf("user file changed: %s", name)
+			}
+		}
+	}
+	invoke("apply-pending")
+	verify()
+	installed, err := os.ReadFile(filepath.Join(root, "Archive Center.js"))
+	if err != nil || !bytes.Contains(installed, []byte("//@version 4.3.0\n")) {
+		t.Fatal("stable plugin missing after apply")
+	}
+	invoke("rollback")
+	verify()
+	rolled, err := os.ReadFile(filepath.Join(root, "Archive Center.js"))
+	if err != nil || !bytes.Equal(rolled, oldJS) {
+		t.Fatal("rollback failed to restore old plugin")
+	}
+	stage()
+	invoke("apply-pending")
+	invoke("commit")
+	verify()
+	t.Logf("Published %s -> 4.3.0: UI HTTP owner, actual package, prior updater apply/rollback/reapply/commit passed; data files are sentinels, not a DB process", oldVersion)
 }

@@ -182,6 +182,7 @@ func TestProxyProviderBaseURLDefaults(t *testing.T) {
 	wants := map[string]string{
 		"openai":     "https://api.openai.com/v1",
 		"openrouter": "https://openrouter.ai/api/v1",
+		"opencode":   "https://opencode.ai/zen/v1",
 		"llmgateway": "https://api.llmgateway.io/v1",
 		"vercel":     "https://ai-gateway.vercel.sh/v1",
 		"neuralwatt": "https://api.neuralwatt.com/v1",
@@ -4638,6 +4639,98 @@ func TestHandleSupervisorUsesRuntimeLLMConfig(t *testing.T) {
 	for _, key := range []string{"narrative_stance", "narrative_stance_suffix_present", "narrative_stance_bounds_present", "narrative_stance_summary"} {
 		if _, exists := traceSummary[key]; exists {
 			t.Fatalf("trace_summary exposes story-control field %q: %+v", key, traceSummary)
+		}
+	}
+}
+
+func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
+	cases := []struct{ name, provider, model, endpoint, target, shape, auth, effort string }{
+		{"Zen DeepSeek", "opencode", "deepseek-v4-pro", "", "https://opencode.ai/zen/v1/chat/completions", "chat", "Authorization", "low"},
+		{"Zen GLM", "opencode", "glm-5.2", "", "https://opencode.ai/zen/v1/chat/completions", "chat", "Authorization", "high"},
+		{"Zen Claude", "opencode", "claude-sonnet-4-6", "", "https://opencode.ai/zen/v1/messages", "claude", "x-api-key", "medium"},
+		{"Zen Gemini", "opencode", "gemini-3.8-flash", "", "https://opencode.ai/zen/v1/models/gemini-3.8-flash:generateContent", "gemini", "x-goog-api-key", "medium"},
+		{"Zen GPT", "opencode", "gpt-5.6-luna", "", "https://opencode.ai/zen/v1/responses", "responses", "Authorization", "low"},
+		{"explicit chat", "opencode", "gpt-5.6-luna", "https://relay.example/zen/v1/chat/completions", "https://relay.example/zen/v1/chat/completions", "chat", "Authorization", "low"},
+		{"explicit messages", "opencode", "qwen3.7-plus", "https://opencode.ai/zen/v1/messages", "https://opencode.ai/zen/v1/messages", "claude", "x-api-key", ""},
+		{"explicit Gemini model", "opencode", "gemini-3.8-flash", "https://opencode.ai/zen/v1/models/gemini-3.8-flash", "https://opencode.ai/zen/v1/models/gemini-3.8-flash:generateContent", "gemini", "x-goog-api-key", "medium"},
+		{"OpenRouter default", "openrouter", "google/gemini-3.8-flash", "", "https://openrouter.ai/api/v1/chat/completions", "chat", "Authorization", "medium"},
+		{"OpenRouter override", "openrouter", "anthropic/claude-sonnet-4.6", "https://relay.example/api/v1", "https://relay.example/api/v1/chat/completions", "chat", "Authorization", "medium"},
+	}
+	for _, tc := range cases {
+		for _, purpose := range []string{"publisher", "critic", "memory_preprocessing"} {
+			t.Run(tc.name+"/"+purpose, func(t *testing.T) {
+				old := proxyHTTPClient
+				defer func() { proxyHTTPClient = old }()
+				calls := 0
+				proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+					calls++
+					if r.URL.String() != tc.target {
+						t.Fatalf("URL=%s want=%s", r.URL, tc.target)
+					}
+					wantAuth := "fixture-key"
+					if tc.auth == "Authorization" {
+						wantAuth = "Bearer " + wantAuth
+					}
+					if r.Header.Get(tc.auth) != wantAuth {
+						t.Fatal("missing provider authentication")
+					}
+					var b map[string]any
+					if err := json.NewDecoder(r.Body).Decode(&b); err != nil {
+						t.Fatal(err)
+					}
+					if _, ok := b["service_tier"]; ok {
+						t.Fatal("unexpected service tier")
+					}
+					response := `{"choices":[{"message":{"content":"{}"},"finish_reason":"stop"}]}`
+					switch tc.shape {
+					case "chat":
+						if len(sliceFromAny(b["messages"])) != 2 {
+							t.Fatalf("messages=%v", b)
+						}
+						if tc.provider == "openrouter" && stringFromMap(mapFromAny(b["reasoning"]), "effort") != tc.effort {
+							t.Fatalf("router reasoning=%v", b)
+						}
+						if tc.model == "deepseek-v4-pro" && stringFromMap(b, "reasoning_effort") != "low" {
+							t.Fatalf("DeepSeek reasoning=%v", b)
+						}
+						if b["max_tokens"] != float64(2048) && b["max_completion_tokens"] != float64(2048) {
+							t.Fatalf("tokens=%v", b)
+						}
+					case "claude":
+						if b["system"] != "Return JSON" || b["max_tokens"] != float64(2048) {
+							t.Fatalf("messages body=%v", b)
+						}
+						response = `{"content":[{"type":"text","text":"{}"}],"stop_reason":"end_turn"}`
+					case "gemini":
+						g := mapFromAny(b["generationConfig"])
+						if g["temperature"] != 0.3 || g["maxOutputTokens"] != float64(2048) || stringFromMap(mapFromAny(g["thinkingConfig"]), "thinkingLevel") != "medium" {
+							t.Fatalf("generation config=%v", g)
+						}
+						response = `{"candidates":[{"content":{"parts":[{"text":"{}"}]},"finishReason":"STOP"}]}`
+					case "responses":
+						if _, exists := b["temperature"]; exists {
+							t.Fatal("reasoning GPT retained temperature")
+						}
+						if b["max_output_tokens"] != float64(2048) || len(sliceFromAny(b["input"])) != 2 || stringFromMap(mapFromAny(b["reasoning"]), "effort") != "low" {
+							t.Fatalf("responses body=%v", b)
+						}
+						response = `{"status":"completed","output":[{"type":"message","content":[{"type":"output_text","text":"{}"}]}]}`
+					}
+					return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(response))}, nil
+				})}
+				temp := 0.3
+				result, status, err := performProxyPluginMainWithPolicy(context.Background(), dto.ProxyPluginMainRequest{
+					Provider: &tc.provider, Endpoint: &tc.endpoint, Model: &tc.model, APIKey: strPtr("fixture-key"), Temperature: &temp, MaxTokens: int64Ptr(2048), MaxCompletionTokens: int64Ptr(2048), ReasoningEffort: &tc.effort,
+					Messages: []any{map[string]any{"role": "system", "content": "Return JSON"}, map[string]any{"role": "user", "content": "Fixture input"}},
+				}, proxyRequestPolicy{JSONResponse: true, Purpose: purpose})
+				if err != nil || status != 200 || calls != 1 {
+					t.Fatalf("status=%d calls=%d error=%v", status, calls, err)
+				}
+				choices := sliceFromAny(result["choices"])
+				if len(choices) != 1 || stringFromMap(mapFromAny(mapFromAny(choices[0])["message"]), "content") != "{}" {
+					t.Fatalf("normalized result=%v", result)
+				}
+			})
 		}
 	}
 }

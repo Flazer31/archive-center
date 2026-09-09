@@ -1,20 +1,80 @@
 # Archive Center Repository Structure
 
+## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen
+
+Source version is 4.3.0 (stable); publication and package execution evidence is
+tracked in [release verification](docs/archive-center-4.3.0-release-verification.md).
+`proxy_provider.go::callProxyProviderWithPolicy` routes the explicit `opencode`
+provider through existing model-native adapters. Explicit API endpoints retain
+priority. `proxyProviderBaseURL` supplies the Zen default; OpenRouter retains its
+existing default and transport. JS changes are provider options, endpoint hints
+and reasoning controls only. Shared provider tests cover Publisher, Critic and
+preprocessing purposes with an external HTTP fixture, not live provider proof.
+No memory policy, storage schema, lifecycle or fallback is added in this slice.
+
+
 ## 1. Document Status
 
 | Field | Value |
 | --- | --- |
-| Review date | 2026-09-08 (test.21 runtime baseline; planned reliable recall, shared reactivation and optional Actor expression aligned separately) |
+| Review date | 2026-09-09: 4.3.0 stable source and release verification; test.23 behavior retained |
 | Branch | `work/4.2.0` |
 | Commit | 4.1 public parent `574c2d5b`; 4.2 source/regression checkpoints `43bc20a1` and `c2f1a2d5`; public `v4.2.0` release source `4257081c217e57b7e570592fb1090b484255c013`, including the fact-semantic relevance correction. |
 | Repository root | active `source/` worktree |
-| Local test build | [`4.3.0-test.21`](docs/archive-center-4.3-test-build-21.md): broader budgeted Go selection, ordinary subjective memories, current-field time resolution and supplemental source references. Plugin and Go backend are packaged together; user owns startup. |
-| Current work summary | [4.3 status through test.21](docs/archive-center-4.3-status-summary.md), including this presentation/reference repair and preceding optional specialists, retrieval, knowledge, Hypa, provider, guide and HUD work. |
+| Local test build | [`4.3.0-test.23`](docs/archive-center-4.3-test-build-23.md): branch coordinates while parent source is pending; inherited-prefix and canonical-text preservation in cold start. Retains test.21–22 memory/preprocessing work. Plugin and Go backend are packaged together; user owns startup. |
+| Current work summary | 4.3.0 stable source; OpenCode Zen added. [4.3 history through test.23](docs/archive-center-4.3-status-summary.md). Source checkpoint: `6ef8f74239af065d2810761dd94c846b34e99826`; previous test.22 package retained. |
 | Next-version plan | [Reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan): 4.4 deduplication → 4.5 context bundles → 4.6 time/state → 4.7 retrieval → 4.8–4.9 related recall → 5.1-A–5.2 shared reactivation. [4.4 execution plan](docs/archive-center-4.4-refactoring-plan.md) and [state-time handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#temporal-state-44647) retain their scopes. Actor expression is optional. All follow-up work is **PLANNED**; runtime ownership and behavior are unchanged. |
-| Inspection scope | New red-to-green regressions, Go 35 packages, fixed-content delivery comparison, and source/package/53-file/ZIP verification. Loaded test.21 and final RP quality remain open. |
+| Inspection scope | Pending-source and cold-start red-to-green regressions, existing lifecycle suite, and source/package verification recorded in test.23. Loaded test.23 and actual user DB/provider behavior remain open. |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |
 | Evidence level | Source/regression, seven public 4.2.0 packages, tagged-source Windows/Ubuntu/macOS CI, and an isolated Windows public 4.1-to-4.2 managed update with real MariaDB/Chroma fixture preservation are verified within the [release record](docs/archive-center-4.2.0-release-verification.md). Earlier bounded PDF/Provider Manager observations remain limited to their stated artifacts. Loaded-RisuAI verification of the release, live recall quality, Google AI Studio/LLM Gateway behavior, usage comparison, long-session generalization, and full native-device coverage remain open. |
 | Confidence | **VERIFIED** within each explicitly cited source/regression/package/backend-live/public-release tier; **UNKNOWN** for the remaining loaded-host, provider body/usage/display, and native-device behavior in section 20. |
+
+### 2026-09-09 test.23 pending-source lineage and cold-start merge
+
+- `group_turn_range_decision.go::resolveRisuWorldlineObservation()` and
+  `worldline_message_origins.go::risuWorldlineObservedSourceTurn()` resolve the
+  copied prefix's coordinate from the already named parent observation when the
+  fork source revision is still pending. Stored source coordinates account for
+  offsets; a confirmed parent's inherited endpoint anchors its first owned turn.
+  Unanchored root observations reuse the existing Go turn calculator. The existing
+  inherited-through user/char distinction and ancestor scope traversal remain.
+- This records lineage, not the missing response's memory. JS
+  `queueNextInputFinalization()`/`beginNextInputFinalizationPipeline()` retain
+  per-session ownership; a child's input does not finalize the parent's marker.
+- JS `computeActiveChatRescanDryRunPlan()` now consumes Go's inherited-prefix
+  exclusion in its second assistant merge and reuses the existing persistence
+  normalizer before producing repair entries. Host hashes remain observation
+  identities. `buildSessionNormalizeRepairEntriesFromDryRunPlan()` consequently
+  receives owned canonical entries instead of reintroduced inherited/translated text.
+- `worldline_cold_start_reproduction_test.go` runs active JS functions against the
+  actual routing handler; only Host/Store reads are fixtures. Separate owner tests
+  cover source delay, preserved/reissued IDs, user/char endpoints, saved offsets
+  and five-session ancestry. Earlier source fails these new assertions. See
+  [test.23](docs/archive-center-4.3-test-build-23.md) for results and upstream commits.
+
+### 2026-09-09 test.22 preprocessing finishing scope
+
+- `prepare_turn_multi_agent.go::parseMultiAgentRecommendation()` normalizes
+  recorded `search_requests` array items with string `question`/`query` fields.
+  Memory IDs keep their existing decoder; valid later fields remain usable when
+  a question is malformed. Existing one-search/two-analysis limits remain in force.
+- `multiAgentOrderCandidates()` takes each fact lane's order from its own role,
+  and summary order exclusively from event_recent's summary list. Another role's
+  mention does not rank the owning lane. Go fallback lanes retain their order.
+- Common and five role defaults distinguish the recorded detail, source time,
+  possible relevance and missing information. User creative direction and useful
+  associative/peripheral evidence remain supported. Saved prompt overrides win.
+- `buildPrepareTurnPreprocessingNotes()` keeps diagnostic items and source_catalog
+  intact. The joined text uses documented short provenance keys and one scope
+  heading for adjacent uncertainties. Source IDs, values, null/absent fields,
+  owner/viewers, original reasons and unresolved text are retained. The Publisher
+  support projection continues receiving the full diagnostic catalog.
+- New owner regressions fail at the checkpoint and pass after repair. Offline
+  replay covers 20 supplied replies and both frozen accepted selections. It
+  verifies representation and delivery, not newly generated AI judgments. No
+  external AI calls, database changes or backend startup were performed.
+- JavaScript changes only four version identifiers (+4/-4). Full evidence and
+  prompt-reset instructions are in the [test.22 record](docs/archive-center-4.3-test-build-22.md).
 
 ### 2026-09-08 planning alignment — reliable recall before optional expression
 

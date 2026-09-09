@@ -1,8 +1,69 @@
 # Archive Center AI Coding Guardrails
 
+## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen
+
+Source version is 4.3.0 (stable); publication and package execution evidence is
+tracked in [release verification](docs/archive-center-4.3.0-release-verification.md).
+`proxy_provider.go::callProxyProviderWithPolicy` routes the explicit `opencode`
+provider through existing model-native adapters. Explicit API endpoints retain
+priority. `proxyProviderBaseURL` supplies the Zen default; OpenRouter retains its
+existing default and transport. JS changes are provider options, endpoint hints
+and reasoning controls only. Shared provider tests cover Publisher, Critic and
+preprocessing purposes with an external HTTP fixture, not live provider proof.
+No memory policy, storage schema, lifecycle or fallback is added in this slice.
+
+
 Use this file as an operational checklist. Treat the active implementation and its actual callers as stronger evidence than filenames, comments, roadmaps, generated packages, or previous conversations. Treat unqualified rules below as **VERIFIED** from source or explicit architecture. Mark unresolved behavior **UNKNOWN**, current roadmap-only work **PLANNED**, and superseded/inactive surfaces **OBSOLETE**; do not guess.
 
 ## 1. Files to Read Before Editing
+
+### 4.3 test.23 — pending branch source and cold-start merge — 2026-09-09
+
+- Go's existing lineage resolver can use the named parent's observed message
+  prefix before its last source revision is persisted. `worldline_message_origins.go`
+  anchors that position to stored source coordinates or the parent's confirmed
+  inherited endpoint; the existing routing calculator handles the unanchored
+  root prefix. Source persistence and Critic completion are separate operations.
+- Host origin observations remain optional. Preserve direct source/history
+  matching and the existing user/char inherited-through boundary. Do not flush a
+  parent's next-input marker from a child or add a save-on-switch/background job.
+- `computeActiveChatRescanDryRunPlan()` must apply Go's existing
+  `skip_pre_route_visible_pair` decision in both merge passes. A positive turn
+  number on that decision is not authorization to rebuild inherited memory.
+- Reuse the existing assistant persistence normalizer for second-pass text.
+  Keep Host observation hashes separate from normalized persistence content.
+  This repairs GigaTrans translation text re-entry; it does not add a new regex
+  setting, translation policy, source admission rule or memory-selection policy.
+- The real JS merge and real Go routing API are exercised together with fixture
+  Host/Store boundaries. Source-save delay, reissued IDs, offsets and deeper
+  rebranches have separate owner regressions. See the [test.23 record](docs/archive-center-4.3-test-build-23.md).
+  Actual RisuAI/DB/provider verification remains `implemented_unverified`.
+
+### 4.3 test.22 — bounded preprocessing finishing — 2026-09-09
+
+The user first requested a local rollback checkpoint. It is commit `6ef8f74`,
+with test.21 retained. This slice repairs the existing Go preprocessing owner.
+
+- Normalize only the reproduced string `question`/`query` object forms inside
+  search_requests. Preserve independent fields and existing partial decoding.
+  Do not apply question-object decoding to selected memory references.
+- Each role owns the order of its accepted fact recommendation. event_recent's
+  summary list has separate ordering. Other roles' mentions retain their own
+  context and cannot overwrite that order. Preserve Go no-recommendation ordering.
+- Prompts prepare attributed evidence and possible relevance, with the user's
+  creative direction authoritative. Source time, planned time and current scene
+  time stay distinguishable. Gaps accompany usable evidence; they are not new
+  rejection criteria. Saved custom prompts remain authoritative.
+- Compact only the rendered provenance keys and repeated uncertainty scope.
+  Preserve full diagnostic catalog/items, source text and IDs, owner/viewer scope,
+  null/absence, received reasons and uncertainty. Keep Publisher support connected
+  to the full catalog. Add no post-selection character cut or reinterpretation.
+- Test.21 retrieval breadth, importance/recency, budgets, secret scope, existing
+  empty/failed recommendation behavior and maximum two analysis rounds remain.
+- Verification uses production owners and recorded provider replies at a local
+  fixture endpoint, with zero external AI calls. Prompt quality requires the next
+  real user test; offline reply replay cannot establish improved creative output.
+  See [test.22](docs/archive-center-4.3-test-build-22.md). User owns backend startup.
 
 ### 2026-09-08 planning alignment — shared recall and optional Actor expression
 
@@ -196,7 +257,7 @@ test.18; application to the user's running backend/RisuAI remains unverified.
 ### 4.3 status and 4.4 planning — 2026-09-07
 
 Use the [4.3 status summary](docs/archive-center-4.3-status-summary.md) to locate
-current test.18 owners and distinguish source/regression/package records from
+current owners and distinguish source/regression/package records from
 loaded Host, actual provider, payload application and displayed-output evidence.
 Optional role calls, prompts and UI are implemented in source; the original
 world_state first-call error, race-detector and broad live/40M evidence remain open.
@@ -474,7 +535,7 @@ Read the applicable owner set before changing behavior:
 - For configuration work, inspect `config.Default()`, `config.Load()`, and `Config.Validate()` in [`go-service/internal/config/config.go`](go-service/internal/config/config.go), plus the plugin defaults and runtime `/config/update` consumer.
 - For API changes, inspect [`go-service/internal/dto/prepare_source_contract.go`](go-service/internal/dto/prepare_source_contract.go), [`go-service/internal/dto/types_gen.go`](go-service/internal/dto/types_gen.go), the registered route, the Go producer/validator, the JavaScript consumer, and production-path contract tests. Verify each contract version independently.
 - For package or installer work, inspect [`ops/build-full-package.ps1`](ops/build-full-package.ps1), [`ops/build-posix-managed-packages.ps1`](ops/build-posix-managed-packages.ps1), the relevant launcher template, [`install-windows.ps1`](install-windows.ps1), and [`install.sh`](install.sh).
-- The historical `4.3.0-test.7` checkpoint changed Go and the plugin for expanded specialist prompts, the Endpoint label and persistent password editors. The current documented package is [test.18](docs/archive-center-4.3-test-build-18.md); consult its record instead of reusing test.7 build arguments. When packaging is requested, plugin version, build channel and packaged backend version must describe the same artifact. Version reported by the backend is launcher configuration, not proof of a changed executable. The user owns backend startup and RisuAI installation. The normal Windows launcher uses the stable user data directory; a newly extracted package is not an isolated database.
+- The historical `4.3.0-test.7` checkpoint changed Go and the plugin for expanded specialist prompts, the Endpoint label and persistent password editors. The current documented package is [test.22](docs/archive-center-4.3-test-build-22.md); consult its record instead of reusing test.7 build arguments. When packaging is requested, plugin version, build channel and packaged backend version must describe the same artifact. Version reported by the backend is launcher configuration, not proof of a changed executable. The user owns backend startup and RisuAI installation. The normal Windows launcher uses the stable user data directory; a newly extracted package is not an isolated database.
 - The user explicitly requested that saved preprocessing API keys remain populated like the Publisher/Critic password fields and that the separate deletion checkbox be removed. The config ViewModel now returns keys for editing with `Cache-Control: no-store`; do not treat this credential-bearing response as a shareable diagnostic. Explicit `api_key`, including an empty string, is the edited value; omission preserves the stored key. Test save/reopen/edit/clear and missing-field preservation. Keep keys out of AI prompt/input assembly and retain existing error scrubbing.
 - For preprocessing Flex settings, retain the existing provider transport owner: OpenAI-compatible `service_tier`, AI Studio `serviceTier`, and Vertex Flex headers. Use each role's persisted processing options for independent connections and the Publisher's options when shared. Preserve hidden values across provider switches without sending an inapplicable independent service-tier option. Verify both analysis rounds, optional sharing, configured temperature/output limit, and unchanged no-recommendation Go selection. Provider-level UI visibility is not proof that every model/account supports Flex; do not invent a model whitelist or silently retry with a different tier.
 - For preprocessing prompt changes, retain Go-owned assembly and persistence. `settings.shared_prompt` is the saved override; empty uses the bundled default, omitted PUT preserves the existing value, and the ViewModel exposes effective/default text separately. Verify the selected common and role prompts reach both rounds from one request settings snapshot. Independent role connections are the new default; preserve explicitly saved Publisher sharing and verify it only shares the connection. Keep the existing no-recommendation Go selection behavior.

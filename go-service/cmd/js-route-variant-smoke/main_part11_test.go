@@ -3821,6 +3821,18 @@ func TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources(t *
 	}
 	src := readArchiveCenterJS(t)
 	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
+	// The rescan merge now uses the same production persistence normalizer as
+	// the first pass; include it instead of replacing its result with a stub.
+	for _, name := range []string{
+		"normalizeAssistantPersistenceCandidate", "canonicalizeAssistantOutputForPersistence",
+		"extractPostprocessorCanonicalAssistantText", "extractAssistantTaggedBlocks", "removeAssistantTaggedBlocks",
+		"canonicalizeAssistantTranslationDisplayForPersistence", "extractGigaTransCanonicalAssistantText",
+		"attachTranslationDisplayCanonicalizationTrace", "attachPostprocessorCanonicalizationTrace",
+		"sanitizeNarrativeOutputForDisplay", "stripHiddenReasoningEnvelopes",
+		"isReasoningEnvelopeName", "normalizeReasoningEnvelopeName",
+	} {
+		functionBody += "\n" + extractArchiveCenterJSFunction(t, src, name)
+	}
 	script := functionBody + `
 async function getCurrentChatSessionId() { throw new Error("rescan plan re-read the active session"); }
 function captureSessionHostContextFromCache() { throw new Error("rescan plan re-captured host context"); }

@@ -1,10 +1,12 @@
 # Go Service
 
-Status (2026-09-08): active Archive Center 4.3 source, packaged in the local
-Windows `4.3.0-test.21` build. The public release record remains 4.2.0.
+Current source: **4.3.0 stable**, release verification in progress. See [release record](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+
+Previous test-package snapshot (2026-09-09): active Archive Center 4.3 source, packaged in the local
+Windows `4.3.0-test.23` build. The public release record remains 4.2.0.
 This identifies the source/package, not a running backend or a loaded RisuAI plugin.
 See the [current status](../docs/archive-center-4.3-status-summary.md) and
-[test.21 verification](../docs/archive-center-4.3-test-build-21.md).
+[test.23 verification](../docs/archive-center-4.3-test-build-23.md).
 
 This directory contains the Go-primary Archive Center backend. In the packaged
 `live` profile it owns request planning, memory and source selection, prompt

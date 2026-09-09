@@ -35,6 +35,120 @@ func modelEvidenceForTest(t *testing.T, input map[string]any, raw any) map[strin
 	return out
 }
 
+func Test43SearchQuestionObjectsPreserveIndependentFields(t *testing.T) {
+	r, err := parseMultiAgentRecommendation(`{"selected_ids":["F2","F1"],"search_requests":[{"question":"When was the key delivered?"},{"query":"Who received it?"},"Where is it now?"],"unresolved":["recipient's location"]}`)
+	if err != nil || !r.formatRepaired || !reflect.DeepEqual(r.SearchRequests, []string{"When was the key delivered?", "Who received it?", "Where is it now?"}) || !reflect.DeepEqual(r.SelectedIDs, []string{"F2", "F1"}) || len(r.Unresolved) != 1 {
+		t.Fatalf("observed question objects lost usable results: %+v %v", r, err)
+	}
+	r, err = parseMultiAgentRecommendation(`{"search_requests":[{"question":42},"valid later question",{"query":"another question"}],"selected_ids":["F2","F1"]}`)
+	if err == nil || !reflect.DeepEqual(r.SearchRequests, []string{"valid later question", "another question"}) || !reflect.DeepEqual(r.SelectedIDs, []string{"F2", "F1"}) {
+		t.Fatalf("one invalid question blocked independent entries: %+v %v", r, err)
+	}
+	r, err = parseMultiAgentRecommendation(`{"selected_ids":[{"question":"not a memory ID"},"F1"],"search_requests":[]}`)
+	if err == nil || !reflect.DeepEqual(r.SelectedIDs, []string{"F1"}) {
+		t.Fatalf("question decoding changed memory ID semantics: %+v %v", r, err)
+	}
+}
+
+func Test43RoleOrderUsesOwningRecommendation(t *testing.T) {
+	facts := []prepareTurnPriorityMemoryCandidate{
+		{CanonicalFactID: "goal-b", Lane: "unresolved_goal"},
+		{CanonicalFactID: "event-a", Lane: "event_recent"},
+		{CanonicalFactID: "goal-a", Lane: "unresolved_goal"},
+		{CanonicalFactID: "state-b", Lane: "world_state"},
+		{CanonicalFactID: "event-b", Lane: "event_recent"},
+		{CanonicalFactID: "state-a", Lane: "world_state"},
+	}
+	summaries := []prepareTurnPriorityTurnSummaryCandidate{{SummaryID: "summary-a"}, {SummaryID: "summary-b"}}
+	selection := &multiAgentSelection{Roles: []multiAgentRoleResult{
+		{Role: "world_state", Source: "go_default", Selection: multiAgentRecommendation{SelectedIDs: []string{"state-a", "state-b"}, SelectedSummaryIDs: []string{"summary-a", "summary-b"}}},
+		{Role: "event_recent", Source: "ai", Selection: multiAgentRecommendation{SelectedIDs: []string{"event-b", "event-a", "goal-a"}, SelectedSummaryIDs: []string{"summary-b", "summary-a"}}},
+		{Role: "unresolved_goal", Source: "ai", Selection: multiAgentRecommendation{SelectedIDs: []string{"goal-a", "goal-b"}}},
+	}}
+	multiAgentOrderCandidates(selection, facts, summaries)
+	got := []string{}
+	for _, f := range facts {
+		got = append(got, f.CanonicalFactID)
+	}
+	if !reflect.DeepEqual(got, []string{"goal-a", "event-b", "goal-b", "state-b", "event-a", "state-a"}) || summaries[0].SummaryID != "summary-b" {
+		t.Fatalf("another role changed the owner's order or Go baseline: %v %+v", got, summaries)
+	}
+}
+
+func Test43CompactNoteCatalogPreservesExactScope(t *testing.T) {
+	selection := &multiAgentSelection{}
+	planItems := []map[string]any{}
+	for _, role := range []string{"event_recent", "subjective_relationship"} {
+		r := multiAgentRoleResult{Role: role, Source: "ai", SelectionRound: 2, Selection: multiAgentRecommendation{Reasons: map[string]string{}, Unresolved: []string{"Open timing for " + role, "Open location for " + role}}}
+		inputItems := []map[string]any{}
+		for i := 0; i < 12; i++ {
+			id := fmt.Sprintf("%s-%d", role, i)
+			item := map[string]any{"canonical_fact_id": id, "selection_status": "selected", "source_table": "precise_memory_facts", "source_ref": "precise_memory_facts:" + id, "source_turn": i + 1, "visibility": "owner_private", "perspective_owner": fmt.Sprintf("Reader%d", i), "allowed_viewers": []string{fmt.Sprintf("Reader%d", i)}}
+			if i == 0 {
+				item["allowed_viewers"] = nil
+			} else if i == 1 {
+				delete(item, "allowed_viewers")
+			}
+			planItems = append(planItems, item)
+			inputItems = append(inputItems, item)
+			r.Selection.SelectedIDs = append(r.Selection.SelectedIDs, id)
+			r.Selection.Reasons[id] = "Recorded detail and possible relevance: " + id
+		}
+		r.Calls = []multiAgentCall{{Round: 2, Input: map[string]any{"candidates": inputItems}}}
+		selection.Roles = append(selection.Roles, r)
+	}
+	notes := buildPrepareTurnPreprocessingNotes(selection, map[string]any{"priority_items": planItems}, nil)
+	text := extractionStringFromAny(notes["final_text"])
+	marker := "Source scope catalog: "
+	_, rest, found := strings.Cut(text, marker)
+	if !found {
+		t.Fatal("missing readable catalog")
+	}
+	line, _, _ := strings.Cut(rest, "\n")
+	var compact map[string]map[string]any
+	if err := json.Unmarshal([]byte(line), &compact); err != nil {
+		t.Fatal(err)
+	}
+	keys := map[string]string{"t": "source_table", "n": "source_turn", "v": "visibility", "o": "perspective_owner", "a": "allowed_viewers", "r": "source_refs"}
+	expanded := map[string]any{}
+	for ref, row := range compact {
+		x := map[string]any{}
+		for key, value := range row {
+			full, ok := keys[key]
+			if !ok {
+				t.Fatalf("uncompacted or undocumented scope key: %s", key)
+			}
+			x[full] = value
+		}
+		expanded[ref] = x
+	}
+	want, _ := json.Marshal(notes["source_catalog"])
+	got, _ := json.Marshal(expanded)
+	if string(want) != string(got) || len(line) >= len(want) {
+		t.Fatal("compaction changed scope, absence/null, provenance or failed to save space")
+	}
+	for _, role := range selection.Roles {
+		for _, note := range role.Selection.Reasons {
+			if strings.Count(text, note+"\n") != 1 && !strings.HasSuffix(text, note) {
+				t.Fatalf("reason changed, repeated or dropped: %s", note)
+			}
+		}
+		for _, note := range role.Selection.Unresolved {
+			if strings.Count(text, note) != 1 {
+				t.Fatalf("uncertainty changed, repeated or dropped: %s", note)
+			}
+		}
+	}
+	for _, raw := range outputFidelityLineageSlice(notes["items"]) {
+		item := mapFromAny(raw)
+		for _, ref := range stringsFromAny(item["scope_refs"]) {
+			if compact[ref] == nil {
+				t.Fatalf("note lost scope %s", ref)
+			}
+		}
+	}
+}
+
 func Test43ModelInputReadingOrderAndSourcePacking(t *testing.T) {
 	current := "The user establishes that Mira has no practical farming experience."
 	facts := []prepareTurnPriorityMemoryCandidate{}
@@ -178,6 +292,7 @@ func Test43PreprocessingNotesFollowAcceptedRoundAndScope(t *testing.T) {
 		ids                        []string
 	}{
 		{"supplement", `{"selected_ids":["F1"],"reasons":{"F1":"SECOND_NOTE"},"unresolved":["SECOND_QUESTION"]}`, "SECOND_NOTE", "FIRST_NOTE", false, []string{"fact-a"}},
+		{"object_question_supplement", `{"selected_ids":["F1"],"reasons":{"F1":"SECOND_NOTE"},"search_requests":[{"query":"source time still unknown"}]}`, "SECOND_NOTE", "FIRST_NOTE", false, []string{"fact-a"}},
 		{"failed_supplement", "", "FIRST_NOTE", "SECOND_NOTE", true, []string{"fact-b", "fact-a"}},
 		{"partial_supplement_retains_first", `{"selected_ids":["F1"],"reasons":{"F1":"SECOND_NOTE"},"related_requests":false}`, "FIRST_NOTE", "SECOND_NOTE", false, []string{"fact-b", "fact-a"}},
 		{"empty_final_go_selection", `{}`, "", "FIRST_NOTE", false, []string{"fact-a"}},

@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.3.0-test.21
+//@display-name Archive Center 4.3.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.3.0-test.21
+//@version 4.3.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.3.0-test.21";
-  const BUILD_ID = "4.3.0-test.21";
-  const BUILD_CHANNEL = "test";
-  const BUILD_TIME = "2026-09-07 KST";
-  const BUILD_NOTES = "Archive Center 4.3 test: attributed specialist interpretations delivered independently to Publisher and main model, with separate edit-check display and input accounting; includes backend changes";
+  const VERSION = "4.3.0";
+  const BUILD_ID = "4.3.0";
+  const BUILD_CHANNEL = "stable";
+  const BUILD_TIME = "2026-09-09 KST";
+  const BUILD_NOTES = "Archive Center 4.3 stable: optional memory editors, broader recall, branch repair and provider support";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -81,7 +81,7 @@
   const RECOMPOSER_BRIDGE_KEY = "__RISU_ARCHIVE_CENTER_RECOMPOSER_V1__";
   const RECOMPOSER_BRIDGE_CONTRACT = "archive_center.recomposer_bridge.v1";
   const RECOMPOSER_ENHANCEMENT_CONTRACT = "archive_center.recomposer_enhancement.v1";
-  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vercel", "neuralwatt", "vertex", "copilot", "ollama", "custom"]);
+  const LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "openrouter", "llmgateway", "vercel", "neuralwatt", "vertex", "copilot", "ollama", "opencode", "custom"]);
   const EMBEDDING_PROVIDER_OPTIONS = Object.freeze(["openai", "gemini", "vertex", "voyageai", "ollama", "custom"]);
   const SOURCE_SEARCH_LLM_PROVIDER_OPTIONS = Object.freeze(["openai", "claude", "gemini", "ollama"]);
   const REASONING_PRESET_OPTIONS = Object.freeze(["auto", "gpt", "gemini", "claude", "glm", "custom"]);
@@ -1265,6 +1265,7 @@
       "timeline.worldline.repairSuccess": "분기 계보를 복구했습니다.",
       "timeline.worldline.repairFailed": "분기 계보 복구 실패: {reason}",
       "timeline.worldline.reason.parent_fork_source_history_unresolved": "부모 세션의 기존 기록에서도 분기 원본 턴을 찾지 못했습니다.",
+      "timeline.worldline.reason.official_branch_marker_observed_prefix_validated": "부모 메시지 기록으로 분기 위치를 확인했습니다.",
       "timeline.worldline.reason.parent_fork_source_history_ambiguous": "같은 분기 표식과 일치하는 부모 턴이 여러 개입니다.",
       "timeline.worldline.state.confirmed": "확인됨",
       "timeline.worldline.state.unresolved": "확인 필요",
@@ -1705,6 +1706,7 @@
       "timeline.worldline.repairSuccess": "Branch lineage repaired.",
       "timeline.worldline.repairFailed": "Branch lineage repair failed: {reason}",
       "timeline.worldline.reason.parent_fork_source_history_unresolved": "No exact fork source turn was found in the parent session history.",
+      "timeline.worldline.reason.official_branch_marker_observed_prefix_validated": "Fork position confirmed from the parent messages.",
       "timeline.worldline.reason.parent_fork_source_history_ambiguous": "Multiple parent turns match the same branch marker.",
       "timeline.worldline.state.confirmed": "Confirmed",
       "timeline.worldline.state.unresolved": "Needs confirmation",
@@ -2989,6 +2991,7 @@
       "timeline.worldline.repairSuccess": "分岐系譜を復旧しました。",
       "timeline.worldline.repairFailed": "分岐系譜の復旧に失敗しました: {reason}",
       "timeline.worldline.reason.parent_fork_source_history_unresolved": "親セッション履歴に一致する分岐元ターンがありません。",
+      "timeline.worldline.reason.official_branch_marker_observed_prefix_validated": "親メッセージの記録から分岐位置を確認しました。",
       "timeline.worldline.reason.parent_fork_source_history_ambiguous": "同じ分岐マーカーに一致する親ターンが複数あります。",
       "timeline.worldline.state.confirmed": "確認済み",
       "timeline.worldline.state.unresolved": "確認が必要",
@@ -11418,7 +11421,7 @@
           : "현재 전송 규약: Ollama OpenAI 호환 reasoning_effort",
       };
     }
-    if ((["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") || (transport === "custom" && family === "deepseek_v4")) {
+    if ((["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") || (["custom", "opencode"].includes(transport) && family === "deepseek_v4")) {
       const gatewayEffortOptions = family === "deepseek_v4"
         ? deepSeekV4EffortOptions
         : (family === "gpt" && gptEffortOptions.length > 0
@@ -11486,7 +11489,7 @@
       };
     }
     if (family === "gemini") {
-      if ((normalizedProvider !== "gemini" && normalizedProvider !== "vertex") || geminiMode === "none") {
+      if (!["gemini", "vertex", "opencode"].includes(normalizedProvider) || geminiMode === "none") {
         return {
           family,
           mode: "unsupported",
@@ -11527,7 +11530,7 @@
         };
     }
     if (family === "claude") {
-      if (normalizedProvider === "claude" && claudeMode === "adaptive") {
+      if (["claude", "opencode"].includes(normalizedProvider) && claudeMode === "adaptive") {
         return {
           family,
           mode: "claude_adaptive",
@@ -11541,7 +11544,7 @@
           guideModeText: "현재 모델 감지: Claude adaptive thinking + effort",
         };
       }
-      if (normalizedProvider === "claude" && claudeMode === "manual_budget") {
+      if (["claude", "opencode"].includes(normalizedProvider) && claudeMode === "manual_budget") {
         return {
           family,
           mode: "claude_manual_budget",
@@ -39123,6 +39126,7 @@
         if (!item || Number(item.observation_index) !== index ||
             Number(item.turn_index) < 1 ||
             String(item.turn_identity_state || "") === "unresolved" ||
+            String(item.resolution || "") === "skip_pre_route_visible_pair" ||
             String(item.resolution || "") === "inactive_assistant_observation") {
           return null;
         }
@@ -39139,7 +39143,8 @@
             return { role: String(message && message.role || ""), content: String(message && message.content || "") };
           });
         const userContent = String(item.stored_user_content || assistantObservation.adjacent_user_content || "");
-        const assistantContent = String(item.stored_assistant_content || assistantObservation.assistant_content || "");
+        const observedAssistantContent = String(item.stored_assistant_content || assistantObservation.assistant_content || "");
+        const assistantContent = normalizeAssistantPersistenceCandidate(observedAssistantContent) || observedAssistantContent;
         if (!assistantContent.trim()) return null;
         return {
           observedPairOrdinal: Number(assistantObservation.observedPairOrdinal || item.turn_index),
@@ -51717,7 +51722,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             + '<div class="mo-ma-inherited" id="mo-ma-' + role + '-inherited"' + (c.use_publisher ? '' : ' hidden') + '><span>설정 → 일반 · 출판사 LLM</span><strong>'
             + escapeAttr(publisher.pluginMainModel || '출판사 설정의 모델 사용') + '</strong><span>출판사의 Flex 설정도 함께 사용하며, 이 담당의 전용 프롬프트로 별도 호출합니다.</span></div>'
             + '<fieldset aria-label="AI 연결 설정" id="mo-ma-' + role + '-connection"' + (c.use_publisher ? ' disabled hidden' : '') + '>'
-            + select(role, 'provider', '제공자', [['', '제공자 선택'], ...LLM_PROVIDER_OPTIONS.map(provider => [provider, ({ openai: 'OpenAI', gemini: 'Gemini · AI Studio', claude: 'Claude', llmgateway: 'LLM Gateway', vertex: 'Vertex AI', openrouter: 'OpenRouter', neuralwatt: 'NeuralWatt', vercel: 'Vercel AI Gateway', copilot: 'Copilot', ollama: 'Ollama', custom: 'Custom' })[provider] || provider])])
+            + select(role, 'provider', '제공자', [['', '제공자 선택'], ...LLM_PROVIDER_OPTIONS.map(provider => [provider, ({ openai: 'OpenAI', gemini: 'Gemini · AI Studio', claude: 'Claude', llmgateway: 'LLM Gateway', vertex: 'Vertex AI', openrouter: 'OpenRouter', opencode: 'OpenCode Zen', neuralwatt: 'NeuralWatt', vercel: 'Vercel AI Gateway', copilot: 'Copilot', ollama: 'Ollama', custom: 'Custom' })[provider] || provider])])
             + field(role, 'endpoint', 'Endpoint') + field(role, 'model', '모델 ID')
             + field(role, 'api_key', 'API Key', 'password')
             + select(role, 'llm_gateway_service_tier', '처리 모드 · 지원 모델에서 사용', [['', '기본값'], ['standard', 'Standard'], ['flex', 'Flex'], ['priority', 'Priority']])
@@ -52151,6 +52156,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <option value="claude"${s.pluginMainProvider === "claude" ? " selected" : ""}>Claude</option>
           <option value="gemini"${s.pluginMainProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.pluginMainProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
+          <option value="opencode"${s.pluginMainProvider === "opencode" ? " selected" : ""}>OpenCode Zen</option>
           <option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
           <option value="neuralwatt"${s.pluginMainProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
@@ -52273,6 +52279,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           <option value="claude"${s.subLlmProvider === "claude" ? " selected" : ""}>Claude</option>
           <option value="gemini"${s.subLlmProvider === "gemini" ? " selected" : ""}>Gemini</option>
           <option value="openrouter"${s.subLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
+          <option value="opencode"${s.subLlmProvider === "opencode" ? " selected" : ""}>OpenCode Zen</option>
           <option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
           <option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
           <option value="neuralwatt"${s.subLlmProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
@@ -53643,6 +53650,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       const llmGatewayEndpointPlaceholder = "https://api.llmgateway.io/v1";
       const vercelEndpointPlaceholder = "https://ai-gateway.vercel.sh/v1";
       const neuralWattEndpointPlaceholder = "https://api.neuralwatt.com/v1";
+      const openCodeEndpointPlaceholder = "https://opencode.ai/zen/v1";
+      const openRouterEndpointPlaceholder = "https://openrouter.ai/api/v1";
       const syncVertexOverrideRows = (providerId, rowIds) => {
         const providerEl = $(providerId);
         if (!providerEl) return;
@@ -53684,6 +53693,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const isLlmGateway = provider === "llmgateway";
           const isVercel = provider === "vercel";
           const isNeuralWatt = provider === "neuralwatt";
+          const isOpenCode = provider === "opencode";
+          const isOpenRouter = provider === "openrouter";
           const apiLabel = $(apiLabelId);
           const apiInput = $(apiInputId);
           const endpointLabel = $(endpointLabelId);
@@ -53695,7 +53706,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           if (endpointLabel) endpointLabel.textContent = isVertex ? "Vertex Endpoint (비워두면 global 자동)" : "Endpoint (비워두면 자동)";
           if (endpointInput) endpointInput.placeholder = isVertex
             ? vertexEndpointPlaceholder
-            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (isNeuralWatt ? neuralWattEndpointPlaceholder : (defaults.endpoint || ""))));
+            : (isLlmGateway ? llmGatewayEndpointPlaceholder : (isVercel ? vercelEndpointPlaceholder : (isNeuralWatt ? neuralWattEndpointPlaceholder : (isOpenCode ? openCodeEndpointPlaceholder : (isOpenRouter ? openRouterEndpointPlaceholder : (defaults.endpoint || ""))))));
           if (modelInput) modelInput.placeholder = isVertex ? (defaults.vertexModel || "예: gemini-2.5-flash") : (defaults.model || "");
           if (hint) {
             hint.textContent = "비워두면 선택한 Provider의 공식 기본 Endpoint를 사용하며, 직접 입력하면 입력한 주소를 우선합니다.";

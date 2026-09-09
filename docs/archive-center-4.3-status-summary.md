@@ -1,10 +1,30 @@
 # Archive Center 4.3 작업 현황 요약
 
-기준일: **2026-09-08**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
-현재 소스 식별자는 **`4.3.0-test.21`**, 전체 상태는 **`implemented_unverified`**다.
+Current source: **4.3.0 stable**, release verification in progress. See [release record](archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+
+기준일: **2026-09-09**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
+현재 소스 식별자는 **`4.3.0`**이며 정식 배포 검증을 진행한다. 실제 RisuAI·제공자 검증은 별도로 남아 있다.
 아래의 완료는 해당 소스 반영과 기록된 검증 범위의 완료를 뜻한다. 실제 RisuAI에
 로드한 동일 플러그인·백엔드, 실제 제공자, 최종 표시 출력까지의 완료와 구분한다.
 최초 현황 정리는 문서 작업이었다. 이후 소스 수정과 검증은 아래 후속 갱신에서 구분한다.
+
+## 현재 기준: test.23
+
+2026-09-09 [test.23](archive-center-4.3-test-build-23.md): 부모의 원본 저장 대기와
+분기 위치 확인을 분리해 기존 부모·조상 기억의 상속 범위가 끊기는 경로를 수정했다.
+기본 RisuAI의 보존 ID와 PocketRisu의 재발급 ID를 함께 검사했다. 콜드스타트의 두 번째
+병합에서도 상속 제외와 번역 표시문 정리가 유지된다. 기존 저장 확정 시점은 유지하며,
+미저장 응답에 대한 기억 생성은 원래 확정 절차를 따른다. 사용자 DB·챗·설정은 변경하지
+않았고, 새 백엔드는 사용자가 실행한다. test.22의 전처리·기억 선정 보완을 포함한다.
+
+## 선행 기준: test.22
+
+2026-09-09 [test.22](archive-center-4.3-test-build-22.md): 로컬 기준 커밋 `6ef8f74` 이후
+검색 질문 객체 형식, 담당별 추천 순서, 편집자 기본 프롬프트와 출처 표기를 보완했다.
+기존 원문·선택 항목·보유자/공개 범위를 유지하며 노트의 반복 부분만 줄였다. 기존 Go
+선정 폭과 중요도·예산 정책은 유지한다. 외부 AI 호출 없이 회귀와 20개 저장 응답을
+검사했으며 다음 실제 턴에서 새 기본 프롬프트의 효과를 확인한다. 이전 test.21 패키지를
+보관했고, 백엔드는 사용자가 실행한다. 사용자 프롬프트를 자동으로 덮어쓰지 않는다.
 
 ## 2026-09-08 계획 인계 — 기본 회상 우선
 
@@ -16,7 +36,7 @@
 여섯 공통 사례와 전처리/출판사의 네 조합, 추천 없음·부분 실패를 버전별로 이어서 비교한다.
 이번 인계는 문서 변경이며 구현·빌드·실제 품질 검증을 추가하지 않았다. test.21의 상태는 그대로다.
 
-## 현재 기준: test.21
+## 선행 기준: test.21
 
 2026-09-08 [test.21](archive-center-4.3-test-build-21.md): 기본 기억 전달 폭과 주관 기억의
 예산 경합, 현재 값 판정, 전처리 추가 검색의 출처 충돌을 한 묶음으로 수정했다.
@@ -236,12 +256,14 @@ Flex는 기존 Go 전송을 사용한다: OpenAI 호환 `service_tier`, AI Studi
 | 활성 소스·생산 함수 회귀 | 기능 연결, 추천/원문/순서, OFF·부분 실패, 설정, Host/제공자 대역과 최종 Go payload 계획 | 설치된 Host 적용, 실제 유료 제공자 수락·비용·글쓰기 품질 |
 | [9월 6일 사전 시험](archive-center-4.3-pretest-20260906.md) | 당시 35개 Go 패키지, 집중 13개, 격리 실제 MariaDB/Chroma 시험 5개 | 이후 test.18 전체를 실제 DB/제공자로 다시 검증한 결과 |
 | 선행 삭제 대규모 시험 | 12,000 Chroma 문서 및 과거 중복 112,000/1,120,000행 시험의 명시된 결과 | 사용자 DB 전체, 모든 OS, 40M 장기 이력 성능 |
-| [test.1](archive-center-4.3-test-build-1.md)·[test.2](archive-center-4.3-test-build-2.md)·[test.3](archive-center-4.3-test-build-3.md) | 당시 Windows 패키지/백엔드 기본 동작과 저장소 준비, 승인된 Tailscale 접속 복구 기록 | 현재 test.18 실행 상태나 동일 코드의 RisuAI 재등록 |
+| [test.1](archive-center-4.3-test-build-1.md)·[test.2](archive-center-4.3-test-build-2.md)·[test.3](archive-center-4.3-test-build-3.md) | 당시 Windows 패키지/백엔드 기본 동작과 저장소 준비, 승인된 Tailscale 접속 복구 기록 | 현재 test.22 실행 상태나 동일 코드의 RisuAI 재등록 |
 | 사용자 기본 동작 관측 | 전처리 구현 전 테스트 빌드에서 사용자가 기본 기능에 문제가 없어 보인다고 확인하고 전처리 진행을 요청했다. | 정확한 로드 버전·Host별 검증표, 이후 전처리와 test.18의 실제 제공자/출력 검증 |
 | test.4–12 패키지·UI 대역 기록 | 각 기록의 생성물·해시·로컬 화면/회귀. test.12 관리 파일 53개 디스크/ZIP 해시 일치 기록 | 공개 4.3 출시, 실제 설치·업데이트 완료, 최종 표시 출력 |
 | [test.18](archive-center-4.3-test-build-18.md) | 당시 소스·플러그인·프롬프트·SQL 동일성, 관리 파일 53개와 ZIP 해시, Go 35개 패키지 및 Host 422개 회귀 | 실행 백엔드 교체·RisuAI 설치·실제 제공자 수락·최종 출력 효과 |
 | [test.19](archive-center-4.3-test-build-19.md) | 편집자 프롬프트 검토, 수신 담당의 요청 이유·원문 분리 회귀, 전체 Go 35개 패키지, UI 기본값 사용 저장, 새 백엔드/53개 관리 파일/ZIP | test.19 실제 기동·모델 해석의 정확성·기억 및 최종 RP 품질 향상 |
 | [test.20](archive-center-4.3-test-build-20.md) | 입력 순서·반복 출처·사실/요약별 참조·Publisher 출처 연결 회귀, 제공된 10개 입력 보존, Go 35개 패키지, 새 백엔드/53개 관리 파일/ZIP | 외부 전송 승인 대기 중인 실제 모델 전후 비교, 동일 빌드의 RisuAI 최종 출력 품질 |
+| [test.21](archive-center-4.3-test-build-21.md) | 넓은 Go 전달·주관 기억·현재 출처·보완 검색 회귀와 고정 후보 비교, 패키지 | 사용자 DB 검색 및 생성 품질 전체 보증 |
+| [test.22](archive-center-4.3-test-build-22.md) | 검색 질문 형식·담당 순서·출처 보존 회귀, 20개 저장 응답의 외부 AI 없는 재처리, 패키지 | 새 프롬프트에 따른 새로운 AI 판단·실제 출력 개선 |
 | test.12 후보 전달 벤치마크 | 작은 시험 데이터의 후보 재계산과 사본 전달 함수 비교 | 전체 RP 지연 개선 폭, 제공자 동시 처리 능력, 40M 성능 |
 | 실제 화면 관측 | test.8 HUD와 test.11 백엔드에서 세계 담당 1차 12.7초 실패·2차 19.1초 성공 기록 | 최초 `calls[].error`의 원인과 현재 빌드에서의 동일 원인 해결 여부 |
 
