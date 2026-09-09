@@ -3,7 +3,7 @@
 Current source: **4.3.0 stable**, release verification in progress. See [release record](archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
 
 기준일: **2026-09-09**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
-현재 소스 식별자는 **`4.3.0`**이며 정식 배포 검증을 진행한다. 실제 RisuAI·제공자 검증은 별도로 남아 있다.
+현재 소스 식별자는 **`4.3.0`**이며 정식 패키지·CI·이전 버전 업데이트 검사를 통과했다. main 갱신 승인 전이므로 릴리스는 초안 상태다. [검증 기록](archive-center-4.3.0-release-verification.md). 실제 RisuAI·제공자 검증은 별도로 남아 있다.
 아래의 완료는 해당 소스 반영과 기록된 검증 범위의 완료를 뜻한다. 실제 RisuAI에
 로드한 동일 플러그인·백엔드, 실제 제공자, 최종 표시 출력까지의 완료와 구분한다.
 최초 현황 정리는 문서 작업이었다. 이후 소스 수정과 검증은 아래 후속 갱신에서 구분한다.
