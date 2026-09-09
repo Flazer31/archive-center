@@ -1,8 +1,8 @@
 # Archive Center AI Coding Guardrails
 
-## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen / Go
+## 2026-09-09 — 4.3.0 stable release and OpenCode Zen / Go
 
-Source version is 4.3.0 (stable); publication and package execution evidence is
+Source version is 4.3.0 (stable), published with main and tag updated; package and actual public Windows 4.1/4.2 update evidence is
 tracked in [release verification](docs/archive-center-4.3.0-release-verification.md).
 `proxy_provider.go::callProxyProviderWithPolicy` routes the explicit `opencode`
 and `opencode-go` providers through existing model-native adapters. Explicit API endpoints retain

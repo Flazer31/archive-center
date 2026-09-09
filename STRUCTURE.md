@@ -1,8 +1,8 @@
 # Archive Center Repository Structure
 
-## 2026-09-09 — 4.3.0 release preparation and OpenCode Zen / Go
+## 2026-09-09 — 4.3.0 stable release and OpenCode Zen / Go
 
-Source version is 4.3.0 (stable); publication and package execution evidence is
+Source version is 4.3.0 (stable), published with main and tag updated; package and actual public Windows 4.1/4.2 update evidence is
 tracked in [release verification](docs/archive-center-4.3.0-release-verification.md).
 `proxy_provider.go::callProxyProviderWithPolicy` routes the explicit `opencode`
 and `opencode-go` providers through existing model-native adapters. Explicit API endpoints retain
@@ -28,8 +28,8 @@ No memory policy, storage schema, lifecycle or fallback is added in this slice.
 | Branch | `work/4.2.0` |
 | Commit | 4.1 public parent `574c2d5b`; 4.2 source/regression checkpoints `43bc20a1` and `c2f1a2d5`; public `v4.2.0` release source `4257081c217e57b7e570592fb1090b484255c013`, including the fact-semantic relevance correction. |
 | Repository root | active `source/` worktree |
-| Local test build | [`4.3.0-test.23`](docs/archive-center-4.3-test-build-23.md): branch coordinates while parent source is pending; inherited-prefix and canonical-text preservation in cold start. Retains test.21–22 memory/preprocessing work. Plugin and Go backend are packaged together; user owns startup. |
-| Current work summary | 4.3.0 stable source; OpenCode Zen and Go added. [4.3 history through test.23](docs/archive-center-4.3-status-summary.md). Source checkpoint: `6ef8f74239af065d2810761dd94c846b34e99826`; previous test.22 package retained. |
+| Prior local test build | [`4.3.0-test.23`](docs/archive-center-4.3-test-build-23.md): branch coordinates while parent source is pending; inherited-prefix and canonical-text preservation in cold start. Retains test.21–22 memory/preprocessing work. Plugin and Go backend are packaged together; user owns startup. |
+| Current work summary | 4.3.0 stable published; source tag commit `51d901b`. OpenCode Zen and Go added. [4.3 history through test.23](docs/archive-center-4.3-status-summary.md). Source checkpoint: `6ef8f74239af065d2810761dd94c846b34e99826`; previous test.22 package retained. |
 | Next-version plan | [Reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan): 4.4 deduplication → 4.5 context bundles → 4.6 time/state → 4.7 retrieval → 4.8–4.9 related recall → 5.1-A–5.2 shared reactivation. [4.4 execution plan](docs/archive-center-4.4-refactoring-plan.md) and [state-time handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#temporal-state-44647) retain their scopes. Actor expression is optional. All follow-up work is **PLANNED**; runtime ownership and behavior are unchanged. |
 | Inspection scope | Pending-source and cold-start red-to-green regressions, existing lifecycle suite, and source/package verification recorded in test.23. Loaded test.23 and actual user DB/provider behavior remain open. |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |

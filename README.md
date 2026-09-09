@@ -16,7 +16,8 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 
 ## 현재 버전과 작업 문서
 
-2026-09-09: 활성 소스는 **4.3.0 정식 버전**이며 배포 검증을 진행 중입니다.
+2026-09-09: **[4.3.0 정식 버전](https://github.com/Flazer31/archive-center/releases/tag/v4.3.0)**을 공개했습니다.
+Windows의 실제 공개 4.1·4.2→4.3 관리형 업데이트를 확인했습니다.
 아래 설치·업데이트 명령은 GitHub의 최신 공개 릴리스를 사용합니다.
 
 - [4.3 현황과 남은 확인](docs/archive-center-4.3-status-summary.md)
