@@ -1,5 +1,80 @@
 # Archive Center AI Coding Guardrails
 
+## 2026-09-10 — 4.3.1 stable release preparation
+
+Active runtime identifiers and official builder defaults are **4.3.1 stable**.
+This packages the verified test.4 recall, context-cost and service-port changes;
+no further memory policy, prompt, schema or lifecycle change is part of promotion.
+See [release status and final verification](docs/archive-center-4.3.1-release-verification.md).
+Entries below retain their original local-test/public-release evidence dates.
+Version-only promotion: JS +6/-6. Earlier recall UI changes: JS +1/-9.
+
+Latest local package: [4.3.1-test.4](docs/archive-center-4.3.1-test-build-4.md),
+retaining recall and service port settings while repairing context assembly cost.
+
+## 2026-09-10 — local 4.3.1 install/update verification
+
+See [the bounded verification record](docs/archive-center-4.3.1-install-update-verification.md):
+seven candidate archives, 21 old/new preflights, actual previous Windows updater transactions,
+fresh-install/port contracts and isolated Windows 01 readiness. Public 4.3.1 is not published.
+The record changes no runtime ownership or installer/update rule. Backend package update and
+replacement of the plugin registered in RisuAI remain separate operations. JS +0/-0.
+
+## 2026-09-10 — fixed memory baseline: 4.3.1
+
+- The user-designated memory behavior baseline is **4.3.1**, identified by local
+  [test.4](docs/archive-center-4.3.1-test-build-4.md). Follow the [canonical decision](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-baseline-431)
+  and [preserved behavior / remaining work](docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431).
+- Compare future memory changes with both 4.3.1 and the immediately preceding verified
+  version. Public 4.3.0 remains the release/update comparison, not the memory target.
+- Preserve per-query evidence, merged-result breadth, fact seeds before display selection,
+  lexical cues, independent importance/recency, public and subjective source scope, and
+  existing Go/editor recommendation and failure behavior. Test basic memory without either AI option.
+- Known state/interpretation errors are improvement targets, not golden outputs.
+  A fixed behavior baseline does not freeze file structure, heuristic constants, or generated prose.
+  It adds no runtime rejection, automatic call, or persistence policy. Historical 4.0/3.9
+  baselines remain evidence of their period; current memory comparisons use 4.3.1.
+
+## 2026-09-10 — recall token duplicate cost, local test.4
+
+- `prepare_turn_recall.go::prepareTurnDistinctiveRecallTerms` now tracks expanded
+  forms in a local seen map. Its input forms are already lowercase single tokens;
+  preserve first-seen order, particle expansion and existing anchor/frequency rules.
+- Do not restore per-token full-list normalization or treat this optimization as
+  authorization to narrow retrieval, budgets, source scope or AI recommendation handling.
+- Keep long-query benchmark coverage alongside recall restoration tests. Functional
+  parity alone did not detect the earlier quadratic cost. Original-owner benchmark and
+  timed-out assembly establish failure; current-owner tests establish the bounded repair.
+- The local package carries the user-renamed `06_change_port_windows.bat`; the
+  builder still reads the existing internal BAT source. No port behavior changes.
+- Source/regression/package verified; user owns backend restart and loaded RisuAI
+  verification. JS +0/-0. See the test.4 record for skipped integration cases.
+
+## 2026-09-10 — memory recall restoration, local test.2
+
+- Status: `implemented_unverified` for real RisuAI recall. Follow the [five-part implementation record](docs/archive-center-memory-recall-restoration-plan.md)
+  and its [canonical registration](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-recall-restoration-20260910).
+  Offline production-route fixtures establish source behavior; package and live proof stay separate.
+- Verify both per-search candidate sufficiency and merged-result losses. Do not treat the
+  existing Top K default as validated, or confuse retrieval count with final delivery count.
+- Repair existing Go owners; preserve settings, character budgets, source/privacy scope,
+  valid AI recommendation order and established no-recommendation/failure behavior.
+- General memory candidate count is Go-owned: `4 * ceil(maxInjectionChars / 512)` per existing
+  query/scope search. This is a tested planning heuristic, not measured average source size or
+  a proven optimal count. Do not reapply that count after merging. Keep legacy Top K values
+  for independent reference/manual searches; no UI reset or blanket field deletion.
+- Build source-valid public fact seeds before summary rendering, retaining per-query observations.
+  Lexical recall compares actual current/recent/search inputs independently; stored assembly scene
+  text is not an extra fresh query. Preserve existing unrelated-entity and private-source boundaries.
+- Mixed-memory public evidence may supply the public search summary. Freeform private mixtures
+  without separate public evidence are not automatically reclassified. No live index/data rewrite.
+- Critic free-text pruning hints remain audit evidence; they no longer decrement the whole memory
+  row's importance. Do not guess original importance to undo historical demotions.
+- Compare preprocessing off/on and Publisher off/on using the same facts and budgets;
+  separate retrieval, candidacy, assembled delivery and actual Host/provider application.
+  Source checks do not establish displayed recall quality. Hand off verified intended changes
+  to the 4.4 baseline separately from behavior-preserving refactoring.
+
 ## 2026-09-09 — 4.3.0 stable release and OpenCode Zen / Go
 
 Source version is 4.3.0 (stable), published with main and tag updated; package and actual public Windows 4.1/4.2 update evidence is
@@ -21,6 +96,74 @@ No memory policy, storage schema, lifecycle or fallback is added in this slice.
 
 
 Use this file as an operational checklist. Treat the active implementation and its actual callers as stronger evidence than filenames, comments, roadmaps, generated packages, or previous conversations. Treat unqualified rules below as **VERIFIED** from source or explicit architecture. Mark unresolved behavior **UNKNOWN**, current roadmap-only work **PLANNED**, and superseded/inactive surfaces **OBSOLETE**; do not guess.
+
+## 2026-09-09 — planned 4.4–9.0 handoff
+
+- Use the [stable 4.3 handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#stable-43-handoff)
+  and [4.4 file/function plan](docs/archive-center-4.4-refactoring-plan.md). Public
+  `v4.3.0` / `51d901b` is the released comparison baseline; inspect the active HEAD and
+  dirty diff again when implementation starts. Historical test snapshots are not current status.
+- 4.4 A/B/C preserves the 4.3.1 memory baseline and inherited non-memory behavior; D has separately defined semantic-consolidation changes;
+  E verifies their combination. Preserve core priority targets and remaining-budget breadth,
+  individual source/time/viewer scope, role-owned recommendation order, JSON partial reuse,
+  saved prompts/keys, no-recommendation Go selection and failed-supplement first-result reuse.
+- Retain current/previous save identity, stable/reissued-ID branches, pending-parent source
+  handling and cold-start normalization. A provider session header is not memory identity.
+  Ordinary copy is not branch inheritance; a known fork anchor is not a saved parent response.
+- Preserve existing provider-native requests, explicit endpoints, Vertex/Flex settings,
+  OpenCode Zen/Go and OpenRouter behavior. Preserve compact HUD cards and expansion,
+  actual save statistics, separate current/previous cards, and existing installation entrypoints.
+- Use four preprocessing/Publisher combinations and recorded responses for processing parity.
+  Recorded responses do not prove new model decisions or prompt quality. Use focused live
+  comparisons for the affected behavior and keep evidence/cost scopes distinct.
+- 4.5 context bundles, 4.6 item validity, 4.7 retrieval and 4.8–4.9 relation recall are future
+  work. Shared reactivation and optional Actor expression stay separate. Planned internal
+  output improvement and Living World do not add rejection rules to current memory, output or persistence.
+  This documentation alignment adds no runtime behavior or implementation approval.
+
+## 2026-09-09 — planned output improvement as an internal optional feature
+
+- Follow the [output-improvement decision and mapping](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan).
+  The separate AC Ensemble Agent Integrated product/integration plan is canceled. Do not
+  treat an external plugin shell, separate credential store or cross-plugin claim as a prerequisite.
+- Keep the agreed sequence: 4.4–6.0 memory/refactoring work, 6.1–7.0 common foundations/basic
+  output improvement, 7.1–8.0 complex narrator/Actor output, then 8.1–9.0 Living World.
+- Plan `추가 기능 → 출력 개선 → 끔 / 기본형 / 복합형`. Preprocessing editors remain an
+  independent option; ordinary Go memory selection is usable without those editor calls.
+- Reuse Go settings/provider/prompt orchestration and existing Host output/storage owners.
+  JS owns Host observation, transport, final application and UI only. User prompts, creative
+  direction, existing successful output and lifecycle behavior remain preservation targets.
+- Basic mode improves a real main-model draft using specialist contributions and final writing.
+  Complex mode generates role turns with separate narrator/character models and assembles them.
+  Shared plumbing does not make these two output flows or their completion evidence identical.
+- Preserve legacy bridge sources and workbench material as historical reuse references in this
+  documentation-only change. Any later source migration requires inspection of actual consumers.
+  This is **PLANNED**, not implementation, a new rejection policy or a release action. JS +0/-0.
+
+## 2026-09-10 — local service port settings (unreleased test.3)
+
+- Keep port resolution in OS launchers: Windows `service-ports.ps1` shared by
+  startup and smoke checking; POSIX `configure_service_ports`. Go consumes its
+  existing environment variables. Do not add UI-owned DB ports or another owner.
+- Store ChromaDB / MariaDB / Go HTTP ports in existing data-root
+  `chroma-port.txt` / `mariadb-port.txt` / `backend-port.txt` files. Empty port
+  prompt input resets the selected service to 8000 / 3307 / 28080. Startup with
+  no new port option retains saved values; it must not silently reset them.
+- Chroma port feeds the local server and endpoint together; external/off modes
+  retain their behavior. MariaDB process, schema bootstrap and Go DSN use the
+  same local port; preserve DSN credentials/database/options and remote targets.
+  Go port replacement preserves bind host. RisuAI continues to use its saved URL.
+- Configuration saves and exits before updater/service/database actions. Normal
+  fresh installation gains no prompt. Restart is user-owned. No auto-selection,
+  process termination, DB relocation or schema change is part of this feature.
+- Test defaults, empty input/EOF, invalid input without overwrite, persistence,
+  process/DSN agreement, connection-check URL, and existing installer/update paths.
+  `scripts/test-chromadb-port.ps1` and `.sh` retain their names in CI; they now
+  cover all three services. Process-boundary fixtures are not native runtime proof.
+- [Feature record](docs/chromadb-port-configuration.md),
+  [test.3](docs/archive-center-4.3.1-test-build-3.md). Public 4.3.0 is unchanged.
+  This port slice changes no Go or JavaScript source: JS **+0/-0**.
+
 
 ## 1. Files to Read Before Editing
 
@@ -75,7 +218,7 @@ with test.21 retained. This slice repairs the existing Go preprocessing owner.
 ### 2026-09-08 planning alignment — shared recall and optional Actor expression
 
 The user approved the [reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan).
-It is **PLANNED**, with test.21 as the unchanged runtime/package baseline.
+It is **PLANNED**. The original note used test.21; current memory comparisons use 4.3.1, while public 4.3.0 retains the provider/release evidence recorded above.
 
 - Base recall is evaluated with preprocessing and Publisher OFF. Optional AI
   selection has separate evidence of benefit and keeps its accepted text/order
@@ -266,11 +409,12 @@ test.18; application to the user's running backend/RisuAI remains unverified.
 Use the [4.3 status summary](docs/archive-center-4.3-status-summary.md) to locate
 current owners and distinguish source/regression/package records from
 loaded Host, actual provider, payload application and displayed-output evidence.
-Optional role calls, prompts and UI are implemented in source; the original
-world_state first-call error, race-detector and broad live/40M evidence remain open.
+Optional role calls, prompts, JSON handling and UI are part of 4.3 stable. Refresh any
+remaining world_state failure against its actual error and current artifact instead of carrying
+forward the original unresolved label. Race, loaded-host and broad live/40M claims need their own evidence.
 
 The [4.4 file/function plan](docs/archive-center-4.4-refactoring-plan.md) is
-**PLANNED**. At implementation start, capture the then-current 4.3 baseline and
+**PLANNED**. At implementation start, retain the fixed 4.3.1 memory reference and capture the active HEAD and
 preserve unrelated dirty edits. Proceed through provider/settings, assembly/HUD,
 then the original semantic-consolidation scope. Refactoring compares existing
 behavior; consolidation has separately documented intended changes. Neither

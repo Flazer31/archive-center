@@ -2120,14 +2120,14 @@ async function bridgeFetch(path, options) {
   if (fullBody.host_observations !== hostObservations || fullBody.bootstrap_observation !== bootstrapObservation) {
     throw new Error("full prepare did not repeat the correlated host observations");
   }
-  if (fullBody.settings.top_k !== 0 || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.reference_injection_budget_basis_chars !== 3000 || fullBody.settings.lorebook_reference_max_chars !== 3000 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.injection_enabled !== true || Object.prototype.hasOwnProperty.call(fullBody.settings, "input_context_enabled")) {
+  if (Object.prototype.hasOwnProperty.call(fullBody.settings, "top_k") || fullBody.settings.max_injection_chars !== 0 || fullBody.settings.reference_injection_budget_basis_chars !== 3000 || fullBody.settings.lorebook_reference_max_chars !== 3000 || fullBody.settings.max_input_context_chars !== 0 || fullBody.settings.injection_enabled !== true || Object.prototype.hasOwnProperty.call(fullBody.settings, "input_context_enabled")) {
     throw new Error("fresh-first-turn memory recall was not suppressed independently from guide and Go-default input context");
   }
   await tryPrepareTurn("session-a", "hello", [{role: "user", content: "hello"}], null, "model", null, {
     sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
   });
   const existingSessionBody = capturedBodies[capturedBodies.length - 1];
-  if (existingSessionBody.settings.top_k !== 3 || existingSessionBody.settings.max_injection_chars !== 1000 || existingSessionBody.settings.reference_injection_budget_basis_chars !== 3000 || existingSessionBody.settings.lorebook_reference_max_chars !== 3000 || Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "input_context_enabled")) {
+  if (Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "top_k") || existingSessionBody.settings.max_injection_chars !== 1000 || existingSessionBody.settings.reference_injection_budget_basis_chars !== 3000 || existingSessionBody.settings.lorebook_reference_max_chars !== 3000 || Object.prototype.hasOwnProperty.call(existingSessionBody.settings, "input_context_enabled")) {
     throw new Error("existing-session prepare budget regressed");
   }
   settings.injectionBudgetExtraChars = 2500;

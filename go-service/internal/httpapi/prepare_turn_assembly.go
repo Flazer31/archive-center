@@ -177,6 +177,20 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["current_scene_state_turn"] = recollectionContext.currentSceneTurn
 	out.Counts["latest_assistant_turn"] = recollectionContext.latestAssistantTurn
 	out.Counts["current_scene_state_is_current"] = recollectionContext.currentSceneIsCurrent
+	// Each query remains independently usable for lexical candidate admission.
+	// Copy request-local metadata: supplemental assemblies may share the base map.
+	recallShadow := make(map[string]any, len(vectorShadow)+1)
+	for key, value := range vectorShadow {
+		recallShadow[key] = value
+	}
+	recallQueries := []any{rawUserInput}
+	if priorityMemoryQuerySource != "assembly_context" {
+		for _, text := range priorityMemoryQuerySet {
+			recallQueries = append(recallQueries, text)
+		}
+	}
+	recallShadow["recall_query_texts"] = recallQueries
+	vectorShadow = recallShadow
 	memorySelection := selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, canonicalMemories, memoryQuery, topK, vectorShadow, entityScope.Direct, entityScope.Scene)
 	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
 	protectedSelection := prepareTurnMemoryLaneSelection{
@@ -243,6 +257,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		memorySelection,
 		recallLimit,
 	)
+	appendPrepareTurnPriorityMemoryFactSeeds(&out, memorySelection, vectorShadow)
 	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, canonicalMemories, protectedPerspectiveContext)
 	actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
 	protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
@@ -263,7 +278,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
 	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
 	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
-	appendPrepareTurnPriorityMemoryFactSeeds(&out, memories)
 	perspectiveRecollectionLines := map[string]bool{}
 	if len(perspectiveContextArg) > 0 {
 		seeds, _ := perspectiveContextArg[0]["_character_perspective_fact_seeds"].([]prepareTurnPriorityFactSeed)

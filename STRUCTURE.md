@@ -1,5 +1,75 @@
 # Archive Center Repository Structure
 
+## 2026-09-10 — 4.3.1 stable release preparation
+
+Active runtime identifiers and official builder defaults are **4.3.1 stable**.
+This packages the verified test.4 recall, context-cost and service-port changes;
+no further memory policy, prompt, schema or lifecycle change is part of promotion.
+See [release status and final verification](docs/archive-center-4.3.1-release-verification.md).
+Entries below retain their original local-test/public-release evidence dates.
+Version-only promotion: JS +6/-6. Earlier recall UI changes: JS +1/-9.
+
+Latest local package: [4.3.1-test.4](docs/archive-center-4.3.1-test-build-4.md).
+It retains recall restoration and service port settings and fixes context assembly cost.
+
+Local 4.3.1 release-candidate installation/update checks are recorded in
+[the 2026-09-10 verification](docs/archive-center-4.3.1-install-update-verification.md).
+Seven archives, prior 4.1/4.2/4.3 updater transactions and an isolated real Windows 01
+launch passed within the stated boundaries. Public latest remains 4.3.0; installed
+RisuAI plugin replacement and native-device coverage are separate. No runtime policy changed.
+
+## 2026-09-10 — fixed memory baseline: 4.3.1
+
+The user-designated baseline for future memory work is **4.3.1 (local test.4)**.
+The [canonical decision](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-baseline-431)
+and [detailed preservation criteria](docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431)
+apply to both ordinary Go memory and optional editor paths. Public 4.3.0 remains the
+release/install/update reference; its older memory behavior is not the future target.
+
+Existing owners below remain authoritative: recall merging and lexical cues in
+`prepare_turn_recall.go`; fact seeds before display selection in `prepare_turn_assembly.go`;
+priority/remaining-budget selection in `prepare_turn_priority_memory.go`; public evidence
+projection in `memory_search_text.go`; audit-only prune hints in `turn_extraction_persist.go`.
+The baseline designation changes documentation, not ownership, runtime contracts or schemas.
+Known state/interpretation and out-of-range recall limitations stay future improvement work.
+
+## 2026-09-10 — context assembly duplicate filtering, local test.4
+
+`prepare_turn_recall.go::prepareTurnDistinctiveRecallTerms` replaces repeated
+`appendUniqueMemorySearchText` calls during particle expansion with local `formSeen`
+membership. All forms are already lowercase single tokens; order and lexical meaning
+are preserved. Candidate selection still reaches this owner through
+`prepareTurnPriorityQuerySetRelevance` / `prepareTurnPriorityRelevance`.
+No retrieval count, rank, budget, source/privacy rule, persistence or fallback changes.
+`memory_recall_restoration_test.go::BenchmarkMemoryRestorationRecallTerms` measures
+long-query cost and checks ordered particle/stem output. Actual snapshot assembly
+now completes in 3.46 seconds in the independent reproduction. Follow-up user-trace scope
+is recorded in the memory baseline; this timing is not a live model benchmark.
+The Windows builder maps the existing internal BAT to `06_change_port_windows.bat`
+and records that name in the manifest; packaged documentation matches. JS +0/-0.
+
+## 2026-09-10 — memory recall restoration, local test.2
+
+Status: `implemented_unverified` for loaded RisuAI recall; see the
+[five-part implementation record](docs/archive-center-memory-recall-restoration-plan.md) and
+[test.2 package record](docs/archive-center-4.3.1-test-build-2.md).
+`group_turn_prepare.go` obtains the general-memory count from
+`prepare_turn_recall.go::prepareTurnMemoryCandidateLimit`: `4 * ceil(memory budget / 512)`.
+Initial and supplemental searches use it; legacy Top K remains for separate reference searches.
+`searchAcrossSessions` merges query observations into `recall_queries`, while the memory lane
+selector no longer cuts the merged set to the per-search count. The query observations reach
+`prepare_turn_priority_memory.go` score lineage. Actual query text is independently available
+for lexical recall, including common Korean particle forms; stale scene text is not a new query.
+`prepare_turn_assembly.go` constructs eligible public fact seeds before summary rendering.
+`memory_search_text.go` projects public evidence-only mixed memories for search/assembly.
+`turn_extraction_persist.go::applyCriticSoftPrune` records hints without whole-row importance demotion.
+No storage schema, lifecycle, paid-call count, prompt or AI-recommendation fallback was added.
+The JS changes remove the Top K input and generation field and rename the diagnostic label (+1/-9).
+Three `memory_recall_restoration*_test.go` files cover source admission, search, final packing,
+query provenance and ten editor/Publisher combinations with controlled external responses. The
+[canonical registration](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-recall-restoration-20260910)
+keeps the public release separate and does not move the 4.4–9.0 sequence.
+
 ## 2026-09-09 — 4.3.0 stable release and OpenCode Zen / Go
 
 Source version is 4.3.0 (stable), published with main and tag updated; package and actual public Windows 4.1/4.2 update evidence is
@@ -20,20 +90,86 @@ preprocessing purposes with an external HTTP fixture, not live provider proof.
 No memory policy, storage schema, lifecycle or fallback is added in this slice.
 
 
+## 2026-09-09 — 4.4–9.0 planning aligned to stable 4.3.0
+
+The [stable handoff and version map](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#stable-43-handoff)
+retains public `v4.3.0` / `51d901b` as the released foundation and uses 4.3.1 for future memory comparisons. The
+[4.4 execution plan](docs/archive-center-4.4-refactoring-plan.md) separates A baseline,
+B provider/settings, C assembly/HUD, D intentional semantic consolidation and E integration.
+Existing breadth, role recommendation order, JSON recovery, prompts, lineage/cold start,
+Hypa source import, provider transport and install/update behavior are preservation targets.
+4.5 owns context bundles; 4.6 item time/state; 4.7 retrieval/budgets; 4.8–4.9 relation recall.
+Shared reactivation and optional Actor expression remain in 5.1–6.0. Internal output
+improvement follows in 6.1–8.0; Living World stays in 8.1–9.0. Four option combinations and recorded-response replay precede focused
+live comparisons. This is **PLANNED**, not a new runtime contract or a refactoring completion.
+
+## 2026-09-09 — planned internal output improvement
+
+The [output-improvement decision](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan)
+cancels the separate AC Ensemble Agent Integrated product/integration plan. The optional
+Archive Center feature is `추가 기능 → 출력 개선 → 끔 / 기본형 / 복합형`:
+6.1–7.0 common foundations/basic draft improvement, then 7.1–8.0 narrator/Actor scene generation.
+The 4.4–6.0 memory work comes first; 8.1–9.0 Living World remains afterwards.
+Go owns settings, role prompts and provider orchestration; JS remains the Host observation,
+transport, final-output application and UI adapter. Preprocessing editors are independently
+optional, and output improvement can consume ordinary Go memory selection.
+Historical Recomposer bridge consumers and `workbench/ac-ensemble-agent` remain references;
+this documentation change removes no source and proves no new feature implementation.
+All of this is **PLANNED**. Current source, package and live claims below keep their own scope.
+
+## 2026-09-10 — service port configuration, local test.3
+
+Launcher ownership extends the existing ChromaDB setting to MariaDB and the Go
+HTTP listener. Windows `ops/full-package/scripts/service-ports.ps1` owns saved
+port resolution for `start-full-windows.ps1` and `smoke-live.ps1`; POSIX uses
+`start-full-posix.sh::configure_service_ports`. `06_change_chromadb_port_windows.bat`
+retains its name and now opens the three-service menu. `01` no longer forces a
+28080 override; `02` resolves the saved backend port for connection checks.
+
+Each setting is a decimal port in the existing data root: `chroma-port.txt`,
+`mariadb-port.txt`, `backend-port.txt`. Empty **port prompt** input restores
+8000 / 3307 / 28080 for that service. Empty service selection exits. Ordinary
+startup without a port option retains saved settings, without a new prompt.
+Configuration-only mode exits before updater, installation or service actions.
+
+MariaDB process, readiness probe, schema bootstrap and Go DSN use the same local
+port. Windows adjusts only the local TCP DSN address, preserving credentials,
+database and parameters; remote DSNs are untouched. Go bind host is preserved
+when replacing its port. Explicit Windows `-BindAddr` remains a one-run override;
+an accompanying explicit `-BackendPort` sets its port component. Local vector
+ports feed both Chroma startup and Go; external/off vector behavior is preserved.
+
+Database paths, collection names and schemas remain unchanged. RisuAI's saved
+backend URL is not rewritten: the user must match its port after changing the
+Go listener. See [feature record](docs/chromadb-port-configuration.md) and
+[test.3 package record](docs/archive-center-4.3.1-test-build-3.md). The shared
+PowerShell helper is included by the existing managed-file package manifest.
+Native service and loaded-RisuAI verification remain user-owned. No release push.
+
+### 2026-09-09 — local Windows 4.3.1-test.1 package
+
+[Port test package](docs/archive-center-4.3.1-test-build-1.md) was built from the
+active source under `_dist/4.3.1-test.1`. Windows packaging stamps prerelease
+versions into copied plugin metadata and `VERSION`, matching the launcher.
+Its 54 managed files and ZIP were verified, with configuration tested in an
+isolated data directory. It is a historical package; test.3 extends its port menu.
+
+
 ## 1. Document Status
 
 | Field | Value |
 | --- | --- |
-| Review date | 2026-09-09: 4.3.0 stable source and release verification; test.23 behavior retained |
+| Review date | 2026-09-10: 4.3.1-test.4 context assembly cost repair, retaining test.2 recall and test.3 port work; public 4.3.0 remains the released baseline |
 | Branch | `work/4.2.0` |
-| Commit | 4.1 public parent `574c2d5b`; 4.2 source/regression checkpoints `43bc20a1` and `c2f1a2d5`; public `v4.2.0` release source `4257081c217e57b7e570592fb1090b484255c013`, including the fact-semantic relevance correction. |
+| Commit | Public `v4.3.0` source `51d901bda8173c2d668f64362213375f7eecc028`; post-release documentation checkpoint `c0116aa`. Earlier source/release checkpoints remain in version-specific records. |
 | Repository root | active `source/` worktree |
 | Prior local test build | [`4.3.0-test.23`](docs/archive-center-4.3-test-build-23.md): branch coordinates while parent source is pending; inherited-prefix and canonical-text preservation in cold start. Retains test.21–22 memory/preprocessing work. Plugin and Go backend are packaged together; user owns startup. |
-| Current work summary | 4.3.0 stable published; source tag commit `51d901b`. OpenCode Zen and Go added. [4.3 history through test.23](docs/archive-center-4.3-status-summary.md). Source checkpoint: `6ef8f74239af065d2810761dd94c846b34e99826`; previous test.22 package retained. |
-| Next-version plan | [Reliable recall plan](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#good-memory-plan): 4.4 deduplication → 4.5 context bundles → 4.6 time/state → 4.7 retrieval → 4.8–4.9 related recall → 5.1-A–5.2 shared reactivation. [4.4 execution plan](docs/archive-center-4.4-refactoring-plan.md) and [state-time handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#temporal-state-44647) retain their scopes. Actor expression is optional. All follow-up work is **PLANNED**; runtime ownership and behavior are unchanged. |
-| Inspection scope | Pending-source and cold-start red-to-green regressions, existing lifecycle suite, and source/package verification recorded in test.23. Loaded test.23 and actual user DB/provider behavior remain open. |
+| Memory behavior baseline | **4.3.1**, identified by [test.4](docs/archive-center-4.3.1-test-build-4.md); subsequent memory changes compare with this baseline and the previous verified version. Public release remains 4.3.0. |
+| Current work summary | [4.3.1-test.4](docs/archive-center-4.3.1-test-build-4.md): recall token duplicate-cost repair and new Go binary, retaining recall and port settings. Local source/regression/package verified; follow-up user traces show bounded assembled-memory delivery. Full loaded-host and broader recall quality remain separately evidenced. No 4.4 runtime implementation is claimed. |
+| Next-version plan | [4.3.1 memory baseline](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-baseline-431) and [stable handoff](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#stable-43-handoff) → [4.4 A–E](docs/archive-center-4.4-refactoring-plan.md) → 4.5 bundles → 4.6 time/state → 4.7 retrieval → 4.8–4.9 related recall. 5.1–6.0 shared reactivation/optional Actor expression precedes [internal output improvement](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan): 6.1–7.0 basic, 7.1–8.0 complex, then 8.1–9.0 Living World. All follow-up implementation is **PLANNED**. |
+| Inspection scope | 4.3.1 memory baseline and source records, 4.3 public release records, and future planning alignment. Older test-build snapshots are historical; loaded-host and quality evidence stays artifact-specific. |
 | Intentionally excluded | Dependency caches, compiled-binary internals, database data, logs, bulk traversal of generated packages beyond targeted manifest/hash/symbol checks, and unrelated dirty-worktree contents |
-| Evidence level | Source/regression, seven public 4.2.0 packages, tagged-source Windows/Ubuntu/macOS CI, and an isolated Windows public 4.1-to-4.2 managed update with real MariaDB/Chroma fixture preservation are verified within the [release record](docs/archive-center-4.2.0-release-verification.md). Earlier bounded PDF/Provider Manager observations remain limited to their stated artifacts. Loaded-RisuAI verification of the release, live recall quality, Google AI Studio/LLM Gateway behavior, usage comparison, long-session generalization, and full native-device coverage remain open. |
+| Evidence level | Source/regression, public 4.3 packages, Windows/Ubuntu/macOS CI and actual public Windows 4.1/4.2 updates within the [release record](docs/archive-center-4.3.0-release-verification.md). Real record preservation, settings preservation and readiness checks retain their distinct recorded scopes. Loaded RisuAI recall, live provider/model acceptance, long-session quality and full native-device coverage remain separate. |
 | Confidence | **VERIFIED** within each explicitly cited source/regression/package/backend-live/public-release tier; **UNKNOWN** for the remaining loaded-host, provider body/usage/display, and native-device behavior in section 20. |
 
 ### 2026-09-09 test.23 pending-source lineage and cold-start merge
@@ -716,7 +852,7 @@ boundaries. See the [4.3 feedback work log](docs/archive-center-4.3-feedback-wor
 
 ## 2. System Purpose
 
-**VERIFIED source/regression.** The active source identifies itself as Archive Center 4.3.0-test.18 source: a RisuAI plugin plus a Go HTTP service. It preserves the 4.1 request lifecycle and adds Go-owned priority selection plus a user-selectable turn-finalization policy. Already admitted source projections create request-local `PriorityFactSeed` units before final memory-section rendering; each unit carries its own text, relevance, source identity, and visibility/perspective lineage. Recalled `memories.turn_summary` values form a separate complete-summary group scored by the higher of their best child fact and observed aggregate-vector score. The UI core-memory maximum is applied independently to that group and each scored fact lane, while existing per-class character budgets and the final character envelope remain Go-owned. One Go-owned request query set—current continuity/input plus recent completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`—is used by both Chroma retrieval and fact scoring. This conversation-reference depth is independent of Chroma result `top_k` and final per-group core-memory K. Aggregate Memory candidates remain bounded by the existing `tier=memory` recall result instead of all loaded session rows. In-scope canonical `precise_memory_units` determine the atomic scoring search count; their existing Chroma documents are queried by `source_table` with the same query vectors, then canonically hydrated from MariaDB so each similarity contributes only to its matching fact rather than every child of a parent Memory row. The plugin observes RisuAI lifecycle and Host coordinates, applies a backend-produced payload plan, and transports accepted finality; it does not calculate memory rank or own canonical persistence. The backend resolves the current input and session route, retrieves and assembles memory/context, produces the priority delivery/payload plan, optionally obtains a bounded `publisher_plan.v2`, validates completed-turn source lineage, writes through the selected Store, and maintains a derived Chroma search index. MariaDB remains canonical only in `mariadb_authority`; Chroma remains derived. Evidence: [plugin metadata](Archive%20Center.js), [`registerRisuLifecycleHooks()`](Archive%20Center.js), [`prepareTurnLoadGeneralPreciseMemoryUnits()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnRetrievalQueries()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), and [`handleCompleteTurn()`](go-service/internal/httpapi/group_turn_complete.go). Package and live-host/provider proof are separate.
+**VERIFIED source/regression.** The active source keeps the 4.3.0 base identifier, with unreleased recall fixes retained in 4.3.1-test.3: a RisuAI plugin plus a Go HTTP service. It preserves the 4.1 request lifecycle and adds Go-owned priority selection plus a user-selectable turn-finalization policy. Already admitted source projections create request-local `PriorityFactSeed` units before final memory-section rendering; each unit carries its own text, relevance, source identity, and visibility/perspective lineage. Recalled `memories.turn_summary` values form a separate complete-summary group scored by the higher of their best child fact and observed aggregate-vector score. The core-memory setting is a priority target independently applied to that group and each fact lane; other relevant facts may use the remaining character budget. Existing per-class budgets and the final character envelope remain Go-owned. One Go-owned request query set—current continuity/input plus recent completed user/final-assistant conversation pairs up to UI `recent_conversation_reference_count`—is used by both Chroma retrieval and fact scoring. This conversation-reference depth is independent of Go's budget-derived general-memory retrieval count and per-group core priority target. Query/scope search results are merged without a second per-query K cut. Eligible aggregate memory candidates come from public vector hits and independent lexical recall before summary rendering, rather than indiscriminately using all loaded rows. In-scope canonical `precise_memory_units` determine the atomic scoring search count; their existing Chroma documents are queried by `source_table` with the same query vectors, then canonically hydrated from MariaDB so each similarity contributes only to its matching fact rather than every child of a parent Memory row. The plugin observes RisuAI lifecycle and Host coordinates, applies a backend-produced payload plan, and transports accepted finality; it does not calculate memory rank or own canonical persistence. The backend resolves the current input and session route, retrieves and assembles memory/context, produces the priority delivery/payload plan, optionally obtains a bounded `publisher_plan.v2`, validates completed-turn source lineage, writes through the selected Store, and maintains a derived Chroma search index. MariaDB remains canonical only in `mariadb_authority`; Chroma remains derived. Evidence: [plugin metadata](Archive%20Center.js), [`registerRisuLifecycleHooks()`](Archive%20Center.js), [`prepareTurnLoadGeneralPreciseMemoryUnits()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnRetrievalQueries()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnEffectiveContinuityQuery()`](go-service/internal/httpapi/prepare_turn_recall.go), [`prepareTurnHydratePreciseMemoryVectorFacts()`](go-service/internal/httpapi/prepare_turn_recall.go), [`appendPrepareTurnPriorityFactSeeds()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`prepareTurnBuildPriorityTurnSummaries()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), [`buildPrepareTurnPriorityMemoryDeliveryPlan()`](go-service/internal/httpapi/prepare_turn_priority_memory.go), and [`handleCompleteTurn()`](go-service/internal/httpapi/group_turn_complete.go). Package and live-host/provider proof are separate.
 
 **VERIFIED.** The system also exposes store-backed administration, memory explorer, session migration, narrative/persona, original-work reference-library, Host lorebook-reference, timeline/dashboard, status projection, source-discovery/canon-pack, and managed-update routes. These are registered by [`Server.RegisterRoutes()`](go-service/internal/httpapi/server.go#L203-L233). Their presence in source proves route implementation, not plugin invocation, production enablement, canonical-truth authority, or live data quality.
 
@@ -806,7 +942,7 @@ source/
 | [`docs`](docs) | Documentation, audits, version work logs, and future roadmaps. [`archive-center-4.0.8-work-log.md`](docs/archive-center-4.0.8-work-log.md) and [`archive-center-4.0.8-to-4.0.9-work-log.md`](docs/archive-center-4.0.8-to-4.0.9-work-log.md) are change/evidence indexes; later entries can supersede earlier entries. A claim found only in documentation is **PLANNED**, **OBSOLETE**, or **UNKNOWN**, not implementation proof. | Maintainers and auditors. |
 | `_dist*`, `_release*`, `_test-builds`, `_runtime*`, `.tmp*`, `.gocache` | **OBSOLETE.** Generated, packaged, cached, or test output as active source; some are dirty/untracked. | Build/test tools only. |
 | `Archive Center 3.4-C.js`, `Archive Center.js.codex-backup-*` | **OBSOLETE.** Copies relative to the active 4.1.0 source. They can run only if someone separately installs them. | No active source import was found. |
-| `AC Recomposer Agent.js` | **VERIFIED.** Optional separately installed consumer of the currently implemented `archive_center.recomposer_bridge.v1` contract; it is not copied or auto-loaded by Archive Center package builders. Its Recomposer product identity is historical and is not the current `AC Ensemble Agent` product identity. | Manual installation only; live installation is **UNKNOWN**. Any approved replacement/removal requires an explicit versioned migration and removal condition. |
+| `AC Recomposer Agent.js` | **VERIFIED.** Optional separately installed consumer of the currently implemented `archive_center.recomposer_bridge.v1` contract; it is not copied or auto-loaded by Archive Center package builders. Its Recomposer product identity is historical; the planned internal output-improvement feature is not this legacy consumer. | Manual installation only; live installation is **UNKNOWN**. Any approved replacement/removal requires an explicit versioned migration and removal condition. |
 | `Risu Output Quality Layer 2.5.js`, `Risu Recomposer - 복사본.js` | **INFERRED.** Standalone/legacy plugins with no active package-copy or import path found. | Separate manual installation, if any. |
 
 ## 5. Runtime and Explicit Tool Entry Points
@@ -1275,7 +1411,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **VERIFIED:** Optional bounded Publisher using `publisher_plan.v2`, `response_execution_contract.v1`, `supervisor_support_packet.v2`, and `supervisor_scene_proposal.v3`; it makes one provider request and renders source-backed accepted items from one or both required role shapes without truth/write authority.
 - **VERIFIED:** Runtime Publisher/Critic timeout settings are converted to actual millisecond call limits. NeuralWatt standard/Flex transport and provider-specific DeepSeek V4 `low` reasoning behavior are implemented in `proxy_provider.go`; real provider-account behavior remains **UNKNOWN** in this audit.
 - **VERIFIED:** Default-off Host lorebook reference observation/snapshot route, separate MariaDB ledger/current projection, exact/key/lexical search, `search_only` diagnostics, and conditional `reference_assist` lane with `reference_only` authority. This is source-level implementation, not live-Host proof.
-- **VERIFIED:** Optional source integration for `archive_center.recomposer_enhancement.v1` and the transient `archive_center.recomposer_bridge.v1`; `AC Recomposer Agent.js` is a separately installed historical product-identity consumer of that currently implemented optional Recomposer contract, not the current `AC Ensemble Agent` identity or an auto-loaded package component. The separate `workbench/ac-ensemble-agent` source is standalone-only and outside this active source repository; Archive Center integration remains planned.
+- **VERIFIED:** Optional source integration for `archive_center.recomposer_enhancement.v1` and the transient `archive_center.recomposer_bridge.v1`; `AC Recomposer Agent.js` is a separately installed historical product-identity consumer of that currently implemented optional Recomposer contract, not the planned internal output-improvement feature or an auto-loaded package component. The separate `workbench/ac-ensemble-agent` source remains a standalone reuse reference outside this active source repository. The separate Integrated product/integration plan is canceled; internal basic/complex output improvement is **PLANNED**.
 - **VERIFIED:** `/complete-turn` source acceptance, stable observed user-message `chatId` logical-turn anchoring with existing absent-ID fallback, reroll/source revisions, terminal non-committed replacement-failure handling, idempotency ledger, separately persisted raw pair, Critic proposal parsing, atomic core memory admission, separately persisted typed projections, reprocessing jobs, and vector outbox.
 - **VERIFIED source/regression/package:** A Critic parse failure with durable `reprocessing=queued` remains a nonterminal `recovering` workflow, but its existing dismissal policy is `x_only`. The RisuAI adapter renders and binds that X for both single and previous-turn HUD slots. Closing it cancels only the Host HUD stream and leaves the durable MariaDB reprocessing job unchanged. Loaded-RisuAI confirmation of the refreshed package remains open.
 - **VERIFIED:** Subjective-memory `importance_10` and `emotional_weight` values are preserved per item; canonical scene/world layers are labelled `latest_observed` or `historical` by observed turn instead of treating every open record as current.
@@ -1304,7 +1440,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 
 ### Planned
 
-- **PLANNED — 4.4 behavior-preserving refactoring:** Follow the [file/function plan](docs/archive-center-4.4-refactoring-plan.md) and [integrated 4.4 scope](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#refactoring-consolidation-44). Record the actual starting 4.3 dirty baseline; consolidate existing provider-option mapping and repeated UI/HUD mechanics, type internal assembly inputs and private retrieval results, and measure unused supplemental rendering/repeated input work. Strengthen independent SQL test expectations before any related storage-function move. Shared UI settings and fake-vector read recording are unreproduced concurrency risks, not confirmed data contamination. Preserve active compatibility callers and existing acceptance, privacy, recommendation, settings and lifecycle behavior.
+- **PLANNED — 4.4 behavior-preserving refactoring:** Follow the [file/function plan](docs/archive-center-4.4-refactoring-plan.md) and [integrated 4.4 scope](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#refactoring-consolidation-44). Retain the fixed 4.3.1 memory reference and record the actual starting HEAD/dirty diff; consolidate existing provider-option mapping and repeated UI/HUD mechanics, type internal assembly inputs and private retrieval results, and measure unused supplemental rendering/repeated input work. Strengthen independent SQL test expectations before any related storage-function move. Shared UI settings and fake-vector read recording are unreproduced concurrency risks, not confirmed data contamination. Preserve active compatibility callers and existing acceptance, privacy, recommendation, settings and lifecycle behavior.
 
 - **PLANNED — 4.4 semantic consolidation:** The original cross-surface claim/event grouping remains 4.4-D, after the refactoring slices. Its intended changes to representative delivery and source coverage require separate cases from refactoring parity. Define the connection to 4.3 before implementation; already-received AI recommendations must not be silently rewritten or replaced. Source-linked compact bundles remain 4.5, with typed relations/local-graph work assigned later in the integrated roadmap.
 
@@ -1322,7 +1458,7 @@ Only the document-wide evidence labels are used here. **VERIFIED** followed by �
 - **OBSOLETE:** `publisher_plan.v1` as the active Publisher contract; production source now requires `publisher_plan.v2` and retains v1 only in negative compatibility coverage.
 - **OBSOLETE:** The older `memory_injection_plan.v2` proposal as the current 4.0 delivery/application target; the current 4.0 roadmap explicitly retains `memory_delivery_plan.v1` and `payload_application_plan.v1`.
 - **OBSOLETE:** Historical `_dist*`, `_release*`, `_runtime*`, and `_test-builds` trees as active source.
-- **UNKNOWN:** Whether `AC Recomposer Agent.js` or `AC Ensemble Agent` is currently installed in a live host. The active transient Recomposer bridge proves only the historical optional source integration, not Ensemble integration, installation, package autoload, or displayed-final admission.
+- **UNKNOWN:** Whether `AC Recomposer Agent.js` or `AC Ensemble Agent` is currently installed in a live host. The active transient Recomposer bridge proves only the historical optional source integration, not the planned internal output-improvement implementation, live installation, package autoload, or displayed-final admission.
 
 ## 20. Open Questions and Unverified Areas
 

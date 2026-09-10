@@ -117,6 +117,10 @@ jobs:
         shell: powershell
         run: .\scripts\test-simple-fresh-install.ps1
 
+      - name: Service port configuration
+        shell: powershell
+        run: .\scripts\test-chromadb-port.ps1
+
   simple-fresh-install-posix:
     strategy:
       fail-fast: false
@@ -140,6 +144,10 @@ jobs:
       - name: Production POSIX fresh-install contracts
         shell: bash
         run: sh ./scripts/test-simple-fresh-install.sh
+
+      - name: Service port configuration
+        shell: bash
+        run: sh ./scripts/test-chromadb-port.sh
 
       - name: Native updater transaction tests
         working-directory: go-service

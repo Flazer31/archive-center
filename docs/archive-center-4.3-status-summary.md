@@ -1,14 +1,68 @@
 # Archive Center 4.3 작업 현황 요약
 
-Current source: **4.3.0 stable**, published on GitHub. See [release record](archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+Current source: **4.3.1 stable**, preserving test.4 memory recall and port changes. See the [4.3.1 release record](archive-center-4.3.1-release-verification.md) for publication status. Entries below retain their historical verification dates.
 
-기준일: **2026-09-09**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
-현재 소스 식별자는 **`4.3.0`**이며 정식 패키지·CI·이전 버전 업데이트 검사를 통과했다. main 반영과 정식 릴리스 공개를 완료했다. [검증 기록](archive-center-4.3.0-release-verification.md). 실제 RisuAI·제공자 검증은 별도로 남아 있다.
+기준일: **2026-09-10**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
+기본 소스 식별자는 **`4.3.0`**, 새 로컬 패키지 식별자는 **`4.3.1-test.4`**다. 정식 패키지·CI·이전 버전 업데이트 검증과 공개 기록은 이전 4.3.0 범위이며, 이번 소스 변경의 공개 배포를 뜻하지 않는다. [검증 기록](archive-center-4.3.0-release-verification.md). 실제 RisuAI·제공자 검증은 별도로 남아 있다.
 아래의 완료는 해당 소스 반영과 기록된 검증 범위의 완료를 뜻한다. 실제 RisuAI에
 로드한 동일 플러그인·백엔드, 실제 제공자, 최종 표시 출력까지의 완료와 구분한다.
 최초 현황 정리는 문서 작업이었다. 이후 소스 수정과 검증은 아래 후속 갱신에서 구분한다.
 
-## 현재 기준: 4.3.0 정식 (test.23 동작 포함)
+## 2026-09-10 — 4.3.1 기억 기준 고정
+
+후속 기억 작업의 기준은 **4.3.1(test.4)**로 확정했다. [통합 로드맵 결정](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-baseline-431)과
+[보존할 회수·선정 동작 및 남은 과제](archive-center-memory-recall-restoration-plan.md#memory-baseline-431)를 따른다.
+4.3.0은 공개 배포 비교 기준으로 유지하고, 1.0·3.9.9·4.1·4.2·4.3 기록은 역사적 비교에 사용한다.
+전처리·출판사가 없어도 유지되는 기억 폭을 기준으로 이후 버전과 직전 버전을 함께 비교한다.
+현재/과거 상태 혼재와 목표·담당 해석 문제는 후속 개선 대상으로 남긴다.
+
+사용자 후속 제출 자료에서 다섯 담당의 양쪽 호출 성공과 선택 원문의 최종 조립 반영,
+오래된 기록의 전달을 확인했다. 해당 사례의 관측이며 모든 설정·세션의 회상 성능이나
+최종 제공자 요청 전체의 반영을 입증한 것은 아니다. 이번 기준 고정은 문서 변경이다.
+
+## 2026-09-10 입력 맥락 조립 지연 수정
+
+[test.4](archive-center-4.3.1-test-build-4.md)에 긴 질의의 조사 확장 중복 확인을 개선한 새 Go
+바이너리를 포함했다. 실제 세션 snapshot 재현 45초 초과 → 3.46초, 단어·순서 비교 일치,
+전체 Go 검사와 관리 파일 55개 패키지 검증 통과. test.2 기억 회수와 test.3 포트 기능은 유지한다.
+포트 메뉴 이름은 사용자가 바꾼 `06_change_port_windows.bat`다. JS 실행 소스 +0/-0.
+빌드 당시 사용자 서버를 재시작하지 않았다. 이후 사용자 제출 자료의 확인 범위는 위 기준선 절에 기록한다.
+
+## 2026-09-10 기억 회수 복원 구현
+
+상태: `implemented_unverified` — 오프라인 구현 검증과 실사용 품질을 구분한다. [다섯 항목의 구현 기록](archive-center-memory-recall-restoration-plan.md)을
+[통합 로드맵](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-recall-restoration-20260910)에
+갱신했다. 검색 합치기·사실 후보 순서·어휘 회수·요약 전체 오감점·공개/전처리 후보 경로를 함께 수정했다.
+일반 기억 검색의 Top K 입력을 제거하고 Go 문자 예산으로 후보 수를 정한다. 기존 별도 참조 검색값은 보존한다.
+전처리/출판사 10조합, 검색량 24가지 비교, 공개 근거/개인 비공개 범위와 검색별 근거 전달을 오프라인으로 검사했다.
+[test.2 패키지 기록](archive-center-4.3.1-test-build-2.md)에 전체 검사와 패키지 증거를 남긴다.
+운영 데이터의 과거 중요도·벡터를 추정 수정하지 않았으며 GitHub 공개 배포는 하지 않는다.
+
+## 2026-09-09 후속 계획 인계 — 4.3 공개 기반 (기억 기준은 4.3.1로 갱신)
+
+[통합 로드맵의 정식 인계표](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#stable-43-handoff)에
+기본 기억·편집자·Publisher·설정/provider·하이파·삭제/긴 기억·분기/콜드스타트·HUD·배포를
+보존 기준으로 정리했다. 정식 공개와 후속 기능/실사용 품질의 검증 상태를 분리한다.
+
+- **4.4:** [A 기준→B 제공자/설정→C 조립/HUD→D 동일 사실 통합→E 결합 검증](archive-center-4.4-refactoring-plan.md).
+  저장된 AI 응답과 네 옵션 조합으로 비교하고 구조 변경과 선정/표현 변경을 분리한다.
+- **4.5~5.0:** 맥락 묶음·항목 시점/약속·검색/예산·근거 관계/실제 회수·통합 검증 순서.
+- **5.1~6.0:** 공통 재활성화·장면 단서와 선택형 인물 기억 표현, 상세 관계도/교정의 분리.
+- **6.1~7.0:** 출력 개선 공통 기반·기본형 — 본문 AI 초안→전문 AI 보완→최종 출력.
+- **7.1~8.0:** 출력 개선 복합형 — 나레이터·등장인물별 기억/프롬프트로 장면 생성·조립.
+- **8.1~9.0:** 선택형 Living World 확장. 앞선 기억 개선과 이 후속 순서는 유지한다.
+
+[출력 개선 계획 변경](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan):
+별도 AC Ensemble Agent Integrated 제작·연동 계획은 폐기하고
+`추가 기능 → 출력 개선 → 끔 / 기본형 / 복합형`으로 제공할 계획이다.
+전처리 편집자와 독립 선택이며 편집자를 끄면 기존 Go 기억을 소비한다.
+기존 workbench·bridge는 참고로 보존하고, 이번 변경으로 후처리가 구현됐다고 보지 않는다.
+
+4.3에 이미 반영한 점수·전달 폭·JSON·가이드 강도·provider·분기 수정을 미래 미구현으로
+다시 세지 않는다. 현재 필드 출처 판정만으로 항목별 유효 시점과 일반적인 연관 회수가
+완성된 것도 아니다. 이번 인계는 문서만 변경했으며 구현·빌드·새 AI 호출을 하지 않았다.
+
+## 공개 배포 기준: 4.3.0 정식 (test.23 동작 포함)
 
 2026-09-09 [test.23](archive-center-4.3-test-build-23.md): 부모의 원본 저장 대기와
 분기 위치 확인을 분리해 기존 부모·조상 기억의 상속 범위가 끊기는 경로를 수정했다.

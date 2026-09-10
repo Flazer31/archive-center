@@ -1517,7 +1517,7 @@ func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, 
 			headers["x-opencode-session"] = fmt.Sprintf("archive-center-%x", digest[:16])
 		}
 		if !hasAgent {
-			headers["User-Agent"] = "ArchiveCenter/4.3.0"
+			headers["User-Agent"] = "ArchiveCenter/4.3.1"
 		}
 	}
 

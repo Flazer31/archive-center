@@ -203,8 +203,8 @@ func TestOutputFidelity35BPrepareTurnLinksEligibleCorpusSourceToPayload(t *testi
 	fixture := prepareOutputFidelity35BFixture(t, true)
 	delivered := outputFidelity35BDeliveredMemoryItem(t, fixture.Response, fixture.MemoryRowID)
 	memoryLineage := mapFromAny(mapFromAny(fixture.Response["injection_pack"])["memory_delivery_lineage"])
-	if got := intFromAny(memoryLineage["top_k_memory_target"], 0); got != 1 {
-		t.Fatalf("bounded lineage lost the Go-owned top_k target: got %d lineage=%#v", got, memoryLineage)
+	if got := intFromAny(memoryLineage["top_k_memory_target"], 0); got <= 1 {
+		t.Fatalf("lineage still uses the legacy user Top K: got %d lineage=%#v", got, memoryLineage)
 	}
 	if boolFromAny(memoryLineage["source_text_exposed"]) || delivered["final_text"] != nil {
 		t.Fatalf("bounded lineage exposed delivered source text: %#v", delivered)

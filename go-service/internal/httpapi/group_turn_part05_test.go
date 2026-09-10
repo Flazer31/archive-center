@@ -1656,8 +1656,8 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if lineage["status"] != "mixed" {
 		t.Fatalf("lineage status = %v, want mixed objective memory plus protected guards: %#v", lineage["status"], lineage)
 	}
-	if got := intFromAny(lineage["top_k_memory_target"], 0); got != 5 {
-		t.Fatalf("top_k target = %d, want 5", got)
+	if got := intFromAny(lineage["top_k_memory_target"], 0); got <= 5 {
+		t.Fatalf("candidate count = %d, still tied to legacy Top K", got)
 	}
 	if got := intFromAny(lineage["final_delivered_count"], 0); got != 6 {
 		t.Fatalf("final delivered = %d, want all six distinct source occurrences within the global envelope; lineage=%#v", got, lineage)

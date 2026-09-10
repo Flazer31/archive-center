@@ -21,6 +21,13 @@ Options:
   --vector-mode NAME
                     Vector mode: off, fallback, external, local_native,
                     local_proot, or bundled.
+  --configure-ports  Choose ChromaDB, MariaDB or Go backend; empty port = default.
+  --port-service S   Choose chroma, mariadb or backend without the service menu.
+  --mariadb-port N   Save the local MariaDB port (default 3307).
+  --backend-port N   Save the Go backend port (default 28080).
+  --configure-chroma-port
+                    Save a local ChromaDB port interactively, then exit.
+  --chroma-port N   Save a local ChromaDB port and start (or use with the above).
   --preflight       Print a JSON preflight report and exit.
   --install-only    Install/bootstrap dependencies, then exit.
   --no-install      Do not use package managers; only use existing/bundled tools.
@@ -687,6 +694,86 @@ local_chromadb_requested() {
 	return 1
 }
 
+read_saved_service_port() {
+	SAVED_SERVICE_PORT=
+	service_port_file="$DATA_ROOT/$1-port.txt"
+	[ -f "$service_port_file" ] || return 0
+	SAVED_SERVICE_PORT=$(tr -d '\r\n' < "$service_port_file")
+	case "$SAVED_SERVICE_PORT" in
+		''|*[!0-9]*|??????*) log "Ignoring invalid saved $1 port: $service_port_file"; SAVED_SERVICE_PORT=; return 0 ;;
+	esac
+	if [ "$SAVED_SERVICE_PORT" -lt 1 ] || [ "$SAVED_SERVICE_PORT" -gt 65535 ]; then
+		log "Ignoring invalid saved $1 port: $service_port_file"
+		SAVED_SERVICE_PORT=
+	fi
+}
+
+configure_service_port() {
+	service_name=$1
+	requested_port=$2
+	case "$service_name" in
+		chroma) default_port=8000 ;;
+		mariadb) default_port=3307 ;;
+		backend) default_port=28080 ;;
+		*) die "Choose chroma, mariadb, or backend." ;;
+	esac
+	read_saved_service_port "$service_name"
+	if [ "$3" = true ]; then
+		if [ -z "$requested_port" ]; then
+			printf '%s port (saved: %s). Enter = default %s: ' "$service_name" "${SAVED_SERVICE_PORT:-not set}" "$default_port"
+			IFS= read -r requested_port || requested_port=
+		fi
+		[ -n "$requested_port" ] || requested_port=$default_port
+	fi
+	if [ -n "$requested_port" ]; then
+		case "$requested_port" in
+			*[!0-9]*|??????*) die "$service_name port must be a number from 1 to 65535. Settings unchanged." ;;
+		esac
+		[ "$requested_port" -ge 1 ] && [ "$requested_port" -le 65535 ] || die "$service_name port must be from 1 to 65535. Settings unchanged."
+		SAVED_SERVICE_PORT=$(printf '%s' "$requested_port" | sed 's/^0*//')
+		mkdir -p "$DATA_ROOT"
+		printf '%s\n' "$SAVED_SERVICE_PORT" > "$service_port_file.tmp"
+		mv -f "$service_port_file.tmp" "$service_port_file"
+		printf 'Saved %s port: %s. Applies on next start.\n' "$service_name" "$SAVED_SERVICE_PORT" >&2
+		if [ "$service_name" = backend ]; then
+			printf 'Set the port in the RisuAI backend URL to %s after restarting Archive Center.\n' "$SAVED_SERVICE_PORT" >&2
+		fi
+	fi
+}
+
+configure_service_ports() {
+	if [ "$CONFIGURE_PORTS" = true ]; then
+		if [ -z "$PORT_SERVICE" ]; then
+			printf 'Archive Center - service ports\n  1. ChromaDB (8000)\n  2. MariaDB (3307)\n  3. Go backend (28080)\n  0. Exit\nSelect a service: '
+			IFS= read -r selection || selection=
+			case "$selection" in
+				1) PORT_SERVICE=chroma ;;
+				2) PORT_SERVICE=mariadb ;;
+				3) PORT_SERVICE=backend ;;
+				0|'') exit 0 ;;
+				*) die "Choose 1, 2, 3, or 0." ;;
+			esac
+		fi
+		case "$PORT_SERVICE" in
+			chroma) menu_port=$REQUESTED_CHROMA_PORT ;;
+			mariadb) menu_port=$REQUESTED_MARIADB_PORT ;;
+			backend) menu_port=$REQUESTED_BACKEND_PORT ;;
+			*) die "Choose chroma, mariadb, or backend." ;;
+		esac
+		configure_service_port "$PORT_SERVICE" "$menu_port" true
+		printf 'Database location unchanged. Start Archive Center with your usual launcher.\n'
+		exit 0
+	fi
+	configure_service_port chroma "$REQUESTED_CHROMA_PORT" false
+	if local_chromadb_requested && [ -n "$SAVED_SERVICE_PORT" ]; then
+		AC_CHROMA_ENDPOINT="http://127.0.0.1:$SAVED_SERVICE_PORT"
+	fi
+	configure_service_port mariadb "$REQUESTED_MARIADB_PORT" false
+	[ -z "$SAVED_SERVICE_PORT" ] || MARIADB_PORT=$SAVED_SERVICE_PORT
+	configure_service_port backend "$REQUESTED_BACKEND_PORT" false
+	[ -z "$SAVED_SERVICE_PORT" ] || AC_BIND_ADDR="${AC_BIND_ADDR%:*}:$SAVED_SERVICE_PORT"
+}
+
 ensure_termux_proot_chromadb() {
 	if ! has_cmd proot-distro; then
 		if has_cmd pkg && [ "$NO_INSTALL" != "true" ]; then
@@ -958,6 +1045,9 @@ print_preflight() {
   "arch": "$arch",
   "package_root": "$(json_escape "$PACKAGE_ROOT")",
   "runtime_dir": "$(json_escape "$RUNTIME_DIR")",
+  "mariadb_port": "$MARIADB_PORT",
+  "backend_bind": "$(json_escape "$AC_BIND_ADDR")",
+  "chroma_endpoint": "$(json_escape "$AC_CHROMA_ENDPOINT")",
   "mariadb_present": $(json_bool "$mariadb_present"),
   "chromadb_present": $(json_bool "$chromadb_present"),
   "normal_user_manual_mariadb_required": false,
@@ -969,6 +1059,11 @@ EOF
 PLATFORM=${ARCHIVE_CENTER_PLATFORM:-}
 REQUESTED_RUNTIME_PROFILE=${AC_RUNTIME_PROFILE:-}
 REQUESTED_VECTOR_MODE=${AC_VECTOR_MODE:-}
+CONFIGURE_PORTS=false
+PORT_SERVICE=
+REQUESTED_MARIADB_PORT=
+REQUESTED_BACKEND_PORT=
+REQUESTED_CHROMA_PORT=
 PREFLIGHT=false
 INSTALL_ONLY=false
 NO_INSTALL=false
@@ -992,6 +1087,35 @@ while [ "$#" -gt 0 ]; do
 		--vector-mode)
 			[ "$#" -ge 2 ] || die "missing value for --vector-mode"
 			REQUESTED_VECTOR_MODE=$2
+			shift 2
+			;;
+		--configure-ports)
+			CONFIGURE_PORTS=true
+			shift
+			;;
+		--port-service)
+			[ "$#" -ge 2 ] || die "missing value for --port-service"
+			PORT_SERVICE=$2
+			shift 2
+			;;
+		--mariadb-port)
+			[ "$#" -ge 2 ] || die "missing value for --mariadb-port"
+			REQUESTED_MARIADB_PORT=${2:-3307}
+			shift 2
+			;;
+		--backend-port)
+			[ "$#" -ge 2 ] || die "missing value for --backend-port"
+			REQUESTED_BACKEND_PORT=${2:-28080}
+			shift 2
+			;;
+		--configure-chroma-port)
+			CONFIGURE_PORTS=true
+			PORT_SERVICE=chroma
+			shift
+			;;
+		--chroma-port)
+			[ "$#" -ge 2 ] || die "missing value for --chroma-port"
+			REQUESTED_CHROMA_PORT=${2:-8000}
 			shift 2
 			;;
 		--preflight)
@@ -1140,6 +1264,7 @@ LIFETIME_HELPER="$SCRIPT_DIR/process-lifetime.py"
 [ -f "$LIFETIME_HELPER" ] || die "process lifetime helper was not found: $LIFETIME_HELPER"
 MARIADB_PORT=${AC_MARIADB_PORT:-3307}
 AC_BIND_ADDR=${AC_BIND_ADDR:-0.0.0.0:28080}
+configure_service_ports
 if [ "$AC_VECTOR_MODE" = "external" ]; then
 	[ -n "${AC_CHROMA_ENDPOINT:-}" ] || die "AC_CHROMA_ENDPOINT is required for vector_external"
 elif local_chromadb_requested; then

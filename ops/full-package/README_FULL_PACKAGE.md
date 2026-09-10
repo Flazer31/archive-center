@@ -29,6 +29,19 @@ managed ChromaDB runtime by default, or it can verify a configured external
 ChromaDB endpoint. Startup stops if the endpoint and its upsert/readback/delete
 round trip cannot be verified.
 
+## 서비스 포트 변경
+
+`06_change_port_windows.bat`를 열고 ChromaDB / MariaDB / Go 백엔드 중
+변경할 서비스를 선택한 다음 포트를 입력하세요. 기존 파일 이름을 유지하며 세 서비스를 모두 지원합니다.
+**포트 입력을 비우고 Enter를 누르면 선택한 서비스의 기본값으로 복원**합니다.
+기본값은 ChromaDB **8000**, MariaDB **3307**, Go 백엔드 **28080**입니다.
+
+저장 후 실행 중인 AC를 평소 방법으로 종료하고 `01` 실행기를 다시 열면 적용됩니다.
+메뉴 자체는 서버를 시작하거나 종료하지 않습니다. DB 위치와 기존 기억은 유지됩니다.
+Go 백엔드 포트를 바꾼 경우 RisuAI 설정에 저장된 백엔드 URL의 포트도 맞춰주세요.
+MariaDB와 ChromaDB의 변경 포트는 실행기에서 Go의 DB 연결 주소에 함께 반영합니다.
+
+
 ## Start
 
 Double-click:
@@ -37,7 +50,7 @@ Double-click:
 01_start_archive_center_windows.bat
 ```
 
-The launcher binds the backend to `0.0.0.0:28080`, so the same file works for both same-PC and remote-browser use.
+The default backend bind address is `0.0.0.0:28080`. Saved backend ports apply on startup while retaining the configured host.
 It creates `.env.full.local` if it does not exist, prepares or starts the
 separate per-user MariaDB runtime, applies schema migrations, and starts the Go
 backend. It does not install a Windows service or require administrator rights.

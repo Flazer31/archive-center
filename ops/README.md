@@ -1,6 +1,6 @@
 # Ops
 
-Current source: **4.3.0 stable**, release verification in progress. See [release record](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+Current source: **4.3.1 stable**. See [release status and verification](../docs/archive-center-4.3.1-release-verification.md). Prior test-build entries below are historical evidence.
 
 Previous test-package snapshot (2026-09-09): active packaging, preflight and recovery tools. Latest local
 Windows test package: [4.3.0-test.23](../docs/archive-center-4.3-test-build-23.md).

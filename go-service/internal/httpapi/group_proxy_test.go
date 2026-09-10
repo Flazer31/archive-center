@@ -4683,7 +4683,7 @@ func TestOpenCodeAndOpenRouterProviderWireContracts(t *testing.T) {
 						t.Fatal("missing provider authentication")
 					}
 					if tc.provider == "opencode-go" {
-						if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.0" || !strings.HasPrefix(r.Header.Get("x-opencode-session"), "archive-center-") {
+						if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.1" || !strings.HasPrefix(r.Header.Get("x-opencode-session"), "archive-center-") {
 							t.Fatal("Go client/session headers missing")
 						}
 					} else if r.Header.Get("x-opencode-session") != "" {

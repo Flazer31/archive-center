@@ -65,7 +65,7 @@ func TestPrepareTurnVectorHydrationUsesVectorIDFallbackAndFiltersNonMemory(t *te
 	}
 }
 
-func TestPrepareTurnProtectedGuardDiversityKeepsVectorTopKAndIndependentLexicalMatches(t *testing.T) {
+func TestPrepareTurnProtectedGuardDiversityKeepsAllReturnedVectorCandidates(t *testing.T) {
 	memories := []store.Memory{}
 	vectorResults := []map[string]any{}
 	for i := 1; i <= 7; i++ {
@@ -107,11 +107,11 @@ func TestPrepareTurnProtectedGuardDiversityKeepsVectorTopKAndIndependentLexicalM
 		t.Fatalf("actual memory count = %d, want 12: %#v", got, assembly.Counts)
 	}
 	policy := mapFromAny(assembly.Counts["memory_recall_lane_policy"])
-	if got := intFromAny(policy["actual_memory_vector_selected"], 0); got != 10 {
-		t.Fatalf("vector actual memory count = %d, want 10: %#v", got, policy)
+	if got := intFromAny(policy["actual_memory_vector_selected"], 0); got != len(memories)-7 {
+		t.Fatalf("vector actual memory count = %d, want every public returned hit: %#v", got, policy)
 	}
-	if got := intFromAny(policy["exact_phrase_selected_count"], 0); got != 2 {
-		t.Fatalf("exact phrase count = %d, want 2 non-vector matches after dedupe: %#v", got, policy)
+	if got := intFromAny(policy["exact_phrase_selected_count"], 0); got != 0 {
+		t.Fatalf("exact phrase count = %d, want zero because both matches already arrived as vectors: %#v", got, policy)
 	}
 	if policy["protected_candidates_consume_actual_memory_target"] != false {
 		t.Fatalf("protected candidates consumed actual-memory target: %#v", policy)
@@ -558,7 +558,7 @@ func TestPrepareTurnTopKPrioritizesRelevantMemoryOverRecentTail(t *testing.T) {
 	}
 
 	counts := injectionPack["counts"].(map[string]any)
-	if counts["top_k_memory_target"] != float64(3) || counts["recent_memory_bound"] != float64(0) || counts["relevant_memory_bound"] != float64(3) {
+	if intFromAny(counts["top_k_memory_target"], 0) <= 3 || counts["recent_memory_bound"] != float64(0) || counts["relevant_memory_bound"] != float64(3) {
 		t.Fatalf("topK/recent counts mismatch: %+v", counts)
 	}
 
@@ -586,7 +586,7 @@ func TestPrepareTurnTopKPrioritizesRelevantMemoryOverRecentTail(t *testing.T) {
 	}
 	trace := recall["trace"].(map[string]any)
 	laneTrace := trace["r2_recall_lanes"].(map[string]any)
-	if laneTrace["top_k_memory_target"] != float64(3) || laneTrace["recent_memory_count"] != float64(0) || laneTrace["relevant_memory_count"] != float64(3) {
+	if laneTrace["top_k_memory_target"] != counts["top_k_memory_target"] || laneTrace["recent_memory_count"] != float64(0) || laneTrace["relevant_memory_count"] != float64(3) {
 		t.Fatalf("trace topK/recent mismatch: %+v", laneTrace)
 	}
 }

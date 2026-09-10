@@ -1,22 +1,36 @@
 # Archive Center 4.4 리팩터링·의미 통합 실행 계획
 
 상태: `PLANNED` / `VERSION_ASSIGNED_PLAN`  
-작성일: 2026-09-07 / 기준 갱신: 2026-09-08  
+작성일: 2026-09-07 / 기준 갱신: 2026-09-10 — 4.3.1 기억 기준 고정, 4.3.0 공개 기반 승계
+
 범위: 4.4-A~E의 향후 파일별 작업과 검증 순서. 이 문서 작성은 구현·테스트·배포를 수행하지 않는다.
+
+## 2026-09-10 — 4.3.1 기억 기준선 인계
+
+[기본 기억 회수·후보 선정 복원](archive-center-memory-recall-restoration-plan.md)은 별도로 구현한
+`implemented_unverified` 작업이다. 검색당 후보 확보량과 합친 결과의 재절단, 사실 후보 구성 순서,
+어휘 회수, 요약 전체 오감점, 공개/전처리 후보 연결을 수정했다. 현재 기준 패키지는 `4.3.1-test.4`다.
+사용자 결정으로 [4.3.1 보존 기준](archive-center-memory-recall-restoration-plan.md#memory-baseline-431)을 고정한다.
+구버전 공통 재검사와 test.4의 긴 질의 조립·단어 순서 검사도 함께 인계한다.
+이 의도된 동작 수정을 4.4-A~C의 동작 보존 리팩터링으로 섞지 않는다. 세 `memory_recall_restoration*_test.go`의
+검색·후보·최종 주입, 10가지 옵션/실패 조합, 조회량 비교 자료를 4.4-A 기준으로 인계한다.
+실제 RisuAI 결과는 별도 확인하며, 재현된 결함 자체를 보존할 정답으로 고정하지 않는다.
+4.4 이후의 기능 순서는 유지한다. 이 문서의 4.4 구현 완료를 뜻하지 않는다.
 
 ## 1. 출발점과 버전 경계
 
 - 계획 권위는 [통합 로드맵의 4.4](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md)이며, 이 문서는 실행 항목을 구체화한다.
-- 현재 문서 기준은 활성 `source/`와 로컬 test.21 패키지이다. 4.3 전체 완료나 live 검증 완료를 전제하지 않는다.
+- 기억 동작의 고정 비교 출발점은 **4.3.1(test.4)**이다. 공개 `v4.3.0` / `51d901b`의 test.23·OpenCode Zen/Go·배포 결과는 별도 공개 기반으로 승계한다.
+- [정식 인계표](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#stable-43-handoff)가 완료 기반/미래 기능을 구분한다. [배포 기록](archive-center-4.3.0-release-verification.md)의 패키지·업데이트 증거와 실제 RisuAI 기억 품질은 별개다.
 - [test.12 기록](archive-center-4.3-test-build-12.md)의 병렬 보충검색·pristine 후보 재사용·검색 시간 분리는 이미 반영된 기준선이다.
-- [4.3 상태 요약](archive-center-4.3-status-summary.md)에서 구현 범위와 잔여 검증을 확인한 뒤 실제 4.4 기준선을 다시 확정한다.
-- [4.3 전처리 작업 기록](archive-center-4.3-preprocessing-work-log.md)과 test.7~21 기록은 근거 위치를 찾는 색인으로 사용한다.
+- [현재 상태 요약](archive-center-4.3-status-summary.md)에서 구현 범위·잔여 검증과 착수 소스를 확인한다. 착수 시점이 바뀌어도 4.3.1 기억 기준과의 비교를 유지한다.
+- [4.3 전처리 작업 기록](archive-center-4.3-preprocessing-work-log.md)과 test.7~23 및 정식 릴리스 기록은 근거 위치를 찾는 색인으로 사용한다.
 - 실제 4.4 시작 시 HEAD, dirty diff, 적용 설정, 활성 package/loaded Host 식별을 다시 기록한다. 문서 작성 시점의 상태를 재사용하지 않는다.
 - 4.4-A~C의 리팩터링은 같은 입력에 대한 기존 결과·부작용·실패 의미 보존이 목적이다.
 - 4.4-D의 cross-surface 의미 통합은 전달 표현과 중복 처리의 **의도된 동작 변경**이다. 리팩터링 동등성 검사와 별도 계약·사례로 검증한다.
 - 4.4-E는 두 작업의 결합을 확인한다. 어느 한쪽의 성공으로 다른 쪽의 미검증 항목을 완료 처리하지 않는다.
 
-### 2026-09-08 기준선 추가
+### 4.3.1이 승계한 4.3 정식의 기억 동작 (2026-09-08 수정 포함)
 
 test.18부터 포함된 `priority_score.static.v4`의 의미 점수 전달·독립 중요도/최근성,
 인물별 지식·공개 기록 연결, 하이파 원문 하나당 기억 하나의 가져오기, 224px HUD와
@@ -28,6 +42,32 @@ test.21의 분류별 핵심 우선 수·남은 문자 예산 전달, 일반 주�
 각 수정의 파일/검증은 [4.3 현황](archive-center-4.3-status-summary.md)과
 [test.21 기록](archive-center-4.3-test-build-21.md)을 따른다.
 점수 보정은 상태의 실제 시점이나 표현이 다른 사실의 연결을 해결한 것으로 취급하지 않는다.
+
+### 4.3 공개 기반과 4.3.1 보완의 4.4 배정
+
+| 보존할 기능 | 4.4 담당과 검증할 동작 |
+|---|---|
+| 4.3.1의 검색 근거 합치기·후보 선구성·조사 회수·오감점 제거·조립 비용 개선 | A 기준, C 처리 동등성, D 동일 사실 통합 후 회수/원문 보존. 같은 자료에서 기본 기억과 편집자 경로를 함께 비교 |
+| test.21의 기본 기억 폭·일반 주관 기억·출처/순위 분리·보완 검색 새 참조 | A 기준, C 내부 전달, D 동일 사실 비교. 기본 OFF에서도 원문·세부사항·시점/관점 유지 |
+| test.22의 JSON 부분 활용·검색 질문 형식·담당별 순서·편집자 프롬프트·반복 출처 축소 | A의 저장 응답 재사용. C의 입력 정리 뒤 사실/요약별 순서, 사용자 편집 프롬프트 보존 |
+| 다섯 편집자·선택형 Publisher, 1차 병렬→보충 검색 합류→필요한 2차 | B 호출 옵션, C 후보/렌더. 정상 추천·추천 없음·부분 실패·보완 실패와 전처리/출판사 네 조합 비교 |
+| Endpoint·키·온도·토큰·추론/Flex·Vertex·Gemini medium·OpenCode Zen/Go·OpenRouter | B에서 같은 provider body/headers·UI 저장 의미 유지. 독립 연결/Publisher 공유를 구분 |
+| 하이파 원문별 가져오기·긴 필드 migration 013·대량 삭제/벡터 정리 | A의 저장/삭제 기대값, E의 기존 자료·원문 보존. 같은 의미를 묶는 D는 DB 원문 병합이 아님 |
+| test.23 pending 부모·보존/재발급 ID 분기·콜드스타트 상속/번역 제외 | A/E lifecycle. 미저장 응답 기억 생성과 부모 좌표 확인 구분, 일반 복사 독립성 유지 |
+| 좁은 카드 HUD·완료 펼치기·현재 생성/이전 저장·실제 경과 시간·저장 통계 | C의 RF07은 공통 I/O만 정리. 사용하지 않는 기능과 미저장 턴의 빈 통계 비표시 유지 |
+| 정식 OS 패키지·01/한 줄 신규 설치·UI 업데이트·개인 자료 보존 | E의 영향 범위별 회귀. 새 실행기나 설치 경로를 리팩터링 산출물로 추가하지 않음 |
+
+4.3의 연속성 보완은 필드별 유효 시점이나 일반 관계 그래프의 완성을 뜻하지 않는다.
+4.4는 중복 전달을 정리하고, 맥락 묶음은 4.5, 실제 항목 시점/약속은 4.6, 검색 후보/순위는
+4.7, 근거 관계와 실제 확장 회수는 4.8~4.9가 이어받는다. 5.x 이후 선택형 표현·연기는
+기본 기억의 필수 조건으로 만들지 않는다.
+
+2026-09-09 [출력 개선 재편](../../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan):
+별도 AC Ensemble Agent Integrated 제작·연동은 폐기하고 Archive Center의
+`추가 기능 → 출력 개선 → 끔 / 기본형 / 복합형`으로 계획한다. 4.4~6.0을 먼저 진행하고
+6.1~7.0 공통 기반/기본형, 7.1~8.0 복합형, 8.1~9.0 Living World 순서를 유지한다.
+4.4의 제공자·설정·조립 정리는 이후 내부 기능이 재사용할 기반이며, 이 버전의 작업 범위에
+새 후처리 호출·배역 실행을 추가하지 않는다. 기존 bridge/workbench는 이번 문서 변경으로 삭제하지 않는다.
 
 ### 기본 회상 우선 목표와 공통 비교 자료
 
@@ -72,7 +112,7 @@ test.21의 분류별 핵심 우선 수·남은 문자 예산 전달, 일반 주�
 4. Go는 정책·선택·예산·조립·저장, JS는 Host 관측·전달·실제 payload 적용·표시 확인·UI를 소유한다.
 5. MariaDB canonical source, Chroma 파생 검색, source revision·분기·시점·private owner/viewers·삭제/reroll 범위를 보존한다.
 6. 새 거부 조건·2차 조건·retry·fallback·watcher·queue·병렬 정책 경로를 리팩터링 편의로 추가하지 않는다.
-7. 최종 K·예산·출처/보안 정책을 단순화 명목으로 바꾸지 않는다. 진단 필드는 출력·저장 허용 여부를 결정하지 않는다.
+7. 검색 후보 수·분류별 핵심 우선 수·남은 문자 예산을 구분해 보존한다. 과거 최대 개수 절단을 복원하지 않는다. 진단 필드는 출력·저장 허용 여부를 결정하지 않는다.
 8. 변경 비교에서 요구하는 동등성은 개발 검증 기준이다. 이를 runtime 출력 수락 조건으로 구현하지 않는다.
 9. 파일 이동·공통화만을 위한 새 프레임워크나 서비스 계층을 만들지 않는다. 기존 함수·파일·ViewModel을 우선 정리한다.
 10. [AGENTS](../AGENTS.md), [AI_GUARDRAILS](../AI_GUARDRAILS.md), [Host/Go 경계](permanent-risu-host-backend-boundary.md), [4.0 기억 계약](4.0-memory-restoration-work-contract.md)을 적용한다.
@@ -92,6 +132,27 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 
 ## 4. 4.4-A — 기준선·검증 공백
 
+4.3.1 기억 기준의 [test.4 식별 기록](archive-center-4.3.1-test-build-4.md)과 실제 착수 HEAD·dirty diff를
+함께 기록한다. 공개 4.3.0은 배포 비교, 과거 1.0/3.9.9/4.1/4.2/4.3은 특정 장점·퇴행 사례의
+역사적 비교 자료다. 후속 버전은 4.3.1과 직전 검증 버전에 모두 비교한다. 다음 자료를 준비한 뒤 B/C를 시작한다.
+
+| 비교 묶음 | 실행 자료와 판단 |
+|---|---|
+| 기본 기억 / 출판사만 / 편집자만 / 둘 다 | 같은 원문·입력·설정·문자 예산. 후보·선정 ID/순서·주입 원문·가이드의 역할을 분리 |
+| 정상·빈 추천·일부 실패·보완 실패·로어북 빈 선택 | 기존 실제 처리 함수에 저장 응답을 재생해 fallback과 부분 결과 사용 비교 |
+| 검색 경쟁·한국어 조사·혼합 공개 근거·정리 힌트·긴 질의 | 4.3.1의 세 회수 회귀 파일과 test.4 검사 재사용. 검색 근거→사실 후보→최종 전달을 비교하고 비용 개선에 따른 후보 축소 여부 확인 |
+| 시점·관점·작은 사실·유사 거래 | D에서 합칠 동일 사실과 남길 차이를 독립 기대값으로 구분. 4.6/4.7의 잔여 과제는 별도 표시 |
+| 같은 턴 재생성 / 새 턴 진행 | 직전 실패/리롤 결과가 DB에 남은 여부와 현재/이전 저장 모드를 기록. 다른 시도끼리 오염된 입력을 동일 조건으로 간주하지 않음 |
+| 설정·공급자·lifecycle | 사용자 프롬프트/키·Endpoint, 요청 body/headers, 변경/삭제/분기·cold-start의 기존 결과 보존 |
+
+외부 AI를 다시 부르기 전에 저장 응답·경계 fixture로 처리 경로를 검증한다. 후보나 프롬프트가
+바뀐 경우 이전 녹화 응답의 성공은 새 모델 판단의 증거가 아니다. 실제 모델/Host 검증은
+변경된 기능의 대표 사례에 집중하고 호출 범위·목적·비용을 별도로 기록한다.
+동일 원문 전달이 동일한 창작 문장을 보장하지는 않으므로 최종 출력은 사실 활용과 사용자 지시를 함께 본다.
+
+아래 줄 번호는 최초 소스 조사 시점의 위치 참고다. 현재 파일·함수·호출자가 식별 기준이며,
+4.4 착수 때 이동된 위치를 다시 확인한다. 줄 번호가 달라졌다는 이유로 기능이나 시험을 새로 만들지 않는다.
+
 - 활성 `Archive Center.js`·`go-service`에서 경로와 파일을 확인하고 기존 dirty 변경의 작성자를 구분한다. 정리 목적으로 기존 변경을 되돌리지 않는다.
 - 동일 입력·설정에서 provider request, 선택 ID/순서/원문, final memory text, payload plan, source lineage, 오류 코드·호출 횟수를 캡처한다.
 - OFF, 독립/공유 connection, 빈 추천, 일부 역할 실패, 보완 실패, private/lorebook, auto/custom 예산 사례를 포함한다.
@@ -104,7 +165,7 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - `vector/vector_test.go`·`vector/mutation_fence_test.go`의 실제 delegate/wrapper와 `config/config_test.go`의 core_lite/vector profile 사례를 사용한다. HTTP 테스트 fixture인 `group_memory_part03_test.go`를 수정 대상으로 대신 잡지 않는다.
 - 이 위험을 운영 더미 기억 오염으로 단정하지 않는다. 실제 메모리 오염이나 서비스 실패는 별도 재현 증거가 있어야 하며 새 fallback이나 출력 거부 조건을 추가하지 않는다.
 - 원래 body·호출 횟수·SQL 기대값과 독립적인 실패 검출을 확보한다. production 함수를 복제해 기대값을 만드는 테스트는 보강한다.
-- 4.3의 loaded RisuAI, 실제 provider 응답 품질/시간, 전체 native OS, race-detector 미검증을 각각 유지한다.
+- 정식 배포 기록의 소스/CI/패키지/실제 Windows 업데이트 증거를 유지한다. loaded RisuAI·실제 provider 품질·모든 native 기기·race는 각각 최신 실행 기록으로 판정하고, 예전 미확인 목록을 일괄 재사용하지 않는다.
 - 아래 JS `main_*_test.go`의 위치는 `go-service/cmd/js-route-variant-smoke/`이다.
 - Go HTTP 테스트는 `go-service/internal/httpapi/`, SQL 테스트는 `go-service/internal/store/`의 활성 파일을 사용한다.
 - 알려진 검사 목록이 모두 통과한다는 가정은 하지 않는다. 실제 4.4 시작 시 기존 실패와 새 실패를 구분한다.
@@ -117,20 +178,23 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - **현재:** [turn_extraction.go:884](../go-service/internal/httpapi/turn_extraction.go#L884)의 `applyProxyOverridesFromLLMConfig()`가 extra headers/body·Flex·tier·cache를 전달한다.
 - **대상:** [group_proxy.go:294](../go-service/internal/httpapi/group_proxy.go#L294), [turn_extraction_critic.go:587](../go-service/internal/httpapi/turn_extraction_critic.go#L587) 및 867의 반복 reasoning 매핑.
 - **방법:** 동일한 선택적 config 필드 매핑을 기존 helper로 옮기고 세 호출부의 중복을 제거한다. 역할별 message/purpose·token 기본값·timeout·retry budget은 호출 owner에 남긴다.
-- `prepare_turn_multi_agent.go`의 `callMultiAgent()`는 현재 helper를 523에서 사용한다. 독립 연결과 Publisher 공유 연결의 서로 다른 기본값을 유지한 상태에서 공통 필드만 연결한다.
+- `prepare_turn_multi_agent.go::callMultiAgent()`는 기존 helper를 사용한다. 독립 연결과 Publisher 공유 연결의 서로 다른 기본값을 유지한 상태에서 공통 필드만 연결한다.
 - **호출 보존:** Publisher 단일 요청, Critic 본 추출/세계규칙 audit, specialist 양 round 모두 기존 `performProxy...` 경로를 사용한다.
 - **검증:** `group_proxy_test.go`, `group_proxy_part02_test.go`, `prepare_turn_multi_agent_test.go`의 실제 요청 body/headers를 비교한다.
 - 빈 값·미지정·명시적 0, temperature/token 값, service tier·Vertex Flex·Claude cache·extra overrides, 오류/횟수/취소를 포함한다.
+- OpenCode Zen과 Go는 별도 제공자다. 기존 model-native 경로와 명시적 Endpoint 우선, OpenRouter 기본값, 비-Claude Messages의 JSON 요청 형식을 보존한다.
+- OpenCode Go의 같은 대화 세션 헤더를 Publisher·Critic·편집자 두 round·직접 프록시에서 유지한다. 사용자 extra headers 우선과 Archive Center 자체 클라이언트 표기를 보존하며 provider 요청 식별자를 기억/턴 identity로 옮기지 않는다.
+- 정식 제공자 회귀는 실제 요청을 받는 HTTP fixture 증거다. 이 결과를 모든 모델·구독 계정의 실제 수락으로 보고하지 않는다.
 - helper 단위 검사만으로 끝내지 않고 `TestProxyReasoningContractIsSharedByPublisherAndCritic`과 등록 config/connection-test 경로를 확인한다.
 
 ### RF02 — provider 설정 폼·이벤트의 반복 표현 정리
 
 - **대상:** [Archive Center.js](../Archive%20Center.js)의 provider 옵션(84), 전처리 폼(51582), Publisher(52011), Critic(52133), `renderSettingsPanel()`(51742)·`attachSettingsEvents()` 연결(52679).
 - **방법:** 실제로 같은 옵션·필드 표현만 기존 UI 생성/바인딩 방식으로 묶고 각 역할의 저장 키·DOM ID·기본값·변경 이벤트를 명시적으로 연결한다.
-- 전처리 Flex 표시(51615)와 일반 설정 표시(53508~53591)의 Gemini 차이는 현재 의미를 가진다. 모양이 비슷하다는 이유로 표시 범위를 통합하지 않는다.
+- 전처리와 일반 설정의 Flex·추론 표시 차이는 실제 Go 전송/설정 의미와 대조한다. 모양이 비슷하다는 이유로 표시 범위를 통합하지 않는다. 저장된 백엔드 주소를 그대로 사용한다.
 - **검증:** `ops/preprocessing-ui-smoke.cjs`와 실제 `renderSettingsPanel()`/이벤트 함수를 실행한다. desktop/mobile, 편집 중 재렌더, 복원·저장·재열기·명시적 빈 값·숨겨진 값 보존을 확인한다.
 - `main_settings_loading_43_test.go`의 loading 검사는 유지하되 버튼 이벤트 stub을 저장/connection-test 검증으로 계산하지 않는다.
-- **조건부 위험 확인:** `withUiBridgeSettings()`(53350)는 async 작업 중 전역 `settings`를 임시 변경하고 `bridgeFetch()`(14222)가 이를 읽는다.
+- **조건부 위험 확인:** `withUiBridgeSettings()`(53503, 정식 소스 확인)는 async 작업 중 전역 `settings`를 임시 변경하고 `bridgeFetch()`(14222)가 이를 읽는다.
 - 겹친 UI 시험/일반 요청의 영향은 아직 확정 결함이 아니다. 재현 후 영향이 확인된 호출에 한해 기존 transport의 요청별 설정 전달로 좁혀 수정한다.
 - 이 확인을 이유로 전역 설정 체계·요청 queue·새 bridge fallback을 재설계하지 않는다.
 
@@ -139,7 +203,7 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - **대상:** JS `detectReasoningFamily()`(11212), `resolveReasoningTransport()`(11254), `resolveReasoningControls()`(11315), `applyReasoningFieldsToPayload()`(11568).
 - **Go owner:** [proxy_provider.go:138](../go-service/internal/httpapi/proxy_provider.go#L138)의 transport 및 173~223의 family/요청 변환, `runtime_config.go`와 기존 config ViewModel 응답.
 - **방법:** provider/model/endpoint 정책은 Go의 기존 결정을 사용하도록 정리하고 JS는 선택지·표시·사용자 입력 관측을 맡는다. 필요한 UI 정보는 기존 config ViewModel에서 제공한다.
-- 새 reasoning endpoint나 JS 정책 사본을 만들지 않는다. ViewModel 정보 범위와 편집 중 미저장 값 처리는 B의 request 비교로 구체화한다.
+- 정식 Gemini 3.8 Flash medium과 명시적 none/low/high, 기존 provider별 전송 차이를 비교한다. 새 reasoning endpoint나 JS 정책 사본을 만들지 않는다. ViewModel 정보 범위와 편집 중 미저장 값 처리는 B의 request 비교로 구체화한다.
 - 기존 동작이 서로 다르면 먼저 어떤 실제 경로가 어느 값을 보내는지 기록한다. 지원 모델·값·기존 오류 의미를 임의로 통일하지 않는다.
 - **검증:** JS의 실제 시험 버튼(53877~53913, 53963~53996), `main_part10_test.go:152/260`, Go `group_proxy_test.go`의 wire/family/공유 reasoning 계약을 함께 확인한다.
 - 정상 요청 body·UI 선택 가능 값·미저장 편집·backend 오류 표시를 비교한다. 정책 이전의 준비 작업은 `preparatory`로 보고한다.
@@ -153,7 +217,7 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - `prepare_turn_assembly.go:1030~1044`의 재포장과 `prepare_turn_priority_memory.go:1804~1811`의 문자열 key 해석을 순서대로 정리한다.
 - 외부 request DTO·공개 perspective shape·Store interface는 이 작업만으로 바꾸지 않는다. 관측과 내부 정책을 같은 필드로 재분류하지 않는다.
 - **호출 보존:** `/prepare-turn` → 기본 조립 → 선택적 `runMultiAgent()` → 기존 priority plan → Publisher/payload.
-- **검증:** `prepare_turn_priority_memory_test.go`의 생산 조립·독립 K·auto/custom·private metadata, `prepare_turn_candidate_pool_test.go`의 pristine/deep-copy/JSON 비노출.
+- **검증:** `prepare_turn_priority_memory_test.go`의 생산 조립·분류별 핵심 우선 수·남은 예산·auto/custom·private metadata, `prepare_turn_candidate_pool_test.go`의 pristine/deep-copy/JSON 비노출.
 - `group_turn_perf_test.go:466` 현재 logical turn 이전 generation 제외와 `group_turn_part14_test.go:83` confirmed worldline 범위를 유지한다.
 
 ### RF05 — vector 내부 hit 전달과 공개 trace 구분
@@ -174,14 +238,15 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - request 안에서 불변인 계산만 재사용한다. 후보를 임의로 줄이거나 영구 cache·새 검색·선택 경로를 만들지 않는다.
 - test.12의 후보 재해결 제거·검색 병렬화는 다시 구현하지 않는다. request-local mutex 제거를 성능 목표로 삼지 않는다.
 - **검증:** `prepare_turn_supplement_search_route_test.go:84`, `prepare_turn_multi_agent_search_test.go:17`, `prepare_turn_multi_agent_input_test.go:16/52/132/178`.
-- 모든 검색 합류 후 round two, 역할 순서의 첫 중복 소유권, F/S/L alias, 전체 항목 shared cap, AI 원문/순서·빈 추천·부분 실패를 비교한다.
+- 모든 검색 합류 후 round two, 역할 순서의 병합과 test.22의 담당별 추천 순서, 별도 summary 순서, F/S/L alias, 전체 항목 shared cap, AI 원문·빈 추천·부분 실패를 비교한다. 추가 검색의 다른 출처/값이 같은 필드라는 이유로 사라지지 않아야 한다.
 - `prepare_turn_candidate_pool_test.go`의 benchmark는 측정 도구로 사용한다. 실제 지연 개선량은 측정 전 수치나 완료 기준으로 주장하지 않는다.
 
 ### RF07 — HUD 스트림의 공통 I/O만 정리
 
 - **대상:** JS current/previous 상태(14521~14536), cancel(15835/15851), NDJSON line 소비(15909/15955), reader loop(15933/15982), start(16099/16187).
 - **방법:** 이미 같은 읽기·줄 분할·decode·reader 종료 처리만 공통화한다. current와 previous의 request ID·watch token·abort controller·카드 생명주기는 분리해 보존한다.
-- `applyTurnWorkflowHUDStack()`(15509), 기존 timer/event stream을 사용한다. 새 watcher·수신 수락 규칙·저장 판단을 추가하지 않는다.
+- `applyTurnWorkflowHUDStack()`과 기존 timer/event stream을 사용한다. 새 watcher·수신 수락 규칙·저장 판단을 추가하지 않는다.
+- 정식의 224px HUD·박스/펼치기·완료 카드 클릭·저장 없는 턴의 통계 비표시를 유지한다. wall time·역할 호출 합계를 섞지 않고, 현재 생성/이전 저장의 카드/시간/건수도 분리한다.
 - **검증:** `main_part11_test.go:795`, `main_priority_memory_42_test.go:319`, `main_hud_timing_43_test.go:11/143` 및 `turn_workflow_hud_test.go`.
 - 잘린 NDJSON·다중 chunk·취소·오래된 request·current/previous 동시 표시·OFF·timer 종료를 실제 함수로 확인한다.
 - `main_part12_test.go:1634/1990/2175`의 hook/persistence 경계도 유지한다. HUD 편의를 위해 request identity를 합치지 않는다.
@@ -206,9 +271,9 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 - `merged`, `retained_conflict`, `not_equivalent`를 전달 lineage로 설명한다. prompt에서 선택되지 않았다는 사실을 canonical 삭제로 해석하지 않는다.
 - **예정 owner:** `prepare_turn_priority_memory.go`의 source identity/사실 후보·점수, `prepare_turn_memory.go`의 출처 occurrence, `prepare_turn_memory_budget.go`의 최종 예산, `output_fidelity_lineage.go`의 관측 연결.
 - `prepare_turn_assembly.go`·`prepare_turn_render.go`는 그 결과를 기존 최종 plan/payload로 전달한다. Critic canonical writer나 Chroma를 의미 통합 저장소로 바꾸지 않는다.
-- **4.3 접점은 미구현 계약 과제:** 통합을 이미 수신한 AI 추천 뒤에 적용해 문장·순서를 조용히 대체하지 않는다.
-- 후보 family를 AI 선택 전에 제시하는 방향을 채택한다면 canonical member/source ref와 alias, 추천 순서, 원문, no-recommendation Go 선택의 의미부터 합의하고 계약으로 명시한다.
-- 이 후보 입력 변경은 RF04/RF06의 동등성 리팩터링에 숨겨 넣지 않는다. 합의 전에는 구현된 기능이나 확정된 DTO로 기재하지 않는다.
+- **4.4의 새 family 접점은 후속 계약 과제:** 4.3 편집자 연결 자체는 구현됐다. 새 통합을 이미 수신한 AI 추천 뒤에 적용해 문장·순서를 조용히 대체하지 않는다.
+- family/구성 원문을 AI 선택 전에 제시하는 방향으로 계약을 구체화한다. canonical member/source ref·F/S/L alias·추천 순서·원문·추천 없음의 Go 선택이 기존 후보와 어떻게 대응하는지 먼저 명시한다.
+- 이 후보 입력 변경은 RF04/RF06의 동등성 리팩터링에 숨겨 넣지 않는다. 상세 계약/consumer 검증 전에는 구현된 기능이나 확정된 DTO로 기재하지 않는다.
 - **검증:** 기존 priority/기억 예산/lineage 생산 함수 테스트에 같은 사건의 다중 surface와 별개 사건의 유사 문장을 대조하는 사례를 추가한다.
 - 부정·역방향 관계·다른 source occurrence·시점·owner/viewer·충돌·AI가 명시적으로 고른 서로 다른 기억을 함께 검사한다.
 - 같은 입력·예산에서 문자/token·사실 수·source coverage·필요 사실 recall을 통합 전후 비교한다. 중복 감소만으로 성공 판정하지 않는다.
@@ -220,14 +285,14 @@ RF08의 저장 함수 위치 정리는 A의 테스트 보강과 별개이며, �
 2. 실제 production 함수를 호출하는 Go/JS 회귀를 먼저 확인하고 등록 API의 provider/Store 경계 fixture로 호출·payload를 연결한다.
 3. JS 변경이 있으면 활성 source에서 `node --check "Archive Center.js"`를 수행한다. 이는 문법 증거이며 Host 실행 증거가 아니다.
 4. source/regression, package, loaded RisuAI, MariaDB/Chroma, 실제 provider, payload-applied, displayed-final을 각각 기록한다.
-5. 해당 실환경 검증이 남으면 `implemented_unverified`로 보고한다. 테스트 성공이나 문서 완료만으로 4.3/4.4 전체 완료를 선언하지 않는다.
+5. 해당 변경의 실환경 검증이 남으면 `implemented_unverified`로 보고한다. 4.3 정식 공개 사실과 새로운 4.4 기능의 검증 상태를 구분하며 테스트 성공만으로 일반적인 기억 품질 완료를 선언하지 않는다.
 6. 파일·함수별 변경 이유, JS 추가/삭제 줄 수, 검사 실행/미실행, 성능 측정의 입력·범위·한계와 남은 항목을 기록한다.
 7. architecture·ownership·contract·hook order·저장·검색·fallback 의미가 바뀌는 구현 slice는 `STRUCTURE.md`와 `AI_GUARDRAILS.md`를 함께 갱신한다.
 
 패키지 확인에는 기존 [Windows 빌더](../ops/build-full-package.ps1)·[POSIX 빌더](../ops/build-posix-managed-packages.ps1),
 [Windows 설치](../install-windows.ps1)·[POSIX 설치](../install.sh)와 OS별 실행기를 사용한다.
 Windows의 `01` 시작 파일과 Linux·macOS·Termux의 기존 한 줄 설치/실행 경로,
-업데이트 뒤 DB·키·프롬프트·역할 설정 보존을 해당 환경별로 기록한다. 교차 빌드·Windows 시험만으로
+업데이트 뒤 DB·키·프롬프트·역할 설정 보존을 해당 환경별로 기록한다. 신규 설치 두 진입점과 기존 설치의 별도 업데이트를 유지한다. 공개 4.3 배포 기록의 증거 범위를 이어받고 4.4 변경 영향만 추가 검증한다. 교차 빌드·Windows 시험만으로
 모든 OS 동작을 완료 처리하지 않는다. 설치기 수정은 리팩터링 자체의 필수 산출물이 아니며,
 확인된 패키지 영향이 있을 때 기존 소유자를 수정한다.
 
@@ -235,6 +300,10 @@ Windows의 `01` 시작 파일과 Linux·macOS·Termux의 기존 한 줄 설치/�
 legacy 전체 삭제, 기존 acceptance 강화, 새로운 자동 복구 경로는 이 계획의 실행 방법에 포함하지 않는다.
 
 ## 9. 이번 문서 작업의 증거 수준
+
+- 2026-09-09: 공개 `v4.3.0`/소스 `51d901b`와 정식 현황·배포 기록을 기준으로 4.4 이후 구성을 갱신했다. 활성 소스의 점수/전달 계약과 주요 조립·provider helper·UI 함수 위치도 확인했다.
+- 통합 로드맵이 버전 소유권 정본이며 이 문서는 4.4의 파일별 실행 상세다. 4.3 전체 기반과 미래 계획을 분리하고, 녹화 응답/실제 호출·네 조합 비교와 배포 보존을 반영했다.
+- 이번 정렬은 문서 변경뿐이다. 코드 변경·테스트 실행·빌드·새 유료 AI 호출·프로세스 조작은 없다.
 
 - 2026-09-07 활성 소스의 위치·호출 관계·기존 테스트 내용을 읽어 계획에 반영했다.
 - 구조적 중복과 결합은 소스 근거이며, `withUiBridgeSettings`·생산 대체 `vector/fake.go`의 조회 기록 동시성은 재현 전 `SUPPORTED_RISK`이다.

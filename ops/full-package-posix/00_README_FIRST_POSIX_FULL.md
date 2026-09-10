@@ -21,6 +21,33 @@ server, and Termux.
 On Termux, local ChromaDB uses a managed proot runtime, so server-side or
 external-vector deployment is still preferable when the phone feels slow.
 
+## Change service ports
+
+Append `--configure-ports` to the usual launcher and choose ChromaDB, MariaDB,
+or Go backend. Enter a port, or leave the port input empty to restore that
+service's default: **8000 / 3307 / 28080**, respectively. The menu saves and
+exits; restart Archive Center normally to apply the setting.
+
+For a standard Termux one-line installation:
+
+```sh
+sh ~/.archive-center/start.sh --configure-ports
+```
+
+For an extracted Termux package:
+`sh install-and-start-termux.sh --configure-ports`.
+Linux/macOS users append the same option to their existing start command.
+`--configure-chroma-port` still opens the ChromaDB port prompt directly.
+`--chroma-port 8001`, `--mariadb-port 3308`, and `--backend-port 28081` also
+save the requested port and start normally.
+
+Settings live in the existing data root as `chroma-port.txt`, `mariadb-port.txt`
+and `backend-port.txt`. Database paths stay the same. The launcher applies DB
+ports to both server startup and Go connection settings. External ChromaDB
+keeps its existing endpoint. After changing the Go backend port, also update
+the port in the backend URL saved in RisuAI.
+
+
 ## Start
 
 Linux:

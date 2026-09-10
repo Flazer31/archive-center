@@ -40,9 +40,11 @@ function Invoke-Json($Method, $Path, $Body = $null) {
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $packRoot
 Import-DotEnv $EnvFile
+. (Join-Path $PSScriptRoot "service-ports.ps1")
 
 if ([string]::IsNullOrWhiteSpace($BaseUrl)) {
-    $bind = if ([string]::IsNullOrWhiteSpace($env:AC_BIND_ADDR)) { "127.0.0.1:28080" } else { $env:AC_BIND_ADDR }
+    Set-ArchiveBackendEndpoint (Get-ArchiveDataRoot)
+    $bind = $env:AC_BIND_ADDR -replace '^0\.0\.0\.0:', '127.0.0.1:' -replace '^\[::\]:', '[::1]:'
     $BaseUrl = "http://$bind"
 }
 $BaseUrl = $BaseUrl.TrimEnd("/")

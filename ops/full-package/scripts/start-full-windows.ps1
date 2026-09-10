@@ -3,7 +3,12 @@ param(
     [string]$BindAddr = "",
     [string]$RuntimeProfile = "",
     [string]$VectorMode = "",
-    [int]$MariaDBPort = 3307
+    [string]$MariaDBPort = "",
+    [string]$ChromaPort = "",
+    [string]$BackendPort = "",
+    [switch]$ConfigureChromaPort,
+    [switch]$ConfigurePorts,
+    [string]$PortService = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -976,8 +981,23 @@ function Import-LegacyRuntimeDataOnce([string]$PackageRoot, [string]$DataRoot, [
     Write-Host "Legacy source data was preserved."
 }
 
+. (Join-Path $PSScriptRoot "service-ports.ps1")
+
 $packRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 Set-Location $packRoot
+
+if ($ConfigurePorts -or $ConfigureChromaPort) {
+    Import-DotEnv $EnvFile
+    if ($ConfigureChromaPort) { $PortService = "chroma" }
+    $requestedPort = switch ($PortService) {
+        "chroma" { $ChromaPort }
+        "mariadb" { $MariaDBPort }
+        "backend" { $BackendPort }
+        default { "" }
+    }
+    Show-ArchivePortMenu -DataRoot (Get-ArchiveDataRoot) -Service $PortService -Port $requestedPort
+    exit 0
+}
 
 $backendExe = Join-Path $packRoot "bin\archive-center-go.exe"
 $profileBeforeApply = if (-not [string]::IsNullOrWhiteSpace($RuntimeProfile)) {
@@ -1190,12 +1210,9 @@ if ([string]::IsNullOrWhiteSpace($localAppData)) {
     $localAppData = Join-Path $env:USERPROFILE "AppData\Local"
 }
 $managedRuntimeInstallRoot = Join-Path $localAppData "ArchiveCenter"
-$stableDataRoot = if ([string]::IsNullOrWhiteSpace($env:ARCHIVE_CENTER_DATA_DIR)) {
-    Join-Path $managedRuntimeInstallRoot "data"
-} else {
-    [System.IO.Path]::GetFullPath($env:ARCHIVE_CENTER_DATA_DIR)
-}
+$stableDataRoot = Get-ArchiveDataRoot
 $env:ARCHIVE_CENTER_DATA_DIR = [System.IO.Path]::GetFullPath($stableDataRoot)
+$MariaDBPort = Set-ArchiveServicePorts -DataRoot $stableDataRoot -ChromaPort $ChromaPort -MariaDBPort $MariaDBPort -BackendPort $BackendPort -BindAddr $BindAddr
 Import-LegacyRuntimeDataOnce -PackageRoot $packRoot -DataRoot $env:ARCHIVE_CENTER_DATA_DIR
 $mariaInstallRoot = $managedRuntimeInstallRoot
 $mariaRuntimeRoot = Join-Path $mariaInstallRoot "runtime\MariaDB"
@@ -1313,13 +1330,6 @@ try {
         $startedMariaDB = Start-ArchiveChildProcess -FilePath $mariadbd -ArgumentList $mariaArgs -WorkingDirectory $dataDir
     }
     Wait-Port $MariaDBPort 60
-
-    $dbName = "archive_center"
-    $dbUser = "archive_center"
-    $dbPassword = "archive-center-local-pass"
-    if ([string]::IsNullOrWhiteSpace($env:AC_MARIADB_DSN)) {
-        $env:AC_MARIADB_DSN = "${dbUser}:${dbPassword}@tcp(127.0.0.1:${MariaDBPort})/${dbName}?parseTime=true"
-    }
 
     if (Test-VectorRequiresChroma $env:AC_VECTOR_MODE) {
         if ($env:AC_VECTOR_MODE -eq "external") {

@@ -18,6 +18,23 @@ import (
 
 const prepareTurnPrivatePreciseMemorySearchResultsKey = "_priority_precise_memory_search_results"
 
+// Retrieval compares alternatives before the final character budget is spent.
+// 512 is a planning unit, not measured source length or a text truncation size.
+// Four windows leave room for competing/duplicate documents. Calibration tests
+// exercise this count; the policy adds no search round or model invocation.
+func prepareTurnMemoryCandidateLimit(memoryChars int) int {
+	const planningUnitChars = 512
+	const comparisonWindows = 4
+	if memoryChars <= 0 {
+		return 1
+	}
+	units := memoryChars / planningUnitChars
+	if memoryChars%planningUnitChars != 0 {
+		units++
+	}
+	return units * comparisonWindows
+}
+
 type prepareTurnRetrievalQuery struct {
 	Text   string
 	Source string
@@ -194,9 +211,15 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	shadow["preflight_issues"] = health.PreflightIssues
 	queryVector := clientMetaFloat32Vector(req.ClientMeta, "chroma_query_vector")
 	queryVectors := [][]float32{}
+	vectorQueries := []prepareTurnRetrievalQuery{}
 	queryKey := "chroma_query_vector"
 	if len(queryVector) > 0 {
 		queryVectors = append(queryVectors, queryVector)
+		if len(retrievalQueries) > 0 {
+			vectorQueries = append(vectorQueries, retrievalQueries[0])
+		} else {
+			vectorQueries = append(vectorQueries, prepareTurnRetrievalQuery{Source: "client_query_vector"})
+		}
 		shadow["query_vector_supplied_count"] = 1
 		shadow["query_history_embedding_skipped_count"] = maxInt(len(retrievalQueries)-1, 0)
 	} else {
@@ -242,6 +265,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 				continue
 			}
 			queryVectors = append(queryVectors, vectorValue)
+			vectorQueries = append(vectorQueries, query)
 			if strings.TrimSpace(resolvedModel) != "" {
 				model = strings.TrimSpace(resolvedModel)
 			}
@@ -283,7 +307,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 					continue
 				}
 			}
-			for _, searchVector := range queryVectors {
+			for queryIndex, searchVector := range queryVectors {
 				vectorStarted := time.Now()
 				sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, searchVector, sessionLimit, searchFilter(searchSessionID))
 				searchTiming.addElapsed("vector_search", vectorStarted)
@@ -299,12 +323,25 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 							key += "\x1f" + strings.TrimSpace(doc.SourceTable) + "\x1f" + strings.TrimSpace(doc.SourceRowID) + "\x1f" + strings.TrimSpace(doc.DocumentText)
 						}
 						previous, exists := resultsByID[key]
+						observations := append([]any{}, sliceFromAny(previous.Metadata["recall_queries"])...)
+						observations = append(observations, map[string]any{
+							"query": vectorQueries[queryIndex].Text, "source": vectorQueries[queryIndex].Source,
+							"query_index": queryIndex, "rank": index + 1,
+							"similarity": doc.Similarity, "similarity_observed": doc.SimilarityAvailable,
+						})
 						if !exists {
 							resultOrder = append(resultOrder, key)
 						}
 						if !exists || prepareTurnVectorDocumentRanksBefore(doc, previous) {
-							resultsByID[key] = doc
+							previous = doc
 						}
+						metadata := make(map[string]any, len(previous.Metadata)+1)
+						for name, value := range previous.Metadata {
+							metadata[name] = value
+						}
+						metadata["recall_queries"] = observations
+						previous.Metadata = metadata
+						resultsByID[key] = previous
 					}
 				case errors.Is(searchErr, vector.ErrNotFound):
 				default:
@@ -1187,7 +1224,19 @@ func prepareTurnDistinctiveRecallTerms(text string, anchors ...string) []string 
 		out = append(out, term)
 	}
 	if len(out) > 0 {
-		return out
+		forms := []string{}
+		// Forms are already lowercase tokens; preserve first-seen order without
+		// repeatedly normalizing and scanning every previously collected form.
+		formSeen := map[string]bool{}
+		for _, term := range out {
+			for _, form := range prepareTurnRecallTermForms(term) {
+				if !excluded[form] && !formSeen[form] {
+					formSeen[form] = true
+					forms = append(forms, form)
+				}
+			}
+		}
+		return forms
 	}
 	for _, term := range prepareTurnRecallTerms(text) {
 		if !excluded[term] {
@@ -1286,6 +1335,34 @@ func prepareTurnKGRecallEligible(query string, triple store.KGTriple) (bool, str
 	return false, "unrelated"
 }
 
+// Keep exact spellings and add Korean particle-free forms. This only expands
+// lexical candidates; it does not alter canonical text or entity identity.
+func prepareTurnRecallTermForms(term string) []string {
+	out := []string{term}
+	for _, suffix := range []string{"에게서는", "으로부터", "에서는", "에게서", "으로는", "까지는", "처럼", "부터", "까지", "보다", "에게", "에서", "으로", "은", "는", "이", "가", "을", "를", "와", "과", "도", "만", "로"} {
+		if !strings.HasSuffix(term, suffix) {
+			continue
+		}
+		stem := strings.TrimSuffix(term, suffix)
+		runes := []rune(stem)
+		if len(runes) < 2 {
+			continue
+		}
+		hangul := true
+		for _, r := range runes {
+			if r < '가' || r > '힣' {
+				hangul = false
+				break
+			}
+		}
+		if hangul {
+			out = append(out, stem)
+			break
+		}
+	}
+	return out
+}
+
 func prepareTurnRecallTerms(text string) []string {
 	seen := map[string]bool{}
 	out := []string{}
@@ -1296,8 +1373,12 @@ func prepareTurnRecallTerms(text string) []string {
 		if term == "" || seen[term] {
 			continue
 		}
-		seen[term] = true
-		out = append(out, term)
+		for _, form := range prepareTurnRecallTermForms(term) {
+			if !seen[form] {
+				seen[form] = true
+				out = append(out, form)
+			}
+		}
 	}
 	return out
 }
@@ -1544,9 +1625,6 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	vectorScopeRejected := 0
 	for _, item := range vectorHydration.Items {
 		protected := prepareTurnProtectedMemoryGuard(item).Active
-		if !protected && actualMemoryVectorSelectedCount >= vectorLimit {
-			continue
-		}
 		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 &&
 			len(prepareTurnMemoryCharacterAnchors(item)) > 0 &&
 			len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) == 0 {
@@ -1619,8 +1697,22 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 		evidence := prepareTurnRecallEvidence{}
 		if queryPresent {
 			evidence = prepareTurnMemoryRecallEvidence(query, item)
+			for _, raw := range sliceFromAny(vectorShadow["recall_query_texts"]) {
+				independent := prepareTurnMemoryRecallEvidence(extractionStringFromAny(raw), item)
+				if independent.Eligible {
+					evidence.Eligible = true
+					evidence.ExactPhrase = evidence.ExactPhrase || independent.ExactPhrase
+					evidence.LexicalOverlap = evidence.LexicalOverlap || independent.LexicalOverlap
+					for _, term := range independent.OverlapTerms {
+						evidence.OverlapTerms = appendUniqueMemorySearchText(evidence.OverlapTerms, term)
+					}
+				}
+			}
 			if evidence.Eligible {
 				relevance = simpleTokenSimilarity(query, prepareTurnMemoryRelevanceText(item))
+				if relevance == 0 {
+					relevance = float64(len(evidence.OverlapTerms)) / float64(maxInt(len(prepareTurnRecallTerms(query)), 1))
+				}
 				relevantCandidates++
 			} else {
 				lexicalRejectedCandidates++

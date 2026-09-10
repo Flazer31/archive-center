@@ -833,6 +833,9 @@ func vectorDocumentSearchPreview(docs []vector.VectorDocument) []map[string]any 
 			item["distance"] = doc.Distance
 			item["similarity_source"] = doc.SimilaritySource
 		}
+		if queries := sliceFromAny(doc.Metadata["recall_queries"]); len(queries) > 0 {
+			item["recall_queries"] = append([]any{}, queries...)
+		}
 		if strings.TrimSpace(doc.SearchTextPolicy) != "" {
 			item["search_text_policy"] = strings.TrimSpace(doc.SearchTextPolicy)
 		}

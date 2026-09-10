@@ -435,8 +435,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	maxInputContextChars := prepareTurnIntSetting(req.Settings.MaxInputContextChars, defaultSettings.MaxInputContextChars)
 	injectionEnabled := true
 	inputContextEnabled := true
-	memoryTopK := prepareTurnIntSetting(req.Settings.TopK, defaultSettings.TopK)
-	referenceRecallLimit := memoryTopK
+	// Legacy Top K still belongs to independent reference searches. General
+	// memory retrieval uses the request's Go-resolved memory character budget.
+	memoryTopK := prepareTurnMemoryCandidateLimit(maxInjectionChars)
+	referenceRecallLimit := prepareTurnIntSetting(req.Settings.TopK, defaultSettings.TopK)
 	if req.Settings.ReferenceRecallLimit != nil {
 		referenceRecallLimit = *req.Settings.ReferenceRecallLimit
 		if referenceRecallLimit < 0 {
@@ -496,6 +498,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		historyScope,
 	)
 	timing.addElapsed("vector_recall", vectorStartedAt)
+	vectorShadow["candidate_policy"] = "memory_budget_comparison_windows.v1"
+	vectorShadow["candidate_budget_chars"] = maxInjectionChars
 	vectorMemoryIDs, vectorEvidenceIDs := prepareTurnVectorHistoryRowIDs(vectorShadow)
 
 	// Read assembly from Store (no writes, no LLM).
@@ -1048,6 +1052,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 					shadow := s.prepareTurnVectorShadowWithPreciseCandidateLimits(r.Context(), searchReq, memoryTopK, priorityPreciseCandidateLimits, historyScope)
+					shadow["candidate_policy"] = "memory_budget_comparison_windows.v1"
+					shadow["candidate_budget_chars"] = maxInjectionChars
 					assemblyWaitStarted := time.Now()
 					searchAssemblyMu.Lock()
 					defer searchAssemblyMu.Unlock()
@@ -1056,6 +1062,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					for key, value := range assemblyPerspectiveContext {
 						searchPerspective[key] = value
 					}
+					searchPerspective[prepareTurnPriorityQuerySetContextKey] = append(append([]string{}, priorityMemoryQuerySet...), question)
 					trace := prepareTurnPreprocessingSearchTrace(shadow)
 					breakdown := trace["breakdown_ms"].(map[string]float64)
 					breakdown["assembly_wait"] = assemblyWaitMS

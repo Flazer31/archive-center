@@ -186,6 +186,11 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 	appendEvidence(parseJSONMap(storedEvidence)["evidence_excerpts"])
 	if len(publicEvidence) > 0 {
 		projected["evidence_excerpts"] = append([]string(nil), publicEvidence...)
+		// These excerpts already passed the existing item-level public projection.
+		// An absent mixed free-form summary must not hide their aggregate memory.
+		if memorySummaryFromParsed(projected) == "" {
+			projected["turn_summary"] = strings.Join(publicEvidence, " ")
+		}
 	}
 
 	summary := memorySummaryFromParsed(projected)

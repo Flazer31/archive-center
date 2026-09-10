@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.3.0
+//@display-name Archive Center 4.3.1
 //@author memory-scaffold
 //@api 3.0
-//@version 4.3.0
+//@version 4.3.1
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.3.0";
-  const BUILD_ID = "4.3.0";
+  const VERSION = "4.3.1";
+  const BUILD_ID = "4.3.1";
   const BUILD_CHANNEL = "stable";
-  const BUILD_TIME = "2026-09-09 KST";
-  const BUILD_NOTES = "Archive Center 4.3 stable: optional memory editors, broader recall, branch repair and provider support";
+  const BUILD_TIME = "2026-09-10 KST";
+  const BUILD_NOTES = "Archive Center 4.3.1 stable: restored memory recall, faster context assembly and service port settings";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -17063,7 +17063,6 @@
           max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),
           episode_interval_turns: settings.episodeIntervalTurns || DEFAULT_SETTINGS.episodeIntervalTurns,
           supervisor_enabled: !guideDisabled,
-          top_k: freshFirstTurnLightMode ? 0 : sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
           recent_conversation_reference_count: sanitizeTopKSetting(
             settings.recentConversationReferenceCount,
             DEFAULT_SETTINGS.recentConversationReferenceCount,
@@ -24439,7 +24438,7 @@
       return Array.isArray(lane.items) ? lane.items.length : 0;
     }
     let html = "";
-    html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">topK</span><span class="mo-it-dir-val">' + escapeAttr(String(topK || "?") + ' vector candidate limit') + '</span></div>';
+    html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">검색 후보 수</span><span class="mo-it-dir-val">' + escapeAttr(String(topK || "?") + ' vector candidate limit') + '</span></div>';
     html += '<div class="mo-it-dir-row"><span class="mo-it-dir-key">counts</span><span class="mo-it-dir-val">' + escapeAttr(laneDefs.map(function(def) {
       return def[1] + ":" + laneCount(def[2]);
     }).join(" / ")) + '</span></div>';
@@ -52536,11 +52535,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       </div>
       <div class="mo-settings-card mo-common-card-memory">
         <div class="mo-row mo-range-row">
-          <label>${t('settings.label.topK')}</label>
-          <input type="number" id="mo-topK" value="${s.topK}" min="1" step="1">
-          <small>${t('settings.label.topK.hint')}</small>
-        </div>
-        <div class="mo-row mo-range-row">
           <label>${t('settings.label.coreObjectiveMemoryMaxItems')}</label>
           <input type="number" id="mo-coreObjectiveMemoryMaxItems" value="${s.coreObjectiveMemoryMaxItems}" min="1" step="1">
           <small>${t('settings.label.coreObjectiveMemoryMaxItems.hint')}</small>
@@ -53773,7 +53767,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             webDirectBridgeEnabled: readChecked("mo-webDirectBridgeEnabled", false),
             requestTimeoutMs: $("mo-requestTimeoutMs").value,
             embeddingTimeout: $("mo-embeddingTimeout").value,
-            topK: $("mo-topK").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
             recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value,
             lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")
@@ -53918,7 +53911,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
           setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
-          $("mo-topK").value = settings.topK;
           $("mo-coreObjectiveMemoryMaxItems").value = settings.coreObjectiveMemoryMaxItems;
           $("mo-recentConversationReferenceCount").value = settings.recentConversationReferenceCount;
           $("mo-llmRetryCount").value = settings.llmRetryCount;

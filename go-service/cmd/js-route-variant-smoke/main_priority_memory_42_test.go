@@ -63,13 +63,15 @@ func TestArchiveCenter42PrimarySettingsPlaceRecentConversationAndLifecycleContro
 		t.Fatal("memory transport and save finalization controls must appear below embedding timeout and outside advanced settings")
 	}
 
-	topK := strings.Index(src, `id="mo-topK"`)
+	if strings.Contains(src, `id="mo-topK"`) || strings.Contains(src, `$("mo-topK")`) {
+		t.Fatal("general memory Top K must be Go-owned; removed controls must not retain save/reset DOM references")
+	}
 	coreMemory := strings.Index(src, `id="mo-coreObjectiveMemoryMaxItems"`)
 	recentConversation := strings.Index(src, `id="mo-recentConversationReferenceCount"`)
 	llmRetry := strings.Index(src, `id="mo-llmRetryCount"`)
-	if topK < 0 || coreMemory < 0 || recentConversation < 0 || llmRetry < 0 ||
-		!(topK < coreMemory && coreMemory < recentConversation && recentConversation < llmRetry) {
-		t.Fatal("recent conversation reference count must follow the Chroma and core-memory controls in primary settings")
+	if coreMemory < 0 || recentConversation < 0 || llmRetry < 0 ||
+		!(coreMemory < recentConversation && recentConversation < llmRetry) {
+		t.Fatal("recent conversation reference count must follow core-memory controls in primary settings")
 	}
 }
 

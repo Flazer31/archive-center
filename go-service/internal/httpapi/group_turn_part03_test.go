@@ -332,11 +332,8 @@ func TestSaveCriticExtractionArtifactsAppliesSoftPrune(t *testing.T) {
 	if result.Errors != 0 {
 		t.Fatalf("soft prune should not error, result=%#v", result)
 	}
-	if got := fake.updatedImportance[11]; got < 0.499 || got > 0.501 {
-		t.Fatalf("expected memory 11 importance to be softly pruned to 0.5, got %.2f updates=%#v", got, fake.updatedImportance)
-	}
-	if _, exists := fake.updatedImportance[12]; exists {
-		t.Fatalf("memory 12 should not be pruned, updates=%#v", fake.updatedImportance)
+	if len(fake.updatedImportance) != 0 {
+		t.Fatalf("unscoped cleanup hint changed stored importance: %#v", fake.updatedImportance)
 	}
 	foundAudit := false
 	for _, item := range fake.savedAuditLogs {
@@ -355,8 +352,8 @@ func TestSaveCriticExtractionArtifactsAppliesSoftPrune(t *testing.T) {
 			break
 		}
 	}
-	if !foundResolution {
-		t.Fatalf("expected supersession_resolution stale_demote audit log, got %#v", fake.savedAuditLogs)
+	if foundResolution {
+		t.Fatalf("unscoped hint created a stale_demote resolution, got %#v", fake.savedAuditLogs)
 	}
 }
 

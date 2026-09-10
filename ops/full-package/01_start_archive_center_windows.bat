@@ -18,18 +18,17 @@ echo.
 echo  RisuAI plugin file:
 echo    Archive Center.js
 echo.
-echo  Backend URL:
+echo  Default backend URL:
 echo    Same PC:       http://127.0.0.1:28080
 echo    Remote device: http://SERVER_IP_OR_DOMAIN:28080
 echo.
-echo  The backend listens on 0.0.0.0:28080 so the same launcher
-echo  works for both local and remote RisuAI browsers.
+echo  Saved port settings apply on startup. The actual address is shown below.
 echo  To stop, press Ctrl+C. At the Archive Center prompt choose Y.
 echo  Choose N there to keep every managed service running.
 echo.
 echo ============================================================
 echo.
-powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-full-windows.ps1" -RuntimeProfile "full_local" -VectorMode "bundled" -BindAddr "0.0.0.0:28080"
+powershell -NoProfile -ExecutionPolicy Bypass -File ".\scripts\start-full-windows.ps1" -RuntimeProfile "full_local" -VectorMode "bundled"
 set "ARCHIVE_CENTER_EXIT_CODE=%ERRORLEVEL%"
 if not "%ARCHIVE_CENTER_EXIT_CODE%"=="0" (
   echo.

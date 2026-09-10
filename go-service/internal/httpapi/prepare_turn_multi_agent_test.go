@@ -903,7 +903,7 @@ func TestOpenCodeGoPreprocessingSessionBothRounds(t *testing.T) {
 	var mu sync.Mutex
 	sessions := []string{}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.0" {
+		if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.1" {
 			t.Error("missing client identity")
 		}
 		mu.Lock()

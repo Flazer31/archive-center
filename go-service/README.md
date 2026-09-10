@@ -1,6 +1,11 @@
 # Go Service
 
-Current source: **4.3.0 stable**, release verification in progress. See [release record](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+Current source version identifier: **4.3.1 stable**, retaining the verified test.4 memory and service-port changes.
+See the [4.3.1 release record](../docs/archive-center-4.3.1-release-verification.md).
+The fixed memory behavior baseline for future work is **4.3.1**: see the
+[preservation criteria](../docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431) and
+[current status](../docs/archive-center-4.3-status-summary.md). Public 4.3.0 remains the
+[release/update reference](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
 
 Previous test-package snapshot (2026-09-09): active Archive Center 4.3 source, packaged in the local
 Windows `4.3.0-test.23` build. The public release record remains 4.2.0.

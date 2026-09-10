@@ -130,6 +130,7 @@ type prepareTurnPriorityFactSeed struct {
 	SourceSelectionScore         float64
 	SourceSelectionScoreObserved bool
 	SourceSelectionScoreIsVector bool
+	RecallQueries                []any
 	SemanticSimilarity           float64
 	SemanticSimilarityObserved   bool
 	SemanticUnitID               string
@@ -175,6 +176,7 @@ type prepareTurnPriorityMemoryCandidate struct {
 	SourceSelectionScore         float64
 	SourceSelectionScoreObserved bool
 	SourceSelectionScoreIsVector bool
+	RecallQueries                []any
 	EntityKey                    string
 	FactFamilyKey                string
 	FactValueKey                 string
@@ -1012,48 +1014,53 @@ func prepareTurnPriorityDistinctFacts(facts []prepareTurnPriorityMemoryFact) []p
 	return out
 }
 
-func appendPrepareTurnPriorityMemoryFactSeeds(out *prepareTurnInjectionAssembly, memories []store.Memory) {
+func appendPrepareTurnPriorityMemoryFactSeeds(out *prepareTurnInjectionAssembly, selection prepareTurnMemoryLaneSelection, vectorShadow map[string]any) {
 	if out == nil {
 		return
 	}
-	byRow := map[string]store.Memory{}
-	for _, item := range memories {
-		byRow[fmt.Sprint(prepareTurnMemorySourceRowID(item))] = item
+	// Source-valid public vector hits become facts before summary rendering,
+	// together with the independently admitted lexical/recent/deep candidates.
+	hits := prepareTurnVectorMemorySearchResultMaps(vectorShadow)
+	pool := append([]store.Memory{}, selection.VectorRelevant...)
+	pool = append(pool, selection.Relevant...)
+	pool = append(pool, selection.Recent...)
+	pool = append(pool, selection.Deep...)
+	observations := map[int64][]any{}
+	for _, hit := range hits {
+		observations[prepareTurnVectorMemoryRowID(hit)] = sliceFromAny(hit["recall_queries"])
 	}
-	for _, raw := range prepareTurnMemoryLineageSlice(out.MemoryDeliveryLineage["items"]) {
-		lineage := mapFromAny(raw)
-		if !boolFromAny(lineage["delivered"]) || boolFromAny(lineage["protected_guard"]) {
+	seen := map[string]bool{}
+	for _, item := range pool {
+		key := prepareTurnMemoryLaneKey(item)
+		if seen[key] {
 			continue
 		}
-		rowKey := fmt.Sprint(lineage["source_row_id"])
-		item, ok := byRow[rowKey]
+		seen[key] = true
+		projected, ok := publicMemoryFromCanonical(item)
 		if !ok {
 			continue
 		}
+		item = projected
 		facts, projectionSource := prepareTurnPriorityFactsFromMemory(item)
-		if len(facts) == 0 {
-			facts = prepareTurnPrioritySplitFact(extractionStringFromAny(lineage["final_text"]))
-			projectionSource = "memory_rendered_line"
-		}
+		turnSummary := prepareTurnMemorySummary(item)
 		metadata := prepareTurnPrioritySourceMetadata{
 			Lane: "event_recent", SourceTable: "memories", Tier: "required",
-			LineKey:     prepareTurnPriorityCleanLine(extractionStringFromAny(lineage["final_text"])),
-			SourceRowID: lineage["source_row_id"], SourceOccurrence: strings.TrimSpace(extractionStringFromAny(lineage["source_occurrence_key"])),
-			SourceTurn: intFromAny(lineage["turn_index"], item.TurnIndex),
-			Importance: prepareTurnPriorityNormalizeScore(item.Importance), ImportancePresent: item.Importance > 0,
-			Visibility: "public_projection",
-		}
-		turnSummary := prepareTurnMemorySummary(item)
-		if strings.TrimSpace(turnSummary) == "" {
-			turnSummary = extractionStringFromAny(lineage["final_text"])
+			LineKey:     prepareTurnPriorityCleanLine(turnSummary),
+			SourceRowID: prepareTurnMemorySourceRowID(item), SourceOccurrence: prepareTurnMemorySourceOccurrenceKey(item),
+			SourceTurn: item.TurnIndex, Importance: prepareTurnPriorityNormalizeScore(item.Importance),
+			ImportancePresent: item.Importance > 0, Visibility: "public_projection",
 		}
 		start := len(out.PriorityFactSeeds)
 		appendPrepareTurnPriorityFactSeeds(out, metadata, turnSummary, facts, projectionSource)
-		sourceScore := prepareTurnPriorityNormalizeScore(extractionFloatFromAny(lineage["selection_score"], 0))
+		score, vectorHit := selection.VectorScores[key]
+		if !vectorHit {
+			score = selection.RelevantScores[key]
+		}
 		for index := start; index < len(out.PriorityFactSeeds); index++ {
-			out.PriorityFactSeeds[index].SourceSelectionScore = sourceScore
-			out.PriorityFactSeeds[index].SourceSelectionScoreObserved = sourceScore > 0
-			out.PriorityFactSeeds[index].SourceSelectionScoreIsVector = boolFromAny(lineage["vector_hit"])
+			out.PriorityFactSeeds[index].SourceSelectionScore = prepareTurnPriorityNormalizeScore(score)
+			out.PriorityFactSeeds[index].SourceSelectionScoreObserved = score > 0
+			out.PriorityFactSeeds[index].SourceSelectionScoreIsVector = vectorHit
+			out.PriorityFactSeeds[index].RecallQueries = append([]any{}, observations[item.ID]...)
 		}
 	}
 }
@@ -1395,6 +1402,7 @@ func prepareTurnPriorityCandidateMap(candidate prepareTurnPriorityMemoryCandidat
 			"source_selection_score":                        candidate.SourceSelectionScore,
 			"source_selection_score_observed":               candidate.SourceSelectionScoreObserved,
 			"source_selection_score_is_vector":              candidate.SourceSelectionScoreIsVector,
+			"recall_queries":                                candidate.RecallQueries,
 			"source_selection_score_used_as_fact_relevance": false,
 		},
 	}
@@ -1637,8 +1645,8 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 			SemanticUnitID: strings.TrimSpace(seed.SemanticUnitID), SemanticSimilaritySource: strings.TrimSpace(seed.SemanticSimilaritySource),
 			ImportanceSource: importanceSource, SourceSelectionScore: seed.SourceSelectionScore,
 			SourceSelectionScoreObserved: seed.SourceSelectionScoreObserved,
-			SourceSelectionScoreIsVector: seed.SourceSelectionScoreIsVector,
-			EntityKey:                    entityKey, FactFamilyKey: fact.FamilyKey, FactValueKey: fact.ValueKey,
+			SourceSelectionScoreIsVector: seed.SourceSelectionScoreIsVector, RecallQueries: append([]any{}, seed.RecallQueries...),
+			EntityKey: entityKey, FactFamilyKey: fact.FamilyKey, FactValueKey: fact.ValueKey,
 			LifecycleKey: fact.LifecycleKey, LifecycleTransition: fact.LifecycleTransition,
 			SpeakerSurface: fact.SpeakerSurface, LocationSurface: fact.LocationSurface, StorylineSurface: fact.StorylineSurface,
 		})

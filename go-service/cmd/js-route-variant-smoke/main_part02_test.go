@@ -566,9 +566,9 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 4.3.0",
-		`const VERSION = "4.3.0";`,
-		`const BUILD_ID = "4.3.0";`,
+		"//@version 4.3.1",
+		`const VERSION = "4.3.1";`,
+		`const BUILD_ID = "4.3.1";`,
 		`const BUILD_CHANNEL = "stable";`,
 		`"settings.title": ` + "`Archive Center ${VERSION}`",
 		`<h2>Archive Center</h2>`,

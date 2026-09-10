@@ -511,79 +511,16 @@ func (s *Server) applyCriticSoftPrune(ctx context.Context, sid string, turnIndex
 		result.Warnings = append(result.Warnings, "soft_prune_disabled")
 		return
 	}
-	updater, ok := s.Store.(memoryImportanceUpdater)
-	if !ok {
-		result.Warnings = append(result.Warnings, "soft_prune_update_not_supported")
-		return
-	}
-	memories, err := s.Store.ListMemories(ctx, sid, 0, 0)
-	if err != nil {
-		result.Warnings = append(result.Warnings, "soft_prune_list_failed")
-		return
-	}
-	pruned := []map[string]any{}
-	for _, target := range targets {
-		keyword := strings.ToLower(strings.TrimSpace(target))
-		if keyword == "" {
-			continue
-		}
-		for _, mem := range memories {
-			if mem.ID <= 0 || mem.Importance <= 0.1 {
-				continue
-			}
-			if !strings.Contains(strings.ToLower(mem.SummaryJSON), keyword) {
-				continue
-			}
-			oldImportance := mem.Importance
-			newImportance := oldImportance - 0.2
-			if newImportance < 0.1 {
-				newImportance = 0.1
-			}
-			result.trySave("UpdateMemoryImportance", func() error {
-				return updater.UpdateMemoryImportance(ctx, sid, mem.ID, newImportance)
-			}, result, func() {
-				pruned = append(pruned, map[string]any{
-					"id":      mem.ID,
-					"old":     oldImportance,
-					"new":     newImportance,
-					"keyword": keyword,
-				})
-			})
-		}
-	}
-	if len(pruned) == 0 {
-		return
-	}
+	// Unscoped textual hints describe editorial intent, not a memory-row identity.
+	// Keep the hint without lowering every fact sharing the matching summary.
 	result.trySave("SaveAuditLog(soft_prune)", func() error {
 		return s.Store.SaveAuditLog(ctx, &store.AuditLog{
-			ChatSessionID: sid,
-			EventType:     "soft_prune",
-			TargetType:    "turn",
-			TargetID:      int64(turnIndex),
-			Summary:       fmt.Sprintf("Soft prune: %d memories, turn %d", len(pruned), turnIndex),
-			DetailsJSON:   mustCompactJSON(map[string]any{"pruned": pruned, "targets": targets}),
-			Source:        "critic",
-			CreatedAt:     now,
+			ChatSessionID: sid, EventType: "soft_prune", TargetType: "turn",
+			TargetID: int64(turnIndex), Summary: "Critic cleanup hints recorded without row-wide demotion",
+			DetailsJSON: mustCompactJSON(map[string]any{"targets": targets, "policy": "record_hint_preserve_memory_importance"}),
+			Source:      "critic", CreatedAt: now,
 		})
 	}, result, func() {})
-	for _, item := range pruned {
-		memoryID, _ := item["id"].(int64)
-		if memoryID <= 0 {
-			continue
-		}
-		keyword, _ := item["keyword"].(string)
-		s.saveSupersessionResolutionBestEffort(ctx, store.SupersessionResolutionDecision{
-			ChatSessionID:   sid,
-			TargetType:      "memory",
-			TargetID:        memoryID,
-			SourceTurn:      turnIndex,
-			ResolutionClass: "stale_demote",
-			RelationshipKey: keyword,
-			Reason:          "critic_prune_target",
-			EvidenceJSON:    mustCompactJSON(item),
-			Operator:        "critic",
-		}, now, result)
-	}
 }
 
 func (s *Server) saveSupersessionResolutionBestEffort(ctx context.Context, decision store.SupersessionResolutionDecision, now time.Time, result *artifactSaveResult) {
