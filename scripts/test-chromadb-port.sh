@@ -26,7 +26,7 @@ for platform in linux macos termux; do
     mkdir -p "$TEMP_ROOT/replacement/bin" "$TEMP_ROOT/replacement/migrations"
     cp "$package/bin/"* "$TEMP_ROOT/replacement/bin/"
     cp "$package/migrations/001_schema.sql" "$TEMP_ROOT/replacement/migrations/"
-    ARCHIVE_CENTER_PACKAGE_ROOT="$TEMP_ROOT/replacement" run --preflight > "$TEMP_ROOT/replaced"
+    (export ARCHIVE_CENTER_PACKAGE_ROOT="$TEMP_ROOT/replacement"; run --preflight) > "$TEMP_ROOT/replaced"
     grep -q '"chroma_endpoint": "http://127.0.0.1:8001"' "$TEMP_ROOT/replaced" || fail 'package change lost saved setting'
     printf '\n' | run --configure-chroma-port > "$TEMP_ROOT/reset-empty"
     [ "$(cat "$ARCHIVE_CENTER_DATA_DIR/chroma-port.txt")" = 8000 ] || fail 'empty input did not restore default'
@@ -59,11 +59,12 @@ for platform in linux macos termux; do
         [ "$(cat "$ARCHIVE_CENTER_DATA_DIR/$service-port.txt")" = "$default" ] || fail 'EOF did not restore default'
         run "--$service-port" "$value" --preflight > "$TEMP_ROOT/port-preflight"
     done
-    AC_BIND_ADDR='[::]:28080' run --preflight > "$TEMP_ROOT/services"
+    # Scope temporary fixture environment to this probe on every POSIX shell.
+    (export AC_BIND_ADDR='[::]:28080'; run --preflight) > "$TEMP_ROOT/services"
     grep -Fq '"mariadb_port": "3311"' "$TEMP_ROOT/services" || fail 'MariaDB restart port'
     grep -Fq '"backend_bind": "[::]:28111"' "$TEMP_ROOT/services" || fail 'Backend port or IPv6 host'
-    ARCHIVE_CENTER_PACKAGE_ROOT="$TEMP_ROOT/replacement" run --preflight > "$TEMP_ROOT/services-replaced"
-    grep -Fq '"backend_bind": "0.0.0.0:28111"' "$TEMP_ROOT/services-replaced" || fail 'Backend setting lost on update'
+    (export ARCHIVE_CENTER_PACKAGE_ROOT="$TEMP_ROOT/replacement"; run --preflight) > "$TEMP_ROOT/services-replaced"
+    grep -Fq '"backend_bind": "0.0.0.0:28111"' "$TEMP_ROOT/services-replaced" || { cat "$TEMP_ROOT/services-replaced" >&2; fail 'Backend setting lost on update'; }
     [ ! -e "$ARCHIVE_CENTER_DATA_DIR/mariadb-data" ] || fail 'Configuration created DB'
 done
 
