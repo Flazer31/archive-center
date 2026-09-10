@@ -1,8 +1,10 @@
 # Archive Center AI Coding Guardrails
 
-## 2026-09-10 — 4.3.1 stable release preparation
+## 2026-09-10 — 4.3.1 stable release
 
+Published latest: **v4.3.1**, source tag `0821d69e9be9bc406bd9f0092a03398498f23b5f`.
 Active runtime identifiers and official builder defaults are **4.3.1 stable**.
+Four CI jobs, seven release ZIPs and actual public Windows 4.3.0→4.3.1 update passed.
 This packages the verified test.4 recall, context-cost and service-port changes;
 no further memory policy, prompt, schema or lifecycle change is part of promotion.
 See [release status and final verification](docs/archive-center-4.3.1-release-verification.md).

@@ -4,8 +4,8 @@ Current source version identifier: **4.3.1 stable**, retaining the verified test
 See the [4.3.1 release record](../docs/archive-center-4.3.1-release-verification.md).
 The fixed memory behavior baseline for future work is **4.3.1**: see the
 [preservation criteria](../docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431) and
-[current status](../docs/archive-center-4.3-status-summary.md). Public 4.3.0 remains the
-[release/update reference](../docs/archive-center-4.3.0-release-verification.md). Prior test-build entries below are historical evidence.
+[current status](../docs/archive-center-4.3-status-summary.md). Public **4.3.1** is the current release; the
+[4.3.0 record](../docs/archive-center-4.3.0-release-verification.md) remains historical update evidence. Prior test-build entries below are historical evidence.
 
 Previous test-package snapshot (2026-09-09): active Archive Center 4.3 source, packaged in the local
 Windows `4.3.0-test.23` build. The public release record remains 4.2.0.

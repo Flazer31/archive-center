@@ -17,18 +17,18 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 
 ## 현재 버전과 작업 문서
 
-2026-09-10 정식 배포 대상: **4.3.1**. 검증한 test.4의 기억 회수·서비스 포트·
-맥락 조립 수정을 유지하고 버전 표시를 정식으로 통일합니다.
+2026-09-10 **[4.3.1 정식 버전](https://github.com/Flazer31/archive-center/releases/tag/v4.3.1)**을 공개했습니다.
+검증한 test.4의 기억 회수·서비스 포트·맥락 조립 수정을 유지합니다.
 [구현·검증 범위](docs/archive-center-memory-recall-restoration-plan.md)와
 [설치·이전 버전 업데이트 검사](docs/archive-center-4.3.1-install-update-verification.md)를 참고하세요.
-공개 상태와 최종 파일 검증은 위 배포 기록에 별도로 표시합니다.
+OS별 ZIP 7개와 체크섬, Windows·Linux·macOS CI 4개 작업을 확인했습니다.
 
 **이후 기억 작업의 기준은 4.3.1로 고정합니다.** [보존 기준](docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431)에
 회수 폭·검색 근거·선정·중요도·전처리 선택 동작을 정리합니다. 기본 기억만 사용할 때도 이 기준을
 유지하며 이후 버전은 4.3.1 및 직전 검증 버전과 비교합니다. 현재/과거 상태와 해석 문제는 계속 개선합니다.
 
-2026-09-09: **[4.3.0 정식 버전](https://github.com/Flazer31/archive-center/releases/tag/v4.3.0)**을 공개했습니다.
-Windows의 실제 공개 4.1·4.2→4.3 관리형 업데이트를 확인했습니다.
+4.1·4.2·4.3 이전 updater에서 최종 4.3.1 패키지의 적용·복원을 검사했습니다.
+공개 후에는 별도 Windows 환경에서 실제 GitHub 4.3.0→4.3.1 다운로드·적용·재시작도 확인했습니다.
 아래 설치·업데이트 명령은 GitHub의 최신 공개 릴리스를 사용합니다.
 
 - [4.3 현황과 남은 확인](docs/archive-center-4.3-status-summary.md)

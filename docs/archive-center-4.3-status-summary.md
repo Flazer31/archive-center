@@ -1,9 +1,9 @@
 # Archive Center 4.3 작업 현황 요약
 
-Current source: **4.3.1 stable**, preserving test.4 memory recall and port changes. See the [4.3.1 release record](archive-center-4.3.1-release-verification.md) for publication status. Entries below retain their historical verification dates.
+Published current source: **4.3.1 stable**, preserving test.4 memory recall and port changes. See the [4.3.1 release record](archive-center-4.3.1-release-verification.md) for publication status. Entries below retain their historical verification dates.
 
 기준일: **2026-09-10**. 활성 소스: `source/Archive Center.js`와 `source/go-service`.
-기본 소스 식별자는 **`4.3.0`**, 새 로컬 패키지 식별자는 **`4.3.1-test.4`**다. 정식 패키지·CI·이전 버전 업데이트 검증과 공개 기록은 이전 4.3.0 범위이며, 이번 소스 변경의 공개 배포를 뜻하지 않는다. [검증 기록](archive-center-4.3.0-release-verification.md). 실제 RisuAI·제공자 검증은 별도로 남아 있다.
+현재 소스·정식 공개 패키지는 **`4.3.1`**이다. OS별 패키지와 CI, 이전 updater 적용·복원 및 실제 공개 Windows 4.3.0→4.3.1 업데이트는 [4.3.1 배포 기록](archive-center-4.3.1-release-verification.md)에 정리한다. test.4와 이전 4.3.0 항목은 당시의 검증 이력이며 실제 RisuAI·제공자 범위와 구분한다.
 아래의 완료는 해당 소스 반영과 기록된 검증 범위의 완료를 뜻한다. 실제 RisuAI에
 로드한 동일 플러그인·백엔드, 실제 제공자, 최종 표시 출력까지의 완료와 구분한다.
 최초 현황 정리는 문서 작업이었다. 이후 소스 수정과 검증은 아래 후속 갱신에서 구분한다.
