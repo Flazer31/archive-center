@@ -3,7 +3,7 @@ $repo = Split-Path $PSScriptRoot -Parent
 $launcher = Join-Path $repo 'ops/full-package/scripts/start-full-windows.ps1'
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('ac-chroma-port-' + [guid]::NewGuid().ToString('N'))
 $savedEnv = @{}
-foreach ($name in @('ARCHIVE_CENTER_DATA_DIR', 'AC_CHROMA_ENDPOINT', 'AC_VECTOR_MODE', 'AC_BIND_ADDR', 'AC_MARIADB_PORT', 'AC_MARIADB_DSN')) {
+foreach ($name in @('ARCHIVE_CENTER_DATA_DIR', 'AC_LOG_DIR', 'AC_CHROMA_ENDPOINT', 'AC_VECTOR_MODE', 'AC_BIND_ADDR', 'AC_MARIADB_PORT', 'AC_MARIADB_DSN')) {
     $savedEnv[$name] = [Environment]::GetEnvironmentVariable($name, 'Process')
 }
 function Assert($condition, $message) { if (-not $condition) { throw $message } }
@@ -13,9 +13,11 @@ try {
     Copy-Item -LiteralPath $launcher -Destination $scripts
     Copy-Item -LiteralPath (Join-Path $repo 'ops/full-package/scripts/service-ports.ps1') -Destination $scripts
     Copy-Item -LiteralPath (Join-Path $repo 'ops/full-package/scripts/windows-console-control.ps1') -Destination $scripts
-    $env:ARCHIVE_CENTER_DATA_DIR = Join-Path $tempRoot 'existing data'
+    Copy-Item -LiteralPath (Join-Path $repo 'ops/full-package/scripts/diagnostics.ps1') -Destination $scripts
+    $env:ARCHIVE_CENTER_DATA_DIR = Join-Path $tempRoot ('existing data ' + [char]0xD55C + [char]0xAE00)
+    $env:AC_LOG_DIR = Join-Path $env:ARCHIVE_CENTER_DATA_DIR 'logs'
     $envFile = Join-Path $tempRoot '.env.fixture'
-    [IO.File]::WriteAllText($envFile, "AC_VECTOR_MODE=bundled`nAC_CHROMA_ENDPOINT=http://127.0.0.1:8000`n")
+    [IO.File]::WriteAllText($envFile, "AC_VECTOR_MODE=bundled`nAC_CHROMA_ENDPOINT=http://127.0.0.1:8000`nARCHIVE_CENTER_DATA_DIR=$env:ARCHIVE_CENTER_DATA_DIR`n", [Text.UTF8Encoding]::new($false))
     # Pending-update poison: configuration must exit before update application/parsing.
     $updates = Join-Path $tempRoot 'package/.updates'
     New-Item -ItemType Directory -Force $updates | Out-Null

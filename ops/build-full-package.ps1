@@ -2,7 +2,7 @@ param(
     [string]$OutputRoot,
     [string]$PackageName = "",
     [string]$PackageKind = "managed",
-    [string]$PackageVersion = "4.3.1",
+    [string]$PackageVersion = "4.4.0",
     [string]$ChromaRuntime = "",
     [string]$CodeSigningCertThumbprint = "",
     [string]$TimestampServer = "http://timestamp.digicert.com",
@@ -134,7 +134,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
         return
     }
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.3.1" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.4.0" } else { $PackageVersion.Trim() }
     $packageLabel = if ($PackageKind -eq "managed") {
         "Archive Center $version Windows Auto Install Package"
     } else {
@@ -153,7 +153,7 @@ function Set-CopiedPackageKindText([string]$Path, [string]$PackageKind, [string]
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.3.1" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.4.0" } else { $PackageVersion.Trim() }
     $utf8NoBom = [System.Text.UTF8Encoding]::new($false)
     $patterns = @("*.md", "*.txt", "*.bat", "*.cmd", "*.ps1", "*.sh", "*.command")
     foreach ($pattern in $patterns) {
@@ -543,6 +543,7 @@ Copy-File "ops/full-package/03_run_backend.bat" "03_run_backend.bat"
 Copy-File "ops/full-package/04_protect_env_windows.bat" "04_protect_env_windows.bat"
 Copy-File "ops/full-package/05_unprotect_env_windows.bat" "05_unprotect_env_windows.bat"
 Copy-File "ops/full-package/06_change_chromadb_port_windows.bat" "06_change_port_windows.bat"
+Copy-File "ops/full-package/07_export_diagnostics_windows.bat" "07_export_diagnostics_windows.bat"
 Copy-File "ops/full-package/.env.full.example" ".env.full.example"
 Copy-Directory "ops/full-package/scripts" "scripts" @(
     "migrate-legacy-1.0-windows.ps1"
@@ -686,6 +687,7 @@ $manifest = [ordered]@{
         "04_protect_env_windows.bat",
         "05_unprotect_env_windows.bat",
         "06_change_port_windows.bat",
+        "07_export_diagnostics_windows.bat",
         "scripts",
         "tools/install-windows.ps1"
     )

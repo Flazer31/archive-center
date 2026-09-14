@@ -1,5 +1,13 @@
 # Archive Center Windows Auto Install Package
 
+## 오류 보고
+
+플러그인 **설정 → 오류·진단 보고서 → 보고서 저장**으로 최근 서버·기기 오류를 한 파일로 저장합니다.
+서버가 실행되지 않으면 **07_export_diagnostics_windows.bat**을 실행하세요. DB나 백엔드를 켜지 않고
+기존 로그를 읽어 바탕 화면에 JSON 보고서를 저장합니다. 로그 경로는 01 시작 창에 표시됩니다.
+API 키 등은 보고서에서 마스킹하며 자동 전송하지 않습니다. 새 실행기 이후의 기록이 대상입니다.
+
+
 This is the lightweight Windows auto-install package for the version recorded in
 `PACKAGE_FILE_MANIFEST.json`.
 

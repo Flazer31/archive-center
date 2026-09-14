@@ -49,18 +49,20 @@ func TestCoreObjectiveMemoryLimitAppliesAfterSelectionWithoutConsumingSupportLan
 		"_core_objective_memory_max_items_present": true,
 		"_core_objective_memory_max_items":         2,
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories,
-		nil,
-		[]store.DirectEvidence{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: memories,
+		Evidence: []store.DirectEvidence{{
 			ID: 10, ChatSessionID: sessionID, EvidenceKind: "turn_excerpt",
 			EvidenceText: "The brass key is on the desk.", TurnAnchor: 4,
 		}},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		3, 12000,
-		"Mina reviews the archived brass key, silver bell, and blue ledger.",
-		"default", nil, vectorShadow, nil, perspective,
-	)
+		TopK:        3,
+		MaxChars:    12000,
+		UserInput:   "Mina reviews the archived brass key, silver bell, and blue ledger.",
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	core := mapFromAny(assembly.MemoryDeliveryPlan["core_objective_memory"])
 	if core["status"] != "active" ||
@@ -112,10 +114,10 @@ func TestCoreObjectiveMemoryLimitDoesNotInferCrossLaneDuplicatesFromText(t *test
 		ActualMemoryText:         "Mina archived the brass key.\nMina archived the silver bell.",
 		LatestDirectEvidenceText: "Mina archived the brass key.",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_core_objective_memory_max_items_present": true,
 		"_core_objective_memory_max_items":         1,
-	})
+	}))
 	core := mapFromAny(plan["core_objective_memory"])
 	if intFromAny(core["eligible_distinct_count"], 0) != 2 ||
 		intFromAny(core["delivered_count"], 0) != 1 ||
@@ -288,10 +290,14 @@ func TestPrepareTurnDoesNotCollapseDistinctDirectEvidenceRows(t *testing.T) {
 		{ID: 1, ChatSessionID: "evidence-preservation", EvidenceKind: "turn_excerpt", EvidenceText: "Mira opened the sealed gate.", SourceTurnStart: 7, SourceTurnEnd: 7, TurnAnchor: 7},
 		{ID: 2, ChatSessionID: "evidence-preservation", EvidenceKind: "turn_excerpt", EvidenceText: "Mira broke the seal before opening the gate.", SourceTurnStart: 7, SourceTurnEnd: 7, TurnAnchor: 7},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, evidence, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		3, 9000, "Mira asks about the sealed gate.", "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Evidence:   evidence,
+		TopK:       3,
+		MaxChars:   9000,
+		UserInput:  "Mira asks about the sealed gate.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if got := intFromAny(assembly.Counts["evidence_count"], 0); got != len(evidence) {
 		t.Fatalf("distinct evidence rows were collapsed before delivery: got=%d want=%d counts=%#v", got, len(evidence), assembly.Counts)
 	}

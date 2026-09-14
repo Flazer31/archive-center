@@ -177,7 +177,7 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
-		s.TurnWorkflows.setLogicalTurn(workflowRequestID, req.TurnIndex)
+		s.TurnWorkflows.setEstimatedLogicalTurn(workflowRequestID, req.TurnIndex)
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageFinalAccepted)
 		payloadObservation := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])
 		payloadStatus := strings.TrimSpace(extractionStringFromAny(payloadObservation["payload_application_status"]))

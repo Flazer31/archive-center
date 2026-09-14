@@ -824,7 +824,14 @@ func TestPrepareTurnEpisodeDenseAnchorsSurviveSummaryText(t *testing.T) {
 			CreatedAt:               time.Unix(20, 0),
 		},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "Alice opens the sealed gate.", "wide_context_700k", nil, nil, nil)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		EpisodeSummaries: episodes,
+		TopK:             5,
+		MaxChars:         1200,
+		UserInput:        "Alice opens the sealed gate.",
+		Profile:          "wide_context_700k",
+		BudgetMode:       "auto",
+	})
 	if !strings.Contains(assembly.EpisodeText, "key_event=Alice opens the sealed gate") {
 		t.Fatalf("episode_text missing key event anchor: %s", assembly.EpisodeText)
 	}
@@ -842,7 +849,14 @@ func TestPrepareTurnEpisodeDoesNotRepeatSummaryAsKeyEvent(t *testing.T) {
 		SummaryText: "memory: Alice opens the sealed gate",
 		KeyEvents:   `["memory: Alice opens the sealed gate"]`,
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, episodes, nil, nil, nil, 5, 1200, "Alice opens the sealed gate.", "wide_context_700k", nil, nil, nil)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		EpisodeSummaries: episodes,
+		TopK:             5,
+		MaxChars:         1200,
+		UserInput:        "Alice opens the sealed gate.",
+		Profile:          "wide_context_700k",
+		BudgetMode:       "auto",
+	})
 	if strings.Contains(assembly.EpisodeText, "key_event=memory: Alice opens the sealed gate") {
 		t.Fatalf("episode summary repeated as key event: %s", assembly.EpisodeText)
 	}
@@ -1041,27 +1055,21 @@ func TestPrepareTurnCharacterBlockIncludesSpeechStyle(t *testing.T) {
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", Content: `{"present_entities":["Chloe"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{{
 			ChatSessionID:     "sess-speech",
 			CharacterName:     "Chloe",
 			StatusJSON:        `{"mood":"guarded"}`,
 			SpeechStyleJSON:   `{"default_tone":"dry","speech_notes":"short replies"}`,
 			RelationshipsJSON: `{"Hero":{"affection":35}}`,
 		}},
-		nil, nil, nil,
-		nil,
-		nil,
-		nil,
-		3, 1000,
-		"How does Chloe answer?",
-		"default",
-		nil,
-		nil,
-		nil,
-		perspective,
-	)
+		TopK:        3,
+		MaxChars:    1000,
+		UserInput:   "How does Chloe answer?",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !strings.Contains(assembly.CharacterText, "speech_style") || !strings.Contains(assembly.CharacterText, "dry") || !strings.Contains(assembly.CharacterText, "short replies") {
 		t.Fatalf("character block should include speech style guidance, got %q", assembly.CharacterText)
 	}
@@ -1118,7 +1126,15 @@ func TestPrepareTurnVectorHitsHydrateIntoMemoryLane(t *testing.T) {
 	if len(selection.Recent)+len(selection.Relevant)+len(selection.Deep) != 0 {
 		t.Fatalf("vector-selected memory should consume topK slot without duplicate fallback lanes: %#v", selection)
 	}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Where is the key?", "default", nil, vectorShadow, nil)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        1,
+		MaxChars:    2000,
+		UserInput:   "Where is the key?",
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+	})
 	if !strings.Contains(assembly.MemoryText, "[vector_relevant, turn 1") || !strings.Contains(assembly.MemoryText, "Mina hid the brass key") {
 		t.Fatalf("memory_text should expose vector_relevant lane and hydrated memory: %q", assembly.MemoryText)
 	}
@@ -1206,28 +1222,17 @@ func TestPreviousAssistantRawStaysInInputContextButCannotActivateSupportRecall(t
 		t.Fatalf("previous assistant raw missing from Input Context: %q", inputContext)
 	}
 
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 1, TurnIndex: 5, SummaryJSON: `{"turn_summary":"Mira completed the forge inspection."}`}},
-		nil,
-		nil,
-		chatLogs,
-		nil,
-		[]store.WorldRule{{ID: 9, Key: assistantOnlyAnchor, ValueJSON: `{"rule":"unrelated old passport rule"}`}},
-		[]store.CharacterState{{TurnIndex: 5, CharacterName: "Mira", StatusJSON: `{"location":"forge"}`}},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		5,
-		9000,
-		"Mira rests after the forge inspection.",
-		"default",
-		nil,
-		nil,
-		nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:        []store.Memory{{ID: 1, TurnIndex: 5, SummaryJSON: `{"turn_summary":"Mira completed the forge inspection."}`}},
+		ChatLogs:        chatLogs,
+		WorldRules:      []store.WorldRule{{ID: 9, Key: assistantOnlyAnchor, ValueJSON: `{"rule":"unrelated old passport rule"}`}},
+		CharacterStates: []store.CharacterState{{TurnIndex: 5, CharacterName: "Mira", StatusJSON: `{"location":"forge"}`}},
+		TopK:            5,
+		MaxChars:        9000,
+		UserInput:       "Mira rests after the forge inspection.",
+		Profile:         "default",
+		BudgetMode:      "auto",
+	})
 	if strings.Contains(assembly.WorldRulesText, assistantOnlyAnchor) || strings.Contains(assembly.Text, "unrelated old passport rule") {
 		t.Fatalf("previous assistant raw activated unrelated support recall: %q", assembly.WorldRulesText)
 	}
@@ -1257,36 +1262,37 @@ func TestPrepareTurnSupportLanesDropUnrelatedRowsAndKeepLatestEpisodeAnchor(t *t
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", Content: `{"location":"sealed gate","present_entities":["Alice"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 1, TurnIndex: 20, SummaryJSON: `{"turn_summary":"Alice opens the sealed gate.","entities":[{"name":"Alice"}]}`}},
-		[]store.KGTriple{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{{ID: 1, TurnIndex: 20, SummaryJSON: `{"turn_summary":"Alice opens the sealed gate.","entities":[{"name":"Alice"}]}`}},
+		Triples: []store.KGTriple{
 			{ID: 1, Subject: "Alice", Predicate: "carries", Object: "sealed key"},
 			{ID: 2, Subject: "Bob", Predicate: "visits", Object: "market"},
 			{ID: 3, Subject: "Alice", Predicate: "met", Object: "Rowan"},
 		},
-		nil, nil,
-		[]store.Storyline{
+		Storylines: []store.Storyline{
 			{ID: 1, Name: "Sealed Gate", CurrentContext: "Alice opens the sealed gate"},
 			{ID: 2, Name: "Market Rumor", CurrentContext: "Bob repeats a market rumor"},
 		},
-		nil,
-		[]store.CharacterState{
+		CharacterStates: []store.CharacterState{
 			{ID: 1, CharacterName: "Alice", StatusJSON: `{"location":"sealed gate"}`},
 			{ID: 2, CharacterName: "Bob", StatusJSON: `{"location":"market"}`},
 		},
-		[]store.PendingThread{
+		PendingThreads: []store.PendingThread{
 			{ID: 1, ThreadKey: "sealed_gate", Description: "Alice must open the sealed gate", Status: "open", Owner: "Alice"},
 			{ID: 2, ThreadKey: "market_rumor", Description: "Bob must verify the market rumor", Status: "open", Owner: "Bob"},
 		},
-		nil,
-		[]store.EpisodeSummary{
+		EpisodeSummaries: []store.EpisodeSummary{
 			{ID: 1, FromTurn: 1, ToTurn: 5, SummaryText: "Alice discovered the sealed gate"},
 			{ID: 2, FromTurn: 6, ToTurn: 10, SummaryText: "Bob traded cloth at the market"},
 			{ID: 3, FromTurn: 11, ToTurn: 15, SummaryText: "The latest episode closes at night"},
 		},
-		nil, nil, nil,
-		5, 12000, "Alice opens the sealed gate.", "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    12000,
+		UserInput:   "Alice opens the sealed gate.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	for _, text := range []string{assembly.KGText, assembly.StorylineText, assembly.CharacterText, assembly.PendingThreadText, assembly.EpisodeText} {
 		if strings.Contains(text, "Bob") || strings.Contains(text, "market") || strings.Contains(text, "Rowan") {
 			t.Fatalf("unrelated support row survived relevance gate: %q", text)

@@ -598,25 +598,6 @@ type narrativeCurrentStateView struct {
 	Perspective string
 }
 
-func prepareTurnPerspectiveWithNarrativeState(base map[string]any, values []store.StatusCurrentValue, activeStates []store.ActiveState) map[string]any {
-	out := map[string]any{}
-	for key, value := range base {
-		out[key] = value
-	}
-	out["_narrative_current_values"] = values
-	out["_narrative_active_states"] = activeStates
-	return out
-}
-
-func prepareTurnNarrativeStateFromPerspective(args []map[string]any) ([]store.StatusCurrentValue, []store.ActiveState) {
-	if len(args) == 0 || args[0] == nil {
-		return nil, nil
-	}
-	values, _ := args[0]["_narrative_current_values"].([]store.StatusCurrentValue)
-	activeStates, _ := args[0]["_narrative_active_states"].([]store.ActiveState)
-	return values, activeStates
-}
-
 func narrativeCurrentStateViews(values []store.StatusCurrentValue) []narrativeCurrentStateView {
 	out := []narrativeCurrentStateView{}
 	for _, value := range values {

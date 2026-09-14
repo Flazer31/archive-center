@@ -879,6 +879,85 @@ func TestReferenceDocumentExtractionTextPreservesStructuredContent(t *testing.T)
 	}
 }
 
+func TestReferenceHTMLUnwrappedBodyPreservesMeaningWithoutNoise(t *testing.T) {
+	raw := `<html><body>Opening source sentence.<div class="advertisement">Subscribe here.</div><main><h2>Rules</h2>Magic needs a <em>spoken name</em>.<div>Footnote: only at night.</div><p>A normal paragraph.</p><div class="comments">Reader comment.</div></main><!-- HTML comment --></body></html>`
+	got := referenceDocumentExtractionText(raw)
+	for _, present := range []string{"Opening source sentence.", "Magic needs a", "spoken name", "Footnote: only at night.", "A normal paragraph."} {
+		if !strings.Contains(got, present) {
+			t.Fatalf("meaningful unwrapped source lost %q: %s", present, got)
+		}
+	}
+	for _, absent := range []string{"Subscribe here", "Reader comment", "HTML comment", "<html>"} {
+		if strings.Contains(got, absent) {
+			t.Fatalf("HTML noise reintroduced %q: %s", absent, got)
+		}
+	}
+	plain := "The [keeper] is L. A plain-text note: only at night."
+	if referenceDocumentExtractionText(plain) != plain {
+		t.Fatal("plain text changed")
+	}
+}
+
+func TestReferenceNoiseOnlyDocumentCompletesWithoutCalls(t *testing.T) {
+	raw := `<html><body><!-- editor scratch text --><div class="advertisement"><p>Subscribe for a discount.</p></div><div class="comments"><p>Unrelated reader comment.</p></div><nav><p>Site menu.</p></nav></body></html>`
+	if got := referenceDocumentExtractionText(raw); got != "" {
+		t.Fatalf("removed website material returned as extraction input: %q", got)
+	}
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		t.Error("noise-only document invoked the provider")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"entities\":[],\"claims\":[],\"timeline\":[],\"decisions\":[]}"}}]}`))
+	}))
+	defer upstream.Close()
+	ref := newReferenceLibraryHTTPStore()
+	doc := store.ReferenceDocument{DocumentID: "doc-noise", WorkID: "work-1", ContinuityID: "continuity-1", RawText: raw, RawRetention: "full", ImportStatus: "pending"}
+	ref.documents = append(ref.documents, doc)
+	result, err := (&Server{}).runReferenceExtractionJob(context.Background(), ref, &doc, completeTurnExtractionConfig{Critic: completeTurnLLMConfig{Provider: "openai", APIKey: "fixture", Endpoint: upstream.URL, Model: "fixture", TimeoutMs: 5000}}, true, func(map[string]any) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 || result["status"] != "parsed" || ref.documents[0].ImportStatus != "parsed" || ref.documents[0].RawText != raw || len(ref.entities)+len(ref.claims)+len(ref.timeline)+len(ref.reviews) != 0 {
+		t.Fatalf("noise-only job should complete with no derived records: calls=%d result=%v ref=%#v", calls, result, ref)
+	}
+}
+
+func TestReferenceSourceGuidancePreservesUsefulNotes(t *testing.T) {
+	prompts := []string{}
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			w.WriteHeader(400)
+			return
+		}
+		messages := sliceMapFromAny(request["messages"])
+		if len(messages) == 0 {
+			t.Error("missing messages")
+			w.WriteHeader(400)
+			return
+		}
+		prompts = append(prompts, stringFromMap(messages[0], "content"))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"entities\":[],\"claims\":[],\"timeline\":[],\"decisions\":[]}"}}]}`))
+	}))
+	defer upstream.Close()
+	cfg := completeTurnLLMConfig{Provider: "openai", APIKey: "fixture", Endpoint: upstream.URL, Model: "fixture", TimeoutMs: 5000}
+	if _, err := callReferenceExtractor(context.Background(), cfg, &store.ReferenceDocument{WorkID: "work-1"}, "L is the keeper. Footnote: the power works only at night.", 0, 1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := callReferenceAutoReviewer(context.Background(), cfg, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("calls=%d", len(prompts))
+	}
+	for _, prompt := range prompts {
+		if !containsAll(prompt, "factual footnotes", "setting conditions, exceptions", "website", "advertising", "reader comments") || strings.Contains(prompt, "navigation, footnotes, ads") {
+			t.Fatalf("source guidance lost useful notes or website distinction: %s", prompt)
+		}
+	}
+}
+
 func TestReferenceExtractionReusesExistingCanonicalRecordIDs(t *testing.T) {
 	fake := newReferenceLibraryHTTPStore()
 	fake.timeline = append(fake.timeline, store.ReferenceTimelineNode{

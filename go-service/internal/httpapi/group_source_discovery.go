@@ -14,7 +14,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"path"
 	"sort"
 	"strings"
 	"time"
@@ -2098,122 +2097,19 @@ func sourceCandidateExtractionFailure(err error) map[string]any {
 	return map[string]any{"status": status, "code": code, "reason": reason}
 }
 
-func sourceDiscoveryStructuralRosterCandidates(sections []any) []map[string]any {
-	type rosterEntry struct {
-		name    string
-		section map[string]any
-	}
-	groups := map[string][]rosterEntry{}
-	for _, raw := range sections {
-		section := mapFromAny(raw)
-		kind := strings.ToLower(strings.TrimSpace(stringFromMap(section, "section_kind")))
-		if kind != "list_item" {
-			continue
-		}
-		name := structuralRosterAnchorName(section)
-		if name == "" || stringFromMap(section, "source_url") == "" || stringFromMap(section, "document_sha256") == "" || len(mapFromAny(section["locator"])) == 0 {
-			continue
-		}
-		headingPath := strings.TrimSpace(stringFromMap(section, "heading_path"))
-		groupPath := headingPath
-		key := strings.Join([]string{stringFromMap(section, "document_sha256"), kind, groupPath}, "\x00")
-		groups[key] = append(groups[key], rosterEntry{name: name, section: section})
-	}
-
-	candidates := []map[string]any{}
-	groupKeys := make([]string, 0, len(groups))
-	for key := range groups {
-		groupKeys = append(groupKeys, key)
-	}
-	sort.Strings(groupKeys)
-	for _, key := range groupKeys {
-		entries := groups[key]
-		// A structural roster needs repeated linked sibling entries. A lone list
-		// item or cell is not enough evidence that its anchor text is a name.
-		if len(entries) < 2 {
-			continue
-		}
-		for _, entry := range entries {
-			section := entry.section
-			candidate := map[string]any{
-				"kind": "entity", "entity_type": "other", "canonical_name": entry.name,
-				"work_identity_status": "ambiguous", "canon_scope_status": "ambiguous",
-				"review_state": "pending", "admission_eligible": false,
-				"provenance": "deterministic_structural_roster.v1",
-				"source_url": stringFromMap(section, "source_url"), "source_type": stringFromMap(section, "source_type"),
-				"document_sha256": stringFromMap(section, "document_sha256"), "locator": mapFromAny(section["locator"]),
-				"evidence_excerpt":       stringFromMap(section, "excerpt"),
-				"corroborating_evidence": mapsToAny(sliceMapFromAny(section["equivalent_evidence"])),
-			}
-			candidates = append(candidates, candidate)
-		}
-	}
-	return candidates
-}
-
-func structuralRosterAnchorName(section map[string]any) string {
-	anchors := sliceMapFromAny(section["anchors"])
-	if len(anchors) != 1 {
-		return ""
-	}
-	if !structuralRosterInternalArticleHref(stringFromMap(anchors[0], "href")) {
-		return ""
-	}
-	return structuralRosterName(stringFromMap(anchors[0], "text"))
-}
-
-func structuralRosterInternalArticleHref(rawHref string) bool {
-	rawHref = strings.TrimSpace(rawHref)
-	if rawHref == "" || strings.HasPrefix(rawHref, "#") || strings.HasPrefix(rawHref, "//") {
-		return false
-	}
-	parsed, err := url.Parse(rawHref)
-	if err != nil || parsed.IsAbs() || parsed.Host != "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Path == "" {
-		return false
-	}
-	decodedPath, err := url.PathUnescape(parsed.EscapedPath())
-	if err != nil {
-		return false
-	}
-	target := strings.TrimSpace(path.Base(strings.TrimRight(decodedPath, "/")))
-	if target == "" || target == "." || target == ".." || strings.Contains(target, ":") {
-		return false
-	}
-	lower := strings.ToLower(target)
-	if lower == "wiki" || lower == "w" || lower == "index" || lower == "index.php" {
-		return false
-	}
-	for _, extension := range []string{".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg", ".bmp", ".tif", ".tiff", ".ico", ".pdf", ".mp3", ".wav", ".ogg", ".mp4", ".webm", ".mov", ".avi"} {
-		if strings.HasSuffix(lower, extension) {
-			return false
-		}
-	}
-	return true
-}
-
-func structuralRosterName(value string) string {
-	value = strings.Join(strings.Fields(strings.TrimSpace(value)), " ")
-	if value == "" || len([]rune(value)) > 160 || len(strings.Fields(value)) > 12 {
-		return ""
-	}
-	lower := strings.ToLower(value)
-	if strings.Contains(lower, "://") || strings.ContainsAny(value, "\r\n") {
-		return ""
-	}
-	return value
-}
-
 func runSourceCandidateExtraction(ctx context.Context, cfg completeTurnLLMConfig, input store.SourceDiscoveryInput, result map[string]any) ([]map[string]any, []map[string]any, map[string]any, error) {
 	sections := sliceFromAny(result["section_candidates"])
 	if len(sections) == 0 {
 		return nil, nil, nil, errors.New("no fetched section candidates are available")
 	}
-	structuralCandidates := sourceDiscoveryStructuralRosterCandidates(sections)
-	allCandidates, _ := reconcileSourceCandidates(nil, structuralCandidates)
+	// Links and list structure belong to source context. They do not establish
+	// an entity: even a particle, citation marker or advertisement can be linked.
+	// Keep that context for the existing extractor instead of seeding DB rows.
+	allCandidates := []map[string]any{}
 	if !cfg.hasConfig() {
 		return allCandidates, nil, map[string]any{
-			"status": "completed", "mode": "deterministic_structural_only",
-			"accepted_candidates": len(allCandidates), "structural_roster_candidates": len(allCandidates),
+			"status": "completed", "mode": "source_sections_only",
+			"accepted_candidates": 0, "structural_roster_candidates": 0,
 			"discovered_sections": len(sections), "processed_sections": 0, "attempted_sections": 0,
 			"remaining_sections": len(sections), "processing_incomplete": true, "llm_call_count": 0,
 		}, nil
@@ -2280,7 +2176,7 @@ func runSourceCandidateExtraction(ctx context.Context, cfg completeTurnLLMConfig
 		"processed_sections": processedSections, "attempted_sections": attemptedSections, "input_truncated": false,
 		"processing_incomplete": processingIncomplete, "batch_count": len(batches),
 		"llm_call_count":               llmCallCount,
-		"structural_roster_candidates": len(structuralCandidates),
+		"structural_roster_candidates": 0,
 		"prompt_rune_budget":           promptRuneBudget,
 		"remaining_sections":           len(sections) - processedSections,
 		"processed_document_count":     discoverySectionDocumentCount(sections[:processedSections]),
@@ -2404,6 +2300,8 @@ func runSourceCandidateExtractionBatch(ctx context.Context, cfg completeTurnLLMC
 		"Use kind character, location, item, or faction for named in-world entities. Use generic entity only when none of those types applies, and then include entity_type.",
 		"For named entities, use canonical_name for the best-supported name and aliases only for names that the supplied evidence explicitly identifies as the same entity.",
 		"Analyze the supplied sections as one structured document batch. Preserve heading, list, and table context across adjacent source_refs.",
+		"Interpret names from the surrounding source meaning. Link labels, punctuation, Korean particles and citation markers can be surface fragments rather than entity names. Preserve genuinely named short entities such as L and meaningful setting notes attached to the body.",
+		"Website advertising, signup or purchase prompts, navigation, reader comments and editorial maintenance notes are external_metadata even inside ordinary prose or lists. Omit this website material from records; if reporting such a candidate, use canon_scope_status external_metadata. In-world notices, quoted dialogue and factual footnotes remain source evidence when they describe the work itself.",
 		"Exhaustively enumerate every explicit atomic record; do not select representative examples from rosters, tables, lists, casts, organization charts, timelines, rule lists, or relation lists.",
 		"Do not classify authors, illustrators, publishers, release dates, sales, adaptations, genres, product descriptions, or publication metadata as in-world canon.",
 		"Every candidate must include canon_scope_status as in_world, ambiguous, or external_metadata.",
@@ -3711,6 +3609,29 @@ func discoveryHTMLSections(body []byte) []map[string]any {
 	ignoreDepth := 0
 	seenSections := map[string]bool{}
 	headings := make([]string, 6)
+	// Some HTML documents keep their body directly in div/main or inline tags.
+	// Preserve that text through the same exclusions as structured sections, so
+	// document extraction never needs to fall back to the unfiltered HTML.
+	var looseText strings.Builder
+	flushLooseText := func() {
+		for _, excerpt := range discoveryTextChunks(looseText.String(), 800) {
+			signature := normalizeDiscoveryAnalysisText(excerpt)
+			if signature == "" || seenSections[signature] {
+				continue
+			}
+			seenSections[signature] = true
+			counts["text"]++
+			section := map[string]any{
+				"locator": map[string]any{"type": "text", "value": fmt.Sprint(counts["text"])},
+				"excerpt": excerpt, "section_kind": "prose",
+			}
+			if headingPath := discoveryHTMLHeadingPath(headings); headingPath != "" {
+				section["heading_path"] = headingPath
+			}
+			sections = append(sections, section)
+		}
+		looseText.Reset()
+	}
 	for {
 		token, err := decoder.Token()
 		if err != nil {
@@ -3720,6 +3641,9 @@ func discoveryHTMLSections(body []byte) []map[string]any {
 		case xml.StartElement:
 			tag := strings.ToLower(value.Name.Local)
 			ignoredContainer := ignored[tag] || discoveryHTMLBoilerplateContainer(value)
+			if ignoredContainer || allowed[tag] {
+				flushLooseText()
+			}
 			stackTag := tag
 			if ignoredContainer {
 				stackTag += "\x00ignored"
@@ -3756,6 +3680,10 @@ func discoveryHTMLSections(body []byte) []map[string]any {
 				activeAnchors = nil
 			}
 		case xml.CharData:
+			if ignoreDepth == 0 && activeTag == "" {
+				looseText.Write(value)
+				looseText.WriteByte(' ')
+			}
 			if ignoreDepth == 0 && activeTag != "" {
 				text.Write(value)
 				text.WriteByte(' ')
@@ -3766,6 +3694,10 @@ func discoveryHTMLSections(body []byte) []map[string]any {
 			}
 		case xml.EndElement:
 			tag := strings.ToLower(value.Name.Local)
+			switch tag {
+			case "div", "main", "article", "section", "body", "html":
+				flushLooseText()
+			}
 			if ignoreDepth == 0 && anchorDepth > 0 {
 				anchorDepth--
 				if anchorDepth == 0 {
@@ -3822,6 +3754,7 @@ func discoveryHTMLSections(body []byte) []map[string]any {
 			}
 		}
 	}
+	flushLooseText()
 	return sections
 }
 

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -226,6 +227,9 @@ func (m *adminJobManager) finish(id, status string, result map[string]any, errTe
 	job.FinishedAt = &now
 	job.Result = result
 	job.Error = strings.TrimSpace(errText)
+	if job.Error != "" {
+		slog.Error("background job failed", "job_id", id, "status", status, "error", scrubCriticFailureText(job.Error, ""))
+	}
 	job.cancel = nil
 	if job.Progress == nil {
 		job.Progress = map[string]any{}

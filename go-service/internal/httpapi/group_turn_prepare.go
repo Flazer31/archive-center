@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
@@ -380,10 +381,11 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	workflowRequestID := prepareTurnWorkflowRequestID(prepareSourceContract, request)
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		if turnFinalizationMode == prepareTurnFinalizationNextInput {
-			s.TurnWorkflows.beginForNextInputFinalization(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+			s.TurnWorkflows.beginForNextInputFinalization(workflowRequestID, sid, 0)
 		} else {
-			s.TurnWorkflows.begin(workflowRequestID, sid, intPtrValue(req.TurnIndex, 0))
+			s.TurnWorkflows.begin(workflowRequestID, sid, 0)
 		}
+		s.TurnWorkflows.setEstimatedLogicalTurn(workflowRequestID, intPtrValue(req.TurnIndex, 0))
 		s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
 			Key:         "host_observation",
 			Owner:       "risu_host",
@@ -490,13 +492,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		)
 	}
 	vectorStartedAt := time.Now()
-	vectorShadow := s.prepareTurnVectorShadowWithPreciseCandidateLimits(
+	vectorRecall := s.prepareTurnVectorShadowWithPreciseCandidateLimits(
 		r.Context(),
 		priorityMemoryRequest,
 		memoryTopK,
 		priorityPreciseCandidateLimits,
 		historyScope,
 	)
+	vectorShadow := vectorRecall.Trace
 	timing.addElapsed("vector_recall", vectorStartedAt)
 	vectorShadow["candidate_policy"] = "memory_budget_comparison_windows.v1"
 	vectorShadow["candidate_budget_chars"] = maxInjectionChars
@@ -571,7 +574,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			prioritySemanticFacts, prioritySemanticTrace = prepareTurnHydratePreciseMemoryVectorFacts(
 				ctx,
 				preciseReader,
-				vectorShadow,
+				vectorRecall,
 				historyScope,
 				priorityPreciseUnits,
 			)
@@ -581,7 +584,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				sessionStateReads["precise_memory_vector_facts"] = true
 			}
 		}
-		delete(vectorShadow, prepareTurnPrivatePreciseMemorySearchResultsKey)
 		if interactionReader, ok := s.Store.(store.ActiveInteractionMemoryReader); ok {
 			units, err := interactionReader.ListActiveInteractionMemoryUnits(ctx, sid)
 			if err == nil {
@@ -898,7 +900,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
 		hostTurn, hostTurnObserved := prepareTurnWorkflowHostOrdinal(request, currentInputDecision)
 		s.TurnWorkflows.setHostTurn(workflowRequestID, hostTurn, hostTurnObserved)
-		s.TurnWorkflows.setLogicalTurn(workflowRequestID, resolvePrepareTurnWorkflowLogicalTurn(request, currentInputDecision, chatLogs))
+		s.TurnWorkflows.setEstimatedLogicalTurn(workflowRequestID, resolvePrepareTurnWorkflowLogicalTurn(request, currentInputDecision, chatLogs))
 		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRecall, "succeeded", "")
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageContext)
 	}
@@ -1007,37 +1009,56 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		safeRetrievalEvidence, _ := filterPrepareTurnPerspectiveScopedEvidence(evidence, memories)
 		documents = buildUnifiedRetrievalDocuments(sid, safeRetrievalMemories, safeRetrievalEvidence, kgTriples, episodeSums, resumePack, nil)
 		if injectionEnabled && memoryInjectionBudget > 0 {
-			assemblyPerspectiveContext := prepareTurnPerspectiveWithNarrativeState(perspectiveContext, narrativeCurrentValues, activeStates)
 			priorityMemoryMaxItems := 5
 			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
 				priorityMemoryMaxItems = *req.Settings.CoreObjectiveMemoryMaxItems
 			}
-			assemblyPerspectiveContext["_priority_memory_enabled"] = true
-			assemblyPerspectiveContext["_priority_memory_max_items"] = priorityMemoryMaxItems
-			assemblyPerspectiveContext["_character_perspective_text"] = characterPerspectiveCandidateText
-			assemblyPerspectiveContext["_character_perspective_fact_seeds"] = characterPerspectivePacket["_character_perspective_fact_seeds"]
-			assemblyPerspectiveContext["_character_perspective_candidate_count"] = intFromAny(characterPerspectivePacket["candidate_count"], 0)
-			assemblyPerspectiveContext["_active_interaction_public_text"] = activeInteractionPublicCandidateText
-			assemblyPerspectiveContext["_active_interaction_guarded_text"] = activeInteractionGuardedCandidateText
-			assemblyPerspectiveContext["_active_interaction_candidate_count"] = intFromAny(activeInteractionPacket["candidate_count"], 0)
-			assemblyPerspectiveContext[prepareTurnCharacterMemoryContextKey] = characterMemoryReadContext
-			assemblyPerspectiveContext[prepareTurnEntityIdentityAliasesContextKey] = entityIdentityAliases
-			assemblyPerspectiveContext["_priority_memory_query"] = priorityMemoryQuery
-			assemblyPerspectiveContext["_priority_memory_query_source"] = priorityMemoryQuerySource
-			assemblyPerspectiveContext[prepareTurnPriorityQuerySetContextKey] = priorityMemoryQuerySet
-			assemblyPerspectiveContext["_priority_memory_current_turn"] = maxInt(turnIndex, currentTurnFence)
-			assemblyPerspectiveContext[prepareTurnPrioritySemanticFactsContextKey] = prioritySemanticFacts
-			assemblyPerspectiveContext["_priority_precise_vector_trace"] = prioritySemanticTrace
-			if req.Settings.CoreObjectiveMemoryMaxItems != nil {
-				assemblyPerspectiveContext["_core_objective_memory_max_items_present"] = true
-				assemblyPerspectiveContext["_core_objective_memory_max_items"] = *req.Settings.CoreObjectiveMemoryMaxItems
+			characterSeeds, _ := characterPerspectivePacket["_character_perspective_fact_seeds"].([]prepareTurnPriorityFactSeed)
+			assemblyPerspectiveContext := &prepareTurnAssemblyPerspective{
+				Public: perspectiveContext, NarrativeValues: narrativeCurrentValues, ActiveStates: activeStates,
+				CharacterText: characterPerspectiveCandidateText, CharacterSeeds: characterSeeds,
+				CharacterCount:        intFromAny(characterPerspectivePacket["candidate_count"], 0),
+				InteractionPublicText: activeInteractionPublicCandidateText, InteractionGuardedText: activeInteractionGuardedCandidateText,
+				InteractionCount: intFromAny(activeInteractionPacket["candidate_count"], 0),
+				CharacterMemory:  characterMemoryReadContext, EntityAliases: entityIdentityAliases,
+				Selection: prepareTurnMemorySelectionContext{
+					PriorityEnabled: true, MaxItems: priorityMemoryMaxItems, CoreObjectiveLimit: req.Settings.CoreObjectiveMemoryMaxItems,
+					Query: priorityMemoryQuery, QuerySource: priorityMemoryQuerySource, QuerySet: priorityMemoryQuerySet,
+					CurrentTurn: maxInt(turnIndex, currentTurnFence), SemanticFacts: prioritySemanticFacts, PreciseVectorTrace: prioritySemanticTrace,
+				},
 			}
-			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, memoryInjectionBudget, rawUserInput, profile, documents, vectorShadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
+			assemblyInput := prepareTurnAssemblyInput{
+				Memories:                 memories,
+				Triples:                  kgTriples,
+				Evidence:                 evidence,
+				ChatLogs:                 chatLogs,
+				Storylines:               selectedStorylines,
+				WorldRules:               worldRules,
+				CharacterStates:          charStates,
+				PendingThreads:           pendingThreads,
+				CanonicalLayers:          canonicalLayers,
+				EpisodeSummaries:         episodeSums,
+				ResumePack:               resumePack,
+				PersonaEntries:           personaEntries,
+				CharacterPrivateMemories: characterPrivateMemories,
+				TopK:                     memoryTopK,
+				MaxChars:                 memoryInjectionBudget,
+				UserInput:                rawUserInput,
+				Profile:                  profile,
+				Documents:                documents,
+				VectorTrace:              vectorShadow,
+				LanguageContext:          languageContext,
+				BudgetMode:               stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"),
+				Budgets:                  req.Settings.MemoryDeliveryBudgets,
+				Perspective:              assemblyPerspectiveContext,
+			}
+			assemblyInput.Common = prepareTurnCommonAssemblySources(assemblyInput)
+			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(assemblyInput)
 			multiConfig, multiConfigErr := s.loadMultiAgentSettings()
 			if multiConfigErr != nil {
 				injectionAssembly.MemoryDeliveryPlan["preprocessing_config_error"] = multiConfigErr.Error()
 			} else if multiConfig.Enabled {
-				facts, summaries := multiAgentCandidatePool(&injectionAssembly, assemblyPerspectiveContext)
+				facts, summaries := multiAgentCandidatePool(&injectionAssembly)
 				laneCaps, _ := prepareTurnPriorityDeliveryCaps(memoryInjectionBudget, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets)
 				// Retrieval overlaps; candidate assembly retains its existing shared-input
 				// ownership inside this request, without a service-wide lock.
@@ -1051,38 +1072,39 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 							searchReq.ClientMeta[key] = value
 						}
 					}
-					shadow := s.prepareTurnVectorShadowWithPreciseCandidateLimits(r.Context(), searchReq, memoryTopK, priorityPreciseCandidateLimits, historyScope)
+					searchRecall := s.prepareTurnVectorShadowWithPreciseCandidateLimits(r.Context(), searchReq, memoryTopK, priorityPreciseCandidateLimits, historyScope)
+					shadow := searchRecall.Trace
 					shadow["candidate_policy"] = "memory_budget_comparison_windows.v1"
 					shadow["candidate_budget_chars"] = maxInjectionChars
 					assemblyWaitStarted := time.Now()
 					searchAssemblyMu.Lock()
 					defer searchAssemblyMu.Unlock()
 					assemblyWaitMS := durationMilliseconds(time.Since(assemblyWaitStarted))
-					searchPerspective := map[string]any{}
-					for key, value := range assemblyPerspectiveContext {
-						searchPerspective[key] = value
-					}
-					searchPerspective[prepareTurnPriorityQuerySetContextKey] = append(append([]string{}, priorityMemoryQuerySet...), question)
+					searchPerspective := *assemblyPerspectiveContext
+					searchPerspective.Selection.QuerySet = append(append([]string{}, priorityMemoryQuerySet...), question)
 					trace := prepareTurnPreprocessingSearchTrace(shadow)
 					breakdown := trace["breakdown_ms"].(map[string]float64)
 					breakdown["assembly_wait"] = assemblyWaitMS
 					hydrationStarted := time.Now()
 					if reader, ok := s.Store.(store.GeneralVectorPreciseMemoryReader); ok {
-						additional, hydration := prepareTurnHydratePreciseMemoryVectorFacts(r.Context(), reader, shadow, historyScope, priorityPreciseUnits)
-						searchPerspective[prepareTurnPrioritySemanticFactsContextKey] = append(append([]prepareTurnPrioritySemanticFact{}, prioritySemanticFacts...), additional...)
+						additional, hydration := prepareTurnHydratePreciseMemoryVectorFacts(r.Context(), reader, searchRecall, historyScope, priorityPreciseUnits)
+						for i := range additional {
+							additional[i].SupplementalQueryMatched = true
+						}
+						searchPerspective.Selection.SemanticFacts = append(append([]prepareTurnPrioritySemanticFact{}, prioritySemanticFacts...), additional...)
 						trace["precise_hydration"] = hydration["status"]
 					}
 					breakdown["hydration"] = durationMilliseconds(time.Since(hydrationStarted))
-					delete(shadow, prepareTurnPrivatePreciseMemorySearchResultsKey)
 					assemblyStarted := time.Now()
-					searched := buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, selectedStorylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, memoryTopK, memoryInjectionBudget, rawUserInput, profile, documents, shadow, languageContext, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, searchPerspective)
-					found, sums := multiAgentCandidatePool(&searched, searchPerspective)
+					projected := injectionAssembly.supplementProjection(shadow, searchPerspective.Selection)
+					found, sums := multiAgentCandidatePool(&projected)
 					breakdown["assembly"] = durationMilliseconds(time.Since(assemblyStarted))
 					trace["candidate_count"] = len(found)
 					return found, sums, trace
 				}, map[string]any{
 					"perspective": injectionAssembly.PerspectiveContext, "protected_memory_guidance": injectionAssembly.ProtectedMemoryText,
 					"lorebook_candidates": prepareTurnLorebookPreprocessingCandidates(lorebookReference), "lorebook_budget_chars": lorebookReferenceMaxChars,
+					"recent_conversation_reading": multiAgentRecentReading(priorityMemoryRequest, chatLogs, assemblyInput.Common.GeneralMemories),
 				})
 				if len(selection.Searches) > 0 {
 					timing.addMilliseconds("preprocessing_search", selection.SearchDurationMS)
@@ -1097,7 +1119,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				}
 				selection.captureBaseline(injectionAssembly.MemoryDeliveryPlan)
 				injectionAssembly.Preprocessing = selection
-				injectionAssembly.MemoryDeliveryPlan = buildPrepareTurnPriorityMemoryDeliveryPlan(&injectionAssembly, memoryInjectionBudget, priorityMemoryMaxItems, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext)
+				injectionAssembly.MemoryDeliveryPlan = finalizePrepareTurnPriorityMemoryDeliveryPlan(&injectionAssembly, memoryInjectionBudget, priorityMemoryMaxItems, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets, assemblyPerspectiveContext.Selection)
 				injectionAssembly.MemoryDeliveryLineage = finalizePrepareTurnMemoryDeliveryLineage(injectionAssembly.MemoryDeliveryLineage, injectionAssembly.MemoryDeliveryPlan)
 				injectionAssembly.CharacterMemorySupport = finalizePrepareTurnCharacterMemorySupport(injectionAssembly.CharacterMemorySupport, injectionAssembly.MemoryDeliveryPlan)
 			}
@@ -2711,23 +2733,14 @@ func (s *Server) resolvePrepareTurnCurrentLogicalTurn(
 		return 0, map[string]any{"status": "unobserved", "source": "host_message_position_unavailable"}
 	}
 	messageIndex := *decision.Envelope.Identity.MessageIndex
-	observedPairOrdinal := 0
-	selectedRef := strings.TrimSpace(decision.Envelope.ObservationRef)
-	if request.HostObservations != nil {
-		for _, observation := range request.HostObservations.ActiveChat {
-			if strings.EqualFold(strings.TrimSpace(pointerString(observation.Role)), "user") {
-				observedPairOrdinal++
-			}
-			if selectedRef != "" && strings.TrimSpace(observation.ObservationRef) == selectedRef {
-				break
-			}
-		}
-	}
+	selectedRef := stringPtrValue(decision.SelectedObservationRef, "")
+	_, observedPairOrdinal := prepareTurnObservedInputGroup(request.HostObservations, selectedRef)
 	resolution := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
-		Mode:                 "pair",
-		RisuUserMessageIndex: &messageIndex,
-		ObservedPairOrdinal:  observedPairOrdinal,
-		Baseline:             s.resolveDurableSessionRoutingBaseline(ctx, sessionID, nil),
+		Mode:                      "pair",
+		RisuUserMessageIndex:      &messageIndex,
+		ObservedPairOrdinal:       observedPairOrdinal,
+		Baseline:                  s.resolveDurableSessionRoutingBaseline(ctx, sessionID, nil),
+		ObservedInputGroupOrdinal: observedPairOrdinal,
 	})
 	if resolution.TurnIndex <= 0 {
 		return 0, map[string]any{"status": "unobserved", "source": resolution.LocalTurnSource}
@@ -2835,6 +2848,7 @@ func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {
 	auditSaved := 0
 	storeWriteAttempted := 0
 	storeWriteErrors := 0
+	var storeWriteErrorDetails []string
 
 	now := time.Now().UTC()
 	text := strings.TrimSpace(*req.EffectiveInput)
@@ -2850,6 +2864,7 @@ func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:      now,
 		}); err != nil {
 			storeWriteErrors++
+			storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveEffectiveInput: "+err.Error())
 		} else {
 			effectiveInputSaved++
 			saveOK = true
@@ -2868,6 +2883,7 @@ func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {
 				CreatedAt:     now,
 			}); err != nil {
 				storeWriteErrors++
+				storeWriteErrorDetails = append(storeWriteErrorDetails, "SaveAuditLog(effective_input_saved): "+err.Error())
 			} else {
 				auditSaved = 1
 			}
@@ -2879,6 +2895,11 @@ func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	storeWriteErrorDetails = completeTurnPersistenceDiagnosticMessages(s.completeTurnPersistenceDiagnostics(storeWriteErrorDetails))
+	if len(storeWriteErrorDetails) > 0 {
+		saveErr = strings.Join(storeWriteErrorDetails, "; ")
+		slog.ErrorContext(r.Context(), "effective input persistence failed", "chat_session_id", sid, "turn_index", req.TurnIndex, "errors", storeWriteErrorDetails)
+	}
 	note := "effective-inputs is a shadow skeleton; no live DB mutation performed"
 	if s.usesShadowWriteStore() {
 		if saveOK {
@@ -2891,18 +2912,19 @@ func (s *Server) handleEffectiveInputs(w http.ResponseWriter, r *http.Request) {
 	inputTransparency := buildInputTransparency(sid, req.TurnIndex, text, s.usesShadowWriteStore(), writeSource)
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":                "ok",
-		"source":                writeSource,
-		"turn_index":            req.TurnIndex,
-		"chat_session_id":       sid,
-		"id":                    nil,
-		"save_ok":               saveOK,
-		"save_error":            saveErr,
-		"effective_input_saved": effectiveInputSaved,
-		"audit_saved":           auditSaved,
-		"store_write_attempted": storeWriteAttempted,
-		"store_write_errors":    storeWriteErrors,
-		"input_transparency":    inputTransparency,
+		"status":                    "ok",
+		"source":                    writeSource,
+		"turn_index":                req.TurnIndex,
+		"chat_session_id":           sid,
+		"id":                        nil,
+		"save_ok":                   saveOK,
+		"save_error":                saveErr,
+		"effective_input_saved":     effectiveInputSaved,
+		"audit_saved":               auditSaved,
+		"store_write_attempted":     storeWriteAttempted,
+		"store_write_errors":        storeWriteErrors,
+		"store_write_error_details": storeWriteErrorDetails,
+		"input_transparency":        inputTransparency,
 		"trace_handoff": map[string]any{
 			"shadow_mode": true,
 			"store_mode":  string(s.Cfg.StoreMode),

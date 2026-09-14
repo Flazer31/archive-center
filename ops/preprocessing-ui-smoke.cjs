@@ -43,6 +43,7 @@ const runtime = [
   'const VERSION = ' + version + ', LLM_PROVIDER_OPTIONS = ' + providers + ';',
   'let view = ' + JSON.stringify(fixture) + '; const translations = ' + JSON.stringify(translations) + ';',
   'const t = key => translations[key] || key;',
+  'const diagnosticText = ko => ko;', // Unrelated diagnostics button copy in the main shell.
   'window.fixtureCalls = []; window.fixtureWarnings = [];',
   'let panelOpen = false, _settingsPanelRenderRequestId = 0, _settingsActiveTab = "memory-preprocessing";',
   'const LOG_PREFIX = "UI fixture", _turnHistory = [], _settingsStorageStatus = {}, _lastPrepareTurnBundle = null;',
@@ -52,6 +53,9 @@ const runtime = [
   'const escapeAttr = value => String(value ?? "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;");',
   // Host container and unrelated main navigation event binding are outside this fixture.
   'const R = {showContainer:async () => {}}, attachSettingsEvents = () => {};',
+  // Reasoning preview is covered by settings-pair-smoke with the actual Go
+  // endpoint. This fixture isolates prompt, API-key and layout/save behavior.
+  'const bindLlmSettingsView = () => async () => {};',
   'async function bridgeFetch(route, options = {}) {',
   '  if (route !== "/config/memory-preprocessing") throw new Error("Unexpected route: " + route);',
   '  window.fixtureCalls.push({route,method:options.method || "GET",body:options.body});',
@@ -88,7 +92,7 @@ const runtime = [
     const desktopPrompt = await input('prompt').boundingBox();
     assert.ok(desktopPrompt.width > 400 && desktopPrompt.height >= 240, 'desktop prompt editor is too narrow');
     assert.equal(await input('provider').isEnabled(), true);
-    assert.equal(await input('use_publisher').isChecked(), false);
+    assert.equal(await input('settings_source').inputValue(), '');
     assert.notEqual(await input('prompt').evaluate(el => getComputedStyle(el).backgroundColor), 'rgb(255, 255, 255)', 'native unstyled textarea');
     assert.equal(await input('prompt').inputValue(), fixture.default_prompts[first]);
     assert.equal(await input('api_key').inputValue(), fixture.settings.roles[first].api_key);
@@ -97,9 +101,9 @@ const runtime = [
     await page.screenshot({ path: path.join(output, 'preprocessing-desktop.png') });
 
     // Real DOM controls and the production save handler preserve independent role values.
-    await input('use_publisher').check();
+    await input('settings_source').selectOption('publisher');
     assert.equal(await input('provider').isDisabled(), true);
-    await input('use_publisher').uncheck();
+    await input('settings_source').selectOption('');
     assert.equal(await input('provider').isEnabled(), true);
     assert.equal(await input('inherited').isHidden(), true);
     await input('provider').selectOption('custom');
@@ -127,7 +131,7 @@ const runtime = [
     assert.equal(await input('prompt').inputValue(), fixture.default_prompts[first]);
     const editedPrompt = '이 담당의 지침만 수정합니다. <tag> & "quote"';
     await input('prompt').fill(editedPrompt);
-    await input('use_publisher').check();
+    await input('settings_source').selectOption('publisher');
     assert.equal(await input('temperature').isEnabled(), true, 'connection sharing disabled role generation settings');
     assert.equal(await input('max_tokens').isEnabled(), true);
     await root.locator('#mo-ma-common-settings > summary').click();
@@ -179,7 +183,7 @@ const runtime = [
     assert.equal(await shared.inputValue(), editedShared, 'failed save erased the edited shared prompt');
     assert.equal(await root.locator('#mo-ma-save').isEnabled(), true);
     await page.evaluate(() => { window.fixtureSaveFails = false; });
-    await input('use_publisher').uncheck();
+    await input('settings_source').selectOption('');
     await input('api_key').fill('replacement-fixture-key');
     await root.locator('#mo-ma-save').click();
     await root.getByText('저장했습니다. 다음 요청부터 적용됩니다.', { exact: true }).waitFor();
@@ -227,7 +231,7 @@ const runtime = [
         await page.screenshot({ path: path.join(output, 'preprocessing-mobile-prompt.png') });
       }
       await root.locator('.mo-ma-role,.mo-ma-advanced,#mo-ma-common-settings').evaluateAll(nodes => nodes.forEach(node => { node.open = true; }));
-      for (const role of roles) await root.locator('#mo-ma-' + role + '-use_publisher').uncheck();
+      for (const role of roles) await root.locator('#mo-ma-' + role + '-settings_source').selectOption('');
       assert.deepEqual(await root.locator('.mo-row input,.mo-row textarea,.mo-row select').evaluateAll(nodes => nodes.filter(el => {
         if (!el.checkVisibility()) return false;
         const box = el.getBoundingClientRect(), row = el.closest('.mo-row').getBoundingClientRect();

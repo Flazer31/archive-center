@@ -21,10 +21,15 @@ func TestPrepareTurnCurrentCharacterRanksBeforeCharacterCap(t *testing.T) {
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", Content: `{"present_entities":["강한얼","윤기","윤슬아"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, states, nil, nil, nil, nil, nil, nil,
-		5, 12000, raw, "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: states,
+		TopK:            5,
+		MaxChars:        12000,
+		UserInput:       raw,
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !strings.Contains(assembly.CharacterObjectiveText, "윤슬아") {
 		t.Fatalf("current short-name character was capped before relevance ranking: %q", assembly.CharacterObjectiveText)
 	}
@@ -41,16 +46,18 @@ func TestPrepareTurnCurrentCharacterRanksBeforeCharacterCap(t *testing.T) {
 
 func TestPrepareTurnUnobservedSceneDoesNotPromoteDirectRecollectionsToObjectiveState(t *testing.T) {
 	const rawInput = "소월, 슬아, 서현까지 떠올려보니 하나같이 자신에게 과분하다고 한얼은 생각했다."
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{
 			{CharacterName: "이소월", StatusJSON: `{"emotion":"여유","location":"월하방"}`},
 			{CharacterName: "윤슬아", StatusJSON: `{"emotion":"연정","location":"윤기의 사저"}`},
 			{CharacterName: "민서현", StatusJSON: `{"emotion":"호감","location":"민정호 사저"}`},
 		},
-		nil, nil, nil, nil, nil, nil,
-		5, 12000, rawInput, "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   12000,
+		UserInput:  rawInput,
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if strings.TrimSpace(assembly.CharacterObjectiveText) != "" {
 		t.Fatalf("unobserved scene promoted recalled characters to objective state: %q", assembly.CharacterObjectiveText)
 	}
@@ -180,9 +187,8 @@ func TestPrepareTurnOneDirectNameDoesNotExpandUnrelatedRelationships(t *testing.
 		TurnIndex: 41,
 		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{
 			{
 				CharacterName:     "베라",
 				RelationshipsJSON: `{"주인공":{"type":"trust","description":"둘이 함께 겪은 사건에서 생긴 신뢰"},"행인 C":{"type":"one_time_trade"}}`,
@@ -190,9 +196,13 @@ func TestPrepareTurnOneDirectNameDoesNotExpandUnrelatedRelationships(t *testing.
 			{CharacterName: "주인공"},
 			{CharacterName: "행인 C"},
 		},
-		nil, nil, nil, nil, nil, nil,
-		1, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		TopK:        1,
+		MaxChars:    9000,
+		UserInput:   rawInput,
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	if !strings.Contains(assembly.CharacterRelationshipText, "둘이 함께 겪은 사건") {
 		t.Fatalf("current-pair relationship was lost: %q", assembly.CharacterRelationshipText)
@@ -241,10 +251,16 @@ func TestPrepareTurnDirectReencounterDeliversOldCurrentPairEvent(t *testing.T) {
 		TurnIndex: 41,
 		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, states, nil, nil, nil, nil, nil, nil,
-		1, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:        memories,
+		CharacterStates: states,
+		TopK:            1,
+		MaxChars:        9000,
+		UserInput:       rawInput,
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	if !strings.Contains(assembly.ActualMemoryText, "돌다리에서 서로를 구하고 신뢰하기 시작했다") {
 		t.Fatalf("old current-pair event was not delivered for the reencounter: %q", assembly.ActualMemoryText)
@@ -292,18 +308,21 @@ func TestPrepareTurnDirectReencounterDoesNotInventUnsupportedFamiliarity(t *test
 		TurnIndex: 41,
 		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{{
 			ID:          2,
 			TurnIndex:   39,
 			SummaryJSON: `{"turn_summary":"베라는 시장에서 행인 C와 값을 흥정했다.","characters":["베라","행인 C"],"locations":["시장"]}`,
 			Importance:  0.95,
 		}},
-		nil, nil, nil, nil, nil,
-		[]store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}, {CharacterName: "행인 C"}},
-		nil, nil, nil, nil, nil, nil,
-		1, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		CharacterStates: []store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}, {CharacterName: "행인 C"}},
+		TopK:            1,
+		MaxChars:        9000,
+		UserInput:       rawInput,
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	for _, unsupported := range []string{"행인 C", "값을 흥정"} {
 		if strings.Contains(assembly.Text, unsupported) {
@@ -329,8 +348,8 @@ func TestPrepareTurnDirectPairProtectedEventNeverBecomesActualMemory(t *testing.
 		TurnIndex: 41,
 		Content:   `{"location":"객실","present_entities":["주인공","베라"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{{
 			ID:        9,
 			TurnIndex: 4,
 			SummaryJSON: `{
@@ -347,11 +366,14 @@ func TestPrepareTurnDirectPairProtectedEventNeverBecomesActualMemory(t *testing.
 			}`,
 			Importance: 0.9,
 		}},
-		nil, nil, nil, nil, nil,
-		[]store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}},
-		nil, nil, nil, nil, nil, nil,
-		1, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		CharacterStates: []store.CharacterState{{CharacterName: "베라"}, {CharacterName: "주인공"}},
+		TopK:            1,
+		MaxChars:        9000,
+		UserInput:       rawInput,
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	if strings.Contains(assembly.ActualMemoryText, "RAW_PAIR_SECRET") {
 		t.Fatalf("protected current-pair memory bypassed into actual memory: %q", assembly.ActualMemoryText)
@@ -414,17 +436,21 @@ func TestPrepareTurnExplicitRecollectionsDoNotBecomeOffSceneObjectiveState(t *te
 	}
 
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{
 			{CharacterName: "강한얼", StatusJSON: `{"emotion":"휴식하며 회상 중","location":"한얼의 방"}`, TurnIndex: 51},
 			{CharacterName: "이소월", StatusJSON: `{"emotion":"여유","location":"월하방"}`, TurnIndex: 49},
 			{CharacterName: "윤슬아", StatusJSON: `{"emotion":"연정","location":"윤기의 사저"}`, TurnIndex: 45},
 			{CharacterName: "민서현", StatusJSON: `{"emotion":"호감","location":"민정호 사저"}`, TurnIndex: 40},
 		},
-		nil, nil, nil, nil, nil, privateMemories,
-		5, 12000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		CharacterPrivateMemories: privateMemories,
+		TopK:                     5,
+		MaxChars:                 12000,
+		UserInput:                rawInput,
+		Profile:                  "default",
+		BudgetMode:               "auto",
+		Perspective:              testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !strings.Contains(assembly.CharacterObjectiveText, "강한얼") {
 		t.Fatalf("actual scene character objective state was lost: %q", assembly.CharacterObjectiveText)
 	}
@@ -442,16 +468,15 @@ func TestPrepareTurnExplicitRecollectionsDoNotBecomeOffSceneObjectiveState(t *te
 }
 
 func TestPrepareTurnSelectedHistoricalMemoryCannotExpandOtherLanes(t *testing.T) {
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 1, TurnIndex: 8, SummaryJSON: `{"turn_summary":"Mira opens the brass gate and remembers Juno's old passport."}`}},
-		nil,
-		nil,
-		nil,
-		nil,
-		[]store.WorldRule{{ID: 11, Key: "passport law", ValueJSON: `{"rule":"Juno's passport requires a harbor seal"}`}},
-		nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Mira opens the brass gate.", "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:   []store.Memory{{ID: 1, TurnIndex: 8, SummaryJSON: `{"turn_summary":"Mira opens the brass gate and remembers Juno's old passport."}`}},
+		WorldRules: []store.WorldRule{{ID: 11, Key: "passport law", ValueJSON: `{"rule":"Juno's passport requires a harbor seal"}`}},
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mira opens the brass gate.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.MemoryText, "Juno's old passport") {
 		t.Fatalf("fixture memory was not selected: %q", assembly.MemoryText)
 	}
@@ -461,9 +486,8 @@ func TestPrepareTurnSelectedHistoricalMemoryCannotExpandOtherLanes(t *testing.T)
 }
 
 func TestPrepareTurnCharacterRelationshipsRequireCurrentCounterparty(t *testing.T) {
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{{
 			CharacterName: "Mira",
 			StatusJSON:    `{"emotion":"calm"}`,
 			RelationshipsJSON: `{
@@ -472,9 +496,12 @@ func TestPrepareTurnCharacterRelationshipsRequireCurrentCounterparty(t *testing.
 			}`,
 			TurnIndex: 12,
 		}},
-		nil, nil, nil, nil, nil, nil,
-		5, 9000, "Mira meets Juno beside the brass gate.", "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mira meets Juno beside the brass gate.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.CharacterRelationshipText, "Juno") {
 		t.Fatalf("current counterparty relationship was lost: %q", assembly.CharacterRelationshipText)
 	}
@@ -487,24 +514,25 @@ func TestPrepareTurnCharacterRelationshipsRequireCurrentCounterparty(t *testing.
 }
 
 func TestPrepareTurnWorldEpisodeAndCanonicalRequireCurrentSceneRelevance(t *testing.T) {
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil,
-		[]store.WorldRule{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		WorldRules: []store.WorldRule{
 			{ID: 1, Key: "brass gate", ValueJSON: `{"rule":"The brass gate opens with Mira's key"}`},
 			{ID: 2, Key: "harbor passport", ValueJSON: `{"rule":"A harbor seal is required"}`},
 		},
-		nil, nil,
-		[]store.CanonicalStateLayer{
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{ID: 1, LayerType: "world_state", Content: `{"gate":"Mira holds the brass key"}`, Confidence: 0.9},
 			{ID: 2, LayerType: "world_state", Content: `{"harbor":"Juno's passport is missing"}`, Confidence: 0.9},
 		},
-		[]store.EpisodeSummary{
+		EpisodeSummaries: []store.EpisodeSummary{
 			{ID: 1, ChatSessionID: "scene-relevance", FromTurn: 1, ToTurn: 3, SummaryText: "Mira found the brass gate key"},
 			{ID: 2, ChatSessionID: "scene-relevance", FromTurn: 4, ToTurn: 6, SummaryText: "Juno searched the harbor for a passport"},
 		},
-		nil, nil, nil,
-		5, 9000, "Mira turns the brass key at the gate.", "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mira turns the brass key at the gate.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	for _, text := range []string{assembly.WorldRulesText, assembly.CanonText, assembly.EpisodeText} {
 		if strings.Contains(text, "Juno") || strings.Contains(text, "passport") || strings.Contains(text, "harbor") {
 			t.Fatalf("unrelated latest/support material survived current-scene gate: %q", text)

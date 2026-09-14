@@ -718,9 +718,13 @@ type prepareTurnInjectionBlock struct {
 }
 
 type prepareTurnInjectionAssembly struct {
+	preparation               *prepareTurnRequestPreparation
+	supplementProjection      func(map[string]any, prepareTurnMemorySelectionContext) prepareTurnInjectionAssembly
 	Preprocessing             *multiAgentSelection
 	priorityCandidates        []prepareTurnPriorityMemoryCandidate
 	priorityTurnSummaries     []prepareTurnPriorityTurnSummaryCandidate
+	prioritySuperseded        []prepareTurnPriorityMemoryCandidate
+	priorityIdentityMetadata  []prepareTurnPriorityIdentityMetadata
 	Text                      string
 	SagaText                  string
 	ChapterText               string

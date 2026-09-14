@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/diagnostics"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
@@ -52,6 +53,7 @@ type Server struct {
 	SourceAcceptances        *completeTurnSourceAcceptanceLedger
 	RollbackDecisions        *rollbackDecisionLedger
 	RequestShutdown          func(exitCode int)
+	DiagnosticWriter         *diagnostics.Writer
 }
 
 // ValidateRuntimeDependencies verifies live dependencies before the HTTP
@@ -230,7 +232,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	s.registerCanonPackPreviewRoutes(sub)
 	s.registerSourceDiscoveryRoutes(sub)
 	s.registerUpdateRoutes(sub)
-	mux.Handle("/", s.corsMiddleware(s.authMiddleware(s.reverseProxyBasePathMiddleware(sub))))
+	sub.HandleFunc("GET /diagnostics/report", s.handleDiagnosticReport)
+	mux.Handle("/", s.diagnosticMiddleware(s.corsMiddleware(s.authMiddleware(s.reverseProxyBasePathMiddleware(sub)))))
 }
 
 func (s *Server) reverseProxyBasePathMiddleware(next http.Handler) http.Handler {
@@ -283,6 +286,7 @@ func isArchiveRouteRoot(segment string) bool {
 		"complete-turn",
 		"config",
 		"continuity-pack",
+		"diagnostics",
 		"effective-inputs",
 		"episodes",
 		"explorer",

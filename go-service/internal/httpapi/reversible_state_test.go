@@ -652,19 +652,18 @@ func TestPrepareTurnAssemblySanitizesLegacyReversibleCharacterState(t *testing.T
 		StateType: "scene",
 		Content:   `{"present_entities":["Mina"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{{
 			ChatSessionID: "payload-reversible", CharacterName: "Mina",
 			StatusJSON: `{"injury":"broken arm","current_location":"old tower","emotion":"afraid","role":"captain"}`,
 		}},
-		nil, nil, nil, nil, nil, nil,
-		3, 1000,
-		"Mina looks around.",
-		"default",
-		nil, nil, nil,
-		perspective,
-	)
+		TopK:        3,
+		MaxChars:    1000,
+		UserInput:   "Mina looks around.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if strings.Contains(assembly.CharacterText, "broken arm") ||
 		strings.Contains(assembly.CharacterText, "old tower") ||
 		strings.Contains(assembly.CharacterText, "afraid") ||

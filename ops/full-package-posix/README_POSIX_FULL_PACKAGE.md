@@ -1,5 +1,13 @@
 # Archive Center 2.1 POSIX Package Candidate
 
+## 오류 보고
+
+플러그인 **설정 → 오류·진단 보고서 → 보고서 저장**으로 최근 오류를 저장합니다.
+서버 연결이 안 되면 패키지 폴더에서 **`sh 07_export_diagnostics.sh`**를 실행하세요.
+기존 Python으로 로그를 읽어 홈 폴더에 JSON 보고서를 저장하며 백엔드와 DB는 실행하지 않습니다.
+로그 경로는 시작 화면에 표시됩니다. API 키 등은 보고서에서 마스킹하며 자동 전송하지 않습니다.
+
+
 This package is a managed package candidate for Linux and macOS, and an
 automatic install package for Termux.
 

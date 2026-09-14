@@ -2,8 +2,10 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strconv"
@@ -16,7 +18,12 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/vector"
 )
 
-const prepareTurnPrivatePreciseMemorySearchResultsKey = "_priority_precise_memory_search_results"
+// Request-local vector observations stay separate from the public trace.
+type prepareTurnVectorRecallResult struct {
+	Trace                map[string]any
+	PreciseHits          []vector.VectorDocument `json:"-"`
+	PreciseHitsAvailable bool                    `json:"-"`
+}
 
 // Retrieval compares alternatives before the final character budget is spent.
 // 512 is a planning unit, not measured source length or a text truncation size.
@@ -151,10 +158,10 @@ func prepareTurnEffectiveContinuityQuery(req dto.PrepareTurnRequest, recentConve
 }
 
 func (s *Server) prepareTurnVectorShadow(ctx context.Context, req dto.PrepareTurnRequest, limit int, historyScopes ...prepareTurnHistoryScope) map[string]any {
-	return s.prepareTurnVectorShadowWithPreciseCandidateLimits(ctx, req, limit, nil, historyScopes...)
+	return s.prepareTurnVectorShadowWithPreciseCandidateLimits(ctx, req, limit, nil, historyScopes...).Trace
 }
 
-func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.Context, req dto.PrepareTurnRequest, limit int, preciseCandidateLimits map[string]int, historyScopes ...prepareTurnHistoryScope) map[string]any {
+func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.Context, req dto.PrepareTurnRequest, limit int, preciseCandidateLimits map[string]int, historyScopes ...prepareTurnHistoryScope) prepareTurnVectorRecallResult {
 	limit = prepareTurnRecallLimit(limit)
 	recentConversationLimit := prepareTurnRecentConversationReferenceLimit(req.Settings)
 	retrievalQueries := prepareTurnRetrievalQueries(req, recentConversationLimit)
@@ -185,13 +192,22 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		"recent_conversation_query_limit": recentConversationLimit,
 		"recent_conversation_query_count": recentConversationQueryCount,
 	}
+	result := prepareTurnVectorRecallResult{Trace: shadow}
 	searchTiming := newBackendTimingTrace("")
 	shadow["breakdown_ms"] = searchTiming.stagesMS
 	defer finalizePrepareTurnVectorShadow(shadow)
+	defer func() {
+		for _, key := range []string{"health_error", "query_embedding_error", "query_history_embedding_errors", "search_error", "memory_search_error", "precise_memory_search_error"} {
+			if value, ok := shadow[key]; ok && fmt.Sprint(value) != "" {
+				slog.WarnContext(ctx, "memory retrieval failed", "session_id", req.ChatSessionID, "stage", key,
+					"error", s.completeTurnPersistenceDiagnostics([]string{key + ": " + fmt.Sprint(value)}))
+			}
+		}
+	}()
 	if s.Vector == nil {
 		shadow["status"] = "disabled"
 		shadow["health_error"] = "vector store is not configured"
-		return shadow
+		return result
 	}
 	healthStarted := time.Now()
 	health, err := s.Vector.Health(ctx)
@@ -200,7 +216,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	if err != nil {
 		shadow["status"] = "degraded"
 		shadow["health_error"] = err.Error()
-		return shadow
+		return result
 	}
 	shadow["status"] = health.Status
 	shadow["collection"] = health.Collection
@@ -230,11 +246,11 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		if !embeddingCfg.hasConfig() {
 			shadow["search_skipped_reason"] = "missing_chroma_query_vector_and_embedding_config"
 			shadow["query_embedding_missing_fields"] = embeddingCfg.missingFields()
-			return shadow
+			return result
 		}
 		if len(retrievalQueries) == 0 {
 			shadow["search_skipped_reason"] = "missing_query_text_for_embedding"
-			return shadow
+			return result
 		}
 		historyEmbeddingErrors := []string{}
 		model := strings.TrimSpace(embeddingCfg.Model)
@@ -248,7 +264,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 					shadow["query_embedding_status"] = "error"
 					shadow["query_embedding_error"] = err.Error()
 					shadow["search_skipped_reason"] = "query_embedding_failed"
-					return shadow
+					return result
 				}
 				historyEmbeddingErrors = append(historyEmbeddingErrors, err.Error())
 				continue
@@ -259,7 +275,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 					shadow["status"] = "degraded"
 					shadow["query_embedding_status"] = "empty"
 					shadow["search_skipped_reason"] = "query_embedding_empty"
-					return shadow
+					return result
 				}
 				historyEmbeddingErrors = append(historyEmbeddingErrors, "query_embedding_empty")
 				continue
@@ -450,7 +466,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		shadow["precise_memory_search_attempted"] = false
 		shadow["precise_memory_search_result"] = "no_canonical_candidates"
 		shadow["precise_memory_search_result_count"] = 0
-		return shadow
+		return result
 	}
 	shadow["precise_memory_search_attempted"] = true
 	preciseResults, preciseErr := searchAcrossSessions(func(string) string { return preciseMemoryFilter }, preciseCandidateLimits)
@@ -458,10 +474,8 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	case preciseErr == nil:
 		shadow["precise_memory_search_result"] = "ok"
 		shadow["precise_memory_search_result_count"] = len(preciseResults)
-		// This private handoff is consumed and removed by prepare-turn before the
-		// public response is assembled. It reuses the same query vector and never
-		// becomes a second payload or persistence surface.
-		shadow[prepareTurnPrivatePreciseMemorySearchResultsKey] = vectorDocumentSearchPreview(preciseResults)
+		result.PreciseHits = preciseResults
+		result.PreciseHitsAvailable = true
 	case errors.Is(preciseErr, vector.ErrNotFound):
 		shadow["precise_memory_search_result"] = "not_found"
 		shadow["precise_memory_search_result_count"] = 0
@@ -473,7 +487,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		shadow["precise_memory_search_result_count"] = 0
 		shadow["precise_memory_search_error"] = preciseErr.Error()
 	}
-	return shadow
+	return result
 }
 
 func prepareTurnLoadGeneralPreciseMemoryUnits(
@@ -567,7 +581,7 @@ func prepareTurnVectorHitLooksLikePreciseMemory(hit map[string]any) bool {
 func prepareTurnHydratePreciseMemoryVectorFacts(
 	ctx context.Context,
 	reader store.GeneralVectorPreciseMemoryReader,
-	vectorShadow map[string]any,
+	recall prepareTurnVectorRecallResult,
 	historyScope prepareTurnHistoryScope,
 	preloadedUnits ...map[string][]store.PreciseMemoryUnit,
 ) ([]prepareTurnPrioritySemanticFact, map[string]any) {
@@ -586,10 +600,11 @@ func prepareTurnHydratePreciseMemoryVectorFacts(
 		trace["reason"] = "general_precise_memory_reader_unavailable"
 		return nil, trace
 	}
+	vectorShadow := recall.Trace
 	searchResults := vectorShadow["search_results"]
 	searchResult := strings.TrimSpace(stringFromMap(vectorShadow, "search_result"))
-	if dedicatedResults, ok := vectorShadow[prepareTurnPrivatePreciseMemorySearchResultsKey]; ok {
-		searchResults = dedicatedResults
+	if recall.PreciseHitsAvailable {
+		searchResults = vectorDocumentSearchPreview(recall.PreciseHits)
 		searchResult = strings.TrimSpace(stringFromMap(vectorShadow, "precise_memory_search_result"))
 		trace["search_owner"] = "dedicated_precise_memory_tier_same_query_vector"
 	}
@@ -1016,7 +1031,19 @@ func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
 }
 
 func buildInjectionText(memories []store.Memory, kgTriples []store.KGTriple, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, topK, maxChars int) (string, bool) {
-	assembly := buildPrepareTurnInjectionAssembly(memories, kgTriples, nil, nil, storylines, worldRules, charStates, pendingThreads, nil, nil, nil, nil, nil, topK, maxChars, "", "default", nil, nil, nil)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:        memories,
+		Triples:         kgTriples,
+		Storylines:      storylines,
+		WorldRules:      worldRules,
+		CharacterStates: charStates,
+		PendingThreads:  pendingThreads,
+		TopK:            topK,
+		MaxChars:        maxChars,
+		UserInput:       "",
+		Profile:         "default",
+		BudgetMode:      "auto",
+	})
 	return assembly.Text, assembly.Truncated
 }
 
@@ -1075,36 +1102,76 @@ type prepareTurnRecallEvidence struct {
 	OverlapTerms      []string
 }
 
-func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTurnRecallEvidence {
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return prepareTurnRecallEvidence{}
-	}
-	evidence := prepareTurnRecallEvidence{}
-	for _, anchor := range prepareTurnMemoryStructuredAnchors(item) {
-		if prepareTurnRecallContainsAnchor(query, anchor) {
-			evidence.StructuredAnchors = append(evidence.StructuredAnchors, anchor)
-		}
-	}
-	queryTerms := prepareTurnDistinctiveRecallTerms(query, evidence.StructuredAnchors...)
-	memoryTerms := map[string]bool{}
-	for _, term := range prepareTurnRecallTerms(prepareTurnMemoryRelevanceText(item)) {
-		memoryTerms[term] = true
-	}
-	for _, term := range queryTerms {
-		if memoryTerms[term] {
-			evidence.OverlapTerms = append(evidence.OverlapTerms, term)
-		}
-	}
-	memoryText := prepareTurnMemoryRelevanceText(item)
-	evidence.ExactPhrase = prepareTurnSharedRecallPhrase(query, memoryText)
-	evidence.LexicalOverlap = len(evidence.OverlapTerms) >= prepareTurnRecallRequiredOverlap(queryTerms, memoryText)
+// Prepared source text is immutable and reused only within one prepare request.
+type prepareTurnRecallMemory struct {
+	text             string
+	anchors          []string
+	terms, phrases   map[string]bool
+	distinctiveCount int
+	protected        bool
+}
+
+func prepareTurnPrepareRecallMemory(item store.Memory) prepareTurnRecallMemory {
+	text := prepareTurnMemoryRelevanceText(item)
 	parsed := parseJSONMap(item.SummaryJSON)
-	protected := len(sliceFromAny(parsed["protected_secrets"])) > 0 ||
-		len(sliceFromAny(parsed["character_identity_accuracy"])) > 0
-	evidence.Eligible = evidence.ExactPhrase || evidence.LexicalOverlap ||
-		(protected && len(evidence.StructuredAnchors) > 0)
-	return evidence
+	terms := map[string]bool{}
+	for _, term := range prepareTurnRecallTerms(text) {
+		terms[term] = true
+	}
+	return prepareTurnRecallMemory{text: text, anchors: prepareTurnMemoryStructuredAnchors(item), terms: terms,
+		phrases: prepareTurnRecallPhrasePairs(text), distinctiveCount: len(prepareTurnDistinctiveRecallTerms(text)),
+		protected: len(sliceFromAny(parsed["protected_secrets"])) > 0 || len(sliceFromAny(parsed["character_identity_accuracy"])) > 0}
+}
+
+// Compile a question once. Anchor-dependent terms are local to this matcher;
+// concurrent questions never write the shared prepared memory data.
+func prepareTurnMemoryRecallMatcher(query string) func(prepareTurnRecallMemory) prepareTurnRecallEvidence {
+	query = strings.TrimSpace(query)
+	phrases := prepareTurnRecallPhrasePairs(query)
+	termsByAnchors := map[string][]string{"": prepareTurnDistinctiveRecallTerms(query)}
+	return func(item prepareTurnRecallMemory) prepareTurnRecallEvidence {
+		if query == "" {
+			return prepareTurnRecallEvidence{}
+		}
+		evidence := prepareTurnRecallEvidence{}
+		for _, anchor := range item.anchors {
+			if prepareTurnRecallContainsAnchor(query, anchor) {
+				evidence.StructuredAnchors = append(evidence.StructuredAnchors, anchor)
+			}
+		}
+		encodedAnchors, _ := json.Marshal(evidence.StructuredAnchors)
+		key := string(encodedAnchors)
+		if len(evidence.StructuredAnchors) == 0 {
+			key = ""
+		}
+		queryTerms, ok := termsByAnchors[key]
+		if !ok {
+			queryTerms = prepareTurnDistinctiveRecallTerms(query, evidence.StructuredAnchors...)
+			termsByAnchors[key] = queryTerms
+		}
+		for _, term := range queryTerms {
+			if item.terms[term] {
+				evidence.OverlapTerms = append(evidence.OverlapTerms, term)
+			}
+		}
+		for pair := range item.phrases {
+			if phrases[pair] {
+				evidence.ExactPhrase = true
+				break
+			}
+		}
+		required := prepareTurnDynamicOverlapRequirement(len(queryTerms))
+		if item.distinctiveCount > 0 {
+			required = minInt(required, (item.distinctiveCount+1)/2)
+		}
+		evidence.LexicalOverlap = len(evidence.OverlapTerms) >= required
+		evidence.Eligible = evidence.ExactPhrase || evidence.LexicalOverlap || (item.protected && len(evidence.StructuredAnchors) > 0)
+		return evidence
+	}
+}
+
+func prepareTurnMemoryRecallEvidence(query string, item store.Memory) prepareTurnRecallEvidence {
+	return prepareTurnMemoryRecallMatcher(query)(prepareTurnPrepareRecallMemory(item))
 }
 
 func prepareTurnSupportRecallEligible(query, text string, anchors ...string) bool {
@@ -1124,41 +1191,27 @@ func prepareTurnSupportRecallEligible(query, text string, anchors ...string) boo
 // An exact adjacent term pair is request-local evidence without requiring a
 // language-specific stop-word list. It preserves concise phrases such as a
 // location or task name that can be lost by single-token frequency filtering.
-func prepareTurnSharedRecallPhrase(query, text string) bool {
-	sequenceTerms := func(value string) []string {
-		out := []string{}
-		for _, term := range strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
-			return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
-		}) {
-			if term = strings.TrimSpace(term); term != "" {
-				out = append(out, term)
-			}
-		}
-		return out
-	}
-	queryTerms := sequenceTerms(query)
-	textTerms := sequenceTerms(text)
-	if len(queryTerms) < 2 || len(textTerms) < 2 {
-		return false
-	}
-	queryDistinctive := map[string]bool{}
-	for _, term := range prepareTurnDistinctiveRecallTerms(query) {
-		queryDistinctive[term] = true
-	}
-	textDistinctive := map[string]bool{}
+func prepareTurnRecallPhrasePairs(text string) map[string]bool {
+	terms := strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+		return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+	})
+	distinctive := map[string]bool{}
 	for _, term := range prepareTurnDistinctiveRecallTerms(text) {
-		textDistinctive[term] = true
+		distinctive[term] = true
 	}
-	pairs := make(map[string]bool, len(queryTerms)-1)
-	for i := 0; i+1 < len(queryTerms); i++ {
-		if queryTerms[i] != queryTerms[i+1] &&
-			(queryDistinctive[queryTerms[i]] || queryDistinctive[queryTerms[i+1]]) {
-			pairs[queryTerms[i]+"\x00"+queryTerms[i+1]] = true
+	pairs := map[string]bool{}
+	for i := 0; i+1 < len(terms); i++ {
+		if terms[i] != terms[i+1] && (distinctive[terms[i]] || distinctive[terms[i+1]]) {
+			pairs[terms[i]+"\x00"+terms[i+1]] = true
 		}
 	}
-	for i := 0; i+1 < len(textTerms); i++ {
-		if pairs[textTerms[i]+"\x00"+textTerms[i+1]] &&
-			(textDistinctive[textTerms[i]] || textDistinctive[textTerms[i+1]]) {
+	return pairs
+}
+
+func prepareTurnSharedRecallPhrase(query, text string) bool {
+	pairs := prepareTurnRecallPhrasePairs(query)
+	for pair := range prepareTurnRecallPhrasePairs(text) {
+		if pairs[pair] {
 			return true
 		}
 	}
@@ -1475,6 +1528,10 @@ func prepareTurnMemoryCharacterAnchors(item store.Memory) []string {
 func prepareTurnMemoryDirectEntityMatches(item store.Memory, directlyReferencedEntities []string) []string {
 	anchors := prepareTurnMemoryStructuredAnchors(item)
 	summary := prepareTurnMemorySummary(item)
+	return prepareTurnMemoryEntityMatches(summary, anchors, directlyReferencedEntities)
+}
+
+func prepareTurnMemoryEntityMatches(summary string, anchors, directlyReferencedEntities []string) []string {
 	out := []string{}
 	for _, entity := range directlyReferencedEntities {
 		matched := prepareTurnRecallContainsAnchor(summary, entity)
@@ -1503,6 +1560,13 @@ func selectPrepareTurnMemoryLanesWithVector(memories []store.Memory, query strin
 }
 
 func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydrationMemories []store.Memory, query string, topK int, vectorShadow map[string]any, directlyReferencedEntityGroups ...[]string) prepareTurnMemoryLaneSelection {
+	return selectPrepareTurnMemoryLanesWithPreparedRecall(memories, vectorHydrationMemories, query, topK, vectorShadow, nil, directlyReferencedEntityGroups...)
+}
+
+func selectPrepareTurnMemoryLanesWithPreparedRecall(memories, vectorHydrationMemories []store.Memory, query string, topK int, vectorShadow map[string]any, prepared *prepareTurnRequestPreparation, directlyReferencedEntityGroups ...[]string) prepareTurnMemoryLaneSelection {
+	if prepared == nil {
+		prepared = newPrepareTurnRequestPreparation(&prepareTurnAssemblyCommon{})
+	}
 	vectorLimit := prepareTurnRecallLimit(topK)
 	directlyReferencedEntities := []string{}
 	if len(directlyReferencedEntityGroups) > 0 {
@@ -1520,7 +1584,7 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	}
 	clean := make([]store.Memory, 0, len(memories))
 	for _, item := range memories {
-		if strings.TrimSpace(prepareTurnMemorySummary(item)) == "" {
+		if strings.TrimSpace(prepared.summary(item)) == "" {
 			continue
 		}
 		clean = append(clean, item)
@@ -1584,7 +1648,7 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	out.ProtectedAmbiguousAlias = protectedAmbiguousAliases
 	protectedCandidateMemories := map[string]bool{}
 	for _, item := range clean {
-		if !prepareTurnProtectedMemoryGuard(item).Active {
+		if !prepared.guard(item).Active {
 			continue
 		}
 		key := prepareTurnMemoryLaneKey(item)
@@ -1601,7 +1665,7 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	exactPhraseSelectedCount := 0
 	lexicalSelectedCount := 0
 	acceptProtectedCoverage := func(item store.Memory) (bool, bool) {
-		if !prepareTurnProtectedMemoryGuard(item).Active {
+		if !prepared.guard(item).Active {
 			return true, false
 		}
 		memoryKey := prepareTurnMemoryLaneKey(item)
@@ -1624,10 +1688,10 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	vectorRecallAttempted := prepareTurnVectorSearchAttempted(vectorShadow)
 	vectorScopeRejected := 0
 	for _, item := range vectorHydration.Items {
-		protected := prepareTurnProtectedMemoryGuard(item).Active
+		protected := prepared.guard(item).Active
 		if queryPresent && !protected && len(directEntitiesOutsideStoredScene) > 0 &&
 			len(prepareTurnMemoryCharacterAnchors(item)) > 0 &&
-			len(prepareTurnMemoryDirectEntityMatches(item, directEntitiesOutsideStoredScene)) == 0 {
+			len(prepared.entityMatches(item, directEntitiesOutsideStoredScene)) == 0 {
 			vectorScopeRejected++
 			continue
 		}
@@ -1691,14 +1755,20 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 	exactPhraseCandidates := 0
 	lexicalCandidates := 0
 	lexicalRejectedCandidates := 0
+	matcher := prepared.recallMatcher(query)
+	independentMatchers := []func(store.Memory) prepareTurnRecallEvidence{}
+	for _, raw := range sliceFromAny(vectorShadow["recall_query_texts"]) {
+		independentMatchers = append(independentMatchers, prepared.recallMatcher(extractionStringFromAny(raw)))
+	}
+	queryTermCount := len(prepareTurnRecallTerms(query))
 	for _, item := range clean {
 		key := prepareTurnMemoryLaneKey(item)
 		relevance := 0.0
 		evidence := prepareTurnRecallEvidence{}
 		if queryPresent {
-			evidence = prepareTurnMemoryRecallEvidence(query, item)
-			for _, raw := range sliceFromAny(vectorShadow["recall_query_texts"]) {
-				independent := prepareTurnMemoryRecallEvidence(extractionStringFromAny(raw), item)
+			evidence = matcher(item)
+			for _, match := range independentMatchers {
+				independent := match(item)
 				if independent.Eligible {
 					evidence.Eligible = true
 					evidence.ExactPhrase = evidence.ExactPhrase || independent.ExactPhrase
@@ -1709,9 +1779,9 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 				}
 			}
 			if evidence.Eligible {
-				relevance = simpleTokenSimilarity(query, prepareTurnMemoryRelevanceText(item))
+				relevance = prepared.similarity(query, item)
 				if relevance == 0 {
-					relevance = float64(len(evidence.OverlapTerms)) / float64(maxInt(len(prepareTurnRecallTerms(query)), 1))
+					relevance = float64(len(evidence.OverlapTerms)) / float64(maxInt(queryTermCount, 1))
 				}
 				relevantCandidates++
 			} else {
@@ -1781,7 +1851,7 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 		if prepareTurnMemoryAlreadySelected(out, candidate.item) {
 			return false
 		}
-		protectedCandidate := prepareTurnProtectedMemoryGuard(candidate.item).Active
+		protectedCandidate := prepared.guard(candidate.item).Active
 		if queryPresent && !candidate.evidence.Eligible && !protectedCandidate {
 			return false
 		}
@@ -1832,16 +1902,16 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 		return false
 	}
 	markDirectCoverage := func(item store.Memory) {
-		for _, entity := range prepareTurnMemoryDirectEntityMatches(item, directlyReferencedEntities) {
+		for _, entity := range prepared.entityMatches(item, directlyReferencedEntities) {
 			coveredDirectEntities[normalizePrepareTurnEntityNeedle(entity)] = true
 		}
 	}
 	currentPairEntities := append(append([]string{}, directlyReferencedEntities...), storedSceneEntities...)
 	coveredDirectPairEntities := map[string]bool{}
 	for _, item := range out.VectorRelevant {
-		if !prepareTurnProtectedMemoryGuard(item).Active {
+		if !prepared.guard(item).Active {
 			markDirectCoverage(item)
-			matches := prepareTurnMemoryDirectEntityMatches(item, currentPairEntities)
+			matches := prepared.entityMatches(item, currentPairEntities)
 			if len(matches) >= 2 {
 				for _, entity := range directlyReferencedEntities {
 					if prepareTurnRelationshipNameInList(entity, matches) {
@@ -1859,10 +1929,10 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 			}
 			pairSelected := false
 			for _, candidate := range scored {
-				matches := prepareTurnMemoryDirectEntityMatches(candidate.item, currentPairEntities)
+				matches := prepared.entityMatches(candidate.item, currentPairEntities)
 				if len(matches) < 2 ||
 					!prepareTurnRelationshipNameInList(entity, matches) ||
-					prepareTurnProtectedMemoryGuard(candidate.item).Active {
+					prepared.guard(candidate.item).Active {
 					continue
 				}
 				candidate.evidence.Eligible = true
@@ -1876,10 +1946,10 @@ func selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, vectorHydra
 				continue
 			}
 			for _, candidate := range scored {
-				if !candidate.evidence.Eligible || prepareTurnProtectedMemoryGuard(candidate.item).Active {
+				if !candidate.evidence.Eligible || prepared.guard(candidate.item).Active {
 					continue
 				}
-				matches := prepareTurnMemoryDirectEntityMatches(candidate.item, directlyReferencedEntities)
+				matches := prepared.entityMatches(candidate.item, directlyReferencedEntities)
 				if !prepareTurnRelationshipNameInList(entity, matches) {
 					continue
 				}
@@ -2493,7 +2563,11 @@ func collapseTextKey(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelection, perspectiveContext map[string]any) map[string]any {
+func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelection, perspectiveContext map[string]any, preparation ...*prepareTurnRequestPreparation) map[string]any {
+	var prepared *prepareTurnRequestPreparation
+	if len(preparation) > 0 {
+		prepared = preparation[0]
+	}
 	counts := map[string]any{
 		"protected_secret_count":          0,
 		"identity_accuracy_count":         0,
@@ -2511,7 +2585,7 @@ func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelecti
 			return
 		}
 		seen[key] = true
-		parsed := parseJSONMap(item.SummaryJSON)
+		parsed := prepared.sourceMap(item.SummaryJSON)
 		protectedSecrets := sliceFromAny(parsed["protected_secrets"])
 		identityAccuracy := sliceFromAny(parsed["character_identity_accuracy"])
 		counts["protected_secret_count"] = intFromAny(counts["protected_secret_count"], 0) + len(protectedSecrets)
@@ -2519,7 +2593,7 @@ func prepareTurnMemoryLaneProtectedCounts(selection prepareTurnMemoryLaneSelecti
 		if len(protectedSecrets) > 0 || len(identityAccuracy) > 0 {
 			counts["protected_memory_selected_count"] = intFromAny(counts["protected_memory_selected_count"], 0) + 1
 		}
-		if guard := prepareTurnProtectedMemoryGuard(item, perspectiveContext); guard.Active {
+		if guard := prepared.guard(item, perspectiveContext); guard.Active {
 			counts["protected_memory_guarded_count"] = intFromAny(counts["protected_memory_guarded_count"], 0) + 1
 			if guard.POVScoped {
 				counts["pov_scoped_identity_guard_count"] = intFromAny(counts["pov_scoped_identity_guard_count"], 0) + 1

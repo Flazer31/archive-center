@@ -176,7 +176,7 @@ const R = {
   settings.webDirectBridgeEnabled = false;
   R.nativeFetch = async function(){
     nativeFetchCalled = true;
-    return {ok:true, status:200, async json(){ return {ready:true, route:"native"}; }, async text(){ return ""; }};
+    return new Response(JSON.stringify({ready:true, route:"native"}), {status:200});
   };
   const nativeResult = await bridgeFetch("/ready");
   if(!nativeResult || nativeResult.route !== "native" || !nativeFetchCalled) throw new Error("default nativeFetch route changed");
@@ -220,7 +220,7 @@ const settings = {
 };
 function escapeAttr(value){ return String(value == null ? "" : value); }
 function normalizeSourceSearchLlmProvider(value){ return String(value || "openai"); }
-function getAllowedReasoningPresetsForProvider(){ return ["auto","gpt","gemini","claude","glm","custom"]; }
+const REASONING_PRESET_OPTIONS = ["auto","gpt","gemini","claude","glm","custom"];
 const rendered = (` + renderSource + `)();
 if(!rendered.includes('id="mo-sourceSearchPlannerSave"')) throw new Error("reference search save button is not rendered");
 
@@ -1053,7 +1053,7 @@ func TestTurnWorkflowHUDStopsAfterNonterminalEOF(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	line := extractJSFunctionBlockForTest(t, src, "async function consumeTurnWorkflowHUDStreamLine(line, token, requestId)")
+	line := extractTurnWorkflowHUDStreamIO(t, src) + extractJSFunctionBlockForTest(t, src, "async function consumeTurnWorkflowHUDStreamLine(line, token, requestId)")
 	consume := extractJSFunctionBlockForTest(t, src, "async function consumeTurnWorkflowHUDStream(reader, token, requestId)")
 	prime := extractJSFunctionBlockForTest(t, src, "function primeTurnWorkflowHUD(requestId)")
 	start := extractJSFunctionBlockForTest(t, src, "function startTurnWorkflowHUDWatch(requestId)")
@@ -1642,6 +1642,7 @@ func TestRegisteredRequestCallbacksDetachExactBeforeRequestContext(t *testing.T)
 	}
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "observeActiveChatInputGroup"),
 		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
@@ -1998,6 +1999,7 @@ func TestFailOnceProviderRetryUsesProductionBeforeRequestFastPath(t *testing.T) 
 	}
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "observeActiveChatInputGroup"),
 		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextOwnsPendingResponse"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
@@ -2183,6 +2185,10 @@ func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *tes
 	}
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
+		extractArchiveCenterJSFunction(t, src, "queueNextInputFinalization"),
+		extractArchiveCenterJSFunction(t, src, "beginNextInputFinalizationPipeline"),
+		extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages"),
+		extractArchiveCenterJSAsyncFunction(t, src, "buildNextInputSourceAcceptanceFinality"),
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
 		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
@@ -2191,6 +2197,23 @@ func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *tes
 const settings={enabled:true,debug:false};
 const registered={};
 const completeCalls=[];
+const _nextInputFinalizations=new Map();
+let previousBoundaryResolve=null, previousBoundaryCall=null, activeChat=null;
+async function saveNextInputFinalizationsToStorage(){}
+function finishTurnWorkflowHUDCurrentGeneration(){}
+async function resolveCurrentActiveChatObject(){return {chat:activeChat};}
+function getActiveChatMessageStreamingState(){return false;}
+function extractComparableMessageRoleAndContent(message){return {role:message.role,content:message.content};}
+function extractActiveChatComparableMessages(chat){
+  return chat.message.map((message,index)=>({...message,risuMessageIndex:index}));
+}
+async function buildCompleteTurnSourceAcceptanceObservation(){
+  return {observed_content_hash:computeOrchestrationDirtyHashOr1c(activeChat.message[1].content)};
+}
+async function backfillOneActiveChatCompletedTurn(sid,pair,options){
+  previousBoundaryCall={sid,pair,options};
+  return new Promise(resolve=>{previousBoundaryResolve=resolve;});
+}
 const warnings=[];
 const AUTO_CONTINUE_USER_INPUT_MARKER="[auto-continue]";
 let _activeFinalConfirmationRequestContext=null;
@@ -2307,6 +2330,39 @@ function context(sid,cid,requestId,user,turn){
       throw new Error("captured Char/CID/session mismatch: "+JSON.stringify(call.body));
     }
   }
+
+  // Switching mode keeps the older deferred job and schedules this response immediately.
+  settings.turnFinalizationMode='next_user_input';
+  const old=context('session-switch','cid-switch','request-old','previous input',1);
+  Object.assign(old,{userMessageIndex:0,userMessageChatId:'old-user',userObservedPairOrdinal:1});
+  old.orchestrationResult.turnFinalizationPolicy={owner:'go',mode:settings.turnFinalizationMode};
+  _activeFinalConfirmationRequestContext=old;
+  registered.afterRequest('previous answer','model');
+  if(!_nextInputFinalizations.has(old.sessionId)) throw new Error('previous-mode answer was not queued');
+  settings.turnFinalizationMode='immediate_after_response';
+  const current=context(old.sessionId,old.hostChatId,'request-current','current input',2);
+  Object.assign(current,{userMessageIndex:2,userMessageChatId:'current-user',userObservedPairOrdinal:2});
+  current.orchestrationResult.turnFinalizationPolicy={owner:'go',mode:settings.turnFinalizationMode};
+  activeChat={id:old.hostChatId,message:[
+    {role:'user',content:'previous input',messageChatId:'old-user'},
+    {role:'assistant',content:'previous answer',messageChatId:'old-answer'},
+    {role:'user',content:'current input',messageChatId:'current-user'},
+  ]};
+  const previous=beginNextInputFinalizationPipeline(old.sessionId,current,current.hostContext);
+  if(!previous.started) throw new Error('mode switch dropped the previous pending work');
+  for(let i=0;i<40 && !previousBoundaryResolve;i++) await Promise.resolve();
+  if(!previousBoundaryCall || !previousBoundaryResolve) throw new Error('previous persistence did not start');
+  if(previousBoundaryCall.options.orchestrationResult.requestId!==old.requestId) throw new Error('previous request identity changed');
+  if(previousBoundaryCall.pair.assistantContent!=='previous answer') throw new Error('wrong previous output');
+  _activeFinalConfirmationRequestContext=current;
+  if(registered.afterRequest('current answer','model')!=='current answer') throw new Error('mode switch changed displayed output');
+  for(let i=0;i<100 && completeCalls.length<5;i++) await new Promise(resolve=>setTimeout(resolve,1));
+  const currentCall=completeCalls.find(call=>call.body.client_meta.turn_workflow_request_id===current.requestId);
+  if(!currentCall || currentCall.assistant!=='current answer') throw new Error('current persistence waited for previous work: '+warnings.join(' | '));
+  if(_nextInputFinalizations.get(old.sessionId)?.requestId!==old.requestId) throw new Error('current completion replaced the previous pending marker');
+  previousBoundaryResolve({status:'saved',turnIndex:old.userObservedPairOrdinal});
+  for(let i=0;i<20;i++) await Promise.resolve();
+  if(_nextInputFinalizations.has(old.sessionId)) throw new Error('finished previous marker was not released');
 })().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
 `
 	cmd := exec.Command(nodePath, "-")

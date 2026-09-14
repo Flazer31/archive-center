@@ -29,9 +29,15 @@ func TestMemoryKnowledgeIdentityUnknownPOV(t *testing.T) {
 		"character_identity_accuracy": []any{identity},
 	})
 	memories := []store.Memory{{ID: 8101, ChatSessionID: "audit-identity", TurnIndex: 10, SummaryJSON: string(raw), Importance: .8}}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 30000, "Bob meets Mask in the courtyard.", "default", nil, nil, nil,
-		map[string]any{"current_pov": "Bob", "_priority_memory_enabled": true, "_priority_memory_max_items": 5})
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    30000,
+		UserInput:   "Bob meets Mask in the courtyard.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"current_pov": "Bob", "_priority_memory_enabled": true, "_priority_memory_max_items": 5}),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	t.Logf("final memory: %s", finalText)
 	if strings.Contains(finalText, "For current_pov=Bob") && strings.Contains(finalText, "self/cover-role continuity") {
@@ -114,9 +120,15 @@ func TestMemoryKnowledgeOldSecretAfterPublicReveal(t *testing.T) {
 	old := row(8201, 10, "Alice concealed her cover identity from Bob.", oldSecret)
 	latest := row(8202, 20, "Alice publicly revealed that she is Mask. Bob now knows her identity.", newSecret)
 	assemble := func(rows []store.Memory) prepareTurnInjectionAssembly {
-		return buildPrepareTurnInjectionAssembly(rows, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-			5, 30000, "Alice and Bob discuss Mask in the courtyard.", "default", nil, nil, nil,
-			map[string]any{"_priority_memory_enabled": true, "_priority_memory_max_items": 5, "_priority_memory_current_turn": 21})
+		return buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:    rows,
+			TopK:        5,
+			MaxChars:    30000,
+			UserInput:   "Alice and Bob discuss Mask in the courtyard.",
+			Profile:     "default",
+			BudgetMode:  "auto",
+			Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"_priority_memory_enabled": true, "_priority_memory_max_items": 5, "_priority_memory_current_turn": 21}),
+		})
 	}
 	control := assemble([]store.Memory{latest})
 	if control.ProtectedMemoryText != "" {

@@ -4,12 +4,17 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, canonicalMemories []store.Memory, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
+	return prepareTurnMemoryLaneLinesPrepared(selection, languageContext, canonicalMemories, nil, perspectiveContextArg...)
+}
+
+func prepareTurnMemoryLaneLinesPrepared(selection prepareTurnMemoryLaneSelection, languageContext map[string]any, canonicalMemories []store.Memory, prepared *prepareTurnRequestPreparation, perspectiveContextArg ...map[string]any) ([]string, map[string]any) {
 	lines := []string{}
 	trace := newPrepareTurnMemoryLanguageTrace(languageContext)
 	finalRenderDuplicates := 0
@@ -20,7 +25,7 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
 	}
-	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroups(selection, canonicalMemories...)
+	protectedGroups, protectedGroupMembers := buildPrepareTurnProtectedDeliveryGroupsPrepared(selection, prepared, canonicalMemories...)
 	emittedMemories := map[string]bool{}
 	appendLane := func(label string, items []store.Memory) bool {
 		appendedAny := false
@@ -34,14 +39,14 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 				finalRenderDuplicates++
 				continue
 			}
-			summary := prepareTurnMemorySummary(item)
+			summary := prepared.summary(item)
 			if summary == "" {
 				continue
 			}
 			emittedMemories[renderMemoryKey] = true
 			groups := protectedGroups[memoryKey]
 			protectedGroupMember := protectedGroupMembers[memoryKey]
-			if label != "protected" && !prepareTurnProtectedMemoryGuard(item).Active {
+			if label != "protected" && !prepared.guard(item).Active {
 				groups = nil
 				protectedGroupMember = false
 			}
@@ -108,7 +113,7 @@ func prepareTurnMemoryLaneLines(selection prepareTurnMemoryLaneSelection, langua
 		selected := false
 		for _, lane := range lanes {
 			for _, item := range lane.items {
-				if prepareTurnProtectedMemoryGuard(item).Active {
+				if prepared.guard(item).Active {
 					continue
 				}
 				matches := prepareTurnMemoryDirectEntityMatches(item, selection.DirectlyReferenced)
@@ -157,11 +162,15 @@ type prepareTurnProtectedDeliveryGroup struct {
 }
 
 func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSelection, canonicalMemories ...store.Memory) (map[string][]prepareTurnProtectedDeliveryGroup, map[string]bool) {
+	return buildPrepareTurnProtectedDeliveryGroupsPrepared(selection, nil, canonicalMemories...)
+}
+
+func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemoryLaneSelection, prepared *prepareTurnRequestPreparation, canonicalMemories ...store.Memory) (map[string][]prepareTurnProtectedDeliveryGroup, map[string]bool) {
 	selected := map[string]bool{}
 	selectedItems := []store.Memory{}
 	for _, lane := range [][]store.Memory{selection.VectorRelevant, selection.Relevant, selection.Deep, selection.Recent} {
 		for _, item := range lane {
-			if prepareTurnProtectedMemoryGuard(item).Active {
+			if prepared.guard(item).Active {
 				selected[prepareTurnMemoryLaneKey(item)] = true
 			}
 			selectedItems = append(selectedItems, item)
@@ -185,7 +194,7 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 	latestDisclosure := map[string]disclosure{}
 	for _, source := range [][]store.Memory{canonicalMemories, candidates, selectedItems} {
 		for _, item := range source {
-			parsed := parseJSONMap(item.SummaryJSON)
+			parsed := prepared.sourceMap(item.SummaryJSON)
 			for _, field := range []string{"protected_secrets", "character_identity_accuracy"} {
 				policyKey := "disclosure_policy"
 				if field == "character_identity_accuracy" {
@@ -262,7 +271,7 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 		}
 	}
 	for _, item := range candidates {
-		parsed := parseJSONMap(item.SummaryJSON)
+		parsed := prepared.sourceMap(item.SummaryJSON)
 		for ordinal, raw := range sliceFromAny(parsed["protected_secrets"]) {
 			secret := mapFromAny(raw)
 			if protectedSecretRequiresGuard(secret, "disclosure_policy") {
@@ -282,7 +291,7 @@ func buildPrepareTurnProtectedDeliveryGroups(selection prepareTurnMemoryLaneSele
 		if group == nil || group.Representative == "" || len(group.ProtectedItems) == 0 {
 			continue
 		}
-		parsed := parseJSONMap(group.Memory.SummaryJSON)
+		parsed := maps.Clone(prepared.sourceMap(group.Memory.SummaryJSON))
 		delete(parsed, "protected_secrets")
 		delete(parsed, "character_identity_accuracy")
 		parsed[group.ProtectionField] = group.ProtectedItems
@@ -603,7 +612,10 @@ type prepareTurnProtectedMemoryGuardResult struct {
 }
 
 func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ...map[string]any) prepareTurnProtectedMemoryGuardResult {
-	parsed := parseJSONMap(item.SummaryJSON)
+	return prepareTurnProtectedMemoryGuardFromParsed(parseJSONMap(item.SummaryJSON), perspectiveContextArg...)
+}
+
+func prepareTurnProtectedMemoryGuardFromParsed(parsed map[string]any, perspectiveContextArg ...map[string]any) prepareTurnProtectedMemoryGuardResult {
 	protectedSecrets := sliceFromAny(parsed["protected_secrets"])
 	identityAccuracy := sliceFromAny(parsed["character_identity_accuracy"])
 	if len(protectedSecrets) == 0 && len(identityAccuracy) == 0 {

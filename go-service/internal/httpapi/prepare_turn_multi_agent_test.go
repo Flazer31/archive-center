@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +74,7 @@ func Test43MultiAgentParallelRoundsAndPartialFailure(t *testing.T) {
 			if second {
 				found := false
 				for _, raw := range input["candidates"].([]any) {
-					if raw.(map[string]any)["id"] == "found-event" {
+					if raw.(map[string]any)["text"] == "Mira received the key yesterday." {
 						found = true
 					}
 				}
@@ -103,7 +102,7 @@ func Test43MultiAgentParallelRoundsAndPartialFailure(t *testing.T) {
 		c.UsePublisher = false
 		c.Provider = "custom"
 		c.Endpoint = provider.URL
-		c.Model = "test"
+		c.Model = "test-" + role
 		c.APIKey = "test-key"
 		cfg.Roles[role] = c
 	}
@@ -199,8 +198,8 @@ func Test43MultiAgentSelectionReachesDeliveryWithoutScoreOrBudgetReplacement(t *
 	out := prepareTurnInjectionAssembly{CharacterObjectiveText: "[Character Objective States]\n- Mira guards the archive.\n- Rook carries an old compass.", CanonWorldText: "[Item, Location, and World States]\n- The archive door is sealed."}
 	perspective := priorityMemoryTestContext(1)
 	perspective["_priority_memory_query"] = "Mira guards the archive"
-	baseline := buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 2000, 1, "auto", nil, perspective)
-	facts, summaries := multiAgentCandidatePool(&out, perspective)
+	baseline := buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 2000, 1, "auto", nil, testPrepareTurnMemorySelectionContext(perspective))
+	facts, summaries := multiAgentCandidatePool(&out)
 	var selected []string
 	for i := len(facts) - 1; i >= 0; i-- {
 		if facts[i].Lane == "character_objective" {
@@ -213,7 +212,7 @@ func Test43MultiAgentSelectionReachesDeliveryWithoutScoreOrBudgetReplacement(t *
 	selection := &multiAgentSelection{Contract: multiAgentContract, Candidates: facts, Summaries: summaries, Roles: []multiAgentRoleResult{{Role: "character_objective", Source: "ai", Selection: multiAgentRecommendation{SelectedIDs: selected}}}}
 	selection.captureBaseline(baseline)
 	out.Preprocessing = selection
-	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 1, 1, "auto", nil, perspective)
+	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 1, 1, "auto", nil, testPrepareTurnMemorySelectionContext(perspective))
 	got := []string{}
 	for _, raw := range prepareTurnMemoryLineageSlice(plan["priority_items"]) {
 		item := mapFromAny(raw)
@@ -236,7 +235,7 @@ func Test43MultiAgentSelectionReachesDeliveryWithoutScoreOrBudgetReplacement(t *
 		t.Fatalf("payload changed AI memory: %+v", lane)
 	}
 	selection.Roles[0].Source = "go_default"
-	plan = buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 2000, 1, "auto", nil, perspective)
+	plan = buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 2000, 1, "auto", nil, testPrepareTurnMemorySelectionContext(perspective))
 	if plan["final_text"] != baseline["final_text"] {
 		t.Fatalf("all-empty changed ordinary Go delivery: %q vs %q", plan["final_text"], baseline["final_text"])
 	}
@@ -371,11 +370,11 @@ func Test43MultiAgentIndependentConnectionsAndSharedPromptReachBothRounds(t *tes
 			if rolePrompt == "" {
 				rolePrompt = multiAgentRolePrompts[role]
 			}
-			want := expectedShared + "\n\nAssigned role: " + role + "\n" + rolePrompt + fmt.Sprintf("\nRound %d of at most 2.", round)
+			want := expectedShared + "\n\nAssigned role: " + role + "\n" + rolePrompt + "\n\n" + multiAgentReviewTransport
 			if input["role"] != role || body["model"] != "model-"+role || r.Header.Get("Authorization") != "Bearer key-"+role {
 				t.Errorf("role %s used another connection or model", role)
 			}
-			if prompt != want {
+			if prompt != want || intFromAny(input["analysis_round"], 0) != round {
 				t.Errorf("role %s round %d did not receive the exact edited shared and role prompts", role, round)
 			}
 			if extractionStringFromAny(body["service_tier"]) != tiers[role] {
@@ -737,7 +736,7 @@ func Test43MultiAgentHTTPPrepareDeliversSelectedCanonicalMemoryAndPublisherSuppo
 							if item["request_reason"] != handoffReason || item["from_role"] != "event_recent" {
 								t.Error("actual recipient request lost the originating editor's purpose")
 							}
-							for _, key := range []string{"id", "ref", "text", "source_ref", "source_table", "source_turn"} {
+							for _, key := range []string{"ref", "text", "source_ref", "source_table", "source_turn"} {
 								if item[key] != chosenCandidate[key] {
 									t.Errorf("public handoff changed %s: got=%v want=%v", key, item[key], chosenCandidate[key])
 								}
@@ -755,7 +754,7 @@ func Test43MultiAgentHTTPPrepareDeliversSelectedCanonicalMemoryAndPublisherSuppo
 				for _, raw := range input["candidates"].([]any) {
 					c := modelEvidenceForTest(t, input, raw)
 					if !second && strings.Contains(extractionStringFromAny(c["text"]), "compass") {
-						chosenID = c["id"].(string)
+						chosenID = c["ref"].(string)
 						chosenText = c["text"].(string)
 						chosenCandidate = c
 						if c["visibility"] != "public_projection" {
@@ -798,7 +797,7 @@ func Test43MultiAgentHTTPPrepareDeliversSelectedCanonicalMemoryAndPublisherSuppo
 				value.Provider = "custom"
 				value.Endpoint = provider.URL
 				value.APIKey = "test-key"
-				value.Model = "test"
+				value.Model = "test-" + role
 				settings.Roles[role] = value
 			}
 			b, _ := json.Marshal(settings)
@@ -903,7 +902,7 @@ func TestOpenCodeGoPreprocessingSessionBothRounds(t *testing.T) {
 	var mu sync.Mutex
 	sessions := []string{}
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("User-Agent") != "ArchiveCenter/4.3.1" {
+		if r.Header.Get("User-Agent") != "ArchiveCenter/4.4.0" {
 			t.Error("missing client identity")
 		}
 		mu.Lock()
@@ -920,7 +919,20 @@ func TestOpenCodeGoPreprocessingSessionBothRounds(t *testing.T) {
 		if !strings.Contains(content, "previous_result") {
 			answer = `{"search_requests":["Find the missing evidence"]}`
 		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": answer}}}})
+		var packet map[string]any
+		if err := json.Unmarshal([]byte(content), &packet); err != nil {
+			t.Error(err)
+			return
+		}
+		results := map[string]json.RawMessage{}
+		for _, raw := range sliceFromAny(packet["roles"]) {
+			results[stringFromMap(mapFromAny(raw), "role")] = json.RawMessage(answer)
+		}
+		if len(results) != len(multiAgentRoles) {
+			t.Errorf("group assignments=%d", len(results))
+		}
+		grouped, _ := json.Marshal(map[string]any{"roles": results})
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(grouped)}}}})
 	}))
 	defer provider.Close()
 	cfg := defaultMultiAgentSettings()
@@ -937,11 +949,11 @@ func TestOpenCodeGoPreprocessingSessionBothRounds(t *testing.T) {
 			func(string) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, map[string]any) {
 				return nil, nil, map[string]any{"status": "no_matches"}
 			})
-		if result.AnalysisCalls != len(multiAgentRoles)*2 {
+		if result.AnalysisCalls != 2 {
 			t.Fatalf("calls=%d", result.AnalysisCalls)
 		}
 	}
-	n := len(multiAgentRoles) * 2
+	n := 2 // One physical request per round; every role still participates.
 	if len(sessions) != n*2 || sessions[0] == "" {
 		t.Fatalf("session headers=%v", sessions)
 	}

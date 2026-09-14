@@ -27,6 +27,7 @@ func (s *Server) registerHealthRoutes(mux *http.ServeMux) {
 
 // registerConfigRoutes mounts config and prompt endpoints.
 func (s *Server) registerConfigRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /config/view-model", s.handleConfigViewModel)
 	mux.HandleFunc("GET /config/memory-preprocessing", s.handleMultiAgentSettings)
 	mux.HandleFunc("PUT /config/memory-preprocessing", s.handleMultiAgentSettings)
 	mux.HandleFunc("GET /stats", s.handleStats)

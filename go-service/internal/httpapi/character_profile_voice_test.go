@@ -406,10 +406,18 @@ func Test39CDCriticAndProviderContractsExposeTypedLanes(t *testing.T) {
 
 func Test39DTypedVoiceProjectionIsDeferredUntil39E(t *testing.T) {
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{StateType: "scene", Content: `{"present_entities":["Mira"]}`}})
-	assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, []store.CharacterState{{
-		ChatSessionID: "session-defer", CharacterName: "Mira",
-		SpeechStyleJSON: mustCompactJSON(newVoiceBehaviorProjection("entity-mira", "Mira")),
-	}}, nil, nil, nil, nil, nil, nil, 3, 1000, "How does Mira answer?", "default", nil, nil, nil, perspective)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{{
+			ChatSessionID: "session-defer", CharacterName: "Mira",
+			SpeechStyleJSON: mustCompactJSON(newVoiceBehaviorProjection("entity-mira", "Mira")),
+		}},
+		TopK:        3,
+		MaxChars:    1000,
+		UserInput:   "How does Mira answer?",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if strings.Contains(assembly.CharacterText, "speech_style") || strings.Contains(assembly.Text, voiceBehaviorProjectionContractVersion) || intFromAny(assembly.Counts["typed_voice_projection_deferred_to_3_9_e"], 0) != 1 {
 		t.Fatalf("typed voice projection bypassed 3.9-E delivery boundary: text=%q counts=%#v", assembly.Text, assembly.Counts)
 	}

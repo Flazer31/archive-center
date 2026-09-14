@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -675,7 +676,14 @@ func (m *mariadbStore) ListKGTriplesRange(ctx context.Context, chatSessionID str
 	return out, rows.Err()
 }
 
-func (m *mariadbStore) SaveAuditLog(ctx context.Context, a *AuditLog) error {
+func (m *mariadbStore) SaveAuditLog(ctx context.Context, a *AuditLog) (resultErr error) {
+	// Audit persistence must be diagnosable even when its caller cannot save
+	// another audit entry (or deliberately ignores this optional write failure).
+	defer func() {
+		if resultErr != nil {
+			slog.ErrorContext(ctx, "audit log persistence failed", "error", resultErr)
+		}
+	}()
 	if err := m.ensureDB(); err != nil {
 		return err
 	}

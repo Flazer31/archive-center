@@ -27,7 +27,16 @@ const (
 
 var completeTurnSourceWorkerStopTimeout = 5 * time.Second
 
+type completeTurnUserMessageReference struct {
+	MessageIndex  int    `json:"message_index"`
+	MessageChatID string `json:"message_chat_id,omitempty"`
+	MessageTimeMS int64  `json:"message_time_ms,omitempty"`
+	ContentHash   string `json:"content_hash,omitempty"`
+}
+
 type completeTurnSourceObservation struct {
+	UserMessageRefs []completeTurnUserMessageReference `json:"user_message_refs,omitempty"`
+
 	ContractVersion               string `json:"contract_version"`
 	HostLifecycleContractVersion  string `json:"host_lifecycle_contract_version"`
 	ObservedAtMS                  int64  `json:"observed_at_ms"`
@@ -81,6 +90,9 @@ type completeTurnSourceObservation struct {
 }
 
 type completeTurnSourceAcceptanceState struct {
+	UserMessageRefs    []completeTurnUserMessageReference `json:"user_message_refs,omitempty"`
+	UserLogicalTurnIDs []string                           `json:"user_logical_turn_ids,omitempty"`
+
 	SessionID         string `json:"session_id"`
 	TurnIndex         int    `json:"turn_index"`
 	Revision          string `json:"revision"`
@@ -274,6 +286,43 @@ func observedCompleteTurnBranchIdentity(observation completeTurnSourceObservatio
 		return ""
 	}
 	return strings.TrimSpace(observation.BranchID)
+}
+
+func completeTurnInputGroupLogicalIDs(sid string, observation completeTurnSourceObservation) []string {
+	ids := []string{completeTurnLogicalTurnID(sid, observation)}
+	for _, member := range observation.UserMessageRefs {
+		if strings.TrimSpace(member.MessageChatID) == "" {
+			continue
+		}
+		anchor := observation
+		anchor.UserMessageChatID, anchor.UserMessageChatIDState = member.MessageChatID, "observed"
+		id := completeTurnLogicalTurnID(sid, anchor)
+		found := false
+		for _, existing := range ids {
+			if id == existing {
+				found = true
+				break
+			}
+		}
+		if !found {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func completeTurnInputGroupMatches(candidate completeTurnSourceAcceptanceState, ids []string) bool {
+	for _, id := range ids {
+		if candidate.LogicalTurnID == id {
+			return true
+		}
+		for _, prior := range candidate.UserLogicalTurnIDs {
+			if prior == id {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func validateCompleteTurnBranchObservation(observation completeTurnSourceObservation) string {
@@ -672,15 +721,17 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 		}
 	}
 	logicalTurnResolved := false
+	inputGroupIDs := completeTurnInputGroupLogicalIDs(sid, observation)
 	for _, candidate := range ledger.current {
 		if decision.LogicalTurnID == "" {
 			break
 		}
-		if candidate.SessionID != sid || candidate.LogicalTurnID != decision.LogicalTurnID || candidate.Lifecycle != "active_final" {
+		if candidate.SessionID != sid || !completeTurnInputGroupMatches(candidate, inputGroupIDs) || candidate.Lifecycle != "active_final" {
 			continue
 		}
 		if candidate.ObservedAtMS > 0 && (turnIndex <= 0 || candidate.ObservedAtMS >= ledger.current[sourceAcceptanceStateKey(sid, turnIndex)].ObservedAtMS) {
 			turnIndex = candidate.TurnIndex
+			decision.LogicalTurnID = candidate.LogicalTurnID
 			logicalTurnResolved = true
 		}
 	}
@@ -764,6 +815,22 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 			decision.ReplacementKind = "host_observed_reroll"
 		}
 	}
+	// Keep observed member aliases through edits of this same logical group.
+	// This is existing source-acceptance metadata, not a retry identity.
+	if decision.ReplaceExisting {
+		for _, id := range previous.UserLogicalTurnIDs {
+			found := false
+			for _, currentID := range inputGroupIDs {
+				if currentID == id {
+					found = true
+					break
+				}
+			}
+			if !found {
+				inputGroupIDs = append(inputGroupIDs, id)
+			}
+		}
+	}
 	var superseded *completeTurnSourceAcceptanceState
 	if decision.ReplaceExisting {
 		prior := previous
@@ -774,7 +841,9 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 		superseded = &prior
 	}
 	state := completeTurnSourceAcceptanceState{
-		SessionID: sid, TurnIndex: turnIndex, Revision: decision.Revision,
+		UserMessageRefs:    append([]completeTurnUserMessageReference(nil), observation.UserMessageRefs...),
+		UserLogicalTurnIDs: inputGroupIDs,
+		SessionID:          sid, TurnIndex: turnIndex, Revision: decision.Revision,
 		GenerationID: observation.GenerationID, MessageChatID: observation.MessageChatID,
 		HostChatID: observation.HostChatID, BranchID: observedCompleteTurnBranchIdentity(observation),
 		BranchIDState:  firstNonEmpty(observation.BranchIDState, "not_exposed_by_risuai"),
@@ -1053,7 +1122,9 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 				if source.TurnIndex <= 0 || strings.TrimSpace(source.SourceRevision) == "" {
 					continue
 				}
-				l.current[sourceAcceptanceStateKey(sid, source.TurnIndex)] = completeTurnSourceAcceptanceState{
+				key := sourceAcceptanceStateKey(sid, source.TurnIndex)
+				prior := l.current[key]
+				state := completeTurnSourceAcceptanceState{
 					SessionID:         sid,
 					TurnIndex:         source.TurnIndex,
 					Revision:          source.SourceRevision,
@@ -1067,6 +1138,13 @@ func (l *completeTurnSourceAcceptanceLedger) loadDurableStateLocked(ctx context.
 					LogicalTurnID:     source.LogicalTurnID,
 					ReplacementStatus: "",
 				}
+				// Keep group membership from the existing durable transition JSON;
+				// canonical source rows still own revision/lifecycle/content state.
+				if prior.LogicalTurnID == source.LogicalTurnID {
+					state.UserMessageRefs = prior.UserMessageRefs
+					state.UserLogicalTurnIDs = prior.UserLogicalTurnIDs
+				}
+				l.current[key] = state
 			}
 		}
 	}

@@ -178,7 +178,7 @@ func Test43PublisherCreativeProgressPreservesHistoricalSourceTurns(t *testing.T)
 	}
 	before, _ := json.Marshal(seeds)
 	assembly := &prepareTurnInjectionAssembly{Counts: map[string]any{}, PriorityFactSeeds: seeds}
-	plan := buildPrepareTurnMemoryDeliveryPlan(assembly, 6000, priorityMemoryTestContext(3))
+	plan := buildPrepareTurnMemoryDeliveryPlan(assembly, 6000, testPrepareTurnMemorySelectionContext(priorityMemoryTestContext(3)))
 	memoryText := extractionStringFromAny(plan["final_text"])
 	for _, seed := range seeds {
 		if seed.Fact.MemoryRole == "identity_metadata" {

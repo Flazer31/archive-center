@@ -881,6 +881,28 @@ func addCompleteTurnReasoningTraceFields(trace map[string]any, cfg completeTurnL
 	}
 }
 
+// applyProxyReasoningFromLLMConfig copies the Publisher/Critic reasoning contract.
+// Keep it separate from overrides: editor and reference callers forward different
+// reasoning fields. This helper neither resolves defaults nor changes cfg.
+func applyProxyReasoningFromLLMConfig(req *dto.ProxyPluginMainRequest, cfg completeTurnLLMConfig) {
+	if req == nil {
+		return
+	}
+	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
+		req.ReasoningEffort = &cfg.ReasoningEffort
+	}
+	if strings.TrimSpace(cfg.ReasoningPreset) != "" {
+		req.ReasoningPreset = &cfg.ReasoningPreset
+	}
+	if cfg.ReasoningBudgetTokens > 0 {
+		req.ReasoningBudgetTokens = &cfg.ReasoningBudgetTokens
+		req.BudgetTokens = &cfg.ReasoningBudgetTokens
+	}
+	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
+		req.GlmThinkingType = &cfg.GlmThinkingType
+	}
+}
+
 func applyProxyOverridesFromLLMConfig(req *dto.ProxyPluginMainRequest, cfg completeTurnLLMConfig) {
 	if req == nil {
 		return

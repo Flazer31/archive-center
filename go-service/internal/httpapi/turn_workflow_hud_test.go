@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -134,6 +135,167 @@ func TestPrepareTurnNextInputKeepsPreviousWorkflowRunning(t *testing.T) {
 	current, ok := srv.TurnWorkflows.snapshot("request-current")
 	if !ok || current.Status != "awaiting_final_output" || current.LogicalTurn != 101 {
 		t.Fatalf("current workflow = %#v, found=%t, response=%s", current, ok, rec.Body.String())
+	}
+}
+
+func TestTurnWorkflowHUDPrepareEstimateDoesNotSupersedePreviousPersistence(t *testing.T) {
+	for _, mode := range []string{"next_user_input", "immediate_after_response"} {
+		for _, inputCount := range []int{1, 2, 3} {
+			t.Run(fmt.Sprintf("%s/%d_inputs", mode, inputCount), func(t *testing.T) {
+				const completedHostTurns = 2
+				const backendOffset = 1
+				previousBackendTurn := completedHostTurns + backendOffset
+				currentHostTurn := completedHostTurns + 1
+				sid, previousID, currentID := "session-hud-offset", "previous", "current"
+				srv := NewServer(config.Default())
+				ledger := srv.TurnWorkflows
+				ledger.beginForNextInputFinalization(previousID, sid, previousBackendTurn)
+				ledger.setHostTurn(previousID, completedHostTurns, true)
+				ledger.startStage(previousID, turnWorkflowStageCriticLLM)
+				mux := http.NewServeMux()
+				srv.RegisterRoutes(mux)
+				active := []map[string]any{}
+				add := func(role, text string) {
+					index := len(active)
+					active = append(active, map[string]any{
+						"observation_ref": fmt.Sprintf("active:%d", index), "source_kind": "active_chat",
+						"observation_stage": "active_chat_stored_message", "message_index": index,
+						"message_id": fmt.Sprintf("message-%d", index), "role": role, "raw_content": text,
+						"content_hash": prepareOR1CHash(text), "hash_algorithm": "or1c_utf16_djb2.v1", "evidence_state": "observed",
+					})
+				}
+				for i := 0; i < completedHostTurns; i++ {
+					add("user", "continue")
+					add("assistant", fmt.Sprintf("answer-%d", i))
+				}
+				parts := []string{}
+				for i := 0; i < inputCount; i++ {
+					parts = append(parts, "continue")
+					add("user", "continue")
+				}
+				body, err := json.Marshal(map[string]any{
+					"chat_session_id": sid, "raw_user_input": strings.Join(parts, "\n\n"),
+					"messages": []map[string]any{{"role": "user", "content": strings.Join(parts, "\n\n")}},
+					"host_observations": map[string]any{
+						"contract_version": prepareHostObservationsVersion, "session_id": sid, "request_id": currentID,
+						"request_type": "model", "payload_writable": true, "active_chat": active,
+						"payload": active[len(active)-inputCount:],
+					},
+					"settings": map[string]any{"turn_finalization_mode": mode, "injection_enabled": false},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				prepare := func() {
+					t.Helper()
+					rec := httptest.NewRecorder()
+					mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+					if rec.Code != http.StatusOK {
+						t.Fatalf("prepare status=%d: %s", rec.Code, rec.Body.String())
+					}
+				}
+				prepare()
+				previous, _ := ledger.snapshot(previousID)
+				if previous.Status != "running" || previous.CurrentStage.Key != turnWorkflowStageCriticLLM {
+					t.Fatalf("new Host turn superseded previous persistence: %+v", previous)
+				}
+				current, ok := ledger.snapshot(currentID)
+				if !ok || current.HostTurn != currentHostTurn || current.BackendTurn != previousBackendTurn {
+					t.Fatalf("fixture must retain colliding prepare estimate: %+v", current)
+				}
+				prepare() // Same-request provider replay remains the same HUD attempt.
+				current, _ = ledger.snapshot(currentID)
+				if current.Attempt != 1 {
+					t.Fatalf("prepare replay created a new attempt: %+v", current)
+				}
+				ledger.finishStage(previousID, turnWorkflowStageCriticLLM, "succeeded", "")
+				ledger.startStage(previousID, turnWorkflowStageDerivedPersist)
+				ledger.setCounts(previousID, map[string]int{"turn_summary": 1})
+				ledger.finishStage(previousID, turnWorkflowStageDerivedPersist, "succeeded", "")
+				ledger.startStage(previousID, turnWorkflowStageCheckpoints)
+				ledger.finishStage(previousID, turnWorkflowStageCheckpoints, "succeeded", "")
+				ledger.complete(previousID)
+				previous, _ = ledger.snapshot(previousID)
+				if previous.Status != "completed" {
+					t.Fatalf("previous persistence could not finish its HUD: %+v", previous)
+				}
+				ledger.setLogicalTurn(currentID, previousBackendTurn+1)
+				current, _ = ledger.snapshot(currentID)
+				previous, _ = ledger.snapshot(previousID)
+				if current.BackendTurn != previousBackendTurn+1 || current.Attempt != 1 || previous.Status != "completed" {
+					t.Fatalf("canonical confirmation damaged independent attempts: current=%+v previous=%+v", current, previous)
+				}
+				prepare() // A late prepare replay cannot overwrite the confirmed HUD turn.
+				current, _ = ledger.snapshot(currentID)
+				previous, _ = ledger.snapshot(previousID)
+				if current.BackendTurn != previousBackendTurn+1 || current.Attempt != 1 || previous.Status != "completed" {
+					t.Fatalf("late estimate overwrote canonical HUD ownership: current=%+v previous=%+v", current, previous)
+				}
+			})
+		}
+	}
+}
+
+func TestTurnWorkflowHUDConfirmedRerollStillSupersedesAfterEstimate(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		ids, texts []string
+	}{
+		{"same user rows reroll", []string{"A", "B"}, []string{"first", "last"}},
+		{"edited user row after output deletion", []string{"A", "B"}, []string{"first edited", "last"}},
+		{"last input deleted", []string{"A"}, []string{"first"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := newCompleteTurnAcceptanceTestServer()
+			first := server.beginCompleteTurnSourceAcceptance(context.Background(), groupAcceptanceRequest(
+				[]string{"A", "B"}, []string{"first", "last"}, 1, 1000, "answer"))
+			if !first.Accepted || first.ReplaceExisting {
+				t.Fatalf("first source decision: %+v", first)
+			}
+			ledger := newTurnWorkflowHUDLedger()
+			original := ledger.beginForNextInputFinalization("original", "group", first.BoundTurn)
+			ledger.complete("original")
+			ledger.beginForNextInputFinalization("replacement", "group", 0)
+			ledger.setEstimatedLogicalTurn("replacement", original.BackendTurn)
+			previous, _ := ledger.snapshot("original")
+			if previous.Status != "completed" {
+				t.Fatalf("unconfirmed estimate invalidated original: %+v", previous)
+			}
+			replacementRequest := groupAcceptanceRequest(tc.ids, tc.texts, first.BoundTurn+1, 2000, "regenerated answer")
+			resolved := server.beginCompleteTurnSourceAcceptance(context.Background(), replacementRequest)
+			if !resolved.Accepted || !resolved.ReplaceExisting || resolved.BoundTurn != first.BoundTurn {
+				t.Fatalf("replacement source decision: %+v", resolved)
+			}
+			ledger.setLogicalTurn("replacement", resolved.BoundTurn)
+			previous, _ = ledger.snapshot("original")
+			replacement, _ := ledger.snapshot("replacement")
+			if previous.Status != "invalidated" || replacement.Attempt != original.Attempt+1 {
+				t.Fatalf("confirmed replacement lost attempt semantics: previous=%+v replacement=%+v", previous, replacement)
+			}
+			retry := server.beginCompleteTurnSourceAcceptance(context.Background(), replacementRequest)
+			if !retry.Accepted || retry.Revision != resolved.Revision || retry.BoundTurn != resolved.BoundTurn {
+				t.Fatalf("same-request retry changed source decision: %+v", retry)
+			}
+			ledger.setLogicalTurn("replacement", retry.BoundTurn)
+			ledger.setEstimatedLogicalTurn("replacement", original.BackendTurn+1)
+			replacement, _ = ledger.snapshot("replacement")
+			if replacement.BackendTurn != original.BackendTurn || replacement.Attempt != original.Attempt+1 {
+				t.Fatalf("same-request retry changed confirmed ownership: %+v", replacement)
+			}
+			ledger.complete("replacement")
+			next := server.beginCompleteTurnSourceAcceptance(context.Background(), groupAcceptanceRequest(
+				[]string{"new-row"}, []string{tc.texts[len(tc.texts)-1]}, resolved.BoundTurn+1, 3000, "new answer"))
+			if !next.Accepted || next.ReplaceExisting || next.BoundTurn != resolved.BoundTurn+1 {
+				t.Fatalf("new user row with identical text did not append: %+v", next)
+			}
+			ledger.beginForNextInputFinalization("next", "group", 0)
+			ledger.setEstimatedLogicalTurn("next", next.BoundTurn)
+			ledger.setLogicalTurn("next", next.BoundTurn)
+			replacement, _ = ledger.snapshot("replacement")
+			if replacement.Status != "completed" {
+				t.Fatalf("new canonical turn invalidated previous completion: %+v", replacement)
+			}
+		})
 	}
 }
 

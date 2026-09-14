@@ -33,15 +33,16 @@ func Test42PriorityMemoryProductionAssemblyKeepsStoredScoreThroughPayloadPlan(t 
 		{ID: 2, ChatSessionID: sessionID, TurnIndex: 21, SummaryJSON: `{"turn_summary":"Haneul mentioned the home garden during a casual conversation."}`, Importance: 4},
 		{ID: 3, ChatSessionID: sessionID, TurnIndex: 22, SummaryJSON: `{"turn_summary":"An unrelated harbor changed its evening bell."}`, Importance: 10},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 60000,
-		"Haneul checks what to do next with rapeseed in the home garden.",
-		"default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
-		nil,
-		priorityMemoryTestContext(1),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    60000,
+		UserInput:   "Haneul checks what to do next with rapeseed in the home garden.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	if plan["contract_version"] != prepareTurnPriorityMemoryPlanVersion || plan["score_version"] != prepareTurnPriorityMemoryScoreVersion {
 		t.Fatalf("4.2 priority plan not used: %#v", plan)
@@ -81,12 +82,16 @@ func Test42PriorityMemorySelectsCompleteTurnSummaryByHighestChildFactScore(t *te
 		ID: 81, ChatSessionID: "turn-summary-score", TurnIndex: 40, Importance: 8,
 		SummaryJSON: `{"turn_summary":"` + summary + `","narrative_events":[{"event":"Mira already sealed the archive door.","visibility":"public"},{"event":"A harbor vendor rearranged empty baskets.","visibility":"public"}]}`,
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 60000, "Mira checks the sealed archive door.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(1),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    60000,
+		UserInput:   "Mira checks the sealed archive door.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	if intFromAny(plan["turn_summary_candidate_count"], 0) != 1 || intFromAny(plan["turn_summary_selected_count"], 0) != 1 {
 		t.Fatalf("complete turn summary did not receive its independent K: %#v", plan)
@@ -116,10 +121,10 @@ func Test43PriorityMemoryUsesIndependentCoreTargetPerFactLane(t *testing.T) {
 		CanonWorldText:         "[Item, Location, and World States]\n- archive_door status: sealed\n- desert_observatory status: mapped",
 		Counts:                 map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query": "Mira checks the sealed archive door.",
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "Mira guards") || !strings.Contains(finalText, "archive_door status: sealed") {
 		t.Fatalf("one global K still prevented independent fact lanes from contributing: %q", finalText)
@@ -138,12 +143,12 @@ func Test42PriorityMemoryCustomBudgetsStayOnPriorityPathAndCapEachLane(t *testin
 		CanonWorldText:         "[Item, Location, and World States]\n- archive_door status: sealed",
 		Counts:                 map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 2000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 2000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query":       "Mira checks the sealed archive door.",
 		"_memory_delivery_budget_mode": "custom",
 		"_memory_delivery_budgets":     map[string]int{"character_objective": 40, "world_state": 500},
-	})
+	}))
 	if plan["contract_version"] != prepareTurnPriorityMemoryPlanVersion || plan["mode"] != "custom" {
 		t.Fatalf("custom budgets bypassed the Priority plan: %#v", plan)
 	}
@@ -164,12 +169,17 @@ func Test42PriorityMemoryTurnSummaryAndEventFactsShareEventBudget(t *testing.T) 
 		ID: 82, ChatSessionID: "turn-summary-budget", TurnIndex: 40, Importance: 8,
 		SummaryJSON: `{"turn_summary":"` + summary + `","narrative_events":[{"event":"Mira sealed the archive door.","visibility":"public"}]}`,
 	}}
-	assembly := buildPrepareTurnInjectionAssemblyWithBudget(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 6000, "Mira checks the sealed archive door.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		"custom", map[string]int{"event_recent": capChars}, priorityMemoryTestContext(2),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    6000,
+		UserInput:   "Mira checks the sealed archive door.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "custom",
+		Budgets:     map[string]int{"event_recent": capChars},
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(2)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	if intFromAny(plan["turn_summary_selected_count"], 0) != 1 || intFromAny(plan["priority_fact_selected_count"], 0) != 0 {
 		t.Fatalf("turn summary and event facts did not share the existing event_recent character budget: %#v", plan)
@@ -184,12 +194,16 @@ func Test42PriorityMemoryProductionAssemblyPreservesTypedSourceScores(t *testing
 		{ID: 41, ThreadKey: "ledger-return", Description: "Haneul must return the red archive ledger.", Status: "open", SourceTurn: 30, Priority: 9},
 		{ID: 42, ThreadKey: "ledger-polish", Description: "Haneul may polish the red archive ledger cover.", Status: "open", SourceTurn: 31, Priority: 2},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, pending, nil, nil, nil, nil, nil,
-		5, 60000, "Haneul handles the red archive ledger.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(1),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		PendingThreads: pending,
+		TopK:           5,
+		MaxChars:       60000,
+		UserInput:      "Haneul handles the red archive ledger.",
+		Profile:        "default",
+		VectorTrace:    map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:     "auto",
+		Perspective:    testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "must return") || !strings.Contains(finalText, "may polish") || strings.Index(finalText, "must return") >= strings.Index(finalText, "may polish") {
@@ -217,11 +231,11 @@ func Test42PriorityMemorySplitsStructuredStateAndResolvesCurrentValue(t *testing
 		}, "\n"),
 		Counts: map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 60000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 60000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled":   true,
 		"_priority_memory_max_items": 8,
 		"_priority_memory_query":     "rapeseed home garden status",
-	})
+	}))
 	if plan["contract_version"] != prepareTurnPriorityMemoryPlanVersion {
 		t.Fatalf("priority plan not selected: %#v", plan)
 	}
@@ -242,12 +256,16 @@ func Test42PriorityMemoryProductionTypedRowsResolveByCurrentFieldIdentity(t *tes
 		{ID: 71, ChatSessionID: "typed-current", LayerType: "scene_state", Content: `{"garden":{"rapeseed":{"status":"planned","location":"home"}}}`, TurnIndex: 10, SourceTurn: 10, LastVerifiedTurn: 10, Confidence: 0.9},
 		{ID: 72, ChatSessionID: "typed-current", LayerType: "scene_state", Content: `{"garden":{"rapeseed":{"status":"completed","location":"home"}}}`, TurnIndex: 12, SourceTurn: 12, LastVerifiedTurn: 12, Confidence: 0.9},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, canonical, nil, nil, nil, nil,
-		5, 60000, "Check the home garden rapeseed status.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(8),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CanonicalLayers: canonical,
+		TopK:            5,
+		MaxChars:        60000,
+		UserInput:       "Check the home garden rapeseed status.",
+		Profile:         "default",
+		VectorTrace:     map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(8)),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if !strings.Contains(finalText, "status: completed") || strings.Contains(finalText, "status: planned") {
 		t.Fatalf("typed source provenance prevented current-field resolution: %q", finalText)
@@ -264,12 +282,16 @@ func Test42PriorityMemoryArrayOrdinalsDoNotMergeUnrelatedCanonicalRules(t *testi
 		{ID: 81, ChatSessionID: "typed-array-rules", LayerType: "world_state", Content: `{"rules":[{"scope_name":"Bae Sang-mun disguise","rule":"` + disguiseRule + `"}]}`, TurnIndex: 68, SourceTurn: 68, LastVerifiedTurn: 68, Confidence: 0.9},
 		{ID: 82, ChatSessionID: "typed-array-rules", LayerType: "world_state", Content: `{"rules":[{"scope_name":"Joseon technology boundary","rule":"` + technologyRule + `"}]}`, TurnIndex: 104, SourceTurn: 104, LastVerifiedTurn: 104, Confidence: 0.9},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, canonical, nil, nil, nil, nil,
-		5, 60000, "Recall both the Bae Sang-mun disguise and Joseon technology boundary.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(8),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CanonicalLayers: canonical,
+		TopK:            5,
+		MaxChars:        60000,
+		UserInput:       "Recall both the Bae Sang-mun disguise and Joseon technology boundary.",
+		Profile:         "default",
+		VectorTrace:     map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(8)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, disguiseRule) || !strings.Contains(finalText, technologyRule) {
@@ -308,10 +330,10 @@ func Test42PriorityMemoryReviewedAliasesShareCharacterStateIdentity(t *testing.T
 	}
 	appendPrepareTurnPrioritySourceMetadata(out, "character_objective", "character_states", "required", `- Mask: state={"mood":"ready"}`, "character_states:81:objective", int64(81), 20, 0, false, "general", "", nil)
 	appendPrepareTurnPrioritySourceMetadata(out, "character_objective", "character_states", "required", `- Mina: state={"mood":"ready"}`, "character_states:82:objective", int64(82), 21, 0, false, "general", "", nil)
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 4,
 		"_priority_memory_query": "Mina mood ready",
-	})
+	}))
 	if intFromAny(plan["priority_candidate_count"], 0) != 2 || intFromAny(plan["priority_resolved_count"], 0) != 1 {
 		t.Fatalf("reviewed aliases did not share one character-state identity: %#v", plan["priority_items"])
 	}
@@ -329,10 +351,10 @@ func Test42PriorityMemoryKeepsChangedNaturalLanguageFactsUnderOneOccurrence(t *t
 		}},
 		Counts: map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 2000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 2000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 4,
 		"_priority_memory_query": "rapeseed planting",
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "completed") || !strings.Contains(finalText, "planned") {
 		t.Fatalf("changed facts under one occurrence were not kept as independent score candidates: %q", finalText)
@@ -371,10 +393,10 @@ func Test42PriorityMemoryKeepsStructuredLifecycleStagesAsScoredFacts(t *testing.
 			Visibility: "public_projection",
 		}, prepareTurnMemorySummary(memory), facts, projectionSource)
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 60000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 60000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 5,
 		"_priority_memory_query": "What is the current status of Park Dojun's loan?",
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "settled and burned") || !strings.Contains(finalText, "outstanding") {
 		t.Fatalf("structured lifecycle stages were not preserved for score competition: %q items=%#v", finalText, plan["priority_items"])
@@ -420,11 +442,11 @@ func Test42PriorityMemoryLifecycleMetadataCannotPreemptFinalScore(t *testing.T) 
 		},
 	}
 
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query":        "The archive repair resumed in the current scene.",
 		"_priority_memory_current_turn": 100,
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "resumed in the current scene") || !strings.Contains(finalText, "completed long ago") || strings.Index(finalText, "resumed in the current scene") >= strings.Index(finalText, "completed long ago") {
 		t.Fatalf("lifecycle rank still overrode the higher final score: %q items=%#v", finalText, plan["priority_items"])
@@ -467,10 +489,10 @@ func Test42PriorityMemoryLifecycleTransitionDoesNotChangeScore(t *testing.T) {
 			Fact: prepareTurnPriorityMemoryFact{Text: "The work is complete.", FamilyKey: "complete", ValueKey: "complete", LifecycleKey: "same-work", LifecycleTransition: "complete", Structured: true},
 		},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 2,
 		"_priority_memory_query": "work", "_priority_memory_current_turn": 51,
-	})
+	}))
 	items := prepareTurnMemoryLineageSlice(plan["priority_items"])
 	if len(items) != 2 {
 		t.Fatalf("lifecycle diagnostic candidates missing: %#v", items)
@@ -498,10 +520,10 @@ func Test43PriorityMemoryTurnDistancePreservesImportance(t *testing.T) {
 			Fact: prepareTurnPriorityMemoryFact{Text: "An old relevant event.", FamilyKey: "old", ValueKey: "old", Structured: true},
 		},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 4000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 2,
 		"_priority_memory_query": "relevant event", "_priority_memory_current_turn": 100,
-	})
+	}))
 	items := prepareTurnMemoryLineageSlice(plan["priority_items"])
 	if len(items) != 2 {
 		t.Fatalf("turn-decay candidates missing: %#v", items)
@@ -530,10 +552,10 @@ func Test42PriorityMemoryTextAndPDFConsumeSameFinalSelection(t *testing.T) {
 		}}},
 		Counts: map[string]any{},
 	}
-	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query": "Mira archive door",
-	})
+	}))
 	payloadPlan := map[string]any{
 		"auxiliary_text": extractionStringFromAny(out.MemoryDeliveryPlan["final_text"]),
 		"lanes": []map[string]any{{
@@ -562,12 +584,16 @@ func Test42PriorityMemoryScoresAtomicSentencesWithoutParentScoreLeak(t *testing.
 		ID: 91, ChatSessionID: "atomic-parent-score", TurnIndex: 40, Importance: 8,
 		SummaryJSON: `{"turn_summary":"Mira already sealed the archive door. An unrelated harbor vendor rearranged empty baskets.","narrative_events":[{"event":"Mira already sealed the archive door.","visibility":"public"},{"event":"An unrelated harbor vendor rearranged empty baskets.","visibility":"public"}]}`,
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 60000, "Mira checks the sealed archive door.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(1),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    60000,
+		UserInput:   "Mira checks the sealed archive door.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1)),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	if intFromAny(plan["priority_candidate_count"], 0) != 3 || intFromAny(plan["priority_fact_selected_count"], 0) != 2 ||
 		intFromAny(plan["turn_summary_selected_count"], 0) != 1 {
@@ -614,12 +640,16 @@ func Test42PriorityMemoryCarriesVisibilityAndPerspectivePerFactWithoutNewGate(t 
 		SourceTurn: 30, Importance10: 9,
 		MemoryText: "Mira remembers the hidden promise. Mira remains wary of the northern door.",
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, private,
-		5, 60000, "Mira approaches the northern door.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		priorityMemoryTestContext(4),
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterPrivateMemories: private,
+		TopK:                     5,
+		MaxChars:                 60000,
+		UserInput:                "Mira approaches the northern door.",
+		Profile:                  "default",
+		VectorTrace:              map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:               "auto",
+		Perspective:              testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(4)),
+	})
 	found := 0
 	for _, raw := range prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryPlan["priority_items"]) {
 		item := mapFromAny(raw)
@@ -648,10 +678,10 @@ func Test42PriorityMemoryKeepsUnseededSourceOnLegacySentenceFallback(t *testing.
 		ChapterText: "[Chapter Recall]\n- Mira sealed the archive door. Rowan kept the brass key.",
 		Counts:      map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 2,
 		"_priority_memory_query": "Mira Rowan archive brass key",
-	})
+	}))
 	if intFromAny(plan["priority_candidate_count"], 0) != 2 || intFromAny(plan["priority_selected_count"], 0) != 2 {
 		t.Fatalf("legacy source did not remain available as atomic sentence fallback: %#v", plan)
 	}
@@ -727,10 +757,10 @@ func Test42PriorityMemoryDoesNotRepeatAuthorityOrLetOneOversizedFactBlockOtherTo
 		}},
 		Counts: map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 180, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 180, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 2,
 		"_priority_memory_query": "Mira archive brass key",
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if strings.Count(finalText, "Mira already locked the archive door.") != 1 {
 		t.Fatalf("authority fact was duplicated: %q", finalText)
@@ -750,10 +780,10 @@ func Test42PriorityMemoryDoesNotUseZeroRelevanceAsAHardRejectionGate(t *testing.
 	}
 	appendPrepareTurnPrioritySourceMetadata(out, "character_objective", "character_states", "required", "- Mira already sealed the archive door.", "character_states:201:objective", int64(201), 20, 3, true, "general", "", nil)
 
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query": "A semantically phrased request with no lexical token overlap.",
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "Mira already sealed the archive door") {
 		t.Fatalf("zero lexical relevance became a hard delivery rejection: %q items=%#v", finalText, plan["priority_items"])
@@ -774,15 +804,19 @@ func Test42PriorityMemoryProductionPoolDoesNotBypassExistingMemoryRecall(t *test
 		{ID: 301, ChatSessionID: "recall-pool", TurnIndex: 20, Importance: 0.8, SummaryJSON: `{"turn_summary":"Mira sealed the eastern archive door."}`},
 		{ID: 302, ChatSessionID: "recall-pool", TurnIndex: 21, Importance: 1.0, SummaryJSON: `{"turn_summary":"Cedric rehearsed a violin piece in a distant capital."}`},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 6000, "Mira checks the sealed eastern archive door.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		map[string]any{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    6000,
+		UserInput:   "Mira checks the sealed eastern archive door.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{
 			"_priority_memory_enabled": true, "_priority_memory_max_items": 5,
 			"_priority_memory_query": "Mira checks the sealed eastern archive door.",
-		},
-	)
+		}),
+	})
 	plan := assembly.MemoryDeliveryPlan
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "Mira sealed") || strings.Contains(finalText, "Cedric") {
@@ -809,10 +843,10 @@ func Test42PriorityMemoryShortContinueUsesLatestAcceptedAssistantForFactAffinity
 		}, "\n"),
 		Counts: map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query": query,
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "Mira kept the silver latch") || !strings.Contains(finalText, "Rook") || strings.Index(finalText, "Mira kept the silver latch") >= strings.Index(finalText, "Rook") {
 		t.Fatalf("short continuation did not reuse the latest accepted dialogue context precisely: %q items=%#v", finalText, plan["priority_items"])
@@ -832,12 +866,17 @@ func Test42PriorityMemoryProductionAssemblyCarriesLatestAcceptedAssistantIntoSho
 	context["_priority_memory_query"] = "Mira sealed the eastern archive door and kept the silver latch."
 	context["_priority_memory_query_source"] = "continuity_query"
 	context["_priority_memory_current_turn"] = 31
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, chatLogs, nil, nil, nil, nil, nil, nil, nil, nil, private,
-		5, 6000, "Continue.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		context,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		ChatLogs:                 chatLogs,
+		CharacterPrivateMemories: private,
+		TopK:                     5,
+		MaxChars:                 6000,
+		UserInput:                "Continue.",
+		Profile:                  "default",
+		VectorTrace:              map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:               "auto",
+		Perspective:              testPrepareTurnAssemblyPerspective(context),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if !strings.Contains(finalText, "Mira kept the silver latch") || !strings.Contains(finalText, "Rook") || strings.Index(finalText, "Mira kept the silver latch") >= strings.Index(finalText, "Rook") {
 		t.Fatalf("production assembly lost or broadened short-continuation affinity: %q items=%#v", finalText, assembly.MemoryDeliveryPlan["priority_items"])
@@ -1158,8 +1197,15 @@ func Test42PriorityMemoryPreciseCandidateRecallIsNotLimitedByFinalK(t *testing.T
 		1,
 		map[string]int{sid: 3},
 	)
-	if intFromAny(shadow["precise_memory_search_result_count"], 0) != 3 {
+	if intFromAny(shadow.Trace["precise_memory_search_result_count"], 0) != 3 {
 		t.Fatalf("precise fact recall was limited by final K: %#v", shadow)
+	}
+	if !shadow.PreciseHitsAvailable || len(shadow.PreciseHits) != 3 {
+		t.Fatal("typed precise observations were lost before hydration")
+	}
+	encoded, err := json.Marshal(shadow)
+	if err != nil || bytes.Contains(encoded, []byte("PreciseHits")) || bytes.Contains(encoded, []byte("precise_memory:"+sid+":two")) {
+		t.Fatalf("internal hit handoff escaped JSON: %v %s", err, encoded)
 	}
 	found := false
 	for _, call := range vec.calls {
@@ -1206,7 +1252,7 @@ func Test42PriorityMemoryHydratesFactVectorSimilarityFromCanonicalPreciseUnit(t 
 		}},
 	}
 	history := prepareTurnHistoryScope{Segments: []prepareTurnHistorySegment{{SessionID: "current", FromTurn: 1, ToTurn: 99}}}
-	facts, trace := prepareTurnHydratePreciseMemoryVectorFacts(context.Background(), reader, shadow, history)
+	facts, trace := prepareTurnHydratePreciseMemoryVectorFacts(context.Background(), reader, prepareTurnVectorRecallResult{Trace: shadow}, history)
 	if len(facts) != 1 || facts[0].UnitID != "letter-current" || facts[0].Similarity != 0.91 {
 		t.Fatalf("fact vector hydration=%#v trace=%#v", facts, trace)
 	}
@@ -1281,7 +1327,7 @@ func Test42PriorityMemoryHTTPPathCarriesPreciseSimilarityIntoFinalPlan(t *testin
 	if !preciseCallFound {
 		t.Fatalf("HTTP path did not use canonical precise fact count with existing metadata: %#v", vec.calls)
 	}
-	if bytes.Contains(rec.Body.Bytes(), []byte(prepareTurnPrivatePreciseMemorySearchResultsKey)) {
+	if bytes.Contains(rec.Body.Bytes(), []byte("_priority_precise_memory_search_results")) {
 		t.Fatalf("private precise-memory vector handoff leaked into prepare-turn response: %s", rec.Body.String())
 	}
 }
@@ -1301,12 +1347,16 @@ func Test42PriorityMemoryFactVectorSeparatesSamePersonAndPlaceEvents(t *testing.
 		{UnitID: "letter", SourceTurn: 98, Similarity: 0.92, SimilaritySource: "cosine", Fact: prepareTurnPriorityMemoryFact{Text: "한얼: 한얼은 월하방 누각에서 이미 편지를 내밀었다.", FamilyKey: collapseTextKey("narrative_events\x1f한얼\x1f\x1f한얼은 월하방 누각에서 이미 편지를 내밀었다."), ValueKey: collapseTextKey("한얼은 월하방 누각에서 이미 편지를 내밀었다."), EntitySurface: "한얼", LocationSurface: "월하방 누각", StorylineSurface: "편지 전달", Structured: true}},
 		{UnitID: "first-visit", SourceTurn: 12, Similarity: 0.34, SimilaritySource: "cosine", Fact: prepareTurnPriorityMemoryFact{Text: "한얼: 한얼은 월하방 누각에서 배상문을 처음 만났다.", FamilyKey: collapseTextKey("narrative_events\x1f한얼\x1f\x1f한얼은 월하방 누각에서 배상문을 처음 만났다."), ValueKey: collapseTextKey("한얼은 월하방 누각에서 배상문을 처음 만났다."), EntitySurface: "한얼", LocationSurface: "월하방 누각", StorylineSurface: "첫 방문", Structured: true}},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 6000, "이어서 적어주세요.", "default", nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"}, nil,
-		context,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    6000,
+		UserInput:   "이어서 적어주세요.",
+		Profile:     "default",
+		VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(context),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if !strings.Contains(finalText, "편지를 내밀었다") || !strings.Contains(finalText, "처음 만났다") || strings.Index(finalText, "편지를 내밀었다") >= strings.Index(finalText, "처음 만났다") {
 		t.Fatalf("same-character/location hard negative beat the current event: %q items=%#v", finalText, assembly.MemoryDeliveryPlan["priority_items"])
@@ -1340,7 +1390,7 @@ func Test42PriorityMemoryExplicitOldEventQueryCanStillWin(t *testing.T) {
 			{UnitID: "first-visit", SourceTurn: 12, Similarity: 0.96, SimilaritySource: "cosine", Fact: out.PriorityFactSeeds[1].Fact},
 		},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, perspective)
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(perspective))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "배상문을 처음 만났다") || !strings.Contains(finalText, "편지를 내밀었다") || strings.Index(finalText, "배상문을 처음 만났다") >= strings.Index(finalText, "편지를 내밀었다") {
 		t.Fatalf("explicit old-event request was erased by recency: %q items=%#v", finalText, plan["priority_items"])
@@ -1363,10 +1413,10 @@ func Test42PriorityMemoryIdentityMetadataAttachesWithoutConsumingK(t *testing.T)
 		CanonCharacterText: `[Canonical Character States]\n- entity_state: {"characters":[{"name":"Mira","aliases":["Silver Mask"],"identity_evidence_excerpt":"called the Silver Mask","current_goal":"guard the eastern door"}]}`,
 		Counts:             map[string]any{},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+	plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_priority_memory_enabled": true, "_priority_memory_max_items": 1,
 		"_priority_memory_query": "Mira guards the eastern door.", "_priority_memory_current_turn": 50,
-	})
+	}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if !strings.Contains(finalText, "current_goal: guard the eastern door") {
 		t.Fatalf("narrative fact was not selected: %q items=%#v", finalText, plan["priority_items"])
@@ -1400,11 +1450,19 @@ func Test43PriorityAggregateVectorReachesSummaryWithoutBoostingSiblingFacts(t *t
 			hits := []map[string]any{{"id": "memory:" + sid + ":701", "tier": "memory", "source_table": "memories", "source_row_id": "701", "chat_session_id": sid, "similarity": similarity, "similarity_source": "cosine_from_query_and_stored_embedding"}}
 			shadow := map[string]any{"status": "ready", "memory_search_result": "ok", "search_result": "ok", "memory_search_results": hits, "search_results": hits}
 			query := "What does Rowan know about the hidden identity?"
-			assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-				k, 30000, query, "default", nil, shadow, nil, map[string]any{
+			assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+				Memories:    memories,
+				TopK:        k,
+				MaxChars:    30000,
+				UserInput:   query,
+				Profile:     "default",
+				VectorTrace: shadow,
+				BudgetMode:  "auto",
+				Perspective: testPrepareTurnAssemblyPerspective(map[string]any{
 					"_priority_memory_enabled": true, "_priority_memory_max_items": k,
 					"_priority_memory_current_turn": 100, "_priority_memory_query": query,
-				})
+				}),
+			})
 			plan := assembly.MemoryDeliveryPlan
 			if !strings.Contains(extractionStringFromAny(plan["final_text"]), "unmasked herself") {
 				t.Errorf("retrieved disclosure lost in final memory: %s", plan["final_text"])
@@ -1442,8 +1500,15 @@ func Test43PriorityAggregateVectorReachesSummaryWithoutBoostingSiblingFacts(t *t
 
 func Test43PriorityLexicalParentScoreIsNotAnAggregateVector(t *testing.T) {
 	memories := []store.Memory{{ID: 733, ChatSessionID: "lexical-summary", TurnIndex: 9, Importance: .6, SummaryJSON: `{"turn_summary":"Mira sealed the archive door."}`}}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 30000, "Mira sealed the archive door.", "default", nil, nil, nil, priorityMemoryTestContext(5))
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    30000,
+		UserInput:   "Mira sealed the archive door.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(5)),
+	})
 	items := prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryPlan["turn_summary_items"])
 	if len(items) == 0 {
 		t.Fatal("fixture produced no summary")
@@ -1467,9 +1532,9 @@ func Test43PriorityAllImportanceValuesRemainIndependentOfAge(t *testing.T) {
 					Importance: importance, ImportancePresent: true, SemanticSimilarity: .8, SemanticSimilarityObserved: true,
 					Fact: prepareTurnPriorityMemoryFact{Text: "Mira remembers the promise.", FamilyKey: "promise", ValueKey: "promise", Structured: true},
 				}}
-				plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, map[string]any{
+				plan := buildPrepareTurnMemoryDeliveryPlan(out, 6000, testPrepareTurnMemorySelectionContext(map[string]any{
 					"_priority_memory_enabled": true, "_priority_memory_max_items": 1, "_priority_memory_current_turn": current,
-				})
+				}))
 				items := prepareTurnMemoryLineageSlice(plan["priority_items"])
 				if len(items) != 1 {
 					t.Fatalf("missing scoring fixture at turn %d", current)

@@ -211,7 +211,7 @@ func Test43PrepareTurnSupplementSearchOverlapsExternalRetrievalAndProjectsTiming
 	settings.Enabled = true
 	for role, value := range settings.Roles {
 		value.Enabled, value.UsePublisher = questions[role] != "", false
-		value.Provider, value.Endpoint, value.APIKey, value.Model = "custom", provider.URL, "fixture-key", "fixture-analysis"
+		value.Provider, value.Endpoint, value.APIKey, value.Model = "custom", provider.URL, "fixture-key", "fixture-analysis-"+role
 		settings.Roles[role] = value
 	}
 	mux := http.NewServeMux()

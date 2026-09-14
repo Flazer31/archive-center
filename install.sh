@@ -42,6 +42,12 @@ cleanup() {
 				;;
 		esac
 	fi
+	if [ -n "${INSTALL_LOG_TEE:-}" ]; then
+		printf 'Installation log: %s\n' "$INSTALL_LOG"
+		exec 1>&3 2>&4
+		wait "$INSTALL_LOG_TEE" || true
+		INSTALL_LOG_TEE=
+	fi
 }
 
 commit_reservation() {
@@ -176,6 +182,15 @@ fi
 
 BOOTSTRAP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/archive-center-fresh-install.XXXXXX")
 trap cleanup EXIT INT TERM
+INSTALL_LOG="${HOME:-${TMPDIR:-/tmp}}/ArchiveCenter-install.log"
+if [ -f "$INSTALL_LOG" ]; then mv -f "$INSTALL_LOG" "$INSTALL_LOG.1" || true; fi
+if mkfifo "$BOOTSTRAP_DIR/output.pipe"; then
+	exec 3>&1 4>&2
+	tee -a "$INSTALL_LOG" <"$BOOTSTRAP_DIR/output.pipe" >&3 &
+	INSTALL_LOG_TEE=$!
+	exec >"$BOOTSTRAP_DIR/output.pipe" 2>&1
+	printf 'Installation log: %s\n' "$INSTALL_LOG"
+fi
 
 if ! dependencies_ready; then
 	if [ "$termux" = "true" ]; then

@@ -136,10 +136,22 @@ type turnWorkflowHUDNotice struct {
 
 // Optional, request-local timing only. These calls do not add workflow stages.
 type turnWorkflowHUDPreprocessingCall struct {
-	Round      int       `json:"round"`
-	Status     string    `json:"status"`
-	StartedAt  time.Time `json:"started_at"`
-	DurationMS int64     `json:"duration_ms"`
+	SharedRequestID string    `json:"shared_request_id,omitempty"`
+	SharedRoles     []string  `json:"shared_roles,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Dispatched      bool      `json:"provider_dispatched,omitempty"`
+	Round           int       `json:"round"`
+	Status          string    `json:"status"`
+	StartedAt       time.Time `json:"started_at"`
+	DurationMS      int64     `json:"duration_ms"`
+}
+
+type turnWorkflowHUDPreprocessingRequest struct {
+	turnWorkflowHUDPreprocessingCall
+	ID         string `json:"id"`
+	TimerRole  string `json:"timer_role"`
+	DisplayRow int    `json:"display_row"`
 }
 
 type turnWorkflowHUDPreprocessingRole struct {
@@ -248,36 +260,37 @@ type turnWorkflowHUDRecoveryRequest struct {
 }
 
 type turnWorkflowHUDViewModel struct {
-	ContractVersion     string                              `json:"contract_version"`
-	RequestID           string                              `json:"request_id"`
-	ChatSessionID       string                              `json:"chat_session_id"`
-	LogicalTurn         int                                 `json:"logical_turn"`
-	HostTurn            int                                 `json:"host_turn,omitempty"`
-	BackendTurn         int                                 `json:"backend_turn,omitempty"`
-	TurnAlignment       turnWorkflowHUDTurnAlignment        `json:"turn_alignment"`
-	Attempt             int                                 `json:"attempt"`
-	Revision            int64                               `json:"revision"`
-	Status              string                              `json:"status"`
-	Severity            string                              `json:"severity"`
-	DismissalPolicy     string                              `json:"dismissal_policy"`
-	StartedAt           time.Time                           `json:"started_at"`
-	UpdatedAt           time.Time                           `json:"updated_at"`
-	EndedAt             *time.Time                          `json:"ended_at,omitempty"`
-	CurrentStage        *turnWorkflowHUDStage               `json:"current_stage,omitempty"`
-	Stages              []turnWorkflowHUDStage              `json:"stages"`
-	Counts              []turnWorkflowHUDCount              `json:"counts"`
-	Facts               []turnWorkflowHUDFact               `json:"facts"`
-	MemorySelection     *turnWorkflowHUDMemorySelection     `json:"memory_selection,omitempty"`
-	Preprocessing       []turnWorkflowHUDPreprocessingRole  `json:"preprocessing,omitempty"`
-	PreprocessingSearch *turnWorkflowHUDPreprocessingSearch `json:"preprocessing_search,omitempty"`
-	Warnings            []turnWorkflowHUDNotice             `json:"warnings"`
-	Error               *turnWorkflowHUDError               `json:"error,omitempty"`
-	DisplayMode         string                              `json:"display_mode,omitempty"`
-	TitleKey            string                              `json:"title_key,omitempty"`
-	MessageKey          string                              `json:"message_key,omitempty"`
-	NoticeCode          string                              `json:"notice_code,omitempty"`
-	NoticeKind          string                              `json:"notice_kind,omitempty"`
-	PresentationTone    string                              `json:"presentation_tone,omitempty"`
+	ContractVersion       string                                `json:"contract_version"`
+	RequestID             string                                `json:"request_id"`
+	ChatSessionID         string                                `json:"chat_session_id"`
+	LogicalTurn           int                                   `json:"logical_turn"`
+	HostTurn              int                                   `json:"host_turn,omitempty"`
+	BackendTurn           int                                   `json:"backend_turn,omitempty"`
+	TurnAlignment         turnWorkflowHUDTurnAlignment          `json:"turn_alignment"`
+	Attempt               int                                   `json:"attempt"`
+	Revision              int64                                 `json:"revision"`
+	Status                string                                `json:"status"`
+	Severity              string                                `json:"severity"`
+	DismissalPolicy       string                                `json:"dismissal_policy"`
+	StartedAt             time.Time                             `json:"started_at"`
+	UpdatedAt             time.Time                             `json:"updated_at"`
+	EndedAt               *time.Time                            `json:"ended_at,omitempty"`
+	CurrentStage          *turnWorkflowHUDStage                 `json:"current_stage,omitempty"`
+	Stages                []turnWorkflowHUDStage                `json:"stages"`
+	Counts                []turnWorkflowHUDCount                `json:"counts"`
+	Facts                 []turnWorkflowHUDFact                 `json:"facts"`
+	MemorySelection       *turnWorkflowHUDMemorySelection       `json:"memory_selection,omitempty"`
+	Preprocessing         []turnWorkflowHUDPreprocessingRole    `json:"preprocessing,omitempty"`
+	PreprocessingRequests []turnWorkflowHUDPreprocessingRequest `json:"preprocessing_requests,omitempty"`
+	PreprocessingSearch   *turnWorkflowHUDPreprocessingSearch   `json:"preprocessing_search,omitempty"`
+	Warnings              []turnWorkflowHUDNotice               `json:"warnings"`
+	Error                 *turnWorkflowHUDError                 `json:"error,omitempty"`
+	DisplayMode           string                                `json:"display_mode,omitempty"`
+	TitleKey              string                                `json:"title_key,omitempty"`
+	MessageKey            string                                `json:"message_key,omitempty"`
+	NoticeCode            string                                `json:"notice_code,omitempty"`
+	NoticeKind            string                                `json:"notice_kind,omitempty"`
+	PresentationTone      string                                `json:"presentation_tone,omitempty"`
 }
 
 type turnWorkflowHUDRecoveryTarget struct {
@@ -436,6 +449,25 @@ func (l *turnWorkflowHUDLedger) beginWithFinalizationTiming(requestID, sessionID
 	return &snapshot
 }
 
+// Preparation can estimate a turn already used by an earlier request whose
+// canonical turn was corrected during persistence. Display that estimate without
+// claiming its retry slot; only complete-turn's resolved turn owns that slot.
+func (l *turnWorkflowHUDLedger) setEstimatedLogicalTurn(requestID string, logicalTurn int) {
+	if l == nil || logicalTurn <= 0 {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entry := l.entries[strings.TrimSpace(requestID)]
+	if entry == nil || entry.attemptKey != "" || entry.view.LogicalTurn == logicalTurn {
+		return
+	}
+	entry.view.LogicalTurn = logicalTurn
+	entry.view.BackendTurn = logicalTurn
+	syncTurnWorkflowHUDAlignment(&entry.view)
+	l.touchLocked(entry, time.Now().UTC())
+}
+
 func (l *turnWorkflowHUDLedger) setLogicalTurn(requestID string, logicalTurn int) {
 	if l == nil || logicalTurn <= 0 {
 		return
@@ -446,7 +478,7 @@ func (l *turnWorkflowHUDLedger) setLogicalTurn(requestID string, logicalTurn int
 	if entry == nil {
 		return
 	}
-	if entry.view.LogicalTurn == logicalTurn {
+	if entry.view.LogicalTurn == logicalTurn && entry.attemptKey != "" {
 		return
 	}
 	now := time.Now().UTC()
@@ -1242,6 +1274,7 @@ func (l *turnWorkflowHUDLedger) recordPreprocessingCall(requestID, role string, 
 		index = len(entry.view.Preprocessing) - 1
 	}
 	item := &entry.view.Preprocessing[index]
+	call.SharedRoles = append([]string(nil), call.SharedRoles...)
 	if len(selectionSource) > 0 {
 		item.SelectionSource = selectionSource[0]
 	}
@@ -1878,7 +1911,11 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 	out.Preprocessing = append([]turnWorkflowHUDPreprocessingRole(nil), source.Preprocessing...)
 	for i := range out.Preprocessing {
 		out.Preprocessing[i].Calls = append([]turnWorkflowHUDPreprocessingCall(nil), source.Preprocessing[i].Calls...)
+		for j := range out.Preprocessing[i].Calls {
+			out.Preprocessing[i].Calls[j].SharedRoles = append([]string(nil), source.Preprocessing[i].Calls[j].SharedRoles...)
+		}
 	}
+	out.PreprocessingRequests = turnWorkflowHUDPreprocessingRequests(out.Preprocessing)
 	out.Stages = append([]turnWorkflowHUDStage(nil), source.Stages...)
 	out.Counts = cloneTurnWorkflowHUDCounts(source.Counts)
 	out.Facts = append([]turnWorkflowHUDFact(nil), source.Facts...)
@@ -1899,6 +1936,83 @@ func cloneTurnWorkflowHUDView(source turnWorkflowHUDViewModel) turnWorkflowHUDVi
 			source.Error.RecoveryActions...,
 		)
 		out.Error = &errorCopy
+	}
+	return out
+}
+
+// Present real dispatched call groups, including single-role requests. Group times
+// are elapsed times; parallel role durations are never added together.
+func turnWorkflowHUDPreprocessingRequests(roles []turnWorkflowHUDPreprocessingRole) []turnWorkflowHUDPreprocessingRequest {
+	out := []turnWorkflowHUDPreprocessingRequest{}
+	positions := map[string]int{}
+	states := map[string][]string{}
+	for _, role := range roles {
+		for _, call := range role.Calls {
+			if !call.Dispatched {
+				continue
+			}
+			id := call.SharedRequestID
+			if id == "" {
+				id = fmt.Sprintf("round:%d:%s", call.Round, role.Role)
+			}
+			index, found := positions[id]
+			if !found {
+				index = len(out)
+				positions[id] = index
+				call.SharedRoles = append([]string(nil), call.SharedRoles...)
+				if len(call.SharedRoles) == 0 {
+					call.SharedRoles = []string{role.Role}
+				}
+				out = append(out, turnWorkflowHUDPreprocessingRequest{turnWorkflowHUDPreprocessingCall: call, ID: id, TimerRole: role.Role})
+			}
+			states[id] = append(states[id], call.Status)
+			if call.DurationMS > out[index].DurationMS {
+				out[index].DurationMS = call.DurationMS
+			}
+		}
+	}
+	for i := range out {
+		running, failed, repaired, partial := 0, 0, 0, 0
+		for _, state := range states[out[i].ID] {
+			switch state {
+			case "running":
+				running++
+			case "failed":
+				failed++
+			case "partial":
+				partial++
+			case "repaired":
+				repaired++
+			}
+		}
+		switch {
+		case running > 0:
+			out[i].Status = "running"
+		case failed == len(states[out[i].ID]):
+			out[i].Status = "failed"
+		case failed > 0 || partial > 0:
+			out[i].Status = "partial"
+		case repaired > 0:
+			out[i].Status = "repaired"
+		default:
+			out[i].Status = "succeeded"
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Round < out[j].Round })
+	// Pair round columns only for the same actual role membership and model.
+	// This is display placement; retain every request ID, duration and status.
+	rows := map[string]int{}
+	for i := range out {
+		members := append([]string(nil), out[i].SharedRoles...)
+		sort.Strings(members)
+		encoded, _ := json.Marshal([]any{out[i].Provider, out[i].Model, members})
+		key := string(encoded)
+		row, found := rows[key]
+		if !found {
+			row = len(rows) + 1
+			rows[key] = row
+		}
+		out[i].DisplayRow = row
 	}
 	return out
 }

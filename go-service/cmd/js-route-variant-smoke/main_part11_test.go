@@ -810,7 +810,7 @@ func TestTurnWorkflowHUDEventStreamUsesOneConnectionAndNoPolling(t *testing.T) {
 	cancelStream := extractArchiveCenterJSFunction(t, src, "cancelTurnWorkflowHUDStream")
 	streamFailure := extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDStreamFailure")
 	openStream := extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream")
-	consumeLine := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStreamLine")
+	consumeLine := extractTurnWorkflowHUDStreamIO(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStreamLine")
 	consumeStream := extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDStream")
 	primeHUD := extractArchiveCenterJSFunction(t, src, "primeTurnWorkflowHUD")
 	startWatch := extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch")
@@ -4544,6 +4544,7 @@ func TestNewRequestDoesNotSupersedePendingRecovery(t *testing.T) {
 		extractArchiveCenterJSAsyncFunction(t, src, "persistPendingFinalConfirmationRecovery"),
 		extractArchiveCenterJSAsyncFunction(t, src, "removePendingFinalConfirmationRecovery"),
 		extractArchiveCenterJSAsyncFunction(t, src, "supersedePendingFinalConfirmation"),
+		extractArchiveCenterJSFunction(t, src, "observeActiveChatInputGroup"),
 		extractArchiveCenterJSAsyncFunction(t, src, "captureFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "removeFailedCompleteTurnByIdempotencyKey"),
 		extractArchiveCenterJSAsyncFunction(t, src, "loadPendingFinalConfirmationRecoveryFromStorage"),
@@ -5659,7 +5660,7 @@ func TestBridgeURLValidationKeepsExplicitCrossDeviceEndpoints(t *testing.T) {
 	script := functions + `
 function assert(condition,message) { if(!condition) throw new Error(message); }
 assert(isValidBridgeUrlInput("http://127.0.0.1:28080"),"loopback URL rejected");
-assert(isValidBridgeUrlInput("http://100.96.60.55:28080"),"LAN or tailnet URL rejected");
+assert(isValidBridgeUrlInput("http://100.64.0.10:28080"),"LAN or tailnet URL rejected");
 assert(isValidBridgeUrlInput("https://archive.example.test"),"HTTPS URL rejected");
 assert(isValidBridgeUrlInput("http://[::1]:28080"),"IPv6 loopback URL rejected");
 assert(!isValidBridgeUrlInput("127.0.0.1:28080"),"scheme-less URL accepted");

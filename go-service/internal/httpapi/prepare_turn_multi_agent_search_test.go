@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -13,6 +14,220 @@ import (
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
+
+// The provider and retrieval are external boundaries. All packet construction,
+// grouped dispatch, reference resolution, selection and payload assembly are real.
+func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
+	for _, grouped := range []bool{false, true} {
+		for _, reply := range []string{"recommendation", "empty", "failure"} {
+			t.Run(fmt.Sprintf("grouped_%v_%s", grouped, reply), func(t *testing.T) {
+				facts := []prepareTurnPriorityMemoryCandidate{
+					{CanonicalFactID: "promise", Lane: "unresolved_goal", CompleteText: "status=open; Ainz promised Minwoo five casks of ale.", SourceRef: "pending_threads:403", SourceTable: "pending_threads", SourceTurn: 46},
+					{CanonicalFactID: "plate", Lane: "unresolved_goal", CompleteText: "An adventurer plate was also promised.", SourceRef: "pending_threads:401", SourceTable: "pending_threads", SourceTurn: 41},
+					{CanonicalFactID: "completed-event", Lane: "event_recent", CompleteText: "The ale outing was completed at the inn.", SourceRef: "memories:1523", SourceTurn: 47, Visibility: "public_projection"},
+					{CanonicalFactID: "private-ale", Lane: "subjective_relationship", CompleteText: "PRIVATE_ALE_INTERPRETATION", SourceRef: "private:1", PerspectiveOwner: "Ainz", Visibility: "owner_private", SupplementalQueryMatched: true},
+					{CanonicalFactID: "walk", Lane: "event_recent", CompleteText: "Minwoo and Yuri are walking around E-Rantel.", SourceRef: "memories:1600", SourceTurn: 105},
+				}
+				summaries := []prepareTurnPriorityTurnSummaryCandidate{
+					{SummaryID: "fulfilled-summary", SourceRef: "memories:1523", SourceTurn: 47, CompleteText: "아인즈가 여관 1층 홀을 정오부터 통째로 빌려 민우와의 생맥주 약속을 이행했다.", SourceVectorSimilarityObserved: true, SourceVectorSimilarity: .95},
+					{SummaryID: "unrelated-summary", SourceRef: "memories:9", SourceTurn: 9, CompleteText: "Distant nebula survey."},
+				}
+				var mu sync.Mutex
+				requests, seen := 0, map[string]int{}
+				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					var body struct {
+						Messages []struct {
+							Content string `json:"content"`
+						} `json:"messages"`
+					}
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil || len(body.Messages) < 2 {
+						t.Error("missing provider messages", err)
+						http.Error(w, "bad fixture request", 400)
+						return
+					}
+					var packet map[string]any
+					if err := json.Unmarshal([]byte(body.Messages[1].Content), &packet); err != nil {
+						t.Error(err)
+						return
+					}
+					mu.Lock()
+					defer mu.Unlock()
+					requests++
+					members, isGroup := packet["roles"].([]any)
+					if !isGroup {
+						members = []any{map[string]any{"role": packet["role"], "input": packet}}
+					}
+					results := map[string]any{}
+					failed := false
+					for _, raw := range members {
+						member := mapFromAny(raw)
+						role := extractionStringFromAny(member["role"])
+						input := map[string]any{}
+						for k, v := range mapFromAny(packet["shared_input"]) {
+							input[k] = v
+						}
+						for k, v := range mapFromAny(member["input"]) {
+							input[k] = v
+						}
+						seen[role]++
+						second := input["previous_result"] != nil
+						answer := multiAgentRecommendation{}
+						switch role {
+						case "event_recent":
+							answer.SelectedIDs = []string{"F5"}
+							if !second {
+								answer.SearchRequests = []string{"Yuri walking around E-Rantel"}
+							}
+						case "unresolved_goal":
+							answer.SelectedIDs = []string{"F1", "F2"}
+							if !second {
+								answer.SearchRequests = []string{"Was the five casks of ale promise fulfilled?"}
+							} else {
+								found, total := map[string]int{}, 0
+								for _, key := range []string{"candidates", "turn_summaries", "search_evidence"} {
+									for _, raw := range outputFidelityLineageSlice(input[key]) {
+										item := mapFromAny(raw)
+										ref, text := extractionStringFromAny(item["ref"]), extractionStringFromAny(item["text"])
+										found[ref]++
+										total += len([]rune(text))
+										if ref == "S1" {
+											if key != "search_evidence" || text != summaries[0].CompleteText {
+												t.Error("completion changed text or became selectable")
+											}
+											p := mapFromAny(mapFromAny(input["source_catalog"])[extractionStringFromAny(item["source"])])
+											if p["r"] != summaries[0].SourceRef || p["n"] != float64(summaries[0].SourceTurn) {
+												t.Error("completion lost its source or turn", p)
+											}
+										}
+										if key == "candidates" && ref != "F1" && ref != "F2" {
+											t.Error("selection category changed", ref)
+										}
+									}
+								}
+								if found["S1"] != 1 || found["F3"] != 1 || found["F4"] != 0 || found["S2"] != 0 || found["F5"] != 0 {
+									t.Error("own-query evidence missing, duplicated, private, or borrowed from another question", found)
+								}
+								if total > intFromAny(mapFromAny(input["budgets"])["candidate_chars"], 0) {
+									t.Error("reading exceeded existing input budget")
+								}
+								if len(outputFidelityLineageSlice(input["turn_summaries"])) != 0 {
+									t.Error("goal gained summary selection")
+								}
+								answer.SelectedIDs = []string{"F2", "F1"}
+								answer.Reasons = map[string]string{"F1": "S1 records fulfillment at turn 47; this is a past promise. The plate is a separate question."}
+								if reply == "empty" {
+									answer = multiAgentRecommendation{}
+								}
+								failed = reply == "failure"
+							}
+						default:
+							t.Error("unexpected role", role)
+						}
+						results[role] = answer
+					}
+					if failed {
+						http.Error(w, "fixture provider failure", http.StatusBadRequest)
+						return
+					}
+					var response any = map[string]any{"roles": results}
+					if !isGroup {
+						response = results[packet["role"].(string)]
+					}
+					content, _ := json.Marshal(response)
+					_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
+				}))
+				defer provider.Close()
+				cfg := defaultMultiAgentSettings()
+				cfg.Enabled = true
+				for role, c := range cfg.Roles {
+					c.Enabled = role == "event_recent" || role == "unresolved_goal"
+					c.Provider, c.Endpoint, c.Model, c.APIKey = "custom", provider.URL, "fixture", "fixture-key"
+					if !grouped {
+						c.Model += "-" + role
+					}
+					cfg.Roles[role] = c
+				}
+				selection := (&Server{}).runMultiAgent(context.Background(), cfg, dto.PrepareTurnRequest{}, facts, summaries, 4000, 5, nil,
+					func(q string) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, map[string]any) {
+						if strings.Contains(q, "five casks") {
+							return facts[:4], summaries, map[string]any{"memory_search_result": "ok"}
+						}
+						if strings.Contains(q, "Yuri") {
+							return facts[4:], nil, map[string]any{"memory_search_result": "ok"}
+						}
+						t.Error("unexpected search", q)
+						return nil, nil, nil
+					})
+				wantRequests := 4
+				if grouped {
+					wantRequests = 2
+				}
+				if requests != wantRequests || seen["event_recent"] != 2 || seen["unresolved_goal"] != 2 {
+					t.Fatal("dispatch/round count changed", requests, seen)
+				}
+				selection.BaselineIDs = map[string]bool{"promise": true, "walk": true}
+				// Reading budgets do not shrink the canonical pool, including old,
+				// unselected or private records retained by the existing owners.
+				if !reflect.DeepEqual(selection.Candidates, facts) || !reflect.DeepEqual(selection.Summaries, summaries) {
+					t.Fatal("supplemental reading removed or changed original memory candidates")
+				}
+				goal := selection.role("unresolved_goal")
+				wantIDs := []string{"plate", "promise"}
+				if reply == "failure" {
+					wantIDs = []string{"promise", "plate"}
+				}
+				if reply == "empty" {
+					if goal.Source != "go_default" || !multiAgentWants(selection, "unresolved_goal", "promise", false) {
+						t.Fatal("Go selection fallback changed")
+					}
+				} else if !reflect.DeepEqual(goal.Selection.SelectedIDs, wantIDs) {
+					t.Fatal("AI recommendation/order changed", goal.Selection.SelectedIDs)
+				}
+				if multiAgentWants(selection, "event_recent", "fulfilled-summary", true) {
+					t.Fatal("reading-only completion became automatic selection")
+				}
+				assembly := prepareTurnInjectionAssembly{Preprocessing: selection}
+				plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 4000, 5, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
+				notes := buildPrepareTurnPreprocessingNotes(selection, plan, nil)
+				for _, publisher := range []string{"disabled", "failed_open", "succeeded"} {
+					payload := buildPrepareTurnPayloadApplicationPlan("Walk around town", "", extractionStringFromAny(plan["final_text"]), "", true, true, 4000, 0, 0, nil, publisher, notes)
+					got := strings.Contains(extractionStringFromAny(payload["auxiliary_text"]), "S1 records fulfillment at turn 47")
+					if got != (reply == "recommendation") {
+						t.Error("accepted completion interpretation lost or fabricated", publisher, reply)
+					}
+				}
+			})
+		}
+	}
+}
+
+func Test44OwnSearchReadingSharesBudgetAndPreservesSelections(t *testing.T) {
+	for _, role := range multiAgentRoles {
+		t.Run(role, func(t *testing.T) {
+			cfg := defaultMultiAgentSettings()
+			cfg.CandidateChars = 80
+			facts := []prepareTurnPriorityMemoryCandidate{{CanonicalFactID: "selected", Lane: role, CompleteText: strings.Repeat("사", 10)}}
+			summaries := []prepareTurnPriorityTurnSummaryCandidate{{SummaryID: "complete", CompleteText: strings.Repeat("요", 60), SourceRef: "memories:47", SourceTurn: 47}}
+			ctx := map[string]any{"retained_ids": map[string]bool{"selected": true}, "search_evidence_ranks": map[string]float64{"complete": 1}}
+			input := multiAgentInput(role, facts, summaries, dto.PrepareTurnRequest{}, cfg, 160, 3, nil, ctx)
+			if len(input["candidates"].([]map[string]any)) != len(facts) {
+				t.Fatal("first-round selection disappeared")
+			}
+			key := "search_evidence"
+			if role == "event_recent" {
+				key = "turn_summaries"
+			}
+			items := input[key].([]map[string]any)
+			if len(items) != 1 || items[0]["text"] != summaries[0].CompleteText {
+				t.Fatal("whole completed source disappeared", input)
+			}
+			want := len([]rune(facts[0].CompleteText)) + len([]rune(summaries[0].CompleteText))
+			if input["input_candidate_chars"] != want || want > cfg.CandidateChars {
+				t.Fatal("existing character cap changed")
+			}
+		})
+	}
+}
 
 func Test43MultiAgentSearchOverlapDeterministicMergeAndHUD(t *testing.T) {
 	roles := []string{"event_recent", "character_objective", "world_state"}
@@ -57,13 +272,13 @@ func Test43MultiAgentSearchOverlapDeterministicMergeAndHUD(t *testing.T) {
 				ids, refs := []string{}, []string{}
 				for _, raw := range input["candidates"].([]any) {
 					item := raw.(map[string]any)
-					ids = append(ids, item["id"].(string))
+					ids = append(ids, item["text"].(string))
 					refs = append(refs, item["ref"].(string))
-					if item["id"] == "duplicate" && item["text"] != roles[0] {
+					if item["ref"] == "F3" && item["text"] != roles[0] {
 						t.Error("reverse completion replaced original-role duplicate content")
 					}
 				}
-				want := []string{"event_recent", "duplicate", "world_state"}
+				want := []string{"Retrieved source for event_recent", "event_recent", "Retrieved source for world_state"}
 				if !reflect.DeepEqual(ids, want) || !reflect.DeepEqual(refs, []string{"F2", "F3", "F4"}) {
 					t.Errorf("all merged evidence/aliases changed: ids=%v refs=%v", ids, refs)
 				}
@@ -83,7 +298,7 @@ func Test43MultiAgentSearchOverlapDeterministicMergeAndHUD(t *testing.T) {
 	cfg.Enabled = true
 	for role, value := range cfg.Roles {
 		value.Enabled = role == roles[0] || role == roles[1] || role == roles[2]
-		value.Provider, value.Endpoint, value.Model, value.APIKey = "custom", provider.URL, "fixture-model", "fixture-key"
+		value.Provider, value.Endpoint, value.Model, value.APIKey = "custom", provider.URL, "fixture-model-"+role, "fixture-key"
 		cfg.Roles[role] = value
 	}
 	started := make(chan string, len(roles))

@@ -1,18 +1,213 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func Test44RecentSummaryCanonicalSourceAndUnchangedInputs(t *testing.T) {
+	limit := 3
+	current := "Continue with the same promise."
+	older := "Chatindex: 900\n" + strings.Repeat("Original scene detail. ", 100)
+	latest := "Latest scene and exact dialogue."
+	req := dto.PrepareTurnRequest{RawUserInput: &current, Settings: dto.PrepareTurnSettings{RecentConversationReferenceCount: &limit}, Messages: []map[string]any{
+		{"role": "user", "content": "first direction\nassistant:\nliteral quoted label"},
+		{"role": "user", "content": "second direction"}, {"role": "assistant", "content": older},
+		{"role": "user", "content": "latest direction"}, {"role": "char", "content": latest},
+		{"role": "user", "content": current},
+	}}
+	logs := []store.ChatLog{{ChatSessionID: "parent", TurnIndex: 4, Role: "assistant", Content: older}, {ChatSessionID: "child", TurnIndex: 4, Role: "assistant", Content: "Other worldline"}}
+	memories := []store.Memory{
+		{ID: 12, ChatSessionID: "parent", TurnIndex: 4, SummaryJSON: `{"narrative_events":[{"event":"The promise remains unfulfilled."}]}`},
+		{ID: 11, ChatSessionID: "parent", TurnIndex: 4, SummaryJSON: `{"narrative_events":[{"event":"Mira made the promise."}]}`},
+		{ID: 13, ChatSessionID: "child", TurnIndex: 4, SummaryJSON: `{"narrative_events":[{"event":"WRONG_BRANCH"}]}`},
+	}
+	before, _ := json.Marshal([]any{req, logs, memories})
+	reading := multiAgentRecentReading(req, logs, memories)
+	wantOriginal := prepareTurnRecentConversationQueries(req.Messages, limit)
+	if len(reading) != 2 || reading[0]["Text"] != wantOriginal[0].Text {
+		t.Fatal("latest original or configured range changed")
+	}
+	text := extractionStringFromAny(reading[1]["Text"])
+	for _, want := range []string{"first direction\nassistant:\nliteral quoted label", "second direction", "Mira made the promise.", "The promise remains unfulfilled."} {
+		if !strings.Contains(text, want) {
+			t.Errorf("lost required reading: %q", want)
+		}
+	}
+	if strings.Contains(text, "Original scene detail") || strings.Contains(text, "WRONG_BRANCH") {
+		t.Fatal("old raw text duplicated or source was chosen by display index")
+	}
+	refs := reading[1]["summary_sources"].([]map[string]any)
+	if len(refs) != 2 || refs[0]["source_ref"] != "memories:11" || refs[0]["source_turn"] != 4 || refs[0]["source_session_id"] != "parent" {
+		t.Fatalf("canonical summary provenance lost: %+v", refs)
+	}
+	after, _ := json.Marshal([]any{req, logs, memories})
+	if !bytes.Equal(before, after) {
+		t.Fatal("reading projection mutated its sources")
+	}
+	canonical := store.Memory{ID: 20, ChatSessionID: "parent", TurnIndex: 4, SummaryJSON: `{"narrative_events":[{"event":"Public meeting."}],"protected_secrets":[{"owner":"Mira","summary":"PRIVATE_MARKER"}]}`}
+	public, _ := projectPrepareTurnGeneralMemories([]store.Memory{canonical})
+	projected := multiAgentRecentReading(req, logs, public)
+	if got := extractionStringFromAny(projected[1]["Text"]); !strings.Contains(got, "Public meeting.") || strings.Contains(got, "PRIVATE_MARKER") {
+		t.Fatalf("stored reading bypassed public projection: %s", got)
+	}
+	input := multiAgentInput("event_recent", []prepareTurnPriorityMemoryCandidate{{CanonicalFactID: "promise", Lane: "event_recent", CompleteText: "The complete original fact.", SourceRef: "memory:11", SourceTurn: 4}}, nil, req, defaultMultiAgentSettings(), 5000, 5, nil)
+	var baseline, compact map[string]any
+	_ = json.Unmarshal([]byte(multiAgentModelInput(input, 1)), &baseline)
+	input["recent_conversation_reading"] = reading
+	_ = json.Unmarshal([]byte(multiAgentModelInput(input, 1)), &compact)
+	for _, key := range []string{"candidates", "turn_summaries", "source_catalog", "source_scopes", "current_input", "budgets"} {
+		if !reflect.DeepEqual(baseline[key], compact[key]) {
+			t.Errorf("summary reading changed %s", key)
+		}
+	}
+	chosen := []string{"C2.1"}
+	input["previous_result"] = multiAgentRecommendation{RecentContextRefs: &chosen}
+	_ = json.Unmarshal([]byte(multiAgentModelInput(input, 2)), &compact)
+	if compact["recent_context_status"] != "first_round_selected_verbatim_passages" || strings.Contains(multiAgentModelInput(input, 2), "Original scene detail") {
+		t.Fatal("second-round source reference did not address the held summary")
+	}
+	for _, tc := range []struct {
+		name     string
+		logs     []store.ChatLog
+		memories []store.Memory
+	}{
+		{"missing", nil, memories},
+		{"edited-response", []store.ChatLog{{ChatSessionID: "parent", TurnIndex: 4, Role: "assistant", Content: older + " edited"}}, memories},
+		{"ambiguous", append(append([]store.ChatLog{}, logs...), store.ChatLog{ChatSessionID: "other", TurnIndex: 5, Role: "assistant", Content: older}), memories},
+		{"missing-summary", logs, nil},
+		{"empty-summary", logs, []store.Memory{{ID: 11, ChatSessionID: "parent", TurnIndex: 4, SummaryJSON: `{}`}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := multiAgentRecentReading(req, tc.logs, tc.memories)
+			if got[1]["Text"] != wantOriginal[1].Text {
+				t.Fatal("unavailable summary changed existing original")
+			}
+		})
+	}
+	for _, n := range []int{0, 1} {
+		req.Settings.RecentConversationReferenceCount = &n
+		if got := multiAgentRecentReading(req, logs, memories); len(got) != len(prepareTurnRecentConversationQueries(req.Messages, prepareTurnRecentConversationReferenceLimit(req.Settings))) || (n == 1 && got[0]["Text"] != wantOriginal[0].Text) {
+			t.Fatalf("configured recent count %d changed: %+v", n, got)
+		}
+	}
+}
+
+// Exercises the registered route, scoped DB reads, both AI rounds and actual
+// grouped HTTP packets. The provider is local and makes controlled selections;
+// it verifies transport and assembly, not real-model memory quality.
+func Test44RecentSummaryRegisteredRouteGroupedRounds(t *testing.T) {
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+	old := strings.Repeat("Older raw dialogue and scenery. ", 100)
+	latest := "Exact latest dialogue."
+	var packets []map[string]any
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var wire map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&wire)
+		var packet map[string]any
+		_ = json.Unmarshal([]byte(extractionStringFromAny(mapFromAny(outputFidelityLineageSlice(wire["messages"])[1])["content"])), &packet)
+		packets = append(packets, packet)
+		results := map[string]any{}
+		for _, raw := range outputFidelityLineageSlice(packet["roles"]) {
+			role := mapFromAny(raw)
+			input := map[string]any{}
+			for k, v := range mapFromAny(packet["shared_input"]) {
+				input[k] = v
+			}
+			for k, v := range mapFromAny(role["input"]) {
+				input[k] = v
+			}
+			if input["current_input"] != "Keep the agreement." || input["recent_conversation_reading"] != nil {
+				t.Error("current input changed or duplicate internal reading sent")
+			}
+			recent := outputFidelityLineageSlice(input["recent_conversation"])
+			if len(recent) != 2 {
+				t.Errorf("recent scope changed: %d", len(recent))
+				continue
+			}
+			if modelRecentTextForTest(mapFromAny(recent[0])) != "user:\nlatest direction\nassistant:\n"+latest {
+				t.Error("latest conversation lost")
+			}
+			older := mapFromAny(recent[1])
+			text := modelRecentTextForTest(older)
+			if !strings.Contains(text, "Mira promised to return the compass.") || !strings.Contains(text, "first direction") || !strings.Contains(text, "second direction") || strings.Contains(text, "Older raw dialogue") {
+				t.Errorf("registered route did not reuse stored reading: %s", text)
+			}
+			if len(outputFidelityLineageSlice(older["summary_sources"])) != 1 {
+				t.Error("summary source missing")
+			}
+			refs := []string{}
+			for _, raw := range outputFidelityLineageSlice(input["candidates"]) {
+				refs = append(refs, extractionStringFromAny(mapFromAny(raw)["ref"]))
+			}
+			results[extractionStringFromAny(role["role"])] = map[string]any{"selected_ids": refs, "search_requests": []string{"Where is the compass now?"}}
+		}
+		answer, _ := json.Marshal(map[string]any{"roles": results})
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(answer)}}}})
+	}))
+	defer provider.Close()
+	cfg := config.Default()
+	cfg.PromptDir = filepath.Join("..", "..", "..", "prompts")
+	cfg.StoreMode = config.StoreModeDualShadow
+	s := NewServer(cfg)
+	s.Store = &priorityPrepareTurnStore{turnRecordingStore: &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{{ID: 1, ChatSessionID: "summary-http", TurnIndex: 1, Role: "assistant", Content: old}, {ID: 2, ChatSessionID: "summary-http", TurnIndex: 2, Role: "assistant", Content: latest}},
+		returnMemories: []store.Memory{{ID: 701, ChatSessionID: "summary-http", TurnIndex: 1, Importance: 8, SummaryJSON: `{"narrative_events":[{"event":"Mira promised to return the compass.","visibility":"public"}]}`}},
+	}}
+	settings := defaultMultiAgentSettings()
+	settings.Enabled = true
+	for role, c := range settings.Roles {
+		c.Enabled = true
+		c.UsePublisher = false
+		c.Provider = "custom"
+		c.Endpoint = provider.URL
+		c.Model = "same-model"
+		c.APIKey = "test-key"
+		settings.Roles[role] = c
+	}
+	b, _ := json.Marshal(settings)
+	rec := httptest.NewRecorder()
+	s.handleMultiAgentSettings(rec, httptest.NewRequest(http.MethodPut, "/config/memory-preprocessing", bytes.NewReader(b)))
+	if rec.Code != 200 {
+		t.Fatal(rec.Body.String())
+	}
+	body := map[string]any{"chat_session_id": "summary-http", "turn_index": 3, "raw_user_input": "Keep the agreement.", "recent_conversation_messages": []map[string]any{
+		{"role": "user", "content": "first direction"}, {"role": "user", "content": "second direction"}, {"role": "assistant", "content": old}, {"role": "user", "content": "latest direction"}, {"role": "assistant", "content": latest}, {"role": "user", "content": "Keep the agreement."}},
+		"settings": map[string]any{"injection_enabled": true, "max_injection_chars": 6000, "recent_conversation_reference_count": 2, "supervisor_enabled": false}}
+	b, _ = json.Marshal(body)
+	rec = httptest.NewRecorder()
+	mux := http.NewServeMux()
+	s.RegisterRoutes(mux)
+	mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(b)))
+	if rec.Code != 200 {
+		t.Fatalf("route failed: %d %s", rec.Code, rec.Body.String())
+	}
+	if len(packets) != 2 {
+		t.Fatalf("expected two grouped rounds, got %d", len(packets))
+	}
+	for _, p := range packets {
+		if len(outputFidelityLineageSlice(p["roles"])) != 5 {
+			t.Fatal("five assignments did not share the reading")
+		}
+	}
+	first, _ := json.Marshal(mapFromAny(packets[0]["shared_input"])["recent_conversation"])
+	second, _ := json.Marshal(mapFromAny(packets[1]["shared_input"])["recent_conversation"])
+	if !bytes.Equal(first, second) {
+		t.Fatal("second-round search changed the held first-round reading")
+	}
+}
 
 // Read the model-visible source dictionary, asserting every link is present.
 // No production selection or rendering is replaced by this fixture reader.
@@ -28,7 +223,24 @@ func modelEvidenceForTest(t *testing.T, input map[string]any, raw any) map[strin
 		if len(source) == 0 {
 			t.Fatalf("model received a dangling source reference %q", ref)
 		}
+		if groupRef := extractionStringFromAny(source["g"]); groupRef != "" {
+			group := mapFromAny(mapFromAny(input["source_scopes"])[groupRef])
+			if len(group) == 0 {
+				t.Fatalf("model received a dangling scope reference %q", groupRef)
+			}
+			merged := map[string]any{}
+			for k, v := range group {
+				merged[k] = v
+			}
+			for k, v := range source {
+				merged[k] = v
+			}
+			source = merged
+		}
 		for k, v := range source {
+			if expanded, ok := map[string]string{"r": "source_ref", "t": "source_table", "n": "source_turn", "v": "visibility", "o": "perspective_owner", "a": "allowed_viewers"}[k]; ok {
+				k = expanded
+			}
 			out[k] = v
 		}
 	}
@@ -182,15 +394,13 @@ func Test43ModelInputReadingOrderAndSourcePacking(t *testing.T) {
 	if strings.Count(wire, "character_states:12") != 1 || packed["source_catalog"] == nil {
 		t.Error("identical source metadata was repeated rather than shared")
 	}
-	catalog := mapFromAny(packed["source_catalog"])
 	items := outputFidelityLineageSlice(packed["candidates"])
 	if len(items) != len(facts) {
 		t.Fatal("candidate count changed")
 	}
 	for i, raw := range items {
-		item := mapFromAny(raw)
-		source := mapFromAny(catalog[extractionStringFromAny(item["source"])])
-		if item["text"] != facts[i].CompleteText || item["id"] != facts[i].CanonicalFactID || source["perspective_owner"] != "Mira" || !reflect.DeepEqual(stringsFromAny(source["allowed_viewers"]), []string{"Mira"}) {
+		item := modelEvidenceForTest(t, packed, raw)
+		if item["text"] != facts[i].CompleteText || item["ref"] != fmt.Sprintf("F%d", i+1) || item["id"] != nil || item["perspective_owner"] != "Mira" || !reflect.DeepEqual(stringsFromAny(item["allowed_viewers"]), []string{"Mira"}) {
 			t.Error("source text, identity, order or private scope changed")
 		}
 	}
@@ -211,7 +421,7 @@ func Test43PreprocessingFactNotesHaveDistinctStableReferences(t *testing.T) {
 	in := multiAgentInput("unresolved_goal", facts, nil, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), 2000, 8, nil)
 	sel := &multiAgentSelection{Candidates: facts, Roles: []multiAgentRoleResult{{Role: "unresolved_goal", Source: "ai", SelectionRound: 1, Calls: []multiAgentCall{{Round: 1, Input: in}}, Selection: multiAgentRecommendation{SelectedIDs: []string{"watch", "craft"}, Reasons: map[string]string{"watch": "The carpenter's axle still needs checking.", "craft": "The earlier manufacturing plan."}}}}}
 	assembly := prepareTurnInjectionAssembly{Preprocessing: sel}
-	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 8, "auto", nil, nil)
+	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 8, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
 	notes := buildPrepareTurnPreprocessingNotes(sel, plan, nil)
 	memory, note := extractionStringFromAny(plan["final_text"]), extractionStringFromAny(notes["final_text"])
 	for _, ref := range []string{"F1", "F2"} {
@@ -266,7 +476,7 @@ func Test43CompleteSummaryRefReachesPublisher(t *testing.T) {
 	in := multiAgentInput("event_recent", nil, []prepareTurnPriorityTurnSummaryCandidate{summary}, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), 2000, 8, nil)
 	sel := &multiAgentSelection{Summaries: []prepareTurnPriorityTurnSummaryCandidate{summary}, Roles: []multiAgentRoleResult{{Role: "event_recent", Source: "ai", SelectionRound: 1, Calls: []multiAgentCall{{Round: 1, Input: in}}, Selection: multiAgentRecommendation{SelectedSummaryIDs: []string{summary.SummaryID}, Reasons: map[string]string{summary.SummaryID: "The completed disclosure explains Rook's knowledge."}}}}}
 	assembly := prepareTurnInjectionAssembly{Preprocessing: sel}
-	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 8, "auto", nil, nil)
+	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 8, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
 	notes := buildPrepareTurnPreprocessingNotes(sel, plan, nil)
 	if !strings.Contains(extractionStringFromAny(plan["final_text"]), "[S1]") || !strings.Contains(extractionStringFromAny(notes["final_text"]), "[S1]") {
 		t.Fatal("summary and interpretation lost their shared ref")
@@ -334,7 +544,7 @@ func Test43PreprocessingNotesFollowAcceptedRoundAndScope(t *testing.T) {
 				})
 			selection.BaselineIDs = map[string]bool{"fact-a": true}
 			assembly := prepareTurnInjectionAssembly{Preprocessing: selection}
-			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 5, "auto", nil, nil)
+			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 5, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
 			if got := stringsFromAny(plan["selected_fact_ids"]); !reflect.DeepEqual(got, tc.ids) {
 				t.Fatalf("existing selection/order changed: %v want %v", got, tc.ids)
 			}
@@ -410,7 +620,7 @@ func Test43PreprocessingNotesKeepIndependentLoreRound(t *testing.T) {
 	loreContext := map[string]any{"lorebook_candidates": []map[string]any{{"id": "lore-a", "text": "Lore A"}, {"id": "lore-b", "text": "Lore B"}}, "lorebook_budget_chars": 100}
 	selection := (&Server{}).runMultiAgent(context.Background(), cfg, dto.PrepareTurnRequest{}, facts, nil, 2000, 5, nil, nil, loreContext)
 	assembly := prepareTurnInjectionAssembly{Preprocessing: selection}
-	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 5, "auto", nil, nil)
+	plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&assembly, 2000, 5, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
 	lore := prepareTurnLorebookReferenceResult{delivered: []prepareTurnLorebookDeliveredItem{{SourceRefs: []string{"lore-b"}}}}
 	notes := buildPrepareTurnPreprocessingNotes(selection, plan, &lore)
 	items := outputFidelityLineageSlice(notes["items"])
@@ -436,12 +646,20 @@ func Test43PendingGoalUsesConfiguredRecentContext(t *testing.T) {
 			queries = append(queries, "user: Let's restore village pumping station.\nassistant: The pump parts have arrived; restoration is the next job.")
 		}
 		perspective := map[string]any{"_priority_memory_enabled": true, "_priority_memory_query": raw, prepareTurnPriorityQuerySetContextKey: queries}
-		assembly := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, threads, nil, nil, nil, nil, nil, 5, 12000, raw, "default", nil, nil, nil, perspective)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			PendingThreads: threads,
+			TopK:           5,
+			MaxChars:       12000,
+			UserInput:      raw,
+			Profile:        "default",
+			BudgetMode:     "auto",
+			Perspective:    testPrepareTurnAssemblyPerspective(perspective),
+		})
 		if strings.Contains(assembly.PendingThreadText, goal) != withRecent || strings.Contains(assembly.PendingThreadText, threads[1].Description) {
 			t.Fatalf("configured recent context did not reach goal candidates: recent=%v text=%q", withRecent, assembly.PendingThreadText)
 		}
 		if withRecent {
-			facts, _ := multiAgentCandidatePool(&assembly, perspective)
+			facts, _ := multiAgentCandidatePool(&assembly)
 			input := multiAgentInput("unresolved_goal", facts, nil, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), 12000, 5, map[string]int{})
 			items := input["candidates"].([]map[string]any)
 			found := false
@@ -536,7 +754,23 @@ func Test43MultiAgentExactReferencesReachBothRounds(t *testing.T) {
 		for _, group := range []string{"candidates", "turn_summaries"} {
 			for _, raw := range input[group].([]any) {
 				item := raw.(map[string]any)
-				byID[item["id"].(string)] = item["ref"].(string)
+				text := item["text"].(string)
+				for _, f := range facts {
+					if f.CompleteText == text {
+						byID[f.CanonicalFactID] = item["ref"].(string)
+					}
+				}
+				for _, summary := range summaries {
+					if summary.CompleteText == text {
+						byID[summary.SummaryID] = item["ref"].(string)
+					}
+				}
+				if text == "A new consequence followed." {
+					byID["pmf_new_source"] = item["ref"].(string)
+				}
+				if text == "The completed visit led to a new consequence." {
+					byID["pms_new_source"] = item["ref"].(string)
+				}
 			}
 		}
 		var result multiAgentRecommendation
@@ -565,7 +799,7 @@ func Test43MultiAgentExactReferencesReachBothRounds(t *testing.T) {
 	cfg.Enabled = true
 	for role, c := range cfg.Roles {
 		c.Enabled = role == "event_recent"
-		c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model"
+		c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model-"+role
 		cfg.Roles[role] = c
 	}
 	server := &Server{}
@@ -636,7 +870,7 @@ func Test43MultiAgentGeneralPublicHandoffKeepsPrivateScope(t *testing.T) {
 			t.Errorf("configured recent conversation count: got %d, want %d", len(recent), recentLimit)
 		} else {
 			for i, raw := range recent {
-				if mapFromAny(raw)["Text"] != wantRecent[i] {
+				if modelRecentTextForTest(mapFromAny(raw)) != wantRecent[i] {
 					t.Error("recent conversation lost the paired user input, completed response, quantity or uncertainty")
 				}
 			}
@@ -658,7 +892,7 @@ func Test43MultiAgentGeneralPublicHandoffKeepsPrivateScope(t *testing.T) {
 		}
 		if input["role"] == "world_state" && second {
 			items := input["related_evidence"].([]any)
-			if len(items) != 2 || items[0].(map[string]any)["id"] != "general-fact" || items[1].(map[string]any)["id"] != "explicit-public-fact" {
+			if len(items) != 2 || items[0].(map[string]any)["ref"] != "F1" || items[1].(map[string]any)["ref"] != "F2" {
 				t.Errorf("public general was lost or private scope broadened: %+v", items)
 			}
 			if modelEvidenceForTest(t, input, items[0])["source_turn"] != float64(3) {
@@ -685,7 +919,7 @@ func Test43MultiAgentGeneralPublicHandoffKeepsPrivateScope(t *testing.T) {
 	for role, c := range cfg.Roles {
 		c.Enabled = role == "character_objective" || role == "world_state"
 		c.Prompt = "User-authored role instructions."
-		c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model"
+		c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model-"+role
 		cfg.Roles[role] = c
 	}
 	searchCalls := 0
@@ -760,7 +994,7 @@ func Test43MultiAgentLoreAssessmentIsIndependentAndRetained(t *testing.T) {
 			cfg.Enabled = true
 			for role, c := range cfg.Roles {
 				c.Enabled = role == "world_state" || role == "event_recent"
-				c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model"
+				c.Provider, c.Endpoint, c.APIKey, c.Model = "custom", provider.URL, "fixture-key", "fixture-model-"+role
 				cfg.Roles[role] = c
 			}
 			lore := []map[string]any{{"id": "lore-a", "text": "A setting rule."}, {"id": "lore-b", "text": "A useful object."}}

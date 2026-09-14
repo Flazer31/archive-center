@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -17,19 +18,35 @@ import (
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/diagnostics"
 	"github.com/risulongmemory/archive-center-go/internal/httpapi"
 )
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stderr, nil))
+	// Export works before configuration validation or database initialization.
+	if len(os.Args) > 1 && os.Args[1] == "diagnostics" {
+		report := diagnostics.Collect(diagnostics.Directory(), config.Load().BuildVersion)
+		if err := json.NewEncoder(os.Stdout).Encode(report); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
+	cfg := config.Load()
+	logWriter := &diagnostics.Writer{Dir: diagnostics.Directory(), Console: os.Stderr, Secrets: []string{cfg.MariaDBDSN}}
+	logger := slog.New(slog.NewJSONHandler(logWriter, nil))
+	slog.SetDefault(logger)
+	if err := diagnostics.EnableCrashLog(logWriter.Dir); err != nil {
+		logger.Warn("crash log unavailable", "error", err)
+	}
 	appCtx, cancelApp := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancelApp()
 	if httpapi.ConfigureOutboundDNSServers(os.Getenv("AC_DNS_SERVERS")) {
 		logger.Info("configured outbound dns override")
 	}
 
-	cfg := config.Load()
 	logger.Info("loaded config", "config", cfg.String())
+	logger.Info("diagnostic log enabled", "directory", logWriter.Dir)
 
 	if err := cfg.Validate(); err != nil {
 		logger.Error("invalid config", "error", err)
@@ -46,6 +63,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	server := httpapi.NewServer(cfg)
+	server.DiagnosticWriter = logWriter
 	var requestedExitCode atomic.Int32
 	if managedUpdateLauncherAuthorized(cfg) {
 		server.RequestShutdown = func(exitCode int) {
@@ -66,7 +84,7 @@ func main() {
 	server.RegisterRoutes(mux)
 
 	logger.Info("starting server", "bind", cfg.BindAddr, "mode", cfg.Mode)
-	httpServer := &http.Server{Addr: cfg.BindAddr, Handler: mux}
+	httpServer := &http.Server{Addr: cfg.BindAddr, Handler: mux, ErrorLog: slog.NewLogLogger(logger.Handler(), slog.LevelError)}
 	go func() {
 		<-appCtx.Done()
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 10*time.Second)

@@ -40,8 +40,16 @@ func TestMemoryRestorationCandidateWindowCoverage(t *testing.T) {
 					for _, limit := range []int{5, prepareTurnMemoryCandidateLimit(budget)} {
 						returned := hits[:minInt(limit, len(hits))]
 						shadow := map[string]any{"status": "ready", "search_result": "ok", "memory_search_result": "ok", "memory_search_results": returned}
-						assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-							limit, budget, "Let us resume our usual exercise.", "default", nil, shadow, nil, priorityMemoryTestContext(5))
+						assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+							Memories:    memories,
+							TopK:        limit,
+							MaxChars:    budget,
+							UserInput:   "Let us resume our usual exercise.",
+							Profile:     "default",
+							VectorTrace: shadow,
+							BudgetMode:  "auto",
+							Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(5)),
+						})
 						candidate := false
 						for _, seed := range assembly.PriorityFactSeeds {
 							candidate = candidate || strings.Contains(seed.Fact.Text, target)
@@ -121,7 +129,16 @@ func TestMemoryRestorationQueryProvenanceSurvivesFailedHistoryEmbedding(t *testi
 		t.Fatalf("query identity shifted after failed embedding: %v", observations)
 	}
 	memories := []store.Memory{{ID: 1, ChatSessionID: req.ChatSessionID, TurnIndex: 1, Importance: .9, SummaryJSON: `{"turn_summary":"The group practiced ribbon binding together."}`}}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 5, 9000, current, "default", nil, shadow, nil, priorityMemoryTestContext(5))
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   current,
+		Profile:     "default",
+		VectorTrace: shadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(5)),
+	})
 	seen := false
 	for _, raw := range prepareTurnMemoryLineageSlice(assembly.MemoryDeliveryPlan["priority_items"]) {
 		item := mapFromAny(raw)
@@ -147,7 +164,16 @@ func TestMemoryRestorationFactsPrecedeSummaryRenderDeduplication(t *testing.T) {
 		hits = append(hits, map[string]any{"id": fmt.Sprintf("memory:facts:%d", m.ID), "chat_session_id": "facts", "source_table": "memories", "source_row_id": fmt.Sprint(m.ID), "tier": "memory", "similarity": .9})
 	}
 	shadow := map[string]any{"status": "ready", "search_result": "ok", "memory_search_result": "ok", "memory_search_results": hits}
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 9000, "What was arranged?", "default", nil, shadow, nil, priorityMemoryTestContext(1))
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        1,
+		MaxChars:    9000,
+		UserInput:   "What was arranged?",
+		Profile:     "default",
+		VectorTrace: shadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1)),
+	})
 	final := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	for _, phrase := range []string{"brass key", "gate bell"} {
 		if !strings.Contains(final, phrase) {

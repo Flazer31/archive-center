@@ -23,13 +23,19 @@ func Test43HUDPreprocessingAndResponseTiming(t *testing.T) {
 		production = append(production, extractArchiveCenterJSFunction(t, src, name))
 	}
 	production = append(production, extractArchiveCenterJSAsyncFunction(t, src, "updateTurnWorkflowHUDElapsed"))
+	production = append(production, extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDRecoveryPresentation"))
+	production = append(production, extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDErrorDetailsHTML"))
 	production = append(production, extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDTurnLabel"))
+	// Both package builders stamp VERSION. The HUD must follow that value,
+	// even when the source checkout still carries the stable release version.
+	production = append(production, `const VERSION = "4.4.0-test.3";`)
 	production = append(production, regexp.MustCompile(`(?m)^  const BUILD_ID = [^\r\n]+`).FindString(src))
 	for _, match := range regexp.MustCompile(`(?m)^  const TURN_WORKFLOW_HUD_[A-Z_]+_STYLE = [^\r\n]+`).FindAllString(src, -1) {
 		production = append(production, match)
 	}
 	script := strings.Join(production, "\n") + `
 const assert=require('node:assert/strict');
+assert.equal(BUILD_ID, VERSION, 'HUD retained the source version after package stamping');
 const translations={};
 ` + "\n" + func() string {
 		lines := []string{}
@@ -60,6 +66,22 @@ const view={contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'request-a',r
  {role:'world_state',label_key:'turn_hud.preprocessing.world_state',duration_ms:500,calls:[{round:1,status:'failed',duration_ms:500}]}]};
 assert.equal(turnWorkflowHUDTimingHTML({}), '');
 assert.equal(turnWorkflowHUDTimingHTML({preprocessing:[]}), '');
+const sharedRoles=['character_objective','subjective_relationship','world_state'];
+const groupView={preprocessing_requests:[
+ {id:'gateway',display_row:1,round:1,status:'running',provider:'llmgateway',model:'gpt-5.6-luna',timer_role:'event_recent',shared_roles:['event_recent','unresolved_goal']},
+ {id:'ollama',display_row:2,round:1,status:'running',provider:'ollama',model:'deepseek-v4.1-flash:cloud',timer_role:'character_objective',shared_roles:sharedRoles}],
+ preprocessing:['event_recent',...sharedRoles,'unresolved_goal'].map(role=>({role,label_key:'turn_hud.preprocessing.'+role,calls:[{round:1,status:'running'}]}))};
+const groupHTML=turnWorkflowHUDTimingHTML(groupView);
+assert.equal((groupHTML.match(/<tr>/g)||[]).length,6,'five role rows must remain visible');
+assert.ok(!groupHTML.includes('<details'),'role table must be visible without expansion');
+for(const text of ['gpt-5.6-luna','deepseek-v4.1-flash:cloud','llmgateway','ollama','data-turn-workflow-request-']) assert.ok(!groupHTML.includes(text),'request model details leaked: '+text);
+for(const role of ['event_recent',...sharedRoles,'unresolved_goal']) assert.ok(groupHTML.includes('data-turn-workflow-agent-time="'+role+'-1"'),'missing live role timer '+role);
+assert.equal(groupHTML,turnWorkflowHUDTimingHTML({...groupView,preprocessing_requests:[]}),'request metadata must not alter role HUD');
+groupView.preprocessing[0].calls[0]={round:1,status:'repaired',duration_ms:12600};
+groupView.preprocessing[0].calls.push({round:2,status:'running'});
+const updated=turnWorkflowHUDTimingHTML(groupView);
+assert.ok(updated.includes('12.6초')&&updated.includes('보정')&&updated.includes('data-turn-workflow-agent-time="event_recent-2"'));
+if(process.env.ARCHIVE_CENTER_HUD_PREVIEW)require('node:fs').writeFileSync(process.env.ARCHIVE_CENTER_HUD_PREVIEW,'<!doctype html><meta charset="utf-8"><body style="background:#252934;color:#F4F5F7;font-family:Arial,sans-serif"><main style="width:260px;padding:12px;background:#181d28;border-radius:12px">'+updated+'</main></body>');
 assert.deepEqual(projectTurnWorkflowHUDPhaseView({...view,counts:[{key:'total_committed',value:0}]},'generation').counts,[]);
 const searchView={preprocessing_search:{status:'running',started_at:'2026-09-07T00:00:00.000Z',duration_ms:10000,query_count:2,completed_count:1,
  queries:[{role:'event_recent',status:'succeeded',duration_ms:8000,breakdown_ms:{embedding:2000,vector_search:3000,assembly_wait:1000,assembly:2000}},
@@ -160,6 +182,25 @@ const originalNow=Date.now;Date.now=()=>Date.parse('2026-09-07T00:00:09.000Z');
  assert.equal((dual.html.match(/aria-label="눌러서 닫기"/g)||[]).length,2);
  const immediate=buildTurnWorkflowHUDStackPresentation(saved,null,'immediate_after_response');
  assert.ok(immediate.html.includes('총 생성·저장'));
+ // A retained previous-turn card must not change the current request's phase.
+ const critic={key:'critic_llm',label_key:'turn_hud.stage.critic_llm',ordinal:9,total:12,status:'running'};
+ const modeSwitchViews=[view,{...view,current_stage:critic,stages:[waiting,critic],counts},saved];
+ for(const current of modeSwitchViews){
+   for(const previousStatus of ['running','failed','invalidated','completed']){
+     const previous={...saved,status:previousStatus,host_generation_finished:false};
+     const original=JSON.stringify([current,previous]);
+     for(const mode of ['immediate_after_response','next_user_input']){
+       const single=buildTurnWorkflowHUDStackPresentation(current,null,mode);
+       const stacked=buildTurnWorkflowHUDStackPresentation(current,previous,mode);
+       assert.deepEqual(stacked.currentPresentation,single.currentPresentation,
+         mode+' current stage '+current.current_stage.key+' changed by previous '+previousStatus);
+       assert.deepEqual(stacked.previousPresentation,
+         buildTurnWorkflowHUDStackPresentation(null,previous,mode).previousPresentation);
+       assert.equal(stacked.dual,true);
+     }
+     assert.equal(JSON.stringify([current,previous]),original);
+   }
+ }
  const zeroSaved=buildTurnWorkflowHUDStackPresentation({...saved,counts},null,'immediate_after_response');
  assert.ok(zeroSaved.html.includes('총 생성·저장'));
  if(process.env.ARCHIVE_CENTER_HUD_FIXTURE_OUTPUT){

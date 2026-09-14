@@ -55,8 +55,16 @@ func prepareTurnInputContextChatLogs(request dto.PrepareTurnContractRequest, dec
 				if observed[i].role != "user" {
 					continue
 				}
+				first := i
+				for first > 0 && observed[first-1].role == "user" {
+					first--
+				}
+				parts := make([]string, 0, i-first+1)
+				for j := first; j <= i; j++ {
+					parts = append(parts, observed[j].content)
+				}
 				return []store.ChatLog{
-					{TurnIndex: observed[i].index, Role: "user", Content: observed[i].content},
+					{TurnIndex: observed[i].index, Role: "user", Content: strings.Join(parts, "\n\n")},
 					{TurnIndex: observed[i].index, Role: "assistant", Content: observed[assistantAt].content},
 				}, "host_active_chat_previous_completed_turn"
 			}
@@ -367,6 +375,14 @@ func buildPrepareTurnCurrentInputDecision(request dto.PrepareTurnContractRequest
 	decision.ReasonCode = "current_user_input_observed"
 	decision.RequestOwnership = "main"
 	decision.EffectiveUserInput = envelope.RawContent
+	group, _ := prepareTurnObservedInputGroup(host, selected.ObservationRef)
+	if len(group) > 1 {
+		parts := make([]string, 0, len(group))
+		for _, member := range group {
+			parts = append(parts, strings.TrimSpace(pointerString(member.RawContent)))
+		}
+		decision.EffectiveUserInput = strings.Join(parts, "\n\n")
+	}
 	decision.SelectedObservationRef = &envelope.ObservationRef
 	decision.Envelope = &envelope
 	payloadObserved, exactPayloadMatch := preparePayloadSupportsCurrentInput(*selected, host.Payload)
@@ -383,6 +399,36 @@ func buildPrepareTurnCurrentInputDecision(request dto.PrepareTurnContractRequest
 	}
 	decision.MemoryReadsAllowed = true
 	return decision, true
+}
+
+// Host rows retain their physical indexes. Go derives the user-led input group
+// independently of those indexes, including groups excluded from persistence.
+func prepareTurnObservedInputGroup(host *dto.PrepareTurnHostObservationsV1, selectedRef string) ([]dto.PrepareTurnMessageObservationV1, int) {
+	var group []dto.PrepareTurnMessageObservationV1
+	ordinal := 0
+	completed := false
+	if host == nil {
+		return group, ordinal
+	}
+	for _, observation := range host.ActiveChat {
+		switch strings.ToLower(strings.TrimSpace(pointerString(observation.Role))) {
+		case "user":
+			if len(group) == 0 || completed {
+				ordinal++
+				group = nil
+				completed = false
+			}
+			group = append(group, observation)
+		case "assistant", "char":
+			if len(group) > 0 {
+				completed = true
+			}
+		}
+		if selectedRef != "" && observation.ObservationRef == selectedRef {
+			break
+		}
+	}
+	return group, ordinal
 }
 
 func selectPrepareTurnCurrentInput(host *dto.PrepareTurnHostObservationsV1) (*dto.PrepareTurnMessageObservationV1, string) {

@@ -151,10 +151,14 @@ func TestActiveInteractionProjectionUsesExistingMemoryDeliveryBudget(t *testing.
 		"_active_interaction_guarded_text":    guardedCandidate,
 		"_active_interaction_candidate_count": intFromAny(packet["candidate_count"], 0),
 	}
-	assembly := buildPrepareTurnInjectionAssemblyWithBudget(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		1, 3000, "Alice greets Bob.", "default", nil, nil, nil, "auto", nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        1,
+		MaxChars:    3000,
+		UserInput:   "Alice greets Bob.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	packet, publicText, guardedText := finalizePrepareTurnActiveInteractionProjection(
 		packet, publicCandidate, guardedCandidate, finalText,
@@ -165,10 +169,14 @@ func TestActiveInteractionProjectionUsesExistingMemoryDeliveryBudget(t *testing.
 		t.Fatalf("packet=%#v plan=%#v public=%q guarded=%q", packet, assembly.MemoryDeliveryPlan, publicText, guardedText)
 	}
 
-	tinyAssembly := buildPrepareTurnInjectionAssemblyWithBudget(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		1, 1, "Alice greets Bob.", "default", nil, nil, nil, "auto", nil, perspective,
-	)
+	tinyAssembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        1,
+		MaxChars:    1,
+		UserInput:   "Alice greets Bob.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	tinyPacket, tinyPublic, tinyGuarded := finalizePrepareTurnActiveInteractionProjection(
 		packet, publicCandidate, guardedCandidate,
 		extractionStringFromAny(tinyAssembly.MemoryDeliveryPlan["final_text"]),

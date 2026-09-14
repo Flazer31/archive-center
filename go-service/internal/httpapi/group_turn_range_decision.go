@@ -715,6 +715,8 @@ func calculateRollbackDecision(req rollbackDecisionRequest) rollbackDecisionResp
 }
 
 type sessionRoutingTurnResolutionRequest struct {
+	ObservedInputGroupOrdinal int `json:"observed_input_group_ordinal,omitempty"`
+
 	worldlineOriginDepth   int
 	ChatSessionID          string                    `json:"chat_session_id"`
 	Mode                   string                    `json:"mode"`
@@ -757,6 +759,8 @@ type risuWorldlineMessageObservation struct {
 }
 
 type routingTurnObservation struct {
+	ObservedInputGroupOrdinal int `json:"observed_input_group_ordinal,omitempty"`
+
 	ObservationIndex          int    `json:"observation_index"`
 	RisuUserMessageIndex      *int   `json:"risu_user_message_index,omitempty"`
 	RisuAssistantMessageIndex *int   `json:"risu_assistant_message_index,omitempty"`
@@ -1880,10 +1884,11 @@ func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionReque
 		resp.ResolvedObservations = make([]routingTurnResolvedObservation, 0, len(req.Observations))
 		for _, observation := range req.Observations {
 			resolved := calculateSessionRoutingTurnResolution(sessionRoutingTurnResolutionRequest{
-				Mode:                 "pair",
-				RisuUserMessageIndex: observation.RisuUserMessageIndex,
-				ObservedPairOrdinal:  observation.ObservedPairOrdinal,
-				Baseline:             req.Baseline,
+				Mode:                      "pair",
+				RisuUserMessageIndex:      observation.RisuUserMessageIndex,
+				ObservedPairOrdinal:       observation.ObservedPairOrdinal,
+				ObservedInputGroupOrdinal: observation.ObservedInputGroupOrdinal,
+				Baseline:                  req.Baseline,
 			})
 			resp.ResolvedObservations = append(resp.ResolvedObservations, routingTurnResolvedObservation{
 				ObservationIndex:          observation.ObservationIndex,
@@ -1904,6 +1909,9 @@ func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionReque
 		legacyTurn = req.VisibleCompletedTurns
 	}
 	localTurn, localTurnSource := resolveObservedRisuLocalTurn(req.RisuUserMessageIndex, req.ObservedPairOrdinal, legacyTurn)
+	if req.ObservedInputGroupOrdinal > 0 {
+		localTurn, localTurnSource = req.ObservedInputGroupOrdinal, "observed_input_group_ordinal"
+	}
 	resp := sessionRoutingTurnResolutionResponse{
 		Status:          "ok",
 		ContractVersion: routingTurnContractVersion,

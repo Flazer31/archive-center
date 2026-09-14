@@ -93,7 +93,16 @@ func TestPrepareTurnProtectedGuardDiversityKeepsAllReturnedVectorCandidates(t *t
 	}
 	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
 
-	assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 10, 12000, "Gloria returns to the market.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria", "source": "client_meta"})
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        10,
+		MaxChars:    12000,
+		UserInput:   "Gloria returns to the market.",
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"current_pov": "Gloria", "source": "client_meta"}),
+	})
 	if got := strings.Count(assembly.MemoryText, "POV-scoped identity continuity:") + strings.Count(assembly.MemoryText, "Protected identity continuity:"); got != 7 {
 		t.Fatalf("protected identity guard count = %d, want all 7 distinct turn occurrences: %q", got, assembly.MemoryText)
 	}
@@ -148,11 +157,16 @@ func TestMEMCProtectedVectorDominanceRefillsOnlyEvidenceLinkedCanonicalMemories(
 	)
 	vectorShadow := map[string]any{"memory_search_result": "ok", "search_result": "ok", "search_results": vectorResults}
 
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		3, 12000, "Gloria가 시장조약의 붉은인장을 확인한다.", "default", nil, vectorShadow, nil,
-		map[string]any{"current_pov": "Gloria", "source": "client_meta"},
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        3,
+		MaxChars:    12000,
+		UserInput:   "Gloria가 시장조약의 붉은인장을 확인한다.",
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"current_pov": "Gloria", "source": "client_meta"}),
+	})
 	if got := strings.Count(assembly.MemoryText, "identity continuity:"); got != 8 {
 		t.Fatalf("protected identity guard count = %d, want all 8 distinct turn occurrences: %q", got, assembly.MemoryText)
 	}
@@ -229,10 +243,14 @@ func TestMEMBSamePersonSecretKindMergesOnceWithoutWeakeningProtection(t *testing
 			]
 		}`},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Mina reviews the hidden plan and surveillance duty.", "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:   memories,
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mina reviews the hidden plan and surveillance duty.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if got := strings.Count(assembly.MemoryText, "kind=hidden_plan"); got != 3 {
 		t.Fatalf("different-turn/policy hidden_plan guard count = %d, want 3: %q", got, assembly.MemoryText)
 	}
@@ -289,10 +307,15 @@ func TestMEMBAmbiguousAliasDoesNotMergeDifferentPeople(t *testing.T) {
 			{"id": "memory:sess-mem-b:6", "source_table": "memories", "source_row_id": "6", "similarity": 0.80, "similarity_source": "cosine_from_query_and_stored_embedding"},
 		},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		2, 9000, "Shade considers the hidden plans.", "default", nil, vectorShadow, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    memories,
+		TopK:        2,
+		MaxChars:    9000,
+		UserInput:   "Shade considers the hidden plans.",
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+	})
 	if got := strings.Count(assembly.MemoryText, "kind=hidden_plan"); got != 2 {
 		t.Fatalf("ambiguous alias hidden plans were merged: count=%d text=%q", got, assembly.MemoryText)
 	}
@@ -321,7 +344,15 @@ func TestPrepareTurnNonCharacterPOVDoesNotAuthorizeProtectedMemory(t *testing.T)
 		ID: 1, TurnIndex: 1,
 		SummaryJSON: `{"turn_summary":"Gloria uses Lia as a protected cover identity.","character_identity_accuracy":[{"surface_identity_name":"Lia","true_identity_name":"Gloria","canonical_entity_name":"Gloria","identity_kind":"cover_identity","same_entity":true,"reveal_policy":"owner_private_until_revealed","knowledge_scope":{"known_by":["Gloria"]}}]}`,
 	}
-	assembly := buildPrepareTurnInjectionAssembly([]store.Memory{memory}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 3000, "Continue.", "default", nil, nil, nil, map[string]any{"current_pov": "of the most suffering character", "source": "client_meta"})
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    []store.Memory{memory},
+		TopK:        1,
+		MaxChars:    3000,
+		UserInput:   "Continue.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"current_pov": "of the most suffering character", "source": "client_meta"}),
+	})
 	if strings.Contains(assembly.MemoryText, "POV-scoped identity continuity") {
 		t.Fatalf("non-character POV value authorized protected memory: %q", assembly.MemoryText)
 	}

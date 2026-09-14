@@ -12,6 +12,9 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+. (Join-Path $PSScriptRoot 'diagnostics.ps1')
+Initialize-ArchiveDiagnostics
+try {
 $packagedBuildVersion = "__ARCHIVE_CENTER_PACKAGE_VERSION__"
 $managedChromaDBVersion = "1.5.9"
 
@@ -221,7 +224,7 @@ function Read-DotEnvContent([string]$Path) {
     if (Test-Path -LiteralPath $protectedPath -PathType Leaf) {
         return ConvertFrom-ProtectedEnvText $protectedPath
     } elseif (Test-Path -LiteralPath $Path -PathType Leaf) {
-        return Get-Content -LiteralPath $Path -Raw
+        return Get-Content -LiteralPath $Path -Raw -Encoding UTF8
     }
     throw "Env file not found: $Path or $protectedPath. Copy .env.full.example to .env.full.local first."
 }
@@ -325,12 +328,15 @@ function Start-ArchiveChildProcess {
     }
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
+    $psi.RedirectStandardOutput = $true
+    $psi.RedirectStandardError = $true
 
     try {
         $proc = Start-ArchiveCtrlCIsolatedProcess -StartInfo $psi
         if ($null -eq $proc) {
             throw "Process.Start returned null."
         }
+        Start-ArchiveProcessLog -Process $proc -FilePath $FilePath
         try {
             $script:archiveProcessJob.AddProcess($proc.Handle)
         } catch {
@@ -791,6 +797,7 @@ function Wait-ArchiveBackendLifetime {
         return 0
     }
     $Process.Refresh()
+    Complete-ArchiveProcessLog -Process $Process -ShowError:($Process.ExitCode -ne 0 -and $Process.ExitCode -ne 75)
     return [int]$Process.ExitCode
 }
 
@@ -1544,6 +1551,9 @@ Write-Host "Starting Archive Center 2.1 full package"
         if ($null -ne $archiveProcessJob) {
             $archiveProcessJob.Dispose()
         }
+        foreach ($loggedProcess in @($backendProcess, $candidateBackend, $restoredBackend, $startedChroma, $startedMariaDB)) {
+            Complete-ArchiveProcessLog -Process $loggedProcess
+        }
     }
 }
 
@@ -1552,3 +1562,9 @@ if ($restartLauncherForUpdate) {
     exit $LASTEXITCODE
 }
 exit $backendExitCode
+} catch {
+    Write-ArchiveLauncherFailure $_
+    exit 1
+} finally {
+    if ($script:archiveTranscriptStarted) { try { Stop-Transcript | Out-Null } catch {} }
+}

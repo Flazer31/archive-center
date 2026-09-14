@@ -332,6 +332,7 @@ func TestArchiveCenter42PreviousHUDStreamsTheSameRequestScopedWorkflow(t *testin
 		extractArchiveCenterJSFunction(t, src, "cancelTurnWorkflowHUDPreviousStream"),
 		extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDStreamFailure"),
 		extractArchiveCenterJSAsyncFunction(t, src, "openTurnWorkflowHUDStream"),
+		extractTurnWorkflowHUDStreamIO(t, src),
 		extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDPreviousStreamLine"),
 		extractArchiveCenterJSAsyncFunction(t, src, "consumeTurnWorkflowHUDPreviousStream"),
 		extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDPreviousWatch"),

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql/driver"
 	"errors"
 	"regexp"
 	"strings"
@@ -11,6 +12,67 @@ import (
 	"github.com/DATA-DOG/go-sqlmock"
 	"github.com/go-sql-driver/mysql"
 )
+
+func expectCanonicalTailCleanup44(mock sqlmock.Sqlmock, sid string, turn int, legacyPhysicalCleanup, deleteTailChat bool, affected int64) {
+	// Independent SQL contract: do not obtain this list from the production
+	// command builder. A missing table, changed range/argument or reordered
+	// dependency must be visible to this production transaction test.
+	for _, command := range []struct {
+		query string
+		args  []driver.Value
+	}{
+		{`DELETE FROM effective_input_logs WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM memories WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM direct_evidence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM kg_triples WHERE chat_session_id = ? AND (source_turn >= ? OR valid_from >= ?)`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM critic_feedback WHERE chat_session_id = ? AND target_type = 'turn' AND target_id >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM character_events WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM speaker_attributions WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM entity_identity_artifact_bindings WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM entity_identity_surfaces WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`UPDATE entity_identities identity_row SET last_seen_turn = GREATEST(identity_row.first_seen_turn, COALESCE((SELECT MAX(surface.source_turn) FROM entity_identity_surfaces surface WHERE surface.chat_session_id = identity_row.chat_session_id AND surface.stable_entity_id = identity_row.stable_entity_id), identity_row.first_seen_turn)), updated_at = CURRENT_TIMESTAMP(3) WHERE identity_row.chat_session_id = ? AND identity_row.source_turn < ? AND identity_row.last_seen_turn >= ?`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM entity_identity_links WHERE chat_session_id = ? AND (source_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?) OR target_entity_id IN (SELECT stable_entity_id FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?))`, []driver.Value{sid, sid, turn, sid, turn}},
+		{`DELETE FROM entity_identities WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`UPDATE entities SET last_seen_turn = ?, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND (first_seen_turn IS NULL OR first_seen_turn < ?) AND last_seen_turn >= ?`, []driver.Value{turn - 1, sid, turn, turn}},
+		{`DELETE FROM entities WHERE chat_session_id = ? AND first_seen_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM trust_states WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM storylines WHERE chat_session_id = ? AND (last_turn >= ? OR first_turn >= ?)`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM world_rules WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM character_states WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM pending_threads WHERE chat_session_id = ? AND (source_turn >= ? OR created_turn >= ? OR resolved_turn >= ?)`, []driver.Value{sid, turn, turn, turn}},
+		{`DELETE FROM active_states WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM canonical_state_layers WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM episode_summaries WHERE chat_session_id = ? AND (to_turn >= ? OR from_turn >= ?)`, []driver.Value{sid, turn, turn}},
+		{`UPDATE guidance_plan_states SET story_plan_json = NULL, director_json = NULL, warnings_json = NULL, state_status = 'empty', last_turn = -1, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND last_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM chapter_summaries WHERE chat_session_id = ? AND (to_turn >= ? OR from_turn >= ?)`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM arc_summaries WHERE chat_session_id = ? AND (to_turn >= ? OR from_turn >= ?)`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM saga_digests WHERE chat_session_id = ? AND (to_turn >= ? OR from_turn >= ?)`, []driver.Value{sid, turn, turn}},
+		{`DELETE FROM session_active_scopes WHERE chat_session_id = ?`, []driver.Value{sid}},
+		{`DELETE FROM protagonist_entity_memories WHERE source_chat_session_id = ? AND source_turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM consequence_records WHERE chat_session_id = ? AND source_turn_end >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM psychology_branches WHERE chat_session_id = ? AND source_turn_end >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM theme_offscreen_carries WHERE chat_session_id = ? AND source_turn_end >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM capture_verification_records WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM status_current_values WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ? AND NULLIF(TRIM(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision'))), '') IS NULL`, []driver.Value{sid, turn}},
+		{`UPDATE status_effects SET effect_state = 'active', cleared_evidence_json = NULL, cleared_turn = NULL, updated_at = CURRENT_TIMESTAMP(3) WHERE chat_session_id = ? AND cleared_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM status_effects WHERE chat_session_id = ? AND source_turn >= ?`, []driver.Value{sid, turn}},
+		{`DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index >= ?`, []driver.Value{sid, turn}},
+	} {
+		if strings.HasPrefix(command.query, "DELETE FROM chat_logs") {
+			if legacyPhysicalCleanup {
+				mock.ExpectExec(regexp.QuoteMeta("DELETE FROM status_change_events WHERE chat_session_id = ? AND source_turn >= ?")).WithArgs(sid, turn).WillReturnResult(sqlmock.NewResult(0, affected))
+			}
+			if !deleteTailChat {
+				command.query = "DELETE FROM chat_logs WHERE chat_session_id = ? AND turn_index = ?"
+			}
+		}
+		mock.ExpectExec(regexp.QuoteMeta(command.query)).WithArgs(command.args...).WillReturnResult(sqlmock.NewResult(0, affected))
+		if legacyPhysicalCleanup && strings.HasPrefix(command.query, "DELETE FROM effective_input_logs") {
+			mock.ExpectExec(regexp.QuoteMeta("DELETE FROM precise_memory_units WHERE chat_session_id = ? AND source_turn_end >= ?")).WithArgs(sid, turn).WillReturnResult(sqlmock.NewResult(0, affected))
+		}
+	}
+}
 
 func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) {
 	db, mock, err := sqlmock.New()
@@ -24,13 +86,7 @@ func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) 
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(3))
-	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 3).WillReturnResult(sqlmock.NewResult(0, 1))
-	for i := 0; i < 35; i++ {
-		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
-	}
+	expectCanonicalTailCleanup44(mock, "session-1", 3, true, false, 1)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -130,13 +186,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedImmediateTail(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-1").
 		WillReturnRows(sqlmock.NewRows([]string{"max"}).AddRow(14))
-	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM memories").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
-	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-1", 15).WillReturnResult(sqlmock.NewResult(0, 1))
-	for i := 0; i < 35; i++ {
-		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 1))
-	}
+	expectCanonicalTailCleanup44(mock, "session-1", 15, true, false, 1)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -171,13 +221,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedFirstTurnInEmptySession(t *tes
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT turn_index FROM chat_logs WHERE chat_session_id = ? ORDER BY turn_index DESC, id DESC LIMIT 1 FOR UPDATE")).
 		WithArgs("session-empty").
 		WillReturnRows(sqlmock.NewRows([]string{"turn_index"}))
-	mock.ExpectExec("DELETE FROM effective_input_logs").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM precise_memory_units").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM memories").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
-	mock.ExpectExec("DELETE FROM direct_evidence_records").WithArgs("session-empty", 1).WillReturnResult(sqlmock.NewResult(0, 0))
-	for i := 0; i < 35; i++ {
-		mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 0))
-	}
+	expectCanonicalTailCleanup44(mock, "session-empty", 1, true, false, 0)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-empty").
 		WillReturnResult(sqlmock.NewResult(0, 0))
@@ -218,9 +262,7 @@ func TestMariaDBRollbackCanonicalTailIsAtomicAndIdempotent(t *testing.T) {
 		mock.ExpectQuery("SELECT source_revision").
 			WithArgs("session-1", 4).
 			WillReturnRows(sqlmock.NewRows([]string{"source_revision"}))
-		for range canonicalTailDeleteCommands("session-1", 4, false, true) {
-			mock.ExpectExec(`(?s).+`).WillReturnResult(sqlmock.NewResult(0, 0))
-		}
+		expectCanonicalTailCleanup44(mock, "session-1", 4, false, true, 0)
 		mock.ExpectExec("(?s)INSERT INTO status_current_values.*JOIN memory_source_revisions source_revision.*source_revision.lifecycle_state = 'active'.*NOT EXISTS").
 			WithArgs("session-1").
 			WillReturnResult(sqlmock.NewResult(0, 0))

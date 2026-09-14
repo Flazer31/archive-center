@@ -566,9 +566,9 @@ func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 4.3.1",
-		`const VERSION = "4.3.1";`,
-		`const BUILD_ID = "4.3.1";`,
+		"//@version 4.4.0",
+		`const VERSION = "4.4.0";`,
+		`const BUILD_ID = VERSION;`,
 		`const BUILD_CHANNEL = "stable";`,
 		`"settings.title": ` + "`Archive Center ${VERSION}`",
 		`<h2>Archive Center</h2>`,
@@ -975,7 +975,7 @@ func TestArchiveCenterJSImmediateUpdateUsesOneServerAuthoritativeApplyCall(t *te
 	if strings.Contains(binding, "showConfirmModal") {
 		t.Fatal("Update Now still requires a second confirmation click")
 	}
-	if strings.Count(binding, "applyArchiveCenterUpdate()") != 1 {
+	if strings.Count(binding, "applyArchiveCenterUpdate(") != 1 {
 		t.Fatal("Update Now click must invoke applyArchiveCenterUpdate exactly once")
 	}
 }

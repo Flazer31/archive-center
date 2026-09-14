@@ -1,27 +1,30 @@
 # Archive Center
 
+현재 정식 배포 버전은 **[4.4.0](https://github.com/Flazer31/archive-center/releases/tag/v4.4.0)**입니다.
+4.3.1의 기억 회수 폭을 유지하면서 반복 후보 조립, 전처리 중복 전송, 자동 기억 예산과 오류 진단을 개선합니다.
+[4.4 릴리스 안내](docs/archive-center-4.4-release-notes.md)와
+[설치·업데이트 검증](docs/archive-center-4.4-install-update-verification.md)을 참고하세요.
+
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
 
-4.3.1은 검색한 과거 기억이 최종 선정 전에 빠지는 경로를 고치고, 입력 단서와
-요약 중요도를 보존합니다. 선택형 전처리 편집자와 기본 기억에 함께 적용되며,
-긴 입력의 맥락 조립 지연과 서비스 포트 설정도 개선합니다. 출판사·평론가·편집자의
-제공자와 모델을 따로 설정할 수 있으며 OpenRouter와 OpenCode Zen·Go도 지원합니다.
+4.4는 요청 안에서 준비된 기억 자료를 재사용하고, 동일한 제공자·모델·호출 설정의
+전처리 담당을 묶어 호출합니다. 추가 검색의 질문별 근거와 정상 AI 추천은 유지합니다.
+자동 예산에서도 자료 종류별 공간을 먼저 배분하고, 남는 공간을 다시 사용합니다.
+전처리·출판사·평론가의 모델 설정과 오류 진단, 여러 입력과 리롤의 턴 표시도 보완했습니다.
 
 `저장 확정 시점`의 기본값인 **현재 턴**은 응답 직후 평론가·저장을 진행합니다.
 **이전 턴**을 선택하면 다음 새 입력에서 직전 최종 응답을 확정하며, 현재 응답 생성과
 직전 평론가·저장을 두 진행 카드로 나누어 표시합니다.
 
-변경 사항은 [4.3.1 릴리스 안내](docs/archive-center-4.3.1-release-notes.md),
-검증 결과는 [4.3.1 배포 기록](docs/archive-center-4.3.1-release-verification.md)에 정리합니다.
+변경 사항은 [4.4 릴리스 안내](docs/archive-center-4.4-release-notes.md),
+검증 범위는 [4.4 배포 기록](docs/archive-center-4.4-release-verification.md)에 정리합니다.
 
 ## 현재 버전과 작업 문서
 
-2026-09-10 **[4.3.1 정식 버전](https://github.com/Flazer31/archive-center/releases/tag/v4.3.1)**을 공개했습니다.
-검증한 test.4의 기억 회수·서비스 포트·맥락 조립 수정을 유지합니다.
-[구현·검증 범위](docs/archive-center-memory-recall-restoration-plan.md)와
-[설치·이전 버전 업데이트 검사](docs/archive-center-4.3.1-install-update-verification.md)를 참고하세요.
-OS별 ZIP 7개와 체크섬, Windows·Linux·macOS CI 4개 작업을 확인했습니다.
+**4.4.0 정식 버전**은 test.17까지 검증한 변경과 Windows 한글 경로 읽기 수정을 포함합니다.
+JS·백엔드·HUD·설치 패키지는 `4.4.0`으로 표시합니다. 과거 test 번호는 변경 이력에만 남습니다.
+신규 설치와 관리형 업데이트의 진입점은 유지합니다. RisuAI에 등록한 JS도 별도로 같은 버전으로 업데이트하세요.
 
 **이후 기억 작업의 기준은 4.3.1로 고정합니다.** [보존 기준](docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431)에
 회수 폭·검색 근거·선정·중요도·전처리 선택 동작을 정리합니다. 기본 기억만 사용할 때도 이 기준을
@@ -32,6 +35,7 @@ OS별 ZIP 7개와 체크섬, Windows·Linux·macOS CI 4개 작업을 확인했�
 아래 설치·업데이트 명령은 GitHub의 최신 공개 릴리스를 사용합니다.
 
 - [4.3 현황과 남은 확인](docs/archive-center-4.3-status-summary.md)
+- [4.4 현재 작업·남은 검증·후속 버전 배정](docs/archive-center-4.4-status-and-handoff-20260914.md)
 - [test.23 파일·적용 안내·검증 기록](docs/archive-center-4.3-test-build-23.md)
 - [소스 구조와 기능 소유자](STRUCTURE.md), [작업 규칙](AI_GUARDRAILS.md)
 - [4.1–9.0 통합 로드맵](../_archive/future-reference/4.1-9.0-integrated-roadmap.md), [4.4 실행 계획](docs/archive-center-4.4-refactoring-plan.md)
@@ -47,7 +51,8 @@ test.22는 검색 질문 형식 보정, 담당별 추천 순서, 편집자 기�
 기억·출력 효과 검증은 각 기록에서 구분한다.
 
 4.4 이후 구성은 [4.3.1 기억 기준과 후속 인계](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#memory-baseline-431)를
-따릅니다. 4.4는 동작 보존 리팩터링·동일 사실 통합, 4.5는 맥락 묶음, 4.6은 시점·상태,
+따릅니다. 4.4는 반영된 리팩터링·효율·HUD·예산 수정의 검증으로 마무리하며 큰 폭의 D 의미 통합은 보류합니다.
+4.5는 출처를 보존한 맥락 묶음, 4.6은 약속·상태의 진행 이력과 기존 기록 복원,
 4.7은 검색·예산, 4.8~4.9는 관계 회수를 맡습니다. 기본 기억은 전처리·출판사 없이도
 검증하며, 5.1~6.0의 재회상·선택형 인물 기억 표현을 먼저 진행합니다.
 [출력 개선 계획](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#output-improvement-plan)은
@@ -69,7 +74,7 @@ ChromaDB **8000**, MariaDB **3307**, Go 백엔드 **28080**입니다.
 Go 포트를 바꾸면 RisuAI에 저장한 백엔드 URL의 포트도 변경해야 합니다.
 기존 DB 위치와 데이터는 유지됩니다.
 [사용법과 적용 범위](docs/chromadb-port-configuration.md) ·
-[4.3.1 다운로드](https://github.com/Flazer31/archive-center/releases/tag/v4.3.1).
+[최신 버전 다운로드](https://github.com/Flazer31/archive-center/releases/latest).
 
 
 ## Runtime Architecture

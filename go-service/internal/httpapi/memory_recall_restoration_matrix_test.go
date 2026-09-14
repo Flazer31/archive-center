@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -57,12 +58,19 @@ func TestMemoryRestorationBudgetAndOptionMatrix(t *testing.T) {
 				const sid = "restoration-matrix"
 				var mu sync.Mutex
 				calls := map[string]int{}
+				providerRequests := []map[string]any{}
 				provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 					var body map[string]any
 					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 						t.Error(err)
 						return
 					}
+					mu.Lock()
+					providerRequests = append(providerRequests, map[string]any{
+						"method": r.Method, "path": r.URL.Path, "body": body,
+						"content_type": r.Header.Get("Content-Type"),
+					})
+					mu.Unlock()
 					if input, ok := body["input"]; ok {
 						if extractionStringFromAny(input) != question {
 							t.Errorf("unexpected embedding: %v", input)
@@ -119,7 +127,11 @@ func TestMemoryRestorationBudgetAndOptionMatrix(t *testing.T) {
 						for _, raw := range sliceFromAny(input["candidates"]) {
 							c := modelEvidenceForTest(t, input, raw)
 							if strings.Contains(extractionStringFromAny(c["text"]), target) {
-								answer.SelectedIDs = append(answer.SelectedIDs, extractionStringFromAny(c["id"]))
+								ref := extractionStringFromAny(c["ref"])
+								if ref == "" {
+									t.Error("model-visible candidate has no usable reference")
+								}
+								answer.SelectedIDs = append(answer.SelectedIDs, ref)
 							}
 						}
 						if len(answer.SelectedIDs) == 0 {
@@ -171,7 +183,7 @@ func TestMemoryRestorationBudgetAndOptionMatrix(t *testing.T) {
 					value.UsePublisher = false
 					value.Provider = "custom"
 					value.Endpoint = provider.URL
-					value.Model = "fixture"
+					value.Model = "fixture-" + role
 					value.APIKey = "fixture"
 					settings.Roles[role] = value
 				}
@@ -181,15 +193,31 @@ func TestMemoryRestorationBudgetAndOptionMatrix(t *testing.T) {
 				if rec.Code != 200 {
 					t.Fatal(rec.Body.String())
 				}
-				response := revalidationHTTP(t, srv, map[string]any{"chat_session_id": sid, "turn_index": 41, "raw_user_input": query,
+				request := map[string]any{"chat_session_id": sid, "turn_index": 41, "raw_user_input": query,
 					"client_meta": map[string]any{"chroma_query_vector": []float64{1, .2, .3}},
-					"settings":    map[string]any{"top_k": 1, "max_injection_chars": 18000, "input_context_enabled": false, "injection_enabled": true, "supervisor_enabled": publisher, "guide_mode": "standard", "guide_strength": "strong"}})
+					"settings":    map[string]any{"top_k": 1, "max_injection_chars": 18000, "input_context_enabled": false, "injection_enabled": true, "supervisor_enabled": publisher, "guide_mode": "standard", "guide_strength": "strong"}}
+				response := revalidationHTTP(t, srv, request)
 				pack := mapFromAny(response["injection_pack"])
 				plan := mapFromAny(pack["memory_delivery_plan"])
 				payload, _ := json.Marshal(response["payload_application_plan"])
 				for name, text := range map[string]string{"memory": extractionStringFromAny(plan["final_text"]), "injection": extractionStringFromAny(pack["injection_text"]), "payload": string(payload)} {
 					if !strings.Contains(text, target) {
 						t.Errorf("target lost at %s: %s", name, text)
+					}
+				}
+				if editor == "recommend" || editor == "supplement_failure" {
+					selected := 0
+					for _, raw := range outputFidelityLineageSlice(plan["priority_items"]) {
+						item := mapFromAny(raw)
+						if item["selection_status"] == "selected" {
+							selected++
+							if extractionStringFromAny(item["canonical_fact_id"]) == "" || !strings.Contains(extractionStringFromAny(item["complete_text"]), target) {
+								t.Error("AI reference did not resolve to the requested canonical evidence")
+							}
+						}
+					}
+					if selected != 1 {
+						t.Errorf("AI selection was replaced by ordinary Go selection: %d facts", selected)
 					}
 				}
 				if len(index.limits) == 0 || index.limits[0] <= 1 {
@@ -216,6 +244,29 @@ func TestMemoryRestorationBudgetAndOptionMatrix(t *testing.T) {
 				}
 				if editor == "supplement_failure" && (calls["event_recent/true"] != 1 || calls["embedding"] != 1) {
 					t.Errorf("failed supplement was not exercised: %v", calls)
+				}
+				// Optional test-only capture for 4.4 comparisons. The independent
+				// assertions above remain the pass criteria; captured output is not
+				// used as its own correctness oracle. All data is this fixture's.
+				if dir := os.Getenv("ARCHIVE_CENTER_TEST_BASELINE_DIR"); dir != "" {
+					artifact := map[string]any{
+						"test": t.Name(), "request": request, "preprocessing_settings": settings,
+						"source_memories": mems, "vector_documents": index.docs,
+						"provider_requests": providerRequests, "calls": calls,
+						"search_limits": index.limits, "response": response,
+						"evidence_scope": "registered Go route with controlled provider, Store and vector boundaries",
+					}
+					data, err := json.MarshalIndent(artifact, "", "  ")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if err := os.MkdirAll(dir, 0700); err != nil {
+						t.Fatal(err)
+					}
+					name := strings.NewReplacer("/", "_", "=", "-").Replace(t.Name()) + ".json"
+					if err := os.WriteFile(filepath.Join(dir, name), data, 0600); err != nil {
+						t.Fatal(err)
+					}
 				}
 				t.Logf("calls=%v candidate_limits=%v target_delivered=true", calls, index.limits)
 			})

@@ -448,7 +448,15 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			Evidence:    `{"evidence_excerpts":["미나는 오래된 사당 아래에 황동 열쇠를 숨겼다."]}`,
 			Importance:  0.9,
 		}}
-		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Where is the brass key?", "default", nil, nil, languageContext)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:        memories,
+			TopK:            1,
+			MaxChars:        2000,
+			UserInput:       "Where is the brass key?",
+			Profile:         "default",
+			LanguageContext: languageContext,
+			BudgetMode:      "auto",
+		})
 		if !strings.Contains(assembly.MemoryText, "Mina hid the brass key under the old shrine.") {
 			t.Fatalf("memory text missing output-language summary: %q", assembly.MemoryText)
 		}
@@ -562,7 +570,14 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			}),
 			Importance: 0.9,
 		}}
-		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Mina looks away.", "default", nil, nil, nil)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:   memories,
+			TopK:       1,
+			MaxChars:   2000,
+			UserInput:  "Mina looks away.",
+			Profile:    "default",
+			BudgetMode: "auto",
+		})
 		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") {
 			t.Fatalf("protected memory did not produce guard text: %q", assembly.MemoryText)
 		}
@@ -594,10 +609,18 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			}),
 			Importance: 0.9,
 		}}
-		blocked := buildPrepareTurnInjectionAssembly(memories, nil, nil, []store.ChatLog{
-			{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
-			{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
-		}, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Niv asks Ingrid about the courtyard.", "default", nil, nil, nil)
+		blocked := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories: memories,
+			ChatLogs: []store.ChatLog{
+				{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
+				{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
+			},
+			TopK:       1,
+			MaxChars:   2000,
+			UserInput:  "Niv asks Ingrid about the courtyard.",
+			Profile:    "default",
+			BudgetMode: "auto",
+		})
 		if strings.Contains(blocked.MemoryText, "Protected continuity guard") || strings.Contains(blocked.MemoryText, "former_role") {
 			t.Fatalf("off-scene protected memory guard should not inject: %q", blocked.MemoryText)
 		}
@@ -605,10 +628,18 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 			t.Fatalf("protected memory drop count = %d, want 1; counts=%#v", got, blocked.Counts)
 		}
 
-		allowed := buildPrepareTurnInjectionAssembly(memories, nil, nil, []store.ChatLog{
-			{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
-			{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
-		}, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 2000, "Niv and Ingrid mention Elsie while speaking in the courtyard.", "default", nil, nil, nil)
+		allowed := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories: memories,
+			ChatLogs: []store.ChatLog{
+				{TurnIndex: 7, Role: "user", Content: "Niv and Ingrid inspect the courtyard."},
+				{TurnIndex: 7, Role: "assistant", Content: "They keep their voices low."},
+			},
+			TopK:       1,
+			MaxChars:   2000,
+			UserInput:  "Niv and Ingrid mention Elsie while speaking in the courtyard.",
+			Profile:    "default",
+			BudgetMode: "auto",
+		})
 		if !strings.Contains(allowed.MemoryText, "Protected continuity guard") || !strings.Contains(allowed.MemoryText, "kind=former_role") {
 			t.Fatalf("currently mentioned protected memory guard should inject: %q", allowed.MemoryText)
 		}

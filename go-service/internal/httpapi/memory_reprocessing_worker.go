@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -182,6 +183,10 @@ func (s *Server) processMemoryWorkerWake(
 		result, err := s.processMemoryReprocessingOnce(
 			ctx, owner, time.Now().UTC(), leaseDuration,
 		)
+		if err != nil {
+			slog.ErrorContext(ctx, "memory worker operation failed", "worker", owner, "operation", "memory_reprocessing",
+				"errors", s.completeTurnPersistenceDiagnostics([]string{"processMemoryReprocessingOnce: " + err.Error()}))
+		}
 		if err != nil || !result.Processed {
 			break
 		}
@@ -207,6 +212,10 @@ func (s *Server) processMemoryWorkerWake(
 				ctx, owner+":vector", time.Now().UTC(), leaseDuration, "",
 			)
 		}
+		if err != nil {
+			slog.ErrorContext(ctx, "memory worker operation failed", "worker", owner, "operation", "vector_outbox",
+				"errors", s.completeTurnPersistenceDiagnostics([]string{"processMemoryVectorOutboxGroupPreferred: " + err.Error()}))
+		}
 		if err != nil || len(results) == 0 {
 			break
 		}
@@ -216,8 +225,11 @@ func (s *Server) processMemoryWorkerWake(
 		s.wakeMemoryWorkers()
 	}
 	if schedule, ok := s.Store.(store.MemoryReprocessingWakeScheduleStore); ok {
-		if next, err := schedule.NextMemoryReprocessingWakeAt(ctx); err == nil &&
-			!next.IsZero() && (retryWakeAt.IsZero() || next.Before(retryWakeAt)) {
+		next, err := schedule.NextMemoryReprocessingWakeAt(ctx)
+		if err != nil {
+			slog.ErrorContext(ctx, "memory worker operation failed", "worker", owner, "operation", "wake_schedule",
+				"errors", s.completeTurnPersistenceDiagnostics([]string{"NextMemoryReprocessingWakeAt: " + err.Error()}))
+		} else if !next.IsZero() && (retryWakeAt.IsZero() || next.Before(retryWakeAt)) {
 			retryWakeAt = next
 		}
 	}

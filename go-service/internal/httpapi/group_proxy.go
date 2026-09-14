@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strings"
@@ -302,19 +303,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 		Temperature:         &temp,
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
-	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
-		reqBody.ReasoningEffort = &cfg.ReasoningEffort
-	}
-	if strings.TrimSpace(cfg.ReasoningPreset) != "" {
-		reqBody.ReasoningPreset = &cfg.ReasoningPreset
-	}
-	if cfg.ReasoningBudgetTokens > 0 {
-		reqBody.ReasoningBudgetTokens = &cfg.ReasoningBudgetTokens
-		reqBody.BudgetTokens = &cfg.ReasoningBudgetTokens
-	}
-	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
-		reqBody.GlmThinkingType = &cfg.GlmThinkingType
-	}
+	applyProxyReasoningFromLLMConfig(&reqBody, cfg)
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
 	// Publisher planning is exactly one provider request. A rejected request is
 	// reported explicitly; it is never retried with a different parameter set.
@@ -372,6 +361,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	content, responseTrace, responseFailure := normalizePublisherResponseContent(upstream)
 	trace["response_normalization"] = responseTrace
 	if responseFailure != "" {
+		slog.WarnContext(ctx, "publisher response failed", "session_id", sid, "model", cfg.Model, "error", responseFailure)
 		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "provider_response")
 		callLedger["failure_code"] = responseFailure
 		trace["parse_status"] = responseFailure
@@ -381,6 +371,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	}
 	parsed, parseErr := parsePublisherJSONObject(content)
 	if parseErr != nil {
+		slog.WarnContext(ctx, "publisher JSON parse failed", "session_id", sid, "model", cfg.Model, "error", scrubProxySecret(parseErr.Error(), cfg.APIKey))
 		parseStatus := "publisher_json_malformed"
 		if stringFromMap(providerResponse, "termination_kind") == "length" {
 			parseStatus = "publisher_json_truncated"
@@ -401,6 +392,7 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	trace["proposal_contract"] = proposalTrace
 	proposalStatus := extractionStringFromAny(mapFromAny(mapFromAny(bounded["directive"])["supervisor_scene_proposal"])["status"])
 	if proposalStatus == "publisher_schema_invalid" {
+		slog.WarnContext(ctx, "publisher schema invalid", "session_id", sid, "model", cfg.Model, "error", proposalStatus)
 		observeProviderCallBudgetResult(callLedger, providerResponse, upstreamStatus, "failed_open", "schema_validation")
 		callLedger["failure_code"] = proposalStatus
 	} else {
@@ -1237,11 +1229,16 @@ func formatMomentumSuffix(packet *map[string]any) string {
 // handleProxyPluginMain validates the DTO and endpoint, then performs the
 // bounded upstream call used by the RisuAI JS bridge.
 func (s *Server) handleProxyPluginMain(w http.ResponseWriter, r *http.Request) {
-	var req dto.ProxyPluginMainRequest
-	if err := dto.DecodeWithDefaults(r.Body, &req); err != nil {
+	var input struct {
+		dto.ProxyPluginMainRequest
+		ReasoningInput *llmReasoningInput `json:"reasoning_input,omitempty"`
+	}
+	if err := dto.DecodeWithDefaults(r.Body, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
+	req := input.ProxyPluginMainRequest
+	applyHostReasoningInput(&req, input.ReasoningInput)
 
 	provider := strings.TrimSpace(stringPtrValue(req.Provider, ""))
 	endpoint := proxyProviderBaseURL(provider, stringPtrValue(req.Endpoint, ""))

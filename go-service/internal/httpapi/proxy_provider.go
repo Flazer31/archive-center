@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -82,10 +83,18 @@ func callProxyProvider(ctx context.Context, req dto.ProxyPluginMainRequest) (map
 	return callProxyProviderWithPolicy(ctx, req, proxyRequestPolicy{}, nil)
 }
 
-func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (map[string]any, int, error) {
+func callProxyProviderWithPolicy(ctx context.Context, req dto.ProxyPluginMainRequest, policy proxyRequestPolicy, retryBudget *llmRetryBudget) (result map[string]any, status int, callErr error) {
 	apiKey := strings.TrimSpace(stringPtrValue(req.APIKey, ""))
 	model := strings.TrimSpace(stringPtrValue(req.Model, ""))
 	provider := strings.ToLower(strings.TrimSpace(stringPtrValue(req.Provider, "")))
+	started := time.Now()
+	defer func() {
+		if callErr != nil {
+			slog.ErrorContext(ctx, "AI provider call failed", "purpose", policy.Purpose, "provider", provider, "model", model,
+				"session_id", policy.SessionID, "status", status, "duration_ms", time.Since(started).Milliseconds(),
+				"error", scrubProxySecret(callErr.Error(), apiKey))
+		}
+	}()
 	endpoint := proxyProviderBaseURL(provider, stringPtrValue(req.Endpoint, ""))
 	if provider == "" || endpoint == "" || model == "" || (apiKey == "" && provider != "ollama") {
 		return nil, http.StatusBadRequest, &proxyLocalRequestError{
@@ -200,6 +209,11 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 	}
 	reasoningFamily := proxyReasoningFamily(provider, stringPtrValue(req.ReasoningPreset, "auto"), model, endpoint)
 	if reasoningTransport == "ollama" {
+		if reasoningFamily == "deepseek_v4" {
+			// Omitting effort keeps the same configured output ceiling; it only
+			// leaves thinking mode to Ollama instead of explicitly disabling it.
+			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
+		}
 		if effort := proxyOllamaReasoningEffort(
 			reasoningFamily,
 			model,
@@ -237,6 +251,10 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))
 		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
 		thinkingType := proxyGLMThinkingTypeFromRequest(stringPtrValue(req.GlmThinkingType, ""), effort)
+		if proxyGLMRequiresThinking(model) {
+			thinkingType = "enabled"
+			effort = proxyGLMRequiredEffort(effort)
+		}
 		body["thinking"] = map[string]any{
 			"type": thinkingType,
 		}
@@ -244,8 +262,25 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 			switch effort {
 			case "xhigh", "max":
 				body["reasoning_effort"] = "max"
-			case "enable", "enabled", "on", "true", "low", "medium", "high":
+			case "low":
 				body["reasoning_effort"] = "high"
+				if proxyGLMRequiresThinking(model) {
+					body["reasoning_effort"] = "low"
+				}
+			case "enable", "enabled", "on", "true", "medium", "high":
+				body["reasoning_effort"] = "high"
+			}
+		}
+	} else if strings.HasPrefix(reasoningFamily, "kimi_") {
+		effort := strings.ToLower(strings.TrimSpace(stringPtrValue(req.ReasoningEffort, "")))
+		switch reasoningFamily {
+		case "kimi_toggle":
+			if effort != "" {
+				body["thinking"] = map[string]any{"type": proxyGLMThinkingTypeFromRequest("", effort)}
+			}
+		case "kimi_effort":
+			if effort = proxyKimiEffort(effort); effort != "" {
+				body["reasoning_effort"] = effort
 			}
 		}
 	} else if reasoningFamily == "deepseek_v4" && reasoningTransport == "deepseek" {
@@ -256,12 +291,16 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 		switch effort {
 		case "low", "high", "max":
 			normalizedEffort = effort
-		case "medium":
+		case "minimal":
+			normalizedEffort = "low"
+		case "medium", "xhigh":
 			normalizedEffort = "high"
-		case "xhigh":
+		case "ultra":
 			normalizedEffort = "max"
 		}
-		if normalizedEffort == "none" {
+		if effort == "" {
+			// Unspecified keeps the provider's default thinking mode.
+		} else if normalizedEffort == "none" {
 			body["thinking"] = map[string]any{"type": "disabled"}
 		} else {
 			body["thinking"] = map[string]any{"type": "enabled"}
@@ -276,6 +315,11 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				delete(body, "temperature")
 			}
 		}
+	}
+	// Moonshot's documented K2.5/K2.6/K2.7/K3 sampling values are fixed by
+	// thinking mode. Omit temperature so the provider selects its valid value.
+	if strings.HasPrefix(reasoningFamily, "kimi_") && reasoningTransport != "ollama" {
+		delete(body, "temperature")
 	}
 	managedReasoning := map[string][]byte{}
 	for _, key := range []string{"reasoning_effort", "reasoning", "thinking"} {
@@ -1517,7 +1561,7 @@ func proxyApplyRequestOverrides(headers map[string]string, body map[string]any, 
 			headers["x-opencode-session"] = fmt.Sprintf("archive-center-%x", digest[:16])
 		}
 		if !hasAgent {
-			headers["User-Agent"] = "ArchiveCenter/4.3.1"
+			headers["User-Agent"] = "ArchiveCenter/4.4.0"
 		}
 	}
 
@@ -2148,8 +2192,17 @@ func proxyIsGLMLike(model, endpoint, provider string) bool {
 
 func proxyReasoningFamily(provider, preset, model, endpoint string) string {
 	modelName := strings.ToLower(strings.TrimSpace(model))
-	if regexp.MustCompile(`(^|/)deepseek[-_]?v4($|[-_:])`).MatchString(modelName) {
+	if regexp.MustCompile(`(^|/)deepseek[-_]?(?:v4(?:\.1)?|flash)($|[-_:])`).MatchString(modelName) {
 		return "deepseek_v4"
+	}
+	if regexp.MustCompile(`(^|/)kimi[-_]k2[._-][56]($|[-_:])`).MatchString(modelName) {
+		return "kimi_toggle"
+	}
+	if regexp.MustCompile(`(^|/)kimi[-_]k2[._-]7[-_]code($|[-_:])`).MatchString(modelName) {
+		return "kimi_always"
+	}
+	if regexp.MustCompile(`(^|/)kimi[-_]k3($|[-_:])`).MatchString(modelName) {
+		return "kimi_effort"
 	}
 	if regexp.MustCompile(`(^|/)gemini[-_]`).MatchString(modelName) {
 		return "gemini"
@@ -2197,6 +2250,38 @@ func proxyGLMSupportsReasoningEffort(model string) bool {
 		minor, _ = strconv.Atoi(match[2])
 	}
 	return major > 5 || (major == 5 && minor >= 2)
+}
+
+// Version-specific contracts verified against the official model documentation.
+// Do not infer future versions' thinking controls from a major version alone.
+func proxyGLMRequiresThinking(model string) bool {
+	return regexp.MustCompile(`(?i)(^|/)glm[-_]5[._-]3($|[-_:])`).MatchString(strings.TrimSpace(model))
+}
+
+func proxyGLMRequiredEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "minimal", "disable", "disabled", "off", "false", "low":
+		return "low"
+	case "medium", "high", "enable", "enabled", "on", "true":
+		return "high"
+	case "xhigh", "max":
+		return "max"
+	default:
+		return ""
+	}
+}
+
+func proxyKimiEffort(effort string) string {
+	switch strings.ToLower(strings.TrimSpace(effort)) {
+	case "none", "minimal", "disable", "disabled", "low":
+		return "low"
+	case "medium", "high", "enable", "enabled":
+		return "high"
+	case "xhigh", "max":
+		return "max"
+	default:
+		return ""
+	}
 }
 
 func proxyGeminiThinkingMode(model string) string {
@@ -2318,12 +2403,35 @@ func proxyOllamaReasoningEffort(family, model, effort, glmThinkingType string) s
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	switch family {
 	case "glm":
+		if proxyGLMRequiresThinking(model) {
+			value := proxyGLMRequiredEffort(effort)
+			if value == "max" {
+				value = "high"
+			}
+			return value
+		}
 		if proxyGLMThinkingTypeFromRequest(glmThinkingType, effort) == "disabled" {
 			return "none"
 		}
 		return "high"
+	case "kimi_toggle":
+		if effort == "" {
+			return ""
+		}
+		if proxyGLMThinkingTypeFromRequest("", effort) == "disabled" {
+			return "none"
+		}
+		return "high"
+	case "kimi_effort":
+		value := proxyKimiEffort(effort)
+		if value == "max" {
+			value = "high"
+		}
+		return value
 	case "deepseek_v4":
 		switch effort {
+		case "":
+			return "" // Omitted effort preserves the provider's default thinking mode.
 		case "none":
 			return effort
 		case "minimal":
@@ -2379,22 +2487,43 @@ func proxyGatewayReasoningEffort(transport, family, model, effort, glmThinkingTy
 	effort = strings.ToLower(strings.TrimSpace(effort))
 	switch family {
 	case "glm":
+		if effort == "" && strings.TrimSpace(glmThinkingType) == "" {
+			return ""
+		}
+		if proxyGLMRequiresThinking(model) {
+			return proxyGLMRequiredEffort(effort)
+		}
 		if proxyGLMThinkingTypeFromRequest(glmThinkingType, effort) == "disabled" {
 			return "none"
 		}
+		if proxyGLMSupportsReasoningEffort(model) && (effort == "max" || effort == "xhigh") {
+			return "max"
+		}
 		return "high"
+	case "kimi_toggle":
+		if effort == "" {
+			return ""
+		}
+		if proxyGLMThinkingTypeFromRequest("", effort) == "disabled" {
+			return "none"
+		}
+		return "high"
+	case "kimi_always":
+		return ""
+	case "kimi_effort":
+		return proxyKimiEffort(effort)
 	case "deepseek_v4":
 		switch effort {
 		case "none", "high", "max":
 			return effort
-		case "low":
+		case "low", "minimal":
 			if transport == "neuralwatt" && strings.Contains(strings.ToLower(strings.TrimSpace(model)), "flash") {
 				return "high"
 			}
 			return "low"
-		case "minimal", "medium":
+		case "medium", "xhigh":
 			return "high"
-		case "xhigh":
+		case "ultra":
 			return "max"
 		default:
 			return ""

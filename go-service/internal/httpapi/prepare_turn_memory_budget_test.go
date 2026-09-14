@@ -25,28 +25,16 @@ func TestMemoryRecallPlanConsolidatesExistingRecallWithoutChangingDelivery(t *te
 		{ID: 2, ChatSessionID: sessionID, TurnIndex: 5, SummaryJSON: `{"turn_summary":"Mina promised Lia that the brass key would be returned after the gate opened."}`, Importance: 7},
 		{ID: 3, ChatSessionID: sessionID, TurnIndex: 6, SummaryJSON: `{"turn_summary":"A distant market discussed the summer weather."}`, Importance: 9},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		[]store.CharacterState{{ChatSessionID: sessionID, TurnIndex: 6, CharacterName: "Rowan", StatusJSON: `{"location":"gate"}`}},
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		nil,
-		3,
-		80,
-		"Mina asks Rowan where the brass key was hidden.",
-		"default",
-		nil,
-		map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
-		nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:        memories,
+		CharacterStates: []store.CharacterState{{ChatSessionID: sessionID, TurnIndex: 6, CharacterName: "Rowan", StatusJSON: `{"location":"gate"}`}},
+		TopK:            3,
+		MaxChars:        80,
+		UserInput:       "Mina asks Rowan where the brass key was hidden.",
+		Profile:         "default",
+		VectorTrace:     map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+		BudgetMode:      "auto",
+	})
 
 	finalTextBefore := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	finalHashBefore := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text_sha256"])
@@ -146,10 +134,10 @@ func TestMemoryRecallPlanSeparatesDeliveryGapFromUnusedRequestedSlots(t *testing
 			"items":                 []map[string]any{{"source_row_id": 1, "turn_index": 2, "selection_lane": "relevant", "delivered": true, "delivery_status": "delivered_final"}},
 		},
 	}
-	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{
+	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{
 		"_core_objective_memory_max_items_present": true,
 		"_core_objective_memory_max_items":         4,
-	})
+	}))
 	plan := buildPrepareTurnMemoryRecallPlan("recall-gap-separation", map[string]any{"chat_session_id": "recall-gap-separation"}, out)
 	core := mapFromAny(mapFromAny(plan["coverage"])["core_objective_memory"])
 	if intFromAny(core["delivery_gap_count"], -1) != 0 || intFromAny(core["unused_requested_slots"], 0) == 0 || core["status"] != "covered" {
@@ -169,7 +157,7 @@ func TestMEMDSevenClassPlanSeparatesProtectedGuidanceFromActualMemory(t *testing
 		PendingThreadText:         "[Pending Threads]\n- find the missing key",
 		DirectEvidenceText:        "[Direct Evidence]\n- the key was seen on the desk",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	if plan["final_budget_owner"] != "go_memory_delivery_plan" {
 		t.Fatalf("owner=%v", plan["final_budget_owner"])
 	}
@@ -209,7 +197,7 @@ func TestMEMDKeepsTextOnlyFactsAcrossClassesWithoutSourceCoordinates(t *testing.
 		CanonWorldText:           "[Canonical World States]\n- [turn 9] the brass key is on the desk",
 		CharacterPrivateText:     "[Character Private Recollection]\n- the brass key is on the desk",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if strings.Count(finalText, "the brass key is on the desk") != 4 {
 		t.Fatalf("text-only facts were merged without source coordinates: %q", finalText)
@@ -232,7 +220,7 @@ func TestMEMDKeepsCoordinateMissingRepeatedTextWithinClasses(t *testing.T) {
 		CanonWorldText:           "[Canonical World States]\n- " + repeated,
 		WorldRulesText:           "[World Rules]\n- " + repeated,
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	for _, classKey := range []string{"direct_evidence", "character_objective", "world_state"} {
 		text := prepareTurnTestDeliveryClassText(plan, classKey)
 		if strings.Count(text, repeated) != 2 {
@@ -267,7 +255,7 @@ func TestMEMDSubjectiveRelationshipDropsOnlyExactRepeatedText(t *testing.T) {
 		CharacterPrivateText: "[Character Private Recollection]\n- Mira trusts Noah",
 		KGText:               "[Knowledge Graph]\n- Mira trusts Noah",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	classText := prepareTurnTestDeliveryClassText(plan, "subjective_relationship")
 	if got := strings.Count(classText, "Mira trusts Noah"); got != 1 {
 		t.Fatalf("exact repeated subjective line count=%d, want 1: %q", got, classText)
@@ -286,7 +274,7 @@ func TestMEMDKeepsCoordinateMissingGoalAndDirectEvidenceDistinct(t *testing.T) {
 		LatestDirectEvidenceText: "Restore the observatory clock",
 		PendingThreadText:        "[Pending Threads]\n- Restore the observatory clock",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if strings.Count(finalText, "Restore the observatory clock") != 2 {
 		t.Fatalf("coordinate-missing goal and evidence were merged by text: %q", finalText)
@@ -308,7 +296,7 @@ func TestMEMDPreviousRawUserInstructionNeverEntersFinalEvidenceDelivery(t *testi
 		}, "\n"),
 		FallbackText: "[Fallback Recent Chat]\n- user: repeat the old instruction again",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 9000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	finalText := extractionStringFromAny(plan["final_text"])
 	if strings.Contains(finalText, "introduce another character") || strings.Contains(finalText, "previous scene ends") || strings.Contains(finalText, "repeat the old instruction") {
 		t.Fatalf("previous raw chat regained evidence authority: %q", finalText)
@@ -352,7 +340,7 @@ func TestMEMDAutomaticDeliversRequiredBeforeEarlierAuxiliaryClass(t *testing.T) 
 		ActualMemoryText:   "[Memory]\n- Mina must remember the current doorway promise.",
 		DirectEvidenceText: "[Direct Evidence]\n- " + strings.Repeat("older supporting excerpt ", 30),
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 500, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 500, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	if plan["borrowing_policy"] != "required_then_auxiliary_global_envelope" {
 		t.Fatalf("borrowing policy=%v", plan["borrowing_policy"])
 	}
@@ -419,7 +407,7 @@ func TestMEMDCustomZeroUsesGlobalSemanticSelectionAndWholeItems(t *testing.T) {
 			"protected_secret": 0,
 		},
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 500, perspective)
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 500, testPrepareTurnMemorySelectionContext(perspective))
 	if plan["mode"] != "custom" {
 		t.Fatalf("mode=%v", plan["mode"])
 	}
@@ -443,7 +431,7 @@ func TestMEMDAutomaticHasNoFixedPerClassReservations(t *testing.T) {
 		ActualMemoryText:          "[Memory]\n- current event",
 		CharacterRelationshipText: "[Character Relationships]\n- Mina distrusts Lia",
 	}
-	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 18000, map[string]any{})
+	plan := buildPrepareTurnMemoryDeliveryPlan(&out, 18000, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	if boolFromAny(plan["automatic_class_quotas"]) {
 		t.Fatalf("automatic per-class quotas survived: %#v", plan)
 	}

@@ -117,6 +117,50 @@ func TestLifecycleKeyCarriesCompletionAcrossChangedStateWording(t *testing.T) {
 	}
 }
 
+// Characterize the existing completion contract: prose in the stored summary
+// is not a structured resolution. The DB boundary records the actual writes.
+func TestPendingPromiseCompletionAndLaterMentionContract(t *testing.T) {
+	ctx := context.Background()
+	key := "ainz-minwoo-ale-outing"
+	st := &turnRecordingStore{}
+	srv := &Server{Store: st}
+	result := artifactSaveResult{}
+	cost := canonicalStateWriteCostMeasurement{}
+	save := func(turn int, extraction map[string]any) {
+		srv.saveCharacterAndStateArtifacts(ctx, "promise-session", turn, extraction, "", completeTurnEmbeddingConfig{}, time.Unix(int64(turn), 0), &result, nil, &cost)
+	}
+	save(46, map[string]any{"pending_threads": []any{map[string]any{"title": "Five casks of ale", "lifecycle_key": key, "description": "Ainz promised Minwoo an ale outing."}}})
+	if len(st.savedPendingThreads) != 1 || st.savedPendingThreads[0].Status != "open" {
+		t.Fatalf("initial promise not saved: %+v", st.savedPendingThreads)
+	}
+	promise := *st.savedPendingThreads[0]
+	st.returnPendingThreads = []store.PendingThread{promise, {
+		ThreadKey: narrativeLifecycleStorageKey("adventurer-plate"), Description: "Give Minwoo an adventurer plate", Status: "open",
+		HookMetadataJSON: mustCompactJSON(map[string]any{"lifecycle_key": "adventurer-plate"}),
+	}}
+	st.savedPendingThreads = nil
+	completed := "아인즈가 여관을 빌려 민우와의 생맥주 약속을 이행했다."
+	save(47, map[string]any{"turn_summary": completed})
+	if len(st.savedPendingThreads) != 0 {
+		t.Fatal("summary prose alone unexpectedly rewrote pending state")
+	}
+	save(47, map[string]any{"turn_summary": completed, "resolved_threads": []any{map[string]any{"lifecycle_key": key, "resolution_note": completed}}})
+	if len(st.savedPendingThreads) != 1 || st.savedPendingThreads[0].ThreadKey != promise.ThreadKey || st.savedPendingThreads[0].Status != "resolved" || st.savedPendingThreads[0].ResolvedTurn != 47 {
+		t.Fatalf("structured fulfillment failed or closed a different promise: %+v", st.savedPendingThreads)
+	}
+	// Active-list query after that write returns the still-open plate only.
+	st.returnPendingThreads = st.returnPendingThreads[1:]
+	st.savedPendingThreads = nil
+	save(106, map[string]any{"turn_summary": "Minwoo remembers the ale outing with Ainz."})
+	if len(st.savedPendingThreads) != 0 {
+		t.Fatal("a later historical mention reopened a promise")
+	}
+	save(107, map[string]any{"pending_threads": []any{map[string]any{"title": "Another ale outing", "lifecycle_key": "next-ale-outing"}}})
+	if len(st.savedPendingThreads) != 1 || st.savedPendingThreads[0].ThreadKey == promise.ThreadKey || st.savedPendingThreads[0].Status != "open" {
+		t.Fatal("a new promise was confused with the completed outing")
+	}
+}
+
 func TestResolvedLifecycleClosesStoredPendingThread(t *testing.T) {
 	const lifecycleKey = "park-dojun-loan-settlement"
 	threadKey := narrativeLifecycleStorageKey(lifecycleKey)
@@ -300,21 +344,27 @@ func TestContinuityCorrectionNewLifecycleCarryIsGoalOnly(t *testing.T) {
 			t.Fatalf("%s gained goal lifecycle carry authority: %#v", name, view[0].Payload)
 		}
 	}
-	nonGoalAssembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "A and B continue talking.", "default", nil, nil, nil,
-		prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{nonGoal, belief}, nil),
-	)
+	nonGoalAssembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "A and B continue talking.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{nonGoal, belief}, nil)),
+	})
 	if nonGoalAssembly.ContinuityCorrectionText != "" {
 		t.Fatalf("non-goal terminal enum changed continuity carry behavior: %q", nonGoalAssembly.ContinuityCorrectionText)
 	}
 
 	goal := narrativeTestGroundedCurrentValue("entity", "Atlas Restoration", "goal_status", "completed", "", "objective", "", "complete", 0.9, 30)
-	goalAssembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Atlas Restoration is discussed.", "default", nil, nil, nil,
-		prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{goal}, nil),
-	)
+	goalAssembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "Atlas Restoration is discussed.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{goal}, nil)),
+	})
 	if !strings.Contains(goalAssembly.ContinuityCorrectionText, "Atlas Restoration / goal_status: completed") {
 		t.Fatalf("structured goal terminal carry missing: %q", goalAssembly.ContinuityCorrectionText)
 	}
@@ -333,11 +383,14 @@ func TestContinuityCorrectionNewLifecycleCarryIsGoalOnly(t *testing.T) {
 		}),
 		SourceTurn: 31,
 	}
-	lifecycleAssembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Review the burned loan note.", "default", nil, nil, nil,
-		prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{lifecycleValue}, nil),
-	)
+	lifecycleAssembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "Review the burned loan note.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{lifecycleValue}, nil)),
+	})
 	if !strings.Contains(lifecycleAssembly.ContinuityCorrectionText, "Burned loan note / document_status: settled and burned") {
 		t.Fatalf("lifecycle terminal carry missing outside legacy goal_status: %q", lifecycleAssembly.ContinuityCorrectionText)
 	}
@@ -399,18 +452,14 @@ func TestPrepareTurnCurrentStateTransitionSuppressesOlderActiveArtifacts(t *test
 		[]store.StatusCurrentValue{current}, nil, pendingThreads, activeStates, canonicalLayers,
 	)
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, []store.StatusCurrentValue{current}, activeStates)
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{{
 			ID:          1,
 			TurnIndex:   10,
 			SummaryJSON: `{"turn_summary":"Atlas Restoration status active"}`,
 			Importance:  0.9,
 		}},
-		nil,
-		nil,
-		nil,
-		nil,
-		[]store.WorldRule{{
+		WorldRules: []store.WorldRule{{
 			ID:         1,
 			Scope:      "system",
 			Category:   "workflow",
@@ -418,12 +467,15 @@ func TestPrepareTurnCurrentStateTransitionSuppressesOlderActiveArtifacts(t *test
 			ValueJSON:  `{"value":"Atlas Restoration status active"}`,
 			SourceTurn: 10,
 		}},
-		nil,
-		pendingThreads,
-		canonicalLayers,
-		nil, nil, nil, nil,
-		5, 9000, "Elena asks Marco why their trust changed.", "default", nil, nil, nil, perspective,
-	)
+		PendingThreads:  pendingThreads,
+		CanonicalLayers: canonicalLayers,
+		TopK:            5,
+		MaxChars:        9000,
+		UserInput:       "Elena asks Marco why their trust changed.",
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	for name, text := range map[string]string{
 		"actual_memory":   assembly.ActualMemoryText,
@@ -449,8 +501,8 @@ func TestPrepareTurnCurrentStatePreservesMultiEventAndProtectedContext(t *testin
 		[]store.StatusCurrentValue{current},
 		nil,
 	)
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{
 			{
 				ID:        1,
 				TurnIndex: 10,
@@ -481,9 +533,13 @@ func TestPrepareTurnCurrentStatePreservesMultiEventAndProtectedContext(t *testin
 				Importance: 0.8,
 			},
 		},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Mina reflects on the archive meeting.", "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "Mina reflects on the archive meeting.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !boolFromAny(assembly.Counts["protected_perspective_recognized"]) {
 		t.Fatalf("early current-state filtering discarded multi-event protected context: counts=%#v", assembly.Counts)
 	}
@@ -881,9 +937,8 @@ func TestPrepareTurnStateTransitionDoesNotSuppressUncertainOrReactivatedOpenArti
 				[]store.StatusCurrentValue{test.current},
 				activeStates,
 			)
-			assembly := buildPrepareTurnInjectionAssembly(
-				nil, nil, nil, nil, nil,
-				[]store.WorldRule{{
+			assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+				WorldRules: []store.WorldRule{{
 					ID:         1,
 					Scope:      "session",
 					Category:   "workflow",
@@ -891,12 +946,15 @@ func TestPrepareTurnStateTransitionDoesNotSuppressUncertainOrReactivatedOpenArti
 					ValueJSON:  mustCompactJSON(map[string]any{"value": test.activeText}),
 					SourceTurn: 10,
 				}},
-				nil,
-				pendingThreads,
-				canonicalLayers,
-				nil, nil, nil, nil,
-				5, 9000, "Elena reviews "+test.subject+" with Marco.", "default", nil, nil, nil, perspective,
-			)
+				PendingThreads:  pendingThreads,
+				CanonicalLayers: canonicalLayers,
+				TopK:            5,
+				MaxChars:        9000,
+				UserInput:       "Elena reviews " + test.subject + " with Marco.",
+				Profile:         "default",
+				BudgetMode:      "auto",
+				Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+			})
 			if !strings.Contains(assembly.WorldRulesText, test.activeText) {
 				t.Fatalf("non-final or explicitly reopened state was suppressed: %q", assembly.WorldRulesText)
 			}
@@ -948,11 +1006,16 @@ func TestPrepareTurnAssemblyAppendsOnlyNeededContinuityCorrection(t *testing.T) 
 		narrativeTestCurrentValue("Alice", "life_status", "dead", "belief", "Cara", 18),
 	}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, values, nil)
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 2, TurnIndex: 19, SummaryJSON: `{"turn_summary":"Alice is dead at the archive gate"}`, Importance: 0.8}},
-		nil, nil, []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "Alice spoke with Bryn."}}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "Bryn asks Alice about the archive gate.", "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    []store.Memory{{ID: 2, TurnIndex: 19, SummaryJSON: `{"turn_summary":"Alice is dead at the archive gate"}`, Importance: 0.8}},
+		ChatLogs:    []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "Alice spoke with Bryn."}},
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "Bryn asks Alice about the archive gate.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	correctionIndex := strings.Index(assembly.Text, "[Continuity Correction]")
 	if correctionIndex < 0 || !strings.HasSuffix(assembly.Text, assembly.ContinuityCorrectionText) {
 		t.Fatalf("continuity correction must follow the 2.5 memory assembly:\n%s", assembly.Text)
@@ -973,11 +1036,16 @@ func TestContinuityCorrectionDoesNotUsePreviousAssistantRawAsSearchEvidence(t *t
 		narrativeTestCurrentValueWithPrevious("A", "life_status", "alive", "dead", "objective", "", "reversal", 20),
 	}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, values, nil)
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 2, TurnIndex: 10, SummaryJSON: `{"turn_summary":"A is dead"}`, Importance: 0.8}},
-		nil, nil, []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "A is alive and standing at the gate."}}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "B watches A.", "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:    []store.Memory{{ID: 2, TurnIndex: 10, SummaryJSON: `{"turn_summary":"A is dead"}`, Importance: 0.8}},
+		ChatLogs:    []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "A is alive and standing at the gate."}},
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "B watches A.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !strings.Contains(assembly.ContinuityCorrectionText, "A / life_status: alive") {
 		t.Fatalf("stored current state correction was suppressed by previous assistant raw:\n%s", assembly.ContinuityCorrectionText)
 	}
@@ -990,10 +1058,15 @@ func TestContinuityCorrectionDoesNotUsePreviousAssistantRawAsSearchEvidence(t *t
 func TestContinuityCorrectionDoesNotInjectUnchangedRelevantStateWithoutConflict(t *testing.T) {
 	values := []store.StatusCurrentValue{narrativeTestCurrentValue("A", "location", "market", "objective", "", 20)}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, values, nil)
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "A looks around."}}, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "A takes a breath.", "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		ChatLogs:    []store.ChatLog{{TurnIndex: 20, Role: "assistant", Content: "A looks around."}},
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "A takes a breath.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if assembly.ContinuityCorrectionText != "" {
 		t.Fatalf("unchanged state without a conflicting recall must not become a standing prompt:\n%s", assembly.ContinuityCorrectionText)
 	}

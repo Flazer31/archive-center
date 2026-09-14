@@ -1018,6 +1018,7 @@ shutdown_from_signal() {
 	exit_code=$1
 	trap - EXIT HUP INT TERM
 	cleanup
+	finish_diagnostic_capture "$exit_code"
 	exit "$exit_code"
 }
 
@@ -1057,6 +1058,13 @@ EOF
 }
 
 PLATFORM=${ARCHIVE_CENTER_PLATFORM:-}
+. "$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)/diagnostics.sh"
+diagnostic_capture_requested=true
+for diagnostic_arg in "$@"; do
+	case "$diagnostic_arg" in --preflight|--help|-h) diagnostic_capture_requested=false ;; esac
+done
+if [ "$diagnostic_capture_requested" = true ]; then start_diagnostic_capture; fi
+trap 'diagnostic_exit=$?; finish_diagnostic_capture "$diagnostic_exit"' EXIT
 REQUESTED_RUNTIME_PROFILE=${AC_RUNTIME_PROFILE:-}
 REQUESTED_VECTOR_MODE=${AC_VECTOR_MODE:-}
 CONFIGURE_PORTS=false
@@ -1259,6 +1267,7 @@ export ARCHIVE_CENTER_DATA_DIR="$DATA_ROOT"
 MARIADB_DATA="$RUNTIME_DIR/mariadb-data"
 CHROMA_DATA="$RUNTIME_DIR/chromadb-data"
 LOG_DIR="$RUNTIME_DIR/logs"
+LOG_DIR=${AC_LOG_DIR:-"$RUNTIME_DIR/logs"}
 EXEC_BIN_DIR="$RUNTIME_DIR/bin"
 LIFETIME_HELPER="$SCRIPT_DIR/process-lifetime.py"
 [ -f "$LIFETIME_HELPER" ] || die "process lifetime helper was not found: $LIFETIME_HELPER"
@@ -1322,7 +1331,7 @@ if [ "$INSTALL_ONLY" = "true" ]; then
 	exit 0
 fi
 
-trap cleanup EXIT
+trap 'diagnostic_exit=$?; cleanup; finish_diagnostic_capture "$diagnostic_exit"' EXIT
 trap 'shutdown_from_signal 129' HUP
 trap 'shutdown_from_signal 130' INT
 trap 'shutdown_from_signal 143' TERM
@@ -1370,7 +1379,7 @@ while :; do
 	cleanup_updater_runner
 	UPDATER_RUNNER=
 	prepare_update_launcher_session
-	start_managed_process "$ARCHIVE_CENTER_GO_RUN"
+	start_managed_process "$ARCHIVE_CENTER_GO_RUN" >"$LOG_DIR/launcher.out.log" 2>"$LOG_DIR/launcher.err.log"
 	BACKEND_PID=$MANAGED_PROCESS_PID
 	export BACKEND_PID
 	if [ -n "$ROLLBACK_HEALTH_VERSION" ]; then

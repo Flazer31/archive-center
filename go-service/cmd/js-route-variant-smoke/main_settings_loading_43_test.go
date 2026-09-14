@@ -11,6 +11,8 @@ func TestSettings43OpensBeforeBackendStatusAndPreservesEdits(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
 		extractArchiveCenterJSAsyncFunction(t, src, "renderSettingsPanel"),
+		extractArchiveCenterJSFunction(t, src, "renderLlmProviderOptions"),
+		extractArchiveCenterJSFunction(t, src, "diagnosticText"),
 		extractArchiveCenterJSAsyncFunction(t, src, "loadDashboardViewModel"),
 	}, "\n")
 	script := `
@@ -18,7 +20,7 @@ const assert = require('node:assert/strict');
 const nodes = new Map(), pending = [], failures = [];
 let shown = 0, attached = 0, panelOpen = false, _settingsPanelRenderRequestId = 0;
 let _settingsActiveTab = 'settings';
-const settings = {bridgeUrl:'http://100.96.60.55:28080',memoryDeliveryBudgets:{}};
+const settings = {bridgeUrl:'http://100.64.0.10:28080',memoryDeliveryBudgets:{}};
 const getSettings = () => settings, DEFAULT_SETTINGS = settings;
 const runtimeState = {queuePersistence:{}}, _settingsStorageStatus = {}, _turnHistory = [], _failedQueue = [];
 const _timelineState = {}, lastTurnTrace = null, _prepareTurnEverContacted = false, _turnWorkflowHUDActiveRequestId = '';

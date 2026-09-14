@@ -70,15 +70,18 @@ func TestPrepareTurnCanonicalCharacterRosterDoesNotConsumeStateBudget(t *testing
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", Content: `{"location":"forge","present_entities":["Mira"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil,
-		[]store.CanonicalStateLayer{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{ID: 1, LayerType: "entity_state", Content: `{"characters":["Mira","Juno"],"background":{"location":"forge"}}`, Confidence: 0.9},
 			{ID: 2, LayerType: "entity_state", Content: `{"characters":[{"name":"Mira","emotion":"tense","location":"forge"}]}`, Confidence: 0.9},
 		},
-		nil, nil, nil, nil,
-		5, 9000, "Mira waits tensely at the forge.", "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   "Mira waits tensely at the forge.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if strings.Contains(assembly.CanonCharacterText, `["Mira","Juno"]`) {
 		t.Fatalf("roster-only character array consumed state lane: %q", assembly.CanonCharacterText)
 	}
@@ -101,12 +104,15 @@ func TestPrepareTurnCanonicalCharacterCandidateRemainsWholeUntilFinalBudget(t *t
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", Content: `{"location":"forge","present_entities":["Mira"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil,
-		[]store.CanonicalStateLayer{{ID: 1, LayerType: "entity_state", Content: canonicalJSON, TurnIndex: 9, SourceTurn: 9, Confidence: 0.9}},
-		nil, nil, nil, nil,
-		5, 30000, "Mira checks her precise state at the forge.", "default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CanonicalLayers: []store.CanonicalStateLayer{{ID: 1, LayerType: "entity_state", Content: canonicalJSON, TurnIndex: 9, SourceTurn: 9, Confidence: 0.9}},
+		TopK:            5,
+		MaxChars:        30000,
+		UserInput:       "Mira checks her precise state at the forge.",
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	var payload string
 	for _, line := range strings.Split(assembly.CanonCharacterText, "\n") {
@@ -128,7 +134,7 @@ func TestPrepareTurnCanonicalCharacterCandidateRemainsWholeUntilFinalBudget(t *t
 	}
 
 	bounded := prepareTurnInjectionAssembly{CanonCharacterText: assembly.CanonCharacterText}
-	boundedPlan := buildPrepareTurnMemoryDeliveryPlan(&bounded, 160, map[string]any{})
+	boundedPlan := buildPrepareTurnMemoryDeliveryPlan(&bounded, 160, testPrepareTurnMemorySelectionContext(map[string]any{}))
 	boundedText := extractionStringFromAny(boundedPlan["final_text"])
 	if strings.Contains(boundedText, "entity_state") || strings.Contains(boundedText, tail) {
 		t.Fatalf("small final budget partially injected an oversized canonical item: %q", boundedText)
@@ -216,26 +222,27 @@ func TestPrepareTurnLongSceneNeedsThreeTermsForNonVectorRefill(t *testing.T) {
 }
 
 func TestPrepareTurnPendingThreadNeedsDescriptionOverlapNotOwnerNameOnly(t *testing.T) {
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil,
-		[]store.PendingThread{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		PendingThreads: []store.PendingThread{{
 			ThreadKey:   "old-promise",
 			Owner:       "Mira",
 			Status:      "open",
 			Description: "Mira promised to reveal Juno's identity at the harbor.",
 		}},
-		nil, nil, nil, nil, nil,
-		5, 9000, "Mira calibrates the brass wheel at the forge.", "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mira calibrates the brass wheel at the forge.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if strings.TrimSpace(assembly.PendingThreadText) != "" {
 		t.Fatalf("owner-name-only pending thread survived: %q", assembly.PendingThreadText)
 	}
 }
 
 func TestPrepareTurnPinnedOpenPromiseSurvivesWithoutCurrentQueryOverlap(t *testing.T) {
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil,
-		[]store.PendingThread{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		PendingThreads: []store.PendingThread{
 			{
 				ThreadKey:   "daily-cube-rendezvous",
 				Status:      "open",
@@ -256,9 +263,12 @@ func TestPrepareTurnPinnedOpenPromiseSurvivesWithoutCurrentQueryOverlap(t *testi
 				Suppressed:  true,
 			},
 		},
-		nil, nil, nil, nil, nil,
-		5, 9000, "Mira calibrates the brass wheel at the forge.", "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "Mira calibrates the brass wheel at the forge.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.PendingThreadText, "teleport cube") {
 		t.Fatalf("pinned open promise was dropped without query overlap: %q", assembly.PendingThreadText)
 	}
@@ -284,10 +294,9 @@ func TestPrepareTurnRelationshipSurfacesDoNotLeakOffSceneMarriageBundle(t *testi
 			Content:   `{"location":"월하방","present_entities":["강한얼","세종"],"status":"감시 중"}`,
 		}},
 	)
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil,
-		[]store.WorldRule{{ID: 1, Key: "월하방 감시", ValueJSON: `{"rule":"월하방의 감시는 강한얼 주변에서 계속된다."}`}},
-		[]store.CharacterState{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		WorldRules: []store.WorldRule{{ID: 1, Key: "월하방 감시", ValueJSON: `{"rule":"월하방의 감시는 강한얼 주변에서 계속된다."}`}},
+		CharacterStates: []store.CharacterState{
 			{
 				CharacterName: "강한얼",
 				TurnIndex:     51,
@@ -300,15 +309,18 @@ func TestPrepareTurnRelationshipSurfacesDoNotLeakOffSceneMarriageBundle(t *testi
 			{CharacterName: "민서현", TurnIndex: 40},
 			{CharacterName: "세종", TurnIndex: 51},
 		},
-		nil,
-		[]store.CanonicalStateLayer{
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{ID: 10, LayerType: "relationship_state", Content: `{"pair":["강한얼","민서현"],"target_name":"민서현","bond_and_distance":"오래된 혼사 제안이 아직 남아 있다"}`, TurnIndex: 40, Confidence: 0.9},
 			{ID: 11, LayerType: "relationship_state", Content: `{"pair":["강한얼","세종"],"target_name":"세종","bond_and_distance":"세종이 현재 강한얼의 시연을 판단한다"}`, TurnIndex: 51, Confidence: 0.9},
 			{ID: 12, LayerType: "relationship_state", Content: `강한얼은 세종의 판단을 생각하면서 민서현의 오래된 혼사 제안도 떠올린다.`, TurnIndex: 41, Confidence: 0.9},
 		},
-		nil, nil, nil, nil,
-		5, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   rawInput,
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	relationshipText := assembly.CharacterRelationshipText + "\n" + assembly.CanonRelationshipText
 	if strings.Contains(relationshipText, "민서현") || strings.Contains(relationshipText, "혼사") {
@@ -349,31 +361,32 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 	}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
 	perspective[prepareTurnEntityIdentityAliasesContextKey] = map[string]any{"소월": "이소월", "슬아": "윤슬아", "서현": "민서현"}
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories,
-		nil,
-		[]store.DirectEvidence{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: memories,
+		Evidence: []store.DirectEvidence{
 			{EvidenceText: "강한얼과 장영실은 연삭기 편심 축과 플라이휠을 보정했다.", TurnAnchor: 49},
 			{EvidenceText: "윤슬아는 강한얼의 건강을 걱정해 약재를 건넸다.", TurnAnchor: 15},
 		},
-		nil,
-		nil,
-		[]store.WorldRule{{Key: "연삭기 영점 보정", ValueJSON: `{"rule":"플라이휠은 납 무게로 보정한다."}`}},
-		[]store.CharacterState{
+		WorldRules: []store.WorldRule{{Key: "연삭기 영점 보정", ValueJSON: `{"rule":"플라이휠은 납 무게로 보정한다."}`}},
+		CharacterStates: []store.CharacterState{
 			{CharacterName: "강한얼", TurnIndex: 49},
 			{CharacterName: "이소월", TurnIndex: 12},
 			{CharacterName: "윤슬아", TurnIndex: 15},
 			{CharacterName: "민서현", TurnIndex: 40},
 			{CharacterName: "장영실", TurnIndex: 49},
 		},
-		nil,
-		[]store.CanonicalStateLayer{
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{LayerType: "world_state", Content: `{"rule":"연삭기 플라이휠 영점 보정"}`},
 			{LayerType: "entity_state", Content: `{"events":{"main_plot":"장영실과 연삭기 편심 축을 보정했다"},"characters":["강한얼","장영실"]}`},
 		},
-		nil, nil, nil, nil,
-		5, 12000, rawInput, "default", nil, vectorShadow, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    12000,
+		UserInput:   rawInput,
+		Profile:     "default",
+		VectorTrace: vectorShadow,
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	for _, want := range []string{"이소월", "윤슬아", "민서현"} {
 		if !strings.Contains(assembly.ActualMemoryText, want) {
 			t.Fatalf("explicitly recalled character event %q was omitted: %q", want, assembly.ActualMemoryText)
@@ -394,18 +407,20 @@ func TestPrepareTurnRecollectionDoesNotLetTechnicalSceneReactivateUnrelatedHisto
 func TestPrepareTurnWorldRuleRemainsWholeUntilFinalMemoryBudgetSelection(t *testing.T) {
 	const tailMarker = "WORLD_RULE_COMPLETE_TAIL_MARKER"
 	longRule := strings.Repeat("이 규칙은 장면 전체에서 지속되어야 하며 중간 문장을 잃어서는 안 된다. ", 8) + tailMarker
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil,
-		[]store.WorldRule{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		WorldRules: []store.WorldRule{{
 			ID:        1,
 			Scope:     "root",
 			Key:       "긴 세계 규칙",
 			ValueJSON: `{"rule":` + fmt.Sprintf("%q", longRule) + `}`,
 			Pinned:    true,
 		}},
-		nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "긴 세계 규칙을 확인한다.", "default", nil, nil, nil,
-	)
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "긴 세계 규칙을 확인한다.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.WorldRulesText, tailMarker) {
 		t.Fatalf("world rule was truncated before final budget selection: %q", assembly.WorldRulesText)
 	}
@@ -424,11 +439,10 @@ func TestPrepareTurnRelationshipRequestDoesNotReactivatePriorWorldState(t *testi
 		{StateType: "world_state", TurnIndex: 20, Content: `{"policy":"turbine calibration remains active"}`},
 		{StateType: "entities", TurnIndex: 20, Content: `{"items":["turbine calibration gauge"],"locations":["east library hall"]}`},
 	})
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{{ID: 1, TurnIndex: 12, SummaryJSON: `{"turn_summary":"Mira and Rowan learned to trust each other after their first meeting.","characters":["Mira","Rowan"]}`}},
-		nil, nil, chatLogs,
-		nil,
-		[]store.WorldRule{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories: []store.Memory{{ID: 1, TurnIndex: 12, SummaryJSON: `{"turn_summary":"Mira and Rowan learned to trust each other after their first meeting.","characters":["Mira","Rowan"]}`}},
+		ChatLogs: chatLogs,
+		WorldRules: []store.WorldRule{
 			{Scope: "session", Key: "turbine calibration procedure", ValueJSON: `{"rule":"keep using the old workshop gauge"}`},
 			{Scope: "session", Key: "library etiquette for Mira and Rowan", ValueJSON: `{"rule":"wait for the other person to answer"}`},
 			{Scope: "location", ScopeName: "library", Key: "library voices", ValueJSON: `{"rule":"speak softly"}`},
@@ -438,17 +452,20 @@ func TestPrepareTurnRelationshipRequestDoesNotReactivatePriorWorldState(t *testi
 			{Scope: "root", Key: "gravity", ValueJSON: `{"rule":"gravity always applies"}`},
 			{Scope: "root", Key: "suppressed root", ValueJSON: `{"rule":"never deliver"}`, Pinned: true, Suppressed: true},
 		},
-		[]store.CharacterState{{CharacterName: "Mira", RelationshipsJSON: `{"relationships":[{"target":"Rowan","type":"trusted companion"}]}`}},
-		nil,
-		[]store.CanonicalStateLayer{
+		CharacterStates: []store.CharacterState{{CharacterName: "Mira", RelationshipsJSON: `{"relationships":[{"target":"Rowan","type":"trusted companion"}]}`}},
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{LayerType: "relationship_state", TurnIndex: 20, Content: `{"pair":["Mira","Rowan"],"bond_and_distance":"mutual trust"}`, Confidence: 0.9},
 			{LayerType: "scene_state", TurnIndex: 20, Content: `{"scene_state":{"location":"east library hall","present_entities":["Mira","Rowan"]},"confidence":0.9}`, Confidence: 0.9},
 			{LayerType: "world_state", TurnIndex: 20, Content: `{"policy":"turbine calibration remains active"}`, Confidence: 0.9},
 			{LayerType: "entity_state", TurnIndex: 20, Content: `{"items":["turbine calibration gauge"],"locations":["east library hall"]}`, Confidence: 0.9},
 		},
-		nil, nil, nil, nil,
-		5, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    9000,
+		UserInput:   rawInput,
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if !strings.Contains(assembly.ActualMemoryText, "learned to trust") ||
 		!strings.Contains(assembly.CanonRelationshipText, "mutual trust") {
 		t.Fatalf("relationship support was lost: memory=%q canonical=%q", assembly.ActualMemoryText, assembly.CanonRelationshipText)
@@ -533,13 +550,15 @@ func TestPrepareTurnProtectedGuardSurvivesPronounContinuationFromRelevantPreviou
 	}
 	protectedMina.TurnIndex = 10
 	protectedDax.TurnIndex = 9
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{protectedMina, protectedDax},
-		nil, nil,
-		[]store.ChatLog{{TurnIndex: 10, Role: "assistant", Content: "Mina pauses after the question."}},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		2, 9000, "She hesitates before answering.", "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:   []store.Memory{protectedMina, protectedDax},
+		ChatLogs:   []store.ChatLog{{TurnIndex: 10, Role: "assistant", Content: "Mina pauses after the question."}},
+		TopK:       2,
+		MaxChars:   9000,
+		UserInput:  "She hesitates before answering.",
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.ProtectedMemoryText, "mina_hidden_route") {
 		t.Fatalf("production assembly lost the previous-final secret guard: %q", assembly.ProtectedMemoryText)
 	}
@@ -565,23 +584,26 @@ func TestPrepareTurnStaleSceneCannotActivateRelationshipOrVolatileWorldLanes(t *
 		t.Fatalf("stale scene activated NPC recollections: %#v", private)
 	}
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, activeStates)
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil,
-		[]store.KGTriple{{Subject: "Han-eol", Predicate: "demonstrated_to", Object: "Bae"}},
-		nil, chatLogs, nil, nil,
-		[]store.CharacterState{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Triples:  []store.KGTriple{{Subject: "Han-eol", Predicate: "demonstrated_to", Object: "Bae"}},
+		ChatLogs: chatLogs,
+		CharacterStates: []store.CharacterState{
 			{CharacterName: "Jang", RelationshipsJSON: `{"Han-eol":{"summary":"admires his old machine"}}`},
 			{CharacterName: "Bae", RelationshipsJSON: `{"Han-eol":{"summary":"remembers the old bellows"}}`},
 		},
-		nil,
-		[]store.CanonicalStateLayer{
+		CanonicalLayers: []store.CanonicalStateLayer{
 			{LayerType: "relationship_state", TurnIndex: 38, Content: `{"pair":["Han-eol","Bae"],"bond_and_distance":"old workshop trust"}`, Confidence: 0.9},
 			{LayerType: "scene_state", TurnIndex: 38, Content: `{"location":"old workshop"}`, Confidence: 0.9},
 			{LayerType: "entity_state", TurnIndex: 38, Content: `{"items":["old bellows"],"locations":["old workshop"]}`, Confidence: 0.9},
 		},
-		nil, nil, nil, private,
-		5, 9000, rawInput, "default", nil, nil, nil, perspective,
-	)
+		CharacterPrivateMemories: private,
+		TopK:                     5,
+		MaxChars:                 9000,
+		UserInput:                rawInput,
+		Profile:                  "default",
+		BudgetMode:               "auto",
+		Perspective:              testPrepareTurnAssemblyPerspective(perspective),
+	})
 	if assembly.CharacterRelationshipText != "" || assembly.CanonRelationshipText != "" {
 		t.Fatalf("stale current-state relationship lane survived: character=%q canonical=%q",
 			assembly.CharacterRelationshipText, assembly.CanonRelationshipText)
@@ -608,10 +630,15 @@ func TestPrepareTurnKGUsesTemporalSupportSemanticsAndBranchReferenceTurn(t *test
 		{Subject: "Alice", Predicate: "lent_coin_to", Object: "Bob", SourceTurn: 3, ValidFrom: 3, ValidTo: 5},
 		{Subject: "Alice", Predicate: "will_meet", Object: "Bob", SourceTurn: 10, ValidFrom: 10},
 	}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, triples, nil, chatLogs, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, rawInput, "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Triples:    triples,
+		ChatLogs:   chatLogs,
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  rawInput,
+		Profile:    "default",
+		BudgetMode: "auto",
+	})
 	if !strings.Contains(assembly.KGText, "[Knowledge Graph Support History;") ||
 		!strings.Contains(assembly.KGText, "not current-state authority") {
 		t.Fatalf("KG support authority was not explicit: %q", assembly.KGText)
@@ -942,12 +969,16 @@ func TestPrepareTurnSemanticVectorMemoriesReachEventDeliveryWithoutLexicalProof(
 		"memory_search_results":      hits,
 	}
 	rawInput := "Entity Alpha asks about the violet horizon."
-	assembly := buildPrepareTurnInjectionAssembly(
-		memories, nil, nil, nil, nil, nil,
-		[]store.CharacterState{{ChatSessionID: sessionID, CharacterName: "Entity Alpha", TurnIndex: 3}},
-		nil, nil, nil, nil, nil, nil,
-		len(hits), 9000, rawInput, "default", nil, vectorShadow, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:        memories,
+		CharacterStates: []store.CharacterState{{ChatSessionID: sessionID, CharacterName: "Entity Alpha", TurnIndex: 3}},
+		TopK:            len(hits),
+		MaxChars:        9000,
+		UserInput:       rawInput,
+		Profile:         "default",
+		VectorTrace:     vectorShadow,
+		BudgetMode:      "auto",
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	for _, marker := range markers {
 		if !strings.Contains(assembly.ActualMemoryText, marker) || !strings.Contains(finalText, marker) {
@@ -1018,11 +1049,15 @@ func TestPrepareTurnRelevantOpenGoalIsDeliveredOnceOutsideWorldState(t *testing.
 		TurnIndex: 20,
 		Content:   `{"scene_state":{"location":"library","present_entities":["Mira","Rowan"]},"unresolved_threads":{"opened":["Restore the observatory clock"]}}`,
 	}}
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, pending, canonical,
-		nil, nil, nil, nil,
-		5, 9000, rawInput, "default", nil, nil, nil,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		PendingThreads:  pending,
+		CanonicalLayers: canonical,
+		TopK:            5,
+		MaxChars:        9000,
+		UserInput:       rawInput,
+		Profile:         "default",
+		BudgetMode:      "auto",
+	})
 	if !strings.Contains(assembly.PendingThreadText, goal) {
 		t.Fatalf("request-relevant open goal was not delivered in its owner lane: %q", assembly.PendingThreadText)
 	}
@@ -1141,15 +1176,17 @@ func TestPrepareTurnSeparatesObservedWorldStateAgeAndCollapsesOnlyExactSelectedR
 		StateType: "scene", TurnIndex: 4, Content: `{"location":"Moon Hall observatory chamber","present_entities":["Mira"]}`,
 	}})
 
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil,
-		[]store.ChatLog{{ChatSessionID: sessionID, TurnIndex: 4, Role: "assistant", Content: "Mira entered the Moon Hall observatory chamber after leaving the Old Library."}},
-		nil, worldRules, nil, nil, canonical,
-		nil, nil, nil, nil,
-		5, 12000,
-		"Mira compares the Moon Hall observatory chamber with the Old Library, the dusk bells, and the archive seal observation.",
-		"default", nil, nil, nil, perspective,
-	)
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		ChatLogs:        []store.ChatLog{{ChatSessionID: sessionID, TurnIndex: 4, Role: "assistant", Content: "Mira entered the Moon Hall observatory chamber after leaving the Old Library."}},
+		WorldRules:      worldRules,
+		CanonicalLayers: canonical,
+		TopK:            5,
+		MaxChars:        12000,
+		UserInput:       "Mira compares the Moon Hall observatory chamber with the Old Library, the dusk bells, and the archive seal observation.",
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(perspective),
+	})
 
 	if !strings.Contains(assembly.CanonWorldText, "world_state [latest_observed turn=4]") ||
 		!strings.Contains(assembly.CanonWorldText, "world_state [historical turn=3]") ||

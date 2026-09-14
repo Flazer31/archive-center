@@ -31,15 +31,12 @@ var prepareTurnMemoryDeliveryTitles = map[string]string{
 	"unresolved_goal":         "Unresolved Goals",
 }
 
-func prepareTurnResolveMemoryBudgets(perspective map[string]any) (string, map[string]int) {
-	mode := strings.ToLower(strings.TrimSpace(extractionStringFromAny(perspective["_memory_delivery_budget_mode"])))
+func prepareTurnResolveMemoryBudgets(selection prepareTurnMemorySelectionContext) (string, map[string]int) {
+	mode := strings.ToLower(strings.TrimSpace(selection.BudgetMode))
 	if mode != "custom" {
 		return "auto", nil
 	}
-	custom, ok := perspective["_memory_delivery_budgets"].(map[string]int)
-	if !ok {
-		return "auto", nil
-	}
+	custom := selection.Budgets
 	budgets := map[string]int{}
 	for _, key := range prepareTurnMemoryDeliveryOrder {
 		value := custom[key]
@@ -101,20 +98,23 @@ func prepareTurnDeliveryFactKey(line string) string {
 	return collapseTextKey(strings.TrimSpace(line[end+1:]))
 }
 
-func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxChars int, perspective map[string]any) map[string]any {
-	mode, budgets := prepareTurnResolveMemoryBudgets(perspective)
-	if boolFromAny(perspective["_priority_memory_enabled"]) {
+func buildPrepareTurnMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxChars int, selection prepareTurnMemorySelectionContext) map[string]any {
+	mode, budgets := prepareTurnResolveMemoryBudgets(selection)
+	if selection.PriorityEnabled {
 		return buildPrepareTurnPriorityMemoryDeliveryPlan(
 			out,
 			maxChars,
-			intFromAny(perspective["_priority_memory_max_items"], 5),
+			selection.MaxItems,
 			mode,
 			budgets,
-			perspective,
+			selection,
 		)
 	}
-	coreObjectiveLimitPresent := boolFromAny(perspective["_core_objective_memory_max_items_present"])
-	coreObjectiveLimit := intFromAny(perspective["_core_objective_memory_max_items"], 0)
+	coreObjectiveLimitPresent := selection.CoreObjectiveLimit != nil
+	coreObjectiveLimit := 0
+	if coreObjectiveLimitPresent {
+		coreObjectiveLimit = *selection.CoreObjectiveLimit
+	}
 	if coreObjectiveLimitPresent && coreObjectiveLimit < 1 {
 		coreObjectiveLimit = 1
 	}

@@ -1,11 +1,11 @@
 # Source Discovery Collection And Organization Pipeline v1
 
-Status: Archive Center 3.2 integrated runtime implemented; live-provider acceptance pending  
+Status: historical v1 contract; current-source retention correction and ingestion audit added 2026-09-11; live-provider acceptance is separate
 Contract ID: `source-discovery-pipeline.v1`  
 Depends on: `canon-pack-manifest.v1`, `canon-identity-provenance-dedup.v1`,
 `canon-storage-and-migration-scope.v1`
 
-Current runtime APIs:
+Verified entrypoints (not an exhaustive API list):
 
 - `POST /source-discovery/preview/v1`: DB-write-free scope and fetch-plan preview;
 - `POST /source-discovery/jobs/v1`: configured search-provider discovery, approved-domain
@@ -15,9 +15,34 @@ Current runtime APIs:
 
 The search provider uses the versioned `source-search-request.v1` and
 `source-search-results.v1` adapter contract. Provider credentials and LLM client metadata are
-request-only and are not written to `source_discovery_jobs`. Current runtime stores response
-hashes and bounded section excerpts with `raw_retention=none`; it does not store fetched full
-text or automatically admit candidates into reference retrieval.
+request-only and are not written to `source_discovery_jobs`. Current source retains fetched
+raw documents for work-bound staging with `raw_retention=full`, alongside response hashes,
+section excerpts and pending candidates. This corrects the historical statement that fetched
+full text is never stored. Pending candidate persistence is distinct from approval and reference
+retrieval; current reference vectors use approved entities, claims and timeline material.
+
+## 2026-09-11 current-source audit and future plan
+
+See [original-text RAG plan and ingestion diagnosis](archive-center-reference-rag-plan-20260911.md).
+After the initial audit, the user authorized an ingestion repair. Deterministic linked-text
+entity generation is now removed; existing model extraction interprets the section context.
+Without model configuration, sections remain unprocessed and no synthetic entities are saved.
+Extraction/review guidance distinguishes website material from factual footnotes/in-world text.
+Document extraction no longer reintroduces raw HTML when parsing removed the whole analysis body;
+that job finishes with zero derived records and no extraction/review calls. Raw retention remains.
+This is source/offline-verified and not yet loaded-backend or live-model verified.
+
+Initial audit evidence, before that repair:
+The production HTML/structural-candidate/staging path was exercised with synthetic documents:
+linked punctuation and Korean particles can become pending entities without a model call.
+Marked advertising/comments and HTML comments are excluded in the tested parser cases;
+unmarked promotional body text remains and linked promotional lists can become entity candidates.
+Existing blanket footnote extraction/review instructions may also remove useful setting notes.
+These observations are not proof that a particular user's item was approved or injected.
+
+Original-text question/search/read RAG remains a documented proposal. Ingestion corrections are
+described above. The historical contract sections below are design evidence, not proof
+that every stated stage or completion policy operates in the current loaded application.
 
 ## 1. Purpose
 

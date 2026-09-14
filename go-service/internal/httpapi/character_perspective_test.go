@@ -937,16 +937,20 @@ func TestPrepareTurnGeneralProjectionKeepsMixedPublicEvidenceAndCanonicalProtect
 	}
 
 	privateChatText := "Mira privately named herself the Silver Fox."
-	assembly := buildPrepareTurnInjectionAssembly(
-		[]store.Memory{mixed, privateOnly}, nil, nil,
-		[]store.ChatLog{{ID: 91, TurnIndex: 9, Role: "assistant", Content: privateChatText}},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		5, 9000, "bell ringing", "default", documents, nil, nil,
-		map[string]any{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		Memories:   []store.Memory{mixed, privateOnly},
+		ChatLogs:   []store.ChatLog{{ID: 91, TurnIndex: 9, Role: "assistant", Content: privateChatText}},
+		TopK:       5,
+		MaxChars:   9000,
+		UserInput:  "bell ringing",
+		Profile:    "default",
+		Documents:  documents,
+		BudgetMode: "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{
 			"_character_perspective_text":            "[Character Perspective]\n- Mira hesitates without revealing the reason.",
 			"_character_perspective_candidate_count": 1,
-		},
-	)
+		}),
+	})
 	if !strings.Contains(assembly.ActualMemoryText, "bell ringing") {
 		t.Fatalf("actual memory lane lost the mixed row public projection: %q", assembly.ActualMemoryText)
 	}
@@ -1090,17 +1094,20 @@ func TestMemoryAdmissionOmitsGeneralVectorsForPerspectiveScopedTurn(t *testing.T
 
 func TestCharacterPerspectiveCandidateUsesProtectedMemoryDeliveryPlan(t *testing.T) {
 	candidate := "[Character Perspective]\n- known | vault / access: open"
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
-		4, 4000, "Continue.", "default", nil, nil, nil,
-		map[string]any{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:       4,
+		MaxChars:   4000,
+		UserInput:  "Continue.",
+		Profile:    "default",
+		BudgetMode: "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(map[string]any{
 			"current_pov":                            "Rowan",
 			"current_pov_entity_id":                  "holder-rowan",
 			"identity_state":                         "resolved",
 			"_character_perspective_text":            candidate,
 			"_character_perspective_candidate_count": 1,
-		},
-	)
+		}),
+	})
 	finalText := extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"])
 	if !strings.Contains(assembly.ProtectedMemoryText, "known | vault / access: open") ||
 		!strings.Contains(finalText, "known | vault / access: open") {

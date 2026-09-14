@@ -1,5 +1,553 @@
 # Archive Center AI Coding Guardrails
 
+## 2026-09-15 — 4.4.0 release promotion
+
+The stable source/build version is 4.4.0; historical test identifiers remain only in
+evidence documents and fixtures. This promotion changes version metadata and public
+documentation, not memory policy or lifecycle behavior. See the [release record](docs/archive-center-4.4-release-verification.md).
+Public assets must contain only package-managed files and empty/example credentials;
+private runtime settings, user data, logs and local release-HTTP fixtures are excluded.
+Release-only runtime JavaScript delta: +4/-4 version/build-description lines.
+
+
+## 2026-09-15 installation verification boundary
+
+See [4.4 installation/update verification](docs/archive-center-4.4-install-update-verification.md).
+The Windows plain-env reader must use UTF-8, matching existing env writers. Validate
+with BOM-less Korean paths through Windows PowerShell 5.1, not only PowerShell 7.
+Protected env, ports, data ownership and lifecycle remain unchanged. The production
+port-test fixture must include `diagnostics.ps1` and isolate its log directory.
+Local candidate preflight, actual previous updater execution and isolated native
+Windows startup are separate evidence from live RisuAI UI clicks, remote published
+downloads and native POSIX installation. Keep the user's existing data/services intact.
+The [4.3.1 browser callback test](docs/archive-center-4.3.1-to-4.4-ui-update-verification.md)
+uses only a diagnostic release-HTTP overlay and local host transport; never ship those
+fixtures or describe them as an unmodified published binary/public download test.
+Backend package update does not replace the JS registered in RisuAI.
+
+## 2026-09-14 — scoped request-preparation optimization / test.17
+
+The user authorized request-local source preparation, independent supplemental-query
+projection and prepared-pool final delivery. Follow the [implementation evidence](docs/archive-center-request-preparation-20260914.md).
+Source parsing, facts, base lexical judgment and existing privacy interpretation may be
+reused within one prepare request; preserve owner/visibility/source/turn/value and each
+query's discovery evidence. Copy cached maps before presentation-only field changes.
+Do not persist this workspace, convert it to a session cache or conflate new query scores
+with source identity. The existing question assembly mutex and external retrieval remain.
+
+Keep exact AI order, empty/failed recommendation Go selection, second-round failure
+handling and auto-share/custom budget semantics. Incremental character counting must
+equal actual rendered Unicode text, headers and separators. This is not authorization
+to shorten memories, reduce questions, add model calls, alter prompts/settings, add
+rejection gates or change turn/deletion/reroll/DB policy. Runtime JS +0/-0.
+
+Whole-request before/after artifacts, registered-route AI bodies and final injection are
+equal outside explicit volatile fields. CPU time, cumulative allocation and peak resident
+memory are distinct: peak working set rose in the five-question probe even as CPU/time
+and allocations fell. Request lifetime tests verify object reclamation, not zero memory
+retention across the entire server. Internal checks are not live RisuAI/provider proof.
+Later live test.17 observations cover two requests only: supplemental search under 1.5s,
+sub-second candidate assembly, a 120s failed shared call, and partial OS RAM release.
+The reroll had no current-turn critic in previous-turn mode. Keep this evidence separate
+from full storage acceptance, long-session leak freedom and the unresolved 50-minute report.
+Do not require repeated paid mode-matrix turns to restate existing internal parity checks.
+The reported stale MySQL connection is recorded separately; no DB lifetime, timeout or
+retry setting is changed in this scope. Earlier same-day read-only notes below describe
+the prior checkpoint, not the current implementation status.
+
+## 2026-09-14 — state-boundary and latency evidence scope
+
+The state probes confirm pending-only closure versus paired current-state closure,
+later same-key pending propagation, mixed-age snapshots and detached rule fields.
+They establish the 4.5/4.6 diagnosis, not a completed fix. Preserve broad recall,
+history, partial obligations, AI selections and existing lifecycle ownership.
+
+The [latency report](docs/archive-center-long-prepare-report-20260914.md) separately
+records a real approximately 50-minute wait and test.16 turn 113. In the latter,
+four candidate builds total 65.6s inside a 66.5s supplemental phase, while individual
+searches take 0.42–0.46s. The longest first/second calls total about 124.4s; injection
+assembly includes those calls. Do not sum nested timings, count shared role times
+twice, claim a memory leak, or attribute the phase to Chroma. Current common-source
+reuse/candidate-only assembly does not remove the local assembly mutex or all repeated
+candidate work. Do not remove the mutex or reduce candidates based only on elapsed data.
+The same-ID HUD probe demonstrates a measurement condition, not the old report's
+trigger; normal retries reuse payload. Do not change request/turn/deletion/storage
+contracts from this hypothesis. This slice changes documentation and offline probes
+only: runtime JS +0/-0, Go +0/-0, no package/service/DB or settings changes.
+
+## 2026-09-14 — version handoff, documentation only
+
+Follow the [current handoff](docs/archive-center-4.4-status-and-handoff-20260914.md)
+and [canonical version assignment](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#version-handoff-20260914).
+At the budget-repair checkpoint the local package was test.16. A user-supplied pre-request trace confirms
+automatic shares and lending in that request, not all modes, provider tokens, final
+provider payload or narrative quality. Preserve the existing evidence boundaries.
+
+Close 4.4 around implemented changes and E verification. Broad D semantic merging
+is DEFERRED, not implemented and not a required release condition. Do not silently
+carry it into 4.5 as a prerequisite. 4.5 owns source-linked readable context; 4.6
+owns promise/state progression, field/event time, historical reconstruction and
+shared state consumption, followed by optional body state. Existing 4.7–9.0 order
+and the body feature's internal cycle-before-pregnancy order remain unchanged.
+
+Stop accumulating story-specific completion patches. A separately reproduced loss
+of already-saved completion data may still receive its scoped repair. The planned
+state redesign is not authorized for implementation by this documentation task.
+Do not drop old memories, infer completion without evidence, add mandatory model
+calls or change turn acceptance/deletion while updating these plans. The 4.6 design
+must preserve partial fulfillment, recollection versus new obligations, existing
+reroll/branch semantics and Go-only operation. No schema is prescribed here.
+This change is documentation only: runtime JS +0/-0; no service/DB/package changes.
+
+## 2026-09-14 — restore automatic memory shares / test.16
+
+The user approved repairing reproduced direct-evidence starvation in the production
+priority delivery owner. Automatic allocation must offer all populated memory classes
+their established default proportions before lending unused space. Do not restore
+the old `every class gets the whole envelope first` behavior or replace this with
+permanent automatic ceilings that discard whole memories despite unused space.
+
+Keep current relevance/importance/recency, source eligibility, privacy, full candidate
+pools, explicit custom budgets and AI recommendation content/order. The second budget
+pass is local allocation only: reconsider already budget-deferred entries, preserve
+original reading order, and report only final deferrals. It adds no model calls,
+source rejection requirements, persistent state, retrieval limits, or memory deletion.
+Go baseline IDs used after empty/failed AI results must come from this same corrected
+delivery owner. Preserve existing AI budget-overrun behavior in this scoped repair.
+
+The reproduced OFF case used 17,955 / 18,000 characters for evidence and delivered
+zero ordinary items. The same candidate fixture now delivers all five ordinary
+classes (10 items) and lends remaining space to evidence. A large final evidence
+section alone is not proof of starvation when all other eligible contents fit.
+Verify final selected text, source turns, global budget, custom-mode parity, AI order,
+and counters; do not rely on candidate presence or test totals alone. Speaker/context
+enrichment and the 500-character storage excerpt behavior are separate, unmodified
+issues. Runtime JS +0/-0. User-supplied test.16 evidence verifies allocation in one
+pre-request trace; other modes, actual provider payload and output remain separate.
+
+## 2026-09-14 — supplemental reading distribution / test.15
+
+Repair only the requesting role's missing cross-category search evidence. Keep
+`candidates`, `turn_summaries` and lore selection authority with their existing roles;
+`search_evidence` supplies attributed public reading from that role's own question.
+Reuse the existing public handoff scope, F/S aliases, source catalogs and configured
+whole-entry CandidateChars budget. Keep first-round selections and the full Go
+candidate/summary pool. No age-based drops, new retrieval thresholds, automatic closed
+state selection, DB writes, new LLM rounds, global sharing of private records or JS policy.
+
+The exact report contains fulfilled S89/turn47 inside the event role's shared physical
+request but absent from the requesting goal role's own packet. Thus it is incorrect
+to say the model never saw completion anywhere, or that this routing fix proves the
+entire story error fixed. Recorded-source reconstruction verifies packet delivery;
+mock providers verify actual transport/selection/payload owners, not model reasoning.
+Added reading may increase a sparse role's input within its existing budget; do not
+claim token savings from this repair.
+
+Existing pending closure still consumes explicit lifecycle resolution. A completed
+summary alone is not a structured close; a later pending extraction can still create
+an open record. Do not infer the user's storage history or auto-close a compound
+promise from a beer-related phrase. Inspect original completion extraction before
+changing storage semantics. Existing state writers, source/turn acceptance, memory
+ranking and Go-only delivery are outside this slice. Runtime JS +0/-0; loaded RisuAI
+status remains `implemented_unverified`. See the preprocessing work log for evidence.
+
+## 2026-09-13 — HUD estimate ownership / test.14
+
+Preparation turn estimates are display metadata, not confirmed retry identity. The
+registered `/prepare-turn` entry starts unbound and uses `setEstimatedLogicalTurn` for
+its number. `setLogicalTurn` remains the consumer of complete-turn's existing canonical
+resolution and binds the retry slot even when its number equals the earlier estimate.
+The initial complete-turn display remains provisional until that existing resolution.
+Confirmed HUD entries retain their number when a late preparation replay arrives.
+
+Keep source acceptance, canonical turn routing, raw/derived save, deletion/reroll,
+Critic scheduling, input grouping and preprocessing unchanged. No new source conditions,
+workers, retry ledgers, DB migrations or JS policy. Do not hide genuine confirmed rerolls:
+their existing canonical slot still supersedes the preceding attempt at confirmation.
+
+The reported running-Critic / superseded / nonzero-count combination is reproduced
+through the registered preparation route with Host/Backend offset and one/two/three
+inputs in both finalization modes. The pre-fix route fails all six cases. Updated tests
+also consume production source-acceptance decisions for reroll, edit after output
+deletion, partial input deletion, identical-text new rows and same-request retry.
+Evidence: workspace `_diagnostics/20260913-hud-attempt-ownership/`; verification and
+test.14 package results are recorded in the preprocessing work log. Runtime JS +0/-0.
+Status remains `implemented_unverified` until the patched backend is used in RisuAI.
+
+## 2026-09-13 — planned 4.6 optional body/cycle and pregnancy state
+
+The user assigned this feature to [4.6](../_archive/future-reference/4.1-9.0-integrated-roadmap.md#optional-body-cycle-46).
+Status is `VERSION_ASSIGNED_PLAN`; this update changes documentation only. Preserve current
+4.4 work and packages. At implementation, use existing Go character/body state, story-clock,
+history and delivery ownership, including inspection of the current reproductive exclusion
+in `buildReversibleStatePacket`. No new output/save rejection gates or separate scheduler.
+Use KoCoEMon, YASNOTE, body-change, Dynamic Profile and LIBRA only as method references.
+The user's primary requirement is menstrual/fertile-window assessment from individual
+cycles and story dates. Implement and verify that first, then use the event-time assessment
+in opted-in probability calculations. Cycle-only operation remains independently usable.
+Author-selected settings and story rules govern applicability; cycle tracking and generated
+pregnancy outcomes are separate choices. AI extracts context; opted-in probability/draws,
+time and persistence belong in Go. Specify probability units and repeated-event semantics
+before selecting numeric defaults. Re-reading one event reuses its outcome; edits/deletion
+and branching follow existing canonical lifecycle. Keep possible/actual state, occurrence
+time, character knowledge, disclosure and desire separate. Repeated attempts may remain
+without conception; desire or an attempt counter supplies no guaranteed-success rule.
+Individual experience and relationships inform expression. Provide state/evidence/time to
+models rather than narrative prohibitions or prescribed feelings. Source/medical reference
+text is design evidence, not an adopted probability table or proof of implementation.
+Runtime JS +0/-0; no runtime tests/builds are claimed for this document update.
+
+## 2026-09-13 — stored recent reading and role-table HUD / test.13
+
+Current slice supersedes the test.12 model-request HUD below. The user requested the
+five-role table without model/provider cards. `Archive Center.js::turnWorkflowHUDTimingHTML`
+now displays the existing role rows and both round columns directly. The unused request-card
+live-timer lookup is removed. Grouped dispatch, actual request diagnostics, phase switching,
+expandable search/preparation sections and completed-card interactions remain unchanged.
+
+`group_turn_prepare.go` passes a request-local `recent_conversation_reading` to
+`runMultiAgent`. `prepare_turn_multi_agent.go::multiAgentRecentReading` uses the existing
+configured recent-conversation range, history-scoped ChatLogs and
+`assemblyInput.Common.GeneralMemories` public projection. Current input, all historical user
+directions and the latest completed conversation remain verbatim. Older assistant text is
+replaced with complete available stored summary text when its canonical assistant content
+identifies one stored session/turn. Displayed Chatindex, position and prose similarity are not
+source identities. Missing, changed, ambiguous or empty summary sources retain the original
+reading; this only changes representation and never rejects a turn, response or save.
+
+`summary_sources` carries memory reference, canonical turn/session and public-projection
+label. `multiAgentModelInput` replaces the existing recent-conversation field, removes the
+internal projection field from the wire, and assigns C refs to that supplied representation.
+Both rounds use the same first-round reading. Existing AI passage choices, omitted/unresolved
+reference behavior, candidates, F/S/L refs, scope, ranking, selection and budgets remain owned
+by their existing functions. Retrieval queries remain original conversations. No new DB/AI
+call, persistent cache, UI setting, summary writer or lifecycle acceptance condition.
+
+Verification: full Go 5,893 pass / 14 skip / zero failures. Registered `/prepare-turn` + local
+provider exercises all five roles in one group across two rounds, multiple user inputs and
+held reading. Canonical-source tests cover same-index branches, misleading display indices,
+missing/edited/ambiguous sources, private-summary projection, configured range, immutable
+inputs and unchanged candidate/source dictionaries. Removing the new reading owner makes
+the registered-route regression fail. HUD runtime checks cover five visible rows, status,
+selection and both round timers without model/provider strings.
+
+Production-serializer recorded-content fixture: 201,567 -> 135,985 local input tokens
+(-32.54%). Fixture-provided source joins and recorded AI choices/system text are held fixed;
+this is not verification of the user's canonical DB joins, billed provider tokens, latency,
+or story quality. Actual savings depend on available stored summaries. Older summaries may
+omit useful dialogue nuance; unchanged candidates do not prove unchanged model judgment.
+Test.13 ZIP/manifest/hash, isolated packaged /version and packaged JS input-group smoke (10 cases) pass. Headless role-table layout passes at 224/275/310px. Runtime JS +2/-44 for this slice.
+Status: `implemented_unverified` for loaded RisuAI/provider behavior. Evidence and packaging
+results: workspace `_diagnostics/20260913-recent-summary-implementation/` and the
+[preprocessing work log](docs/archive-center-preprocessing-efficiency-20260911.md).
+
+## 2026-09-13 — compact preprocessing request rounds / test.12
+
+Read-only test.11 settings explain the reported four groups: event/goal service tier differs
+(explicit standard/omitted), and objective/subjective/world effort differs (omitted/none/none).
+No peer sources were selected. Within each provider the keys match. Do not silently rewrite
+these user settings or equate provider default to an explicit choice. The existing peer-source
+controls can share event settings with goal and objective settings with subjective/world.
+
+For the requested HUD reduction, `turnWorkflowHUDPreprocessingRequests` adds `display_row`
+to existing actual-call records. Pair first/second round columns by provider/model and actual
+role membership; changed second-round membership/model remains a separate row. Request IDs,
+rounds, timings and status stay separate. JS renders the Go placement in one compact table,
+with short result badges, existing per-call live timers and collapsed role details. This is
+presentation metadata, not transport grouping, selection or new acceptance policy. No new cache,
+state machine, calls, settings migration or lifecycle change. Runtime JS +25/-9.
+
+Source Go tests: 5,886 pass, 14 skip, zero failures. Producer regressions cover round pairing,
+different same-model role groups, reordered/subset members and changed models. Deliberately
+grouping rows by model alone fails. Existing connection-option and two-provider sharing HTTP
+tests pass. The JS renderer retains four rows/eight calls and both rounds' timers; headless
+layout at 224/275/310px has no horizontal overflow and preserves detail expansion. At 275px,
+the request table is about 208px tall. Evidence: `_diagnostics/20260913-compact-request-rounds/`.
+Package and actual loaded RisuAI evidence remain separate; patched UI is `implemented_unverified`.
+
+## 2026-09-12 — current-mode HUD with a retained previous card / test.11
+
+The test.9 report reproduced a presentation defect in `buildTurnWorkflowHUDStackPresentation`:
+`previousView` forced the current card into the six-stage generation projection even in
+`immediate_after_response`. Select the current projection only from the current request's mode.
+Keep the previous card and its existing finalization projection, counts and dismissal behavior.
+Do not cancel/drop an unsaved previous-mode marker or change Critic scheduling to fix this display.
+No settings, hooks, acceptance, persistence, retrieval or Go policy changed. Runtime JS +1/-1.
+
+The production renderer regression covers assembly, Critic and completed current views with
+running/failed/invalidated/completed previous views in both modes. The pre-fix renderer fails;
+the JS-owner suite and ten input-group replay cases pass. Read-only live test.9 HUD records
+confirm Critic completion for turns 67 and 68; turn 67 subsequently has an invalidated status,
+which is not evidence that its Critic was never called. The screenshot's turn-66 stop reason
+is not established. See the efficiency work log and workspace diagnostic folder
+`_diagnostics/20260913-current-mode-hud/`. Patched Host rendering remains `implemented_unverified`
+until loaded in RisuAI. No user DB mutation, paid request, backend restart or public upload.
+
+`TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn` also exercises the
+mode transition with production registered afterRequest and pending-marker owners: hold the
+previous persistence boundary unresolved while the current immediate response reaches its
+complete-turn boundary. Preserve the previous request/marker until its own completion. This
+establishes scheduling at recorded persistence boundaries, not new live parallel provider proof.
+Packaged JS owner tests and all 58 managed file hashes pass; package version is test.11.
+
+## 2026-09-12 — peer configuration sharing and actual-request HUD / test.10
+
+Approved follow-up: select another preprocessing role as the connection/generation source and
+show actual concurrent request groups. `multiAgentRoleConfig.use_role` is resolved by Go's
+`roleConnection`, including key, endpoint, model, temperature, output ceiling, timeout, effort,
+reasoning budget and processing tier. Keep the destination prompt/enabled flag and stored local
+draft. Source changes follow on the next request; detaching restores the destination's own values.
+Existing Publisher connection inheritance retains its existing per-role generation behavior.
+Reference chains use their root; an unresolved/cyclic reference retains the requesting role's
+local configuration. No setting migration, credential copy to logs, extra model call or rejection gate.
+
+The existing grouping owner normalizes explicit service-tier aliases only: omitted tier can have
+an account default and is not forcibly equated to Standard. Ollama DeepSeek omitted effort now
+omits `reasoning_effort`, while explicit `none` remains off; preserve the prior configured output
+ceiling for both. This shared provider transport correction also applies to Publisher/Critic.
+HUD `preprocessing_requests` projects the existing dispatched-call records by shared request ID,
+with provider/model/member roles and maximum elapsed duration. Local configuration failures stay
+in role details and are not counted as provider requests. JS only renders controls, request cards,
+collapsible role details and live timers. Runtime JS +71/-23.
+
+Full Go 5,881 pass/14 skip/0 fail; three production-branch negative controls fail as expected.
+Two local HTTP request groups overlap before either response, keep all five role results and count
+usage twice. Packaged JS/Go settings save/reopen, source edit propagation and local draft restoration
+are exercised without paid calls or user data. See the efficiency work log for final package hashes.
+Turn deletion/reroll/input-group owners are unchanged in this slice. Previous targeted regressions
+remain passing; arbitrary middle-turn deletion and missing-all-input orphan cleanup are not complete.
+Status stays `implemented_unverified` for actual RisuAI/provider operation. No public upload.
+
+## 2026-09-12 — scoped input-group lifecycle and grouped preprocessing
+
+The user authorized only [these two implementations](docs/archive-center-preprocessing-efficiency-20260911.md).
+Keep Go's effective-connection builder, source selection, final recommendation, partial/empty/failure
+owners and the two-round policy. Group within one request/round only when actual connection/model/
+options match, including credentials. Factor only identical fields and preserve role prompts and
+source/time/visibility. Sum existing role output ceilings; keep shared reasoning and timeout settings.
+These are per-request limits, not independently enforced per-role limits. No guessed model ceiling,
+automatic retry/fan-out, extra summarizer, source pruning, global cache or new rejection gate.
+Shared model context is not independent role isolation. Attribute actual usage and wire payload once.
+
+Consecutive user rows are one observed input group; physical Host indexes remain unchanged. Go owns
+canonical routing. Carry individual optional Host refs through existing confirmation/recovery and
+keep member aliases in existing acceptance audit JSON, including active-source hydration after restart.
+Never use a provider retry fingerprint as a durable turn ID. Maintain normal new, retry, same-row
+reroll, edited-row regeneration, input-member removal and new-row-identical-text distinctions.
+Do not add mandatory coordinates, delete/reindex historical data or redesign arbitrary middle deletion.
+All user rows absent is an unavailable pair observation; do not attach an orphan answer by matching
+unrelated prose. Existing no-ID paths remain unchanged.
+
+Local production-owner regressions and negative branch checks establish source behavior only.
+Runtime JS +122/-26; the growth observes/transports Host rows and existing pending recovery only.
+Full Go 5,872 pass/14 skip/0 fail and JS syntax pass do not establish actual RisuAI/provider behavior.
+The requested follow-up test.9 package uses the existing managed builder and contains matching JS/Go.
+Its 58 managed hashes, ZIP contents, version values, packaged input-group replay and isolated settings
+save/reopen passed. No user installation, live DB/provider or public upload was performed. Packaging
+does not authorize additional runtime changes; replace JS and backend together for live verification.
+Keep status `implemented_unverified` until live confirmation. Other five-call compression proposals
+and remaining 4.4 work are not authorized by this slice.
+
+## 2026-09-12 — authorized recent-context review and explicit reason reuse
+
+The user's test.7 follow-up requires completing the repeated-context reduction, not only
+source metadata packing. This supersedes the earlier requirement to resend all recent prose
+in round two. `multiAgentModelInput` presents every configured recent conversation as ordered
+verbatim C passages in round one. Each role can explicitly select `recent_context_refs` for its
+own supplemental reading; canonical recent text, configured N, current input and all memory
+candidates remain unchanged. No cross-role sharing of these private review choices.
+Missing/null context assessment or an unresolved C reference retains the full recent text;
+an explicit empty list selects no recent passages. This changes reading, not source eligibility
+or output acceptance. No extra model call, cross-turn cache, automatic N/Top-K reduction or
+provider-specific state is introduced. First-round selection and complete final F/S/L lists
+remain separate. `reuse_previous_reasons=true` explicitly inherits earlier reasons only for
+still-selected refs; supplied replacements, including an empty reason, win. Empty final
+selection remains Go selection; existing failed-second/partial-result behavior stays owned
+by runMultiAgent. Keep editable prompts and connection settings. `model_input_sections_chars`
+measures serialized field characters, never billed tokens. A new model's C choices and actual
+savings need live evidence; replay of old traces cannot invent those choices. JS +0/-0.
+
+## 2026-09-12 — request-local recall preparation and second-round preservation
+
+[Scope and evidence](docs/archive-center-preprocessing-efficiency-20260911.md). Keep prepared
+recall maps immutable and request-local; each question owns its matcher and anchor-term map.
+Reusing computations must preserve source eligibility, scores, independent question evidence
+and the 4.3.1 broad memory baseline. The existing assembly mutex remains in this slice.
+P row identity/time plus G table/visibility/owner/viewers reconstruct each source exactly;
+do not merge provenance rows or collapse absent/empty/private fields. Canonical diagnostics
+retain first reasons when the second model packet omits repeated prose. Reserve first-selected
+whole sources before group allocation; supplemental lore skips only spare-capacity refill.
+Do not narrow cross-role search discoveries based on these partial exports: useful surrounding
+sources were lost in the rejected experiment. The existing complete-final-selection contract,
+normal AI order, empty-selection Go path, failed-second first result and two-round limit remain.
+Holding a baseline does not authorize a new delta-response contract. Keep user-saved prompts,
+models, output limits and recent N. Recorded serializer replay is not full DB/search/live proof;
+benchmark allocations are not RSS, character savings are not paid tokens. Own JS +0/-0.
+
+## 2026-09-11 — approved preprocessing efficiency work
+
+See [scope and evidence](docs/archive-center-preprocessing-efficiency-20260911.md). Keep source
+projections immutable and request-local; no cross-turn retained context/cache. Typed current/recent/
+supplemental query sets reach the existing scorer. Indexing must preserve exact/inflection, turn and
+tie behavior. Supplemental query membership is independent from the highest similarity score.
+Model packet compaction is distinct from canonical source selection: preserve original text, source
+turn, owner/viewers and the full Go pool. The second packet retains first selections, question evidence
+and public handoffs; an unselected/failed first round retains its full recovery pool. No changes to
+normal AI ordering, Go no-recommendation selection, failed-supplement retention or existing joins.
+Keep settings and recently configured conversation count. Do not force provider caching or promise
+shared cache across models. Usage comes from provider metadata; record chars as chars. Coalescing
+identical note prose retains every scoped reference and individual diagnostic item. Source/tests/
+package checks do not establish user-host latency or paid-token savings. JS delta +0/-0.
+
+## 2026-09-11 — authorized original-reference ingestion repair
+
+The user authorized the [ingestion repair](docs/archive-center-reference-rag-plan-20260911.md)
+after the diagnosis below. Remove deterministic linked-text entity generation; preserve the
+source body/list/table context for the existing extractor. No name blacklist or new acceptance
+gate is introduced. No model config means retained source/incomplete extraction, not invented rows.
+Use the existing external_metadata classification for website noise, preserve useful factual
+footnotes and short names, and keep source retention separate from derived record creation.
+Preserve meaningful unwrapped HTML text through the existing parser's exclusions; do not restore
+the unfiltered raw fallback. An excluded HTML body stays empty through document extraction and finishes without model/review
+calls or generated records. Preserve nonempty-document failure semantics and manual approval.
+No user DB cleanup, automatic legacy repair, provider retry or main memory/turn policy change.
+Regression evidence covers actual production owners and recorded local provider responses;
+real model interpretation and loaded-backend effects remain unverified. JS +0/-0.
+
+## 2026-09-11 — original-reference plan and ingestion evidence
+
+[Original-text RAG plan](docs/archive-center-reference-rag-plan-20260911.md) is planning and
+diagnosis only. Preserve the 4.3.1 memory baseline and existing 4.4 work order; implementation
+version, migration and iterative tool-call policy are unassigned. Go retains orchestration,
+selection and persistence ownership; normal AI recommendations and existing failure behavior remain.
+The diagnostic overlay reproduces current linked-fragment promotion to pending entities using
+production parsing/extraction/staging and a recording store boundary. It does not establish live
+DB, approval, vector retrieval or displayed-output effects. Unmarked advertising survives parsing;
+HTML comments and tested marked boilerplate do not. Existing blanket footnote instructions are
+a source-level risk to useful setting notes, not a measured model failure in this task.
+Repair the source interpretation in a separately scoped implementation. Preserve meaningful
+body context, factual notes and valid short names. No new strict rejection gates, name blacklists,
+automatic repair/deletion, provider calls or runtime policy changes belong to this documentation task.
+Own JS delta +0/-0; runtime unchanged.
+
+## 2026-09-11 — packaged HUD version identity
+
+Keep host HUD/diagnostic `BUILD_ID` derived from `VERSION`; both existing package builders
+stamp VERSION. Do not infer a stale installation from the formerly hardcoded HUD label.
+User reports current test.3 settings/HUD working; source tests and user reports remain
+distinct evidence. Display correction is JS +1/-1; memory/selection/provider behavior is unchanged.
+
+## 2026-09-11 — preprocessing model reasoning settings
+
+See [implementation and official contracts](docs/archive-center-preprocessing-reasoning-20260911.md).
+This separately requested feature follows B; it is not a behavior-preserving RF change.
+Go owns per-role preview/options. `callMultiAgent` explicitly inherits connection reasoning
+then applies only the role's effort/budget override. This supersedes the historical B
+effort-only boundary below; generic override helper/reference callers retain their scope.
+Blank effort and absent budget preserve defaults; explicit budget zero clears inherited
+numeric budget, not universally thinking. Preserve prompts, keys, output budgets, both-round
+ordering, AI selections and existing failure behavior. No duplicate JS model policy.
+The existing view endpoint may read Publisher runtime config for shared preprocessing;
+it never writes config/storage or calls a provider. Test saved configuration to both outbound
+bodies and full JS/Go save/reopen. Isolated tests are not paid-provider/live-Risu proof.
+Own JS delta for these DOM bindings/save fields is +27/-6. Test.5 source/package/isolated
+verification passed; do not label actual provider or loaded-user-host acceptance complete.
+
+## 2026-09-11 — durable diagnostics and report export
+
+See [diagnostic ownership, retention and verification](docs/archive-center-diagnostic-report-20260911.md).
+Go `internal/diagnostics` owns bounded JSON logs and the authenticated `/diagnostics/report`.
+Capture provider/parse/HTTP/storage failures at their existing owners without changing outcomes,
+retries, prompt/selection, turn identity, persistence acceptance or worker schedules.
+Runtime crash output and native child stdout/stderr supplement structured errors. Preserve
+HTTP flushing/unwrapping and launcher process lifetime, exit codes and Ctrl+C semantics.
+JS may retain only bounded device-local host/transport diagnostics (40 events, no payloads) and
+render/download reports; backend diagnostic history remains on disk. No automatic upload.
+07 native exporters must work without executing Go or connecting to the database; older binaries
+may treat an unknown CLI argument as normal startup. Report source, collection errors and truncation.
+Collect only allowlisted logs, redact credentials, never collect settings/environment/DB/prompt dumps.
+Logging failure remains visible but does not fail a turn. Preflight/help and existing-install
+fresh-install rejection retain their non-mutating behavior. Package manifests must include the
+07 exporters and diagnostics helpers on every supported target. Full-JS/Go isolated checks are
+not loaded RisuAI or native Linux/macOS/Termux service proof. Own JS delta: +115/-1.
+
+## 2026-09-11 — preserve errors before adding durable log collection
+
+See [the bounded repair and verification](docs/archive-center-error-preservation-20260911.md).
+Chroma `doJSON` returns response-body read failures with their cause and HTTP status;
+do not reinterpret a failed read as a successful empty query. Preserve successful payloads
+and the existing caller-owned fallback behavior. `handleEffectiveInputs` reports masked
+operation/cause details while preserving effective-input versus audit-save outcomes.
+The worker logs errors at its existing drain/schedule owners without adding retries or timers.
+Use the existing persistence diagnostic masking/limits; never log raw credentials or payloads.
+The Go entrypoint installs its existing JSON stderr logger as the default for these records.
+JS reads each response body once; audit-query failure is a UI error, not an empty audit list.
+Native Response, JSON-only test host, web-direct, malformed/interrupt/normal responses are covered.
+Do not reintroduce fixtures whose json() and text() return different bodies.
+At this first checkpoint durable logs and export were still open; the later diagnostic-report
+entry above adds them. Source/regression and an isolated
+full-JS/Go settings pair passed; loaded RisuAI/user DB acceptance remains unverified.
+JavaScript delta for this repair: +40/-45; current user's running service is untouched.
+
+## 2026-09-11 — C assembly and stream preservation
+
+Construct `prepareTurnAssemblyInput` and its internal perspective/selection fields directly at
+production callers. Do not put private policy/hits back in public perspective or vector Trace.
+Precise hit availability preserves the former successful-search distinction, including an empty
+successful result; broad/aggregate/precise status and canonical hydration remain independent.
+Supplemental retrieval shares the normal candidate stage and skips only unused final delivery/
+display work. Preserve source pools, budgets, AI ordering, empty/failure handling and round joins.
+HUD common helpers own decoding/read I/O only. Current/previous identity, cancellation and card
+lifecycle stay in their original owners; no watcher, reconnect or acceptance rule is added.
+Validate the registered 10-mode prepare matrix, supplement/full candidate equality, JSON private
+hit exclusion and current/previous chunk/cancel/EOF tests. Compare before/after model input and
+payload separately from volatile timing; microbenchmarks do not prove live latency improvements.
+See `docs/archive-center-4.4-c-assembly-hud.md`. Actual loaded RisuAI remains unverified while the
+user continues on 4.3; do not replace or stop it for an isolated verification.
+
+## 2026-09-10 — full settings lifecycle regression
+
+The B full-JS/Go package check found stale references to a removed preset helper in `sanitizeSettings`
+and reference UI. Existing enum normalization is sufficient; do not restore duplicate provider policy.
+Run `ops/settings-pair-smoke.cjs` after settings ownership changes: it executes full init, actual
+save/sanitize/transport, real Go view/config routes and page-reload storage readback. Partial DOM
+fixtures do not cover these paths. The harness isolates only host APIs and uses no user DB/provider.
+B checkpoint is `0dfd9bf`; corrected paired package is test.2, test.1 is unsuitable for use.
+The active user's 4.3 session remains unchanged; loaded RisuAI acceptance is still unverified.
+
+## 2026-09-10 — 4.4-B role-specific request boundaries
+
+[B verification](docs/archive-center-4.4-b-provider-boundaries.md) confirms 11 callers of the
+override helper with different reasoning contracts. Only Publisher/Critic/audit use the extracted
+`applyProxyReasoningFromLLMConfig`. Do not expand the override helper to inherit those fields in
+editor/reference callers. Preserve role configs, empty/explicit values, defaults, requests and prompts.
+UI connection actions pass form bridge settings per request; do not reintroduce temporary global
+`settings` writes across await. Normal requests continue using saved settings. Keep timeout 0 semantics.
+The actual-button/transport regression replaces assertions that required the unsafe global assignment.
+RF03's draft contract is now `POST /config/view-model` (`llm_settings_view.v1`), owned by
+`llm_settings_view.go`; it reads no store, changes no runtime config and calls no provider.
+`/config/update` remains a writer and must not be used for preview. Preserve unsaved form inputs when
+a preview fails, and let only the latest draft response update that form; this UI state does not gate
+normal chat output, persistence or lifecycle. Credentials are absent from the preview contract.
+The existing proxy HTTP boundary expands optional `reasoning_input` before endpoint normalization
+and the existing Critic test cap. Native Go owners and legacy flat requests do not opt into this mapping.
+Keep model-specific none/toggle/budget differences in Go; do not restore a JS policy fallback.
+The 486-case frozen JS baseline plus upstream-wire comparisons protect the migration. A loose custom
+GLM alias remains a transport heuristic, not a newly inferred UI toggle. Use paired JS/backend versions.
+Source and isolated real-DOM fixtures are not loaded RisuAI or live-account acceptance; status remains
+`implemented_unverified` for those external boundaries. Total B JS +140/-673, no new build/release.
+
+## 2026-09-10 — 4.4-A preparation boundary
+
+[A execution evidence](docs/archive-center-4.4-a-baseline.md) fixes source/settings and controlled
+prepare-route outputs against v4.3.1. Preserve candidate breadth, query evidence, source/visibility,
+received AI order, empty/failed recommendation behavior and payload semantics in B/C comparisons.
+The optional `ARCHIVE_CENTER_TEST_BASELINE_DIR` capture exists only in a Go test; captured outputs
+are not their own correctness oracle. Canonical-tail SQL expectations have independent mutation checks.
+UI helper overlap is reproduced in an isolated VM; it does not establish a live misrouted request.
+Fallback vector race and new live-provider/final-payload verification remain separate open evidence.
+No production decision, runtime rejection condition, DB write or package change is part of A. JS +0/-0.
+
 ## 2026-09-10 — 4.3.1 stable release
 
 Published latest: **v4.3.1**, source tag `0821d69e9be9bc406bd9f0092a03398498f23b5f`.

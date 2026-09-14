@@ -116,7 +116,15 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 				Importance:  0.5,
 			},
 		}
-		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 3000, "Lia enters the room.", "default", nil, nil, languageContext)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:        memories,
+			TopK:            1,
+			MaxChars:        3000,
+			UserInput:       "Lia enters the room.",
+			Profile:         "default",
+			LanguageContext: languageContext,
+			BudgetMode:      "auto",
+		})
 		if !strings.Contains(assembly.MemoryText, "Protected identity continuity") || !strings.Contains(assembly.MemoryText, "kind=cover_identity") {
 			t.Fatalf("identity replay did not inject protected guard: %q", assembly.MemoryText)
 		}
@@ -401,7 +409,14 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 			SummaryJSON: mustCompactJSON(extraction),
 			Importance:  0.9,
 		}}
-		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 1, 3000, "Ari faces the guard.", "default", nil, nil, nil)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:   memories,
+			TopK:       1,
+			MaxChars:   3000,
+			UserInput:  "Ari faces the guard.",
+			Profile:    "default",
+			BudgetMode: "auto",
+		})
 		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") || !strings.Contains(assembly.MemoryText, "kind=power_inheritance") {
 			t.Fatalf("protected secret replay did not inject guard: %q", assembly.MemoryText)
 		}
@@ -434,7 +449,17 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 				{"id": "world_rule:sess-artifact-vector:202", "tier": "world_rule", "source_table": "world_rules", "source_row_id": "202", "similarity": 0.76, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			},
 		}
-		assembly := buildPrepareTurnInjectionAssembly(nil, nil, evidence, nil, nil, worldRules, nil, nil, nil, nil, nil, nil, nil, 4, 4000, "Gloria thinks about Lia.", "default", nil, vectorShadow, nil, map[string]any{"current_pov": "Gloria"})
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Evidence:    evidence,
+			WorldRules:  worldRules,
+			TopK:        4,
+			MaxChars:    4000,
+			UserInput:   "Gloria thinks about Lia.",
+			Profile:     "default",
+			VectorTrace: vectorShadow,
+			BudgetMode:  "auto",
+			Perspective: testPrepareTurnAssemblyPerspective(map[string]any{"current_pov": "Gloria"}),
+		})
 		if !strings.Contains(assembly.DirectEvidenceText, "Lia and Gloria are the same person") {
 			t.Fatalf("direct evidence vector hit was not injected: %q", assembly.DirectEvidenceText)
 		}
@@ -500,7 +525,15 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 				{"id": "memory:sess-24:1", "source_table": "memories", "source_row_id": "1", "raw_language": "ko", "summary_language": "en", "session_output_language": "en", "alias_count": 2, "similarity": 0.81, "similarity_source": "cosine_from_query_and_stored_embedding"},
 			},
 		}
-		assembly := buildPrepareTurnInjectionAssembly(memories, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 2, 3000, "Recall the old oath.", "default", nil, vectorShadow, nil)
+		assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			Memories:    memories,
+			TopK:        2,
+			MaxChars:    3000,
+			UserInput:   "Recall the old oath.",
+			Profile:     "default",
+			VectorTrace: vectorShadow,
+			BudgetMode:  "auto",
+		})
 		for _, want := range []string{"[vector_relevant, turn 4", "[vector_relevant, turn 3", "Old semantic shrine oath", "Old semantic gate oath"} {
 			if !strings.Contains(assembly.MemoryText, want) {
 				t.Fatalf("vector replay missing %q: %q", want, assembly.MemoryText)

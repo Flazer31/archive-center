@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strconv"
 	"strings"
@@ -52,15 +53,120 @@ func prepareTurnVectorRetrievalMethodStatus(vectorShadow map[string]any, selecte
 	}
 }
 
-func buildPrepareTurnInjectionAssembly(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
-	return buildPrepareTurnInjectionAssemblyWithBudget(memories, kgTriples, evidence, chatLogs, storylines, worldRules, charStates, pendingThreads, canonicalLayers, episodeSums, resumePack, personaEntries, characterPrivateMemories, topK, maxChars, rawUserInput, profile, documents, vectorShadow, languageContext, "auto", nil, perspectiveContextArg...)
+// These inputs live only inside one prepare request. Public perspective data is
+// separate from stored state and Go's selection policy; none is a wire DTO.
+type prepareTurnAssemblyInput struct {
+	Memories                     []store.Memory
+	Triples                      []store.KGTriple
+	Evidence                     []store.DirectEvidence
+	ChatLogs                     []store.ChatLog
+	Storylines                   []store.Storyline
+	WorldRules                   []store.WorldRule
+	CharacterStates              []store.CharacterState
+	PendingThreads               []store.PendingThread
+	CanonicalLayers              []store.CanonicalStateLayer
+	EpisodeSummaries             []store.EpisodeSummary
+	ResumePack                   *store.ResumePack
+	PersonaEntries               []store.PersonaMemoryEntry
+	CharacterPrivateMemories     []store.ProtagonistEntityMemory
+	TopK, MaxChars               int
+	UserInput, Profile           string
+	Documents                    []map[string]any
+	VectorTrace, LanguageContext map[string]any
+	BudgetMode                   string
+	Budgets                      map[string]int
+	Perspective                  *prepareTurnAssemblyPerspective
+	Common                       *prepareTurnAssemblyCommon
 }
 
-func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTriples []store.KGTriple, evidence []store.DirectEvidence, chatLogs []store.ChatLog, storylines []store.Storyline, worldRules []store.WorldRule, charStates []store.CharacterState, pendingThreads []store.PendingThread, canonicalLayers []store.CanonicalStateLayer, episodeSums []store.EpisodeSummary, resumePack *store.ResumePack, personaEntries []store.PersonaMemoryEntry, characterPrivateMemories []store.ProtagonistEntityMemory, topK, maxChars int, rawUserInput, profile string, documents []map[string]any, vectorShadow map[string]any, languageContext map[string]any, memoryDeliveryBudgetMode string, memoryDeliveryBudgets map[string]int, perspectiveContextArg ...map[string]any) prepareTurnInjectionAssembly {
+// Immutable source projections shared only by the initial assembly and searches
+// of one request. Query-dependent recall, scoring and delivery remain separate.
+type prepareTurnAssemblyCommon struct {
+	GeneralMemories []store.Memory
+	PublicTrace     map[string]any
+	Evidence        []store.DirectEvidence
+	BlockedEvidence map[int64]bool
+	KnownNames      []string
+	RecallMemories  map[store.Memory]prepareTurnRecallMemory `json:"-"`
+}
+
+func prepareTurnCommonAssemblySources(input prepareTurnAssemblyInput) *prepareTurnAssemblyCommon {
+	c := &prepareTurnAssemblyCommon{RecallMemories: map[store.Memory]prepareTurnRecallMemory{}}
+	c.GeneralMemories, c.PublicTrace = projectPrepareTurnGeneralMemories(input.Memories)
+	c.Evidence, c.BlockedEvidence = filterPrepareTurnPerspectiveScopedEvidence(input.Evidence, input.Memories)
+	for _, state := range input.CharacterStates {
+		c.KnownNames = append(c.KnownNames, state.CharacterName)
+	}
+	for _, memory := range input.CharacterPrivateMemories {
+		c.KnownNames = append(c.KnownNames, prepareTurnMemoryOwnerLabel(memory.OwnerEntityKey, memory.OwnerEntityName))
+	}
+	for _, memory := range c.GeneralMemories {
+		c.RecallMemories[memory] = prepareTurnPrepareRecallMemory(memory)
+		c.KnownNames = append(c.KnownNames, prepareTurnMemoryCharacterAnchors(memory)...)
+	}
+	c.KnownNames = append(c.KnownNames, prepareTurnCanonicalKnownCharacterNames(input.CanonicalLayers)...)
+	return c
+}
+
+type prepareTurnAssemblyPerspective struct {
+	Public                                        map[string]any
+	NarrativeValues                               []store.StatusCurrentValue
+	ActiveStates                                  []store.ActiveState
+	CharacterText                                 string
+	CharacterSeeds                                []prepareTurnPriorityFactSeed
+	CharacterCount                                int
+	InteractionPublicText, InteractionGuardedText string
+	InteractionCount                              int
+	CharacterMemory, EntityAliases                map[string]any
+	Selection                                     prepareTurnMemorySelectionContext
+}
+
+type prepareTurnMemorySelectionContext struct {
+	BudgetMode         string
+	Budgets            map[string]int
+	PriorityEnabled    bool
+	MaxItems           int
+	CoreObjectiveLimit *int
+	Query, QuerySource string
+	QuerySet           []string
+	CurrentTurn        int
+	SemanticFacts      []prepareTurnPrioritySemanticFact
+	PreciseVectorTrace any
+}
+
+func buildPrepareTurnInjectionAssemblyWithBudget(input prepareTurnAssemblyInput) prepareTurnInjectionAssembly {
+	return buildPrepareTurnAssembly(input, true)
+}
+
+// Supplemental searches consume the same source candidates, without producing
+// an unused final delivery plan, display blocks or final-delivery diagnostics.
+func buildPrepareTurnSupplementCandidates(input prepareTurnAssemblyInput) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate) {
+	out := buildPrepareTurnAssembly(input, false)
+	return multiAgentCandidatePool(&out)
+}
+
+func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery bool) prepareTurnInjectionAssembly {
+	memories, kgTriples, evidence, chatLogs := input.Memories, input.Triples, input.Evidence, input.ChatLogs
+	storylines, worldRules, charStates := input.Storylines, input.WorldRules, input.CharacterStates
+	pendingThreads, canonicalLayers, episodeSums := input.PendingThreads, input.CanonicalLayers, input.EpisodeSummaries
+	resumePack, personaEntries, characterPrivateMemories := input.ResumePack, input.PersonaEntries, input.CharacterPrivateMemories
+	topK, maxChars, rawUserInput, profile := input.TopK, input.MaxChars, input.UserInput, input.Profile
+	documents, vectorShadow, languageContext := input.Documents, input.VectorTrace, input.LanguageContext
+	perspectiveInput := input.Perspective
+	selectionContext := prepareTurnMemorySelectionContext{}
+	if perspectiveInput != nil {
+		selectionContext = perspectiveInput.Selection
+	}
+
 	topK = prepareTurnRecallLimit(topK)
 	maxChars = prepareTurnTextBudget(maxChars)
 	canonicalMemories := memories
-	generalMemories, publicProjectionTrace := projectPrepareTurnGeneralMemories(canonicalMemories)
+	common := input.Common
+	if common == nil {
+		common = prepareTurnCommonAssemblySources(input)
+	}
+	preparation := newPrepareTurnRequestPreparation(common)
+	generalMemories, publicProjectionTrace := common.GeneralMemories, common.PublicTrace
 	recallLimit := len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(pendingThreads) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories)
 	languageContext = normalizeCompleteTurnLanguageContext(languageContext)
 	perspectiveContext := map[string]any(nil)
@@ -71,22 +177,28 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	interactionCandidateCount := 0
 	characterMemoryReadContext := map[string]any(nil)
 	entityIdentityAliases := map[string]any(nil)
-	if len(perspectiveContextArg) > 0 {
-		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
-		perspectiveCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_character_perspective_text"]))
-		perspectiveCandidateCount = intFromAny(perspectiveContextArg[0]["_character_perspective_candidate_count"], 0)
-		interactionPublicCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_active_interaction_public_text"]))
-		interactionGuardedCandidateText = strings.TrimSpace(extractionStringFromAny(perspectiveContextArg[0]["_active_interaction_guarded_text"]))
-		interactionCandidateCount = intFromAny(perspectiveContextArg[0]["_active_interaction_candidate_count"], 0)
-		characterMemoryReadContext = mapFromAny(perspectiveContextArg[0][prepareTurnCharacterMemoryContextKey])
-		entityIdentityAliases = mapFromAny(perspectiveContextArg[0][prepareTurnEntityIdentityAliasesContextKey])
+	if perspectiveInput != nil {
+		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveInput.Public)
+		perspectiveCandidateText = strings.TrimSpace(perspectiveInput.CharacterText)
+		perspectiveCandidateCount = perspectiveInput.CharacterCount
+		interactionPublicCandidateText = strings.TrimSpace(perspectiveInput.InteractionPublicText)
+		interactionGuardedCandidateText = strings.TrimSpace(perspectiveInput.InteractionGuardedText)
+		interactionCandidateCount = perspectiveInput.InteractionCount
+		characterMemoryReadContext = perspectiveInput.CharacterMemory
+		entityIdentityAliases = perspectiveInput.EntityAliases
 	}
+
 	evidenceInputCount := len(evidence)
-	evidence, perspectiveBlockedEvidenceIDs := filterPrepareTurnPerspectiveScopedEvidence(evidence, canonicalMemories)
+	evidence, perspectiveBlockedEvidenceIDs := common.Evidence, common.BlockedEvidence
 	evidenceHydrationSource := append([]store.DirectEvidence{}, evidence...)
-	narrativeCurrentValues, activeStates := prepareTurnNarrativeStateFromPerspective(perspectiveContextArg)
+	var narrativeCurrentValues []store.StatusCurrentValue
+	var activeStates []store.ActiveState
+	if perspectiveInput != nil {
+		narrativeCurrentValues, activeStates = perspectiveInput.NarrativeValues, perspectiveInput.ActiveStates
+	}
 
 	out := prepareTurnInjectionAssembly{
+		preparation:           preparation,
 		LanguageContext:       languageContext,
 		PerspectiveContext:    perspectiveContext,
 		PriorityEntityAliases: entityIdentityAliases,
@@ -120,17 +232,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	recollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, memories, activeStates, canonicalLayers, pendingThreads, chatLogs)
 	guardRecollectionContext := buildPrepareTurnRecollectionContext(rawUserInput, canonicalMemories, activeStates, canonicalLayers, pendingThreads, chatLogs)
 	recollectionContext.previousEventGuardSummary = guardRecollectionContext.previousEventGuardSummary
-	knownCharacterNames := make([]string, 0, len(charStates)+len(characterPrivateMemories))
-	for _, state := range charStates {
-		knownCharacterNames = append(knownCharacterNames, state.CharacterName)
-	}
-	for _, memory := range characterPrivateMemories {
-		knownCharacterNames = append(knownCharacterNames, prepareTurnMemoryOwnerLabel(memory.OwnerEntityKey, memory.OwnerEntityName))
-	}
-	for _, memory := range memories {
-		knownCharacterNames = append(knownCharacterNames, prepareTurnMemoryCharacterAnchors(memory)...)
-	}
-	knownCharacterNames = append(knownCharacterNames, prepareTurnCanonicalKnownCharacterNames(canonicalLayers)...)
+	knownCharacterNames := common.KnownNames
 	entityScope := buildPrepareTurnRequestEntityScopeWithAliases(
 		rawUserInput,
 		recollectionContext.currentEntities,
@@ -145,13 +247,9 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		objectiveEntitySource = "unobserved_no_objective_state_delivery"
 	}
 	memoryQuery := prepareTurnEventMemoryQuery(recollectionContext, entityScope.Direct)
-	priorityMemoryQueryInput := map[string]any(nil)
-	if len(perspectiveContextArg) > 0 {
-		priorityMemoryQueryInput = perspectiveContextArg[0]
-	}
-	priorityMemoryQuery := strings.TrimSpace(extractionStringFromAny(priorityMemoryQueryInput["_priority_memory_query"]))
-	priorityMemoryQuerySource := strings.TrimSpace(extractionStringFromAny(priorityMemoryQueryInput["_priority_memory_query_source"]))
-	priorityMemoryQuerySet := prepareTurnPriorityQuerySetFromAny(priorityMemoryQueryInput[prepareTurnPriorityQuerySetContextKey])
+	priorityMemoryQuery := strings.TrimSpace(selectionContext.Query)
+	priorityMemoryQuerySource := strings.TrimSpace(selectionContext.QuerySource)
+	priorityMemoryQuerySet := prepareTurnPriorityQuerySetFromAny(selectionContext.QuerySet)
 	if priorityMemoryQuery == "" {
 		priorityMemoryQuery = prepareTurnPriorityContextQuery(
 			rawUserInput,
@@ -177,63 +275,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["current_scene_state_turn"] = recollectionContext.currentSceneTurn
 	out.Counts["latest_assistant_turn"] = recollectionContext.latestAssistantTurn
 	out.Counts["current_scene_state_is_current"] = recollectionContext.currentSceneIsCurrent
-	// Each query remains independently usable for lexical candidate admission.
-	// Copy request-local metadata: supplemental assemblies may share the base map.
-	recallShadow := make(map[string]any, len(vectorShadow)+1)
-	for key, value := range vectorShadow {
-		recallShadow[key] = value
-	}
-	recallQueries := []any{rawUserInput}
-	if priorityMemoryQuerySource != "assembly_context" {
-		for _, text := range priorityMemoryQuerySet {
-			recallQueries = append(recallQueries, text)
-		}
-	}
-	recallShadow["recall_query_texts"] = recallQueries
-	vectorShadow = recallShadow
-	memorySelection := selectPrepareTurnMemoryLanesWithVectorHydrationSource(memories, canonicalMemories, memoryQuery, topK, vectorShadow, entityScope.Direct, entityScope.Scene)
-	memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
-	protectedSelection := prepareTurnMemoryLaneSelection{
-		ProtectedAliasCanonical: map[string]string{},
-		ProtectedAmbiguousAlias: map[string]bool{},
-		Trace:                   map[string]any{},
-	}
-	protectedSelection.ProtectedAliasCanonical, protectedSelection.ProtectedAmbiguousAlias = prepareTurnProtectedAliasResolution(canonicalMemories)
-	for _, item := range canonicalMemories {
-		if !prepareTurnProtectedMemoryGuard(item).Active {
-			continue
-		}
-		protectedSelection.ProtectedCandidates = append(protectedSelection.ProtectedCandidates, item)
-		protectedSelection.ProtectedSelected = append(protectedSelection.ProtectedSelected, item)
-	}
-	protectedSelection = filterPrepareTurnProtectedMemoryLaneSelection(protectedSelection, recollectionContext, protectedPerspectiveContext)
-	memorySelection.ProtectedSelected = protectedSelection.ProtectedSelected
-	memorySelection.ProtectedCandidates = protectedSelection.ProtectedCandidates
-	memorySelection.ProtectedAliasCanonical = protectedSelection.ProtectedAliasCanonical
-	memorySelection.ProtectedAmbiguousAlias = protectedSelection.ProtectedAmbiguousAlias
-	for _, key := range []string{
-		"protected_memory_before_filter",
-		"protected_memory_after_filter",
-		"protected_memory_dropped_count",
-		"protected_memory_gate",
-		"protected_memory_dropped",
-	} {
-		memorySelection.Trace[key] = protectedSelection.Trace[key]
-	}
-	memorySelection.Trace["protected_guard_selected"] = len(memorySelection.ProtectedSelected)
-	memorySelection.Trace["protected_guard_candidate_safety_limit"] = len(protectedSelection.ProtectedCandidates)
-	exactPhraseSelected := 0
-	lexicalSelected := 0
-	for _, item := range memorySelection.Relevant {
-		evidence := prepareTurnMemoryRecallEvidence(memoryQuery, item)
-		if evidence.ExactPhrase {
-			exactPhraseSelected++
-		} else if evidence.LexicalOverlap {
-			lexicalSelected++
-		}
-	}
-	memorySelection.Trace["exact_phrase_selected_count"] = exactPhraseSelected
-	memorySelection.Trace["lexical_selected_count"] = lexicalSelected
 	// Each support lane owns its request-scoped evidence. A prior event may help
 	// retrieve event memory, but cannot activate state, relationship, world,
 	// evidence, or goal lanes.
@@ -249,64 +290,126 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 		strings.Join(entityScope.Scene, "\n"),
 	}), "\n"))
 	goalQuery := prepareTurnEntityScopeQuery(rawUserInput, entityScope.Direct, entityScope.Scene)
-	out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
-		narrativeCurrentValues,
-		rawUserInput,
-		chatLogs,
-		activeStates,
-		memorySelection,
-		recallLimit,
-	)
-	appendPrepareTurnPriorityMemoryFactSeeds(&out, memorySelection, vectorShadow)
-	memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLines(memorySelection, languageContext, canonicalMemories, protectedPerspectiveContext)
-	actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
-	protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
-	out.MemoryDeliveryLineage = buildPrepareTurnMemoryDeliveryLineage(memorySelection, memoryLanguageTrace)
-	for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, protectedPerspectiveContext) {
-		out.Counts[k] = v
+	protectedSelection := prepareTurnMemoryLaneSelection{
+		ProtectedAliasCanonical: map[string]string{},
+		ProtectedAmbiguousAlias: map[string]bool{},
+		Trace:                   map[string]any{},
 	}
-	out.Counts["memory_injected_line_count"] = len(actualMemoryLines)
-	out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
-	out.Counts["memory_final_render_duplicate_count"] = intFromAny(memoryLanguageTrace["final_render_duplicate_count"], 0)
-	out.Counts["protected_perspective_recognized"] = len(protectedPerspectiveContext) > 0
-	if len(perspectiveContext) > 0 && len(protectedPerspectiveContext) == 0 {
-		out.Counts["protected_perspective_ignored_reason"] = "current_pov_not_recognized_as_character"
-	}
-	artifactHydration := prepareTurnHydrateVectorArtifactHits(
-		evidenceHydrationSource, worldRules, vectorShadow, recallLimit, perspectiveBlockedEvidenceIDs,
-	)
-	out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
-	out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
-	out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
-	perspectiveRecollectionLines := map[string]bool{}
-	if len(perspectiveContextArg) > 0 {
-		seeds, _ := perspectiveContextArg[0]["_character_perspective_fact_seeds"].([]prepareTurnPriorityFactSeed)
-		out.PriorityFactSeeds = append(out.PriorityFactSeeds, seeds...)
-		for _, seed := range seeds {
-			perspectiveRecollectionLines[seed.Fact.Text] = true
+	protectedSelection.ProtectedAliasCanonical, protectedSelection.ProtectedAmbiguousAlias = prepareTurnProtectedAliasResolution(canonicalMemories)
+	for _, item := range canonicalMemories {
+		if !prepareTurnProtectedMemoryGuard(item).Active {
+			continue
 		}
+		protectedSelection.ProtectedCandidates = append(protectedSelection.ProtectedCandidates, item)
+		protectedSelection.ProtectedSelected = append(protectedSelection.ProtectedSelected, item)
 	}
-	if perspectiveCandidateText != "" {
-		for _, line := range strings.Split(perspectiveCandidateText, "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || line == "[Character Perspective]" {
-				continue
-			}
-			if perspectiveRecollectionLines[strings.TrimPrefix(line, "- ")] {
-				continue
-			}
-			protectedMemoryLines = append(protectedMemoryLines, line)
+	protectedSelection = filterPrepareTurnProtectedMemoryLaneSelection(protectedSelection, recollectionContext, protectedPerspectiveContext)
+	projectMemory := func(out *prepareTurnInjectionAssembly, vectorShadow map[string]any, priorityMemoryQuerySet []string) (prepareTurnMemoryLaneSelection, []string, []string, []string, prepareTurnVectorArtifactHydration) {
+		// Each query remains independently usable for lexical candidate admission.
+		// Copy request-local metadata: supplemental assemblies may share the base map.
+		recallShadow := make(map[string]any, len(vectorShadow)+1)
+		for key, value := range vectorShadow {
+			recallShadow[key] = value
 		}
-		out.Counts["character_perspective_candidate_count"] = perspectiveCandidateCount
+		recallQueries := []any{rawUserInput}
+		if priorityMemoryQuerySource != "assembly_context" {
+			for _, text := range priorityMemoryQuerySet {
+				recallQueries = append(recallQueries, text)
+			}
+		}
+		recallShadow["recall_query_texts"] = recallQueries
+		vectorShadow = recallShadow
+		memorySelection := selectPrepareTurnMemoryLanesWithPreparedRecall(memories, canonicalMemories, memoryQuery, topK, vectorShadow, preparation, entityScope.Direct, entityScope.Scene)
+		memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
+		memorySelection.ProtectedSelected = protectedSelection.ProtectedSelected
+		memorySelection.ProtectedCandidates = protectedSelection.ProtectedCandidates
+		memorySelection.ProtectedAliasCanonical = protectedSelection.ProtectedAliasCanonical
+		memorySelection.ProtectedAmbiguousAlias = protectedSelection.ProtectedAmbiguousAlias
+		for _, key := range []string{
+			"protected_memory_before_filter",
+			"protected_memory_after_filter",
+			"protected_memory_dropped_count",
+			"protected_memory_gate",
+			"protected_memory_dropped",
+		} {
+			memorySelection.Trace[key] = protectedSelection.Trace[key]
+		}
+		memorySelection.Trace["protected_guard_selected"] = len(memorySelection.ProtectedSelected)
+		memorySelection.Trace["protected_guard_candidate_safety_limit"] = len(protectedSelection.ProtectedCandidates)
+		exactPhraseSelected := 0
+		lexicalSelected := 0
+		for _, item := range memorySelection.Relevant {
+			evidence := preparation.recallMatcher(memoryQuery)(item)
+			if evidence.ExactPhrase {
+				exactPhraseSelected++
+			} else if evidence.LexicalOverlap {
+				lexicalSelected++
+			}
+		}
+		memorySelection.Trace["exact_phrase_selected_count"] = exactPhraseSelected
+		memorySelection.Trace["lexical_selected_count"] = lexicalSelected
+		out.ContinuityCorrectionText, out.Counts["continuity_correction"] = buildNarrativeContinuityCorrection(
+			narrativeCurrentValues,
+			rawUserInput,
+			chatLogs,
+			activeStates,
+			memorySelection,
+			recallLimit,
+		)
+		appendPrepareTurnPriorityMemoryFactSeeds(out, memorySelection, vectorShadow)
+		memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLinesPrepared(memorySelection, languageContext, canonicalMemories, preparation, protectedPerspectiveContext)
+		actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
+		protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
+		out.MemoryDeliveryLineage = buildPrepareTurnMemoryDeliveryLineage(memorySelection, memoryLanguageTrace)
+		for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, protectedPerspectiveContext, preparation) {
+			out.Counts[k] = v
+		}
+		out.Counts["memory_injected_line_count"] = len(actualMemoryLines)
 		out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
-	}
-	if interactionGuardedCandidateText != "" {
-		protectedMemoryLines = append(protectedMemoryLines, prepareTurnDeliveryItems(interactionGuardedCandidateText)...)
-		out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
-		out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
-	}
-	out.ProtectedMemoryText = makePrepareTurnSection("[Protected Memory Guidance]", protectedMemoryLines)
+		out.Counts["memory_final_render_duplicate_count"] = intFromAny(memoryLanguageTrace["final_render_duplicate_count"], 0)
+		out.Counts["protected_perspective_recognized"] = len(protectedPerspectiveContext) > 0
+		if len(perspectiveContext) > 0 && len(protectedPerspectiveContext) == 0 {
+			out.Counts["protected_perspective_ignored_reason"] = "current_pov_not_recognized_as_character"
+		}
+		artifactHydration := prepareTurnHydrateVectorArtifactHits(
+			evidenceHydrationSource, worldRules, vectorShadow, recallLimit, perspectiveBlockedEvidenceIDs,
+		)
+		out.LanguageInjectionTrace = buildPrepareTurnLanguageInjectionTrace(languageContext, memoryLanguageTrace)
+		out.MemoryText = makePrepareTurnSection("[Memory]", memoryLines)
+		out.ActualMemoryText = makePrepareTurnSection("[Memory]", actualMemoryLines)
+		perspectiveRecollectionLines := map[string]bool{}
+		if perspectiveInput != nil {
+			seeds := perspectiveInput.CharacterSeeds
+			out.PriorityFactSeeds = append(out.PriorityFactSeeds, seeds...)
+			for _, seed := range seeds {
+				perspectiveRecollectionLines[seed.Fact.Text] = true
+			}
+		}
+		if perspectiveCandidateText != "" {
+			for _, line := range strings.Split(perspectiveCandidateText, "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || line == "[Character Perspective]" {
+					continue
+				}
+				if perspectiveRecollectionLines[strings.TrimPrefix(line, "- ")] {
+					continue
+				}
+				protectedMemoryLines = append(protectedMemoryLines, line)
+			}
+			out.Counts["character_perspective_candidate_count"] = perspectiveCandidateCount
+			out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
+		}
+		if interactionGuardedCandidateText != "" {
+			protectedMemoryLines = append(protectedMemoryLines, prepareTurnDeliveryItems(interactionGuardedCandidateText)...)
+			out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
+			out.Counts["protected_memory_injected_line_count"] = len(protectedMemoryLines)
+		}
+		out.ProtectedMemoryText = makePrepareTurnSection("[Protected Memory Guidance]", protectedMemoryLines)
 
+		return memorySelection, memoryLines, actualMemoryLines, protectedMemoryLines, artifactHydration
+	}
+	memorySelection, memoryLines, actualMemoryLines, protectedMemoryLines, artifactHydration := projectMemory(&out, vectorShadow, priorityMemoryQuerySet)
+	fragmentStart := prepareTurnFactFragmentStart(&out)
 	kgLines := make([]string, 0, minInt(len(kgTriples), recallLimit))
 	kgClosedDropped := 0
 	kgIrrelevantDropped := 0
@@ -408,7 +511,6 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 	out.StorylineText = makePrepareTurnSection("[Storylines]", storylineLines)
 
-	worldRulesForInjection := collapsePrepareTurnWorldRules(mergePrepareTurnWorldRulesForInjection(artifactHydration.WorldRules, worldRules))
 	worldRuleValueJSON := func(raw any) string {
 		switch value := raw.(type) {
 		case nil:
@@ -418,7 +520,7 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			if value == "" {
 				return ""
 			}
-			return mustCompactJSON(parseSurfacePayload(value))
+			return mustCompactJSON(preparation.payload(value))
 		default:
 			return mustCompactJSON(value)
 		}
@@ -462,99 +564,106 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			valueJSON,
 		)
 	}
-	hydratedWorldRuleIDs := make(map[int64]bool, len(artifactHydration.WorldRules))
-	for _, wr := range artifactHydration.WorldRules {
-		if wr.ID > 0 {
-			hydratedWorldRuleIDs[wr.ID] = true
+	beforeWorld := fragmentStart.capture(&out)
+	projectWorld := func(out *prepareTurnInjectionAssembly, artifactHydration prepareTurnVectorArtifactHydration) ([]store.WorldRule, []string, map[string]bool, int, int) {
+		worldRulesForInjection := collapsePrepareTurnWorldRules(mergePrepareTurnWorldRulesForInjection(artifactHydration.WorldRules, worldRules))
+		hydratedWorldRuleIDs := make(map[int64]bool, len(artifactHydration.WorldRules))
+		for _, wr := range artifactHydration.WorldRules {
+			if wr.ID > 0 {
+				hydratedWorldRuleIDs[wr.ID] = true
+			}
 		}
-	}
-	currentSceneWorldTerms := prepareTurnDistinctiveRecallTerms(recollectionContext.currentSceneStates, entityScope.Scene...)
-	prioritizedWorldRules := make([]store.WorldRule, 0, len(worldRulesForInjection))
-	for _, wr := range worldRulesForInjection {
-		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-		if wr.Pinned || scope == "root" || scope == "global" {
-			prioritizedWorldRules = append(prioritizedWorldRules, wr)
-		}
-	}
-	for _, wr := range worldRulesForInjection {
-		scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-		if wr.Pinned || scope == "root" || scope == "global" {
-			continue
-		}
-		prioritizedWorldRules = append(prioritizedWorldRules, wr)
-	}
-	worldRuleLines := make([]string, 0, minInt(len(worldRulesForInjection), recallLimit))
-	selectedWorldRuleSignatures := map[string]bool{}
-	worldRuleIrrelevantDropped := 0
-	worldRulePersistentSelected := 0
-	for _, wr := range prioritizedWorldRules {
-		if len(worldRuleLines) >= recallLimit {
-			break
-		}
-		desc := strings.TrimSpace(wr.Key)
-		if desc == "" {
-			desc = strings.TrimSpace(wr.Scope)
-		}
-		if value := prepareTurnSurfaceText(parseSurfacePayload(wr.ValueJSON)); value != "" {
-			desc = strings.TrimSpace(desc + ": " + value)
-		}
-		if desc != "" {
-			worldAnchors := []string{wr.ScopeName, wr.Key}
+		currentSceneWorldTerms := prepareTurnDistinctiveRecallTerms(recollectionContext.currentSceneStates, entityScope.Scene...)
+		prioritizedWorldRules := make([]store.WorldRule, 0, len(worldRulesForInjection))
+		for _, wr := range worldRulesForInjection {
 			scope := strings.ToLower(strings.TrimSpace(wr.Scope))
-			persistent := wr.Pinned || scope == "root" || scope == "global"
-			sceneScoped := scope == "location" || scope == "region" || scope == "area" || scope == "place"
-			relevant := persistent || (wr.ID > 0 && hydratedWorldRuleIDs[wr.ID])
-			currentEntityBindings := 0
-			for _, entityName := range entityScope.Scene {
-				if prepareTurnRecallContainsAnchor(desc, entityName) {
-					currentEntityBindings++
-				}
+			if wr.Pinned || scope == "root" || scope == "global" {
+				prioritizedWorldRules = append(prioritizedWorldRules, wr)
 			}
-			if !relevant && currentEntityBindings > 1 {
-				relevant = true
-			}
-			if !relevant && sceneScoped {
-				relevant = strings.TrimSpace(wr.ScopeName) != "" &&
-					prepareTurnRecallContainsAnchor(worldQuery, wr.ScopeName)
-			}
-			if !relevant && len(currentSceneWorldTerms) > 0 {
-				relevant = prepareTurnDistinctiveRecallOverlapCount(currentSceneWorldTerms, desc) > 0
-			}
-			if !relevant && !sceneScoped {
-				relevant = prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, desc, worldAnchors...)
-			}
-			if !relevant {
-				worldRuleIrrelevantDropped++
+		}
+		for _, wr := range worldRulesForInjection {
+			scope := strings.ToLower(strings.TrimSpace(wr.Scope))
+			if wr.Pinned || scope == "root" || scope == "global" {
 				continue
 			}
-			if persistent {
-				worldRulePersistentSelected++
+			prioritizedWorldRules = append(prioritizedWorldRules, wr)
+		}
+		worldRuleLines := make([]string, 0, minInt(len(worldRulesForInjection), recallLimit))
+		selectedWorldRuleSignatures := map[string]bool{}
+		worldRuleIrrelevantDropped := 0
+		worldRulePersistentSelected := 0
+		for _, wr := range prioritizedWorldRules {
+			if len(worldRuleLines) >= recallLimit {
+				break
 			}
-			line := "- " + desc
-			worldRuleLines = append(worldRuleLines, line)
-			importance := 0.0
-			importancePresent := false
-			if wr.Pinned || wr.UserCorrected {
-				importance = 1
-				importancePresent = true
+			desc := strings.TrimSpace(wr.Key)
+			if desc == "" {
+				desc = strings.TrimSpace(wr.Scope)
 			}
-			appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "world_rules", "required", line,
-				prepareTurnPriorityStoredOccurrence("world_rules", wr.ID, ""),
-				prepareTurnPriorityStoredRowID(wr.ID), wr.SourceTurn, importance, importancePresent, "general", "", nil)
-			if signature := worldRuleSignature(
-				wr.ChatSessionID,
-				wr.Scope,
-				wr.ScopeName,
-				wr.Category,
-				wr.Key,
-				worldRuleValueJSON(wr.ValueJSON),
-			); signature != "" {
-				selectedWorldRuleSignatures[signature] = true
+			if value := preparation.surface(wr.ValueJSON); value != "" {
+				desc = strings.TrimSpace(desc + ": " + value)
+			}
+			if desc != "" {
+				worldAnchors := []string{wr.ScopeName, wr.Key}
+				scope := strings.ToLower(strings.TrimSpace(wr.Scope))
+				persistent := wr.Pinned || scope == "root" || scope == "global"
+				sceneScoped := scope == "location" || scope == "region" || scope == "area" || scope == "place"
+				relevant := persistent || (wr.ID > 0 && hydratedWorldRuleIDs[wr.ID])
+				currentEntityBindings := 0
+				for _, entityName := range entityScope.Scene {
+					if prepareTurnRecallContainsAnchor(desc, entityName) {
+						currentEntityBindings++
+					}
+				}
+				if !relevant && currentEntityBindings > 1 {
+					relevant = true
+				}
+				if !relevant && sceneScoped {
+					relevant = strings.TrimSpace(wr.ScopeName) != "" &&
+						prepareTurnRecallContainsAnchor(worldQuery, wr.ScopeName)
+				}
+				if !relevant && len(currentSceneWorldTerms) > 0 {
+					relevant = prepareTurnDistinctiveRecallOverlapCount(currentSceneWorldTerms, desc) > 0
+				}
+				if !relevant && !sceneScoped {
+					relevant = prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, desc, worldAnchors...)
+				}
+				if !relevant {
+					worldRuleIrrelevantDropped++
+					continue
+				}
+				if persistent {
+					worldRulePersistentSelected++
+				}
+				line := "- " + desc
+				worldRuleLines = append(worldRuleLines, line)
+				importance := 0.0
+				importancePresent := false
+				if wr.Pinned || wr.UserCorrected {
+					importance = 1
+					importancePresent = true
+				}
+				appendPrepareTurnPrioritySourceMetadata(out, "world_state", "world_rules", "required", line,
+					prepareTurnPriorityStoredOccurrence("world_rules", wr.ID, ""),
+					prepareTurnPriorityStoredRowID(wr.ID), wr.SourceTurn, importance, importancePresent, "general", "", nil)
+				if signature := worldRuleSignature(
+					wr.ChatSessionID,
+					wr.Scope,
+					wr.ScopeName,
+					wr.Category,
+					wr.Key,
+					worldRuleValueJSON(wr.ValueJSON),
+				); signature != "" {
+					selectedWorldRuleSignatures[signature] = true
+				}
 			}
 		}
-	}
-	out.WorldRulesText = makePrepareTurnSection("[World Rules]", worldRuleLines)
+		out.WorldRulesText = makePrepareTurnSection("[World Rules]", worldRuleLines)
 
+		return worldRulesForInjection, worldRuleLines, selectedWorldRuleSignatures, worldRuleIrrelevantDropped, worldRulePersistentSelected
+	}
+	worldRulesForInjection, worldRuleLines, selectedWorldRuleSignatures, worldRuleIrrelevantDropped, worldRulePersistentSelected := projectWorld(&out, artifactHydration)
+	fragmentStart = prepareTurnFactFragmentStart(&out)
 	charLines := make([]string, 0, len(charStates))
 	charObjectiveLines := make([]string, 0, len(charStates))
 	charRelationshipLines := make([]string, 0, len(charStates))
@@ -706,52 +815,58 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	}
 	out.CharacterRelationshipText = makePrepareTurnSection("[Character Relationships]", charRelationshipLines)
 
-	pendingLines := make([]string, 0, minInt(len(pendingThreads), recallLimit))
-	pendingIrrelevantDropped := 0
-	pendingPinnedActiveSelected := 0
-	pendingSuppressedDropped := 0
-	// Use the already configured Host conversation query set before candidate
-	// scoring. Otherwise an implicit "continue" loses the named ongoing goal
-	// before either ordinary selection or the optional specialist can see it.
-	pendingQuery := strings.TrimSpace(goalQuery + "\n" + strings.Join(stringsFromAny(priorityMemoryQueryInput[prepareTurnPriorityQuerySetContextKey]), "\n"))
-	for _, pt := range pendingThreads {
-		if len(pendingLines) >= recallLimit {
-			break
-		}
-		if pt.Suppressed {
-			pendingSuppressedDropped++
-			continue
-		}
-		rawDescription := strings.TrimSpace(pt.Description)
-		desc := compactPrepareTurnLine(rawDescription, 0)
-		status := strings.TrimSpace(pt.Status)
-		if status != "" && desc != "" {
-			desc = compactPrepareTurnLine("status="+status+"; "+desc, 0)
-		}
-		if desc != "" {
-			pinnedActive := pt.Pinned && strings.EqualFold(status, "open")
-			if !pinnedActive && !prepareTurnRequestFirstRelevant(rawSupportQuery, pendingQuery, desc) {
-				pendingIrrelevantDropped++
+	beforePending := fragmentStart.capture(&out)
+	projectPending := func(out *prepareTurnInjectionAssembly, selectionContext prepareTurnMemorySelectionContext) ([]string, int, int, int) {
+		pendingLines := make([]string, 0, minInt(len(pendingThreads), recallLimit))
+		pendingIrrelevantDropped := 0
+		pendingPinnedActiveSelected := 0
+		pendingSuppressedDropped := 0
+		// Use the already configured Host conversation query set before candidate
+		// scoring. Otherwise an implicit "continue" loses the named ongoing goal
+		// before either ordinary selection or the optional specialist can see it.
+		pendingQuery := strings.TrimSpace(goalQuery + "\n" + strings.Join(selectionContext.QuerySet, "\n"))
+		for _, pt := range pendingThreads {
+			if len(pendingLines) >= recallLimit {
+				break
+			}
+			if pt.Suppressed {
+				pendingSuppressedDropped++
 				continue
 			}
-			line := "- " + desc
-			pendingLines = append(pendingLines, line)
-			importance := float64(pt.Priority)
-			importancePresent := pt.Priority > 0
-			if pt.Pinned || pt.UserCorrected {
-				importance = 1
-				importancePresent = true
+			rawDescription := strings.TrimSpace(pt.Description)
+			desc := compactPrepareTurnLine(rawDescription, 0)
+			status := strings.TrimSpace(pt.Status)
+			if status != "" && desc != "" {
+				desc = compactPrepareTurnLine("status="+status+"; "+desc, 0)
 			}
-			appendPrepareTurnPrioritySourceMetadata(&out, "unresolved_goal", "pending_threads", "required", line,
-				prepareTurnPriorityStoredOccurrence("pending_threads", pt.ID, ""),
-				prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent, "general", "", nil)
-			if pinnedActive {
-				pendingPinnedActiveSelected++
+			if desc != "" {
+				pinnedActive := pt.Pinned && strings.EqualFold(status, "open")
+				if !pinnedActive && !prepareTurnRequestFirstRelevant(rawSupportQuery, pendingQuery, desc) {
+					pendingIrrelevantDropped++
+					continue
+				}
+				line := "- " + desc
+				pendingLines = append(pendingLines, line)
+				importance := float64(pt.Priority)
+				importancePresent := pt.Priority > 0
+				if pt.Pinned || pt.UserCorrected {
+					importance = 1
+					importancePresent = true
+				}
+				appendPrepareTurnPrioritySourceMetadata(out, "unresolved_goal", "pending_threads", "required", line,
+					prepareTurnPriorityStoredOccurrence("pending_threads", pt.ID, ""),
+					prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent, "general", "", nil)
+				if pinnedActive {
+					pendingPinnedActiveSelected++
+				}
 			}
 		}
-	}
-	out.PendingThreadText = makePrepareTurnSection("[Pending Threads]", pendingLines)
+		out.PendingThreadText = makePrepareTurnSection("[Pending Threads]", pendingLines)
 
+		return pendingLines, pendingIrrelevantDropped, pendingPinnedActiveSelected, pendingSuppressedDropped
+	}
+	pendingLines, pendingIrrelevantDropped, pendingPinnedActiveSelected, pendingSuppressedDropped := projectPending(&out, selectionContext)
+	fragmentStart = prepareTurnFactFragmentStart(&out)
 	episodeLines := make([]string, 0, minInt(len(episodeSums), recallLimit))
 	episodeIrrelevantDropped := 0
 	for _, es := range episodeSums {
@@ -776,31 +891,37 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 			prepareTurnPriorityStoredRowID(es.ID), es.ToTurn, 0, false, "general", "", nil)
 	}
 	out.EpisodeText = makePrepareTurnSection("[Episode Summaries]", episodeLines)
-	hierarchyEscalation := buildPrepareTurnHierarchyEscalation(resumePack, chatLogs, memorySelection, rawUserInput, profile)
-	out.ChapterText = hierarchyEscalation.ChapterText
-	out.ArcText = hierarchyEscalation.ArcText
-	out.SagaText = hierarchyEscalation.SagaText
-	if resumePack != nil && resumePack.Chapter != nil && strings.TrimSpace(out.ChapterText) != "" {
-		for _, line := range prepareTurnDeliveryItems(out.ChapterText) {
-			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "chapter_summaries", "auxiliary", line,
-				prepareTurnPriorityStoredOccurrence("chapter_summaries", resumePack.Chapter.ID, ""),
-				prepareTurnPriorityStoredRowID(resumePack.Chapter.ID), resumePack.Chapter.ToTurn, 0, false, "general", "", nil)
+	beforeHierarchy := fragmentStart.capture(&out)
+	projectHierarchy := func(out *prepareTurnInjectionAssembly, memorySelection prepareTurnMemoryLaneSelection) prepareTurnHierarchyEscalation {
+		hierarchyEscalation := buildPrepareTurnHierarchyEscalation(resumePack, chatLogs, memorySelection, rawUserInput, profile)
+		out.ChapterText = hierarchyEscalation.ChapterText
+		out.ArcText = hierarchyEscalation.ArcText
+		out.SagaText = hierarchyEscalation.SagaText
+		if resumePack != nil && resumePack.Chapter != nil && strings.TrimSpace(out.ChapterText) != "" {
+			for _, line := range prepareTurnDeliveryItems(out.ChapterText) {
+				appendPrepareTurnPrioritySourceMetadata(out, "event_recent", "chapter_summaries", "auxiliary", line,
+					prepareTurnPriorityStoredOccurrence("chapter_summaries", resumePack.Chapter.ID, ""),
+					prepareTurnPriorityStoredRowID(resumePack.Chapter.ID), resumePack.Chapter.ToTurn, 0, false, "general", "", nil)
+			}
 		}
-	}
-	if resumePack != nil && resumePack.Arc != nil && strings.TrimSpace(out.ArcText) != "" {
-		for _, line := range prepareTurnDeliveryItems(out.ArcText) {
-			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "arc_summaries", "auxiliary", line,
-				prepareTurnPriorityStoredOccurrence("arc_summaries", resumePack.Arc.ID, ""),
-				prepareTurnPriorityStoredRowID(resumePack.Arc.ID), resumePack.Arc.ToTurn, 0, false, "general", "", nil)
+		if resumePack != nil && resumePack.Arc != nil && strings.TrimSpace(out.ArcText) != "" {
+			for _, line := range prepareTurnDeliveryItems(out.ArcText) {
+				appendPrepareTurnPrioritySourceMetadata(out, "event_recent", "arc_summaries", "auxiliary", line,
+					prepareTurnPriorityStoredOccurrence("arc_summaries", resumePack.Arc.ID, ""),
+					prepareTurnPriorityStoredRowID(resumePack.Arc.ID), resumePack.Arc.ToTurn, 0, false, "general", "", nil)
+			}
 		}
-	}
-	if resumePack != nil && resumePack.Saga != nil && strings.TrimSpace(out.SagaText) != "" {
-		for _, line := range prepareTurnDeliveryItems(out.SagaText) {
-			appendPrepareTurnPrioritySourceMetadata(&out, "event_recent", "saga_digests", "auxiliary", line,
-				prepareTurnPriorityStoredOccurrence("saga_digests", resumePack.Saga.ID, ""),
-				prepareTurnPriorityStoredRowID(resumePack.Saga.ID), resumePack.Saga.ToTurn, 0, false, "general", "", nil)
+		if resumePack != nil && resumePack.Saga != nil && strings.TrimSpace(out.SagaText) != "" {
+			for _, line := range prepareTurnDeliveryItems(out.SagaText) {
+				appendPrepareTurnPrioritySourceMetadata(out, "event_recent", "saga_digests", "auxiliary", line,
+					prepareTurnPriorityStoredOccurrence("saga_digests", resumePack.Saga.ID, ""),
+					prepareTurnPriorityStoredRowID(resumePack.Saga.ID), resumePack.Saga.ToTurn, 0, false, "general", "", nil)
+			}
 		}
+		return hierarchyEscalation
 	}
+	hierarchyEscalation := projectHierarchy(&out, memorySelection)
+	fragmentStart = prepareTurnFactFragmentStart(&out)
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, maxChars)
 	for _, entry := range personaEntries {
@@ -834,209 +955,214 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(evidence)
 	out.ScopedVerbatimText = out.ScopedVerbatimSupport.Text
 
-	canonLines := make([]string, 0, minInt(len(canonicalLayers), recallLimit))
-	canonEventLines := []string{}
-	canonCharacterLines := []string{}
-	canonRelationshipLines := []string{}
-	canonWorldLines := []string{}
-	canonFiltered := 0
-	canonIrrelevant := 0
-	canonRelationshipIrrelevant := 0
-	canonCharacterRosterOnlyDropped := 0
-	canonTypeCounts := map[string]int{}
-	canonicalObservedTurn := func(layer store.CanonicalStateLayer) int {
-		return maxInt(layer.TurnIndex, maxInt(layer.SourceTurn, layer.LastVerifiedTurn))
-	}
-	latestObservedStateTurn := map[string]int{}
-	for _, layer := range canonicalLayers {
-		if !canonicalLayerEligibleForCurrentTruth(layer) {
-			continue
+	beforeCanon := fragmentStart.capture(&out)
+	projectCanon := func(out *prepareTurnInjectionAssembly, selectedWorldRuleSignatures map[string]bool) ([]string, []string, int, int, int, int, map[string]int) {
+		canonLines := make([]string, 0, minInt(len(canonicalLayers), recallLimit))
+		canonEventLines := []string{}
+		canonCharacterLines := []string{}
+		canonRelationshipLines := []string{}
+		canonWorldLines := []string{}
+		canonFiltered := 0
+		canonIrrelevant := 0
+		canonRelationshipIrrelevant := 0
+		canonCharacterRosterOnlyDropped := 0
+		canonTypeCounts := map[string]int{}
+		canonicalObservedTurn := func(layer store.CanonicalStateLayer) int {
+			return maxInt(layer.TurnIndex, maxInt(layer.SourceTurn, layer.LastVerifiedTurn))
 		}
-		layerType := strings.TrimSpace(layer.LayerType)
-		if layerType != "scene_state" && layerType != "world_state" {
-			continue
-		}
-		latestObservedStateTurn[layerType] = maxInt(latestObservedStateTurn[layerType], canonicalObservedTurn(layer))
-	}
-	stateLayerLabel := func(layerType string, layer store.CanonicalStateLayer) string {
-		observedTurn := canonicalObservedTurn(layer)
-		if observedTurn <= 0 {
-			return layerType
-		}
-		status := "historical"
-		if observedTurn == latestObservedStateTurn[layerType] {
-			status = "latest_observed"
-		}
-		return fmt.Sprintf("%s [%s turn=%d]", layerType, status, observedTurn)
-	}
-	for _, cl := range canonicalLayers {
-		if len(canonLines) >= recallLimit {
-			break
-		}
-		if !canonicalLayerEligibleForCurrentTruth(cl) {
-			canonFiltered++
-			continue
-		}
-		content := prepareTurnSurfaceText(parseSurfacePayload(cl.Content))
-		if content == "" {
-			continue
-		}
-		layer := strings.TrimSpace(cl.LayerType)
-		if layer == "" {
-			layer = "state"
-		}
-		if layer == "relationship_state" {
-			filtered, dropped := prepareTurnRelevantCanonicalRelationshipSurface(cl.Content, rawUserInput, currentSceneEntityNames, currentEntityNames)
-			canonRelationshipIrrelevant += dropped
-			if filtered == "" {
-				canonIrrelevant++
+		latestObservedStateTurn := map[string]int{}
+		for _, layer := range canonicalLayers {
+			if !canonicalLayerEligibleForCurrentTruth(layer) {
 				continue
 			}
-			line := fmt.Sprintf("- %s: %s", layer, filtered)
-			canonLines = append(canonLines, line)
-			canonRelationshipLines = append(canonRelationshipLines, line)
-			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "canonical_state_layers", "required", line,
-				prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "relationship"),
-				prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "source_scoped", "", nil)
-			canonTypeCounts[layer]++
-			continue
+			layerType := strings.TrimSpace(layer.LayerType)
+			if layerType != "scene_state" && layerType != "world_state" {
+				continue
+			}
+			latestObservedStateTurn[layerType] = maxInt(latestObservedStateTurn[layerType], canonicalObservedTurn(layer))
 		}
-		selectedLayer := false
-		switch layer {
-		case "entity_state":
-			if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
-				canonIrrelevant++
+		stateLayerLabel := func(layerType string, layer store.CanonicalStateLayer) string {
+			observedTurn := canonicalObservedTurn(layer)
+			if observedTurn <= 0 {
+				return layerType
+			}
+			status := "historical"
+			if observedTurn == latestObservedStateTurn[layerType] {
+				status = "latest_observed"
+			}
+			return fmt.Sprintf("%s [%s turn=%d]", layerType, status, observedTurn)
+		}
+		for _, cl := range canonicalLayers {
+			if len(canonLines) >= recallLimit {
+				break
+			}
+			if !canonicalLayerEligibleForCurrentTruth(cl) {
+				canonFiltered++
 				continue
 			}
-			var entity map[string]any
-			if json.Unmarshal([]byte(cl.Content), &entity) != nil || len(entity) == 0 {
-				canonIrrelevant++
-				continue
-			}
-			appendCanonicalSubset := func(target *[]string, lane, rawQuery, fallbackQuery string, subset map[string]any) {
-				if len(subset) == 0 {
-					return
-				}
-				encoded, _ := json.Marshal(subset)
-				text := compactPrepareTurnLine(string(encoded), 0)
-				if text == "" || !prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text) {
-					return
-				}
-				line := "- entity_state: " + text
-				*target = append(*target, line)
-				canonLines = append(canonLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, lane, "canonical_state_layers", "required", line,
-					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "entity"),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
-				selectedLayer = true
-			}
-			if value, ok := entity["events"]; ok {
-				appendCanonicalSubset(&canonEventLines, "event_recent", memoryQuery, "", map[string]any{"events": value})
-			}
-			if characters, ok := entity["characters"]; ok {
-				if filtered, ok := prepareTurnCanonicalCharactersForScene(characters, objectiveEntityNames); ok {
-					appendCanonicalSubset(&canonCharacterLines, "character_objective", objectiveQuery, "", map[string]any{"characters": filtered})
-				} else {
-					canonCharacterRosterOnlyDropped++
-				}
-			}
-			worldSubset := map[string]any{}
-			for _, key := range []string{"background", "items"} {
-				if value, ok := entity[key]; ok {
-					worldSubset[key] = value
-				}
-			}
-			appendCanonicalSubset(&canonWorldLines, "world_state", rawSupportQuery, worldQuery, worldSubset)
-		case "scene_state":
-			if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
-				canonIrrelevant++
-				continue
-			}
-			content = prepareTurnSceneStateWithoutUnresolvedThreads(cl.Content)
+			content := preparation.surface(cl.Content)
 			if content == "" {
-				canonIrrelevant++
 				continue
 			}
-			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
-				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
-				canonLines = append(canonLines, line)
-				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
-					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
-				selectedLayer = true
+			layer := strings.TrimSpace(cl.LayerType)
+			if layer == "" {
+				layer = "state"
 			}
-		case "unresolved_threads":
-			canonIrrelevant++
-			continue
-		case "world_state":
-			if state := mapFromAny(parseSurfacePayload(cl.Content)); len(state) > 0 {
-				if rawRules, ok := state["rules"]; ok {
-					keptRules := make([]any, 0, len(sliceFromAny(rawRules)))
-					for _, rawRule := range sliceFromAny(rawRules) {
-						signature := worldStateRuleSignature(cl.ChatSessionID, rawRule)
-						if signature != "" && selectedWorldRuleSignatures[signature] {
+			if layer == "relationship_state" {
+				filtered, dropped := prepareTurnRelevantCanonicalRelationshipSurface(cl.Content, rawUserInput, currentSceneEntityNames, currentEntityNames)
+				canonRelationshipIrrelevant += dropped
+				if filtered == "" {
+					canonIrrelevant++
+					continue
+				}
+				line := fmt.Sprintf("- %s: %s", layer, filtered)
+				canonLines = append(canonLines, line)
+				canonRelationshipLines = append(canonRelationshipLines, line)
+				appendPrepareTurnPrioritySourceMetadata(out, "subjective_relationship", "canonical_state_layers", "required", line,
+					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "relationship"),
+					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "source_scoped", "", nil)
+				canonTypeCounts[layer]++
+				continue
+			}
+			selectedLayer := false
+			switch layer {
+			case "entity_state":
+				if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
+					canonIrrelevant++
+					continue
+				}
+				entity := preparation.sourceMap(cl.Content)
+				if len(entity) == 0 {
+					canonIrrelevant++
+					continue
+				}
+				appendCanonicalSubset := func(target *[]string, lane, rawQuery, fallbackQuery string, subset map[string]any) {
+					if len(subset) == 0 {
+						return
+					}
+					encoded, _ := json.Marshal(subset)
+					text := compactPrepareTurnLine(string(encoded), 0)
+					if text == "" || !prepareTurnRequestFirstRelevant(rawQuery, fallbackQuery, text) {
+						return
+					}
+					line := "- entity_state: " + text
+					*target = append(*target, line)
+					canonLines = append(canonLines, line)
+					appendPrepareTurnPrioritySourceMetadata(out, lane, "canonical_state_layers", "required", line,
+						prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, "entity"),
+						prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
+					selectedLayer = true
+				}
+				if value, ok := entity["events"]; ok {
+					appendCanonicalSubset(&canonEventLines, "event_recent", memoryQuery, "", map[string]any{"events": value})
+				}
+				if characters, ok := entity["characters"]; ok {
+					if filtered, ok := prepareTurnCanonicalCharactersForScene(characters, objectiveEntityNames); ok {
+						appendCanonicalSubset(&canonCharacterLines, "character_objective", objectiveQuery, "", map[string]any{"characters": filtered})
+					} else {
+						canonCharacterRosterOnlyDropped++
+					}
+				}
+				worldSubset := map[string]any{}
+				for _, key := range []string{"background", "items"} {
+					if value, ok := entity[key]; ok {
+						worldSubset[key] = value
+					}
+				}
+				appendCanonicalSubset(&canonWorldLines, "world_state", rawSupportQuery, worldQuery, worldSubset)
+			case "scene_state":
+				if cl.TurnIndex > 0 && recollectionContext.latestAssistantTurn > 0 && cl.TurnIndex < recollectionContext.latestAssistantTurn {
+					canonIrrelevant++
+					continue
+				}
+				content = prepareTurnSceneStateWithoutUnresolvedThreads(cl.Content)
+				if content == "" {
+					canonIrrelevant++
+					continue
+				}
+				if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
+					line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
+					canonLines = append(canonLines, line)
+					canonWorldLines = append(canonWorldLines, line)
+					appendPrepareTurnPrioritySourceMetadata(out, "world_state", "canonical_state_layers", "required", line,
+						prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+						prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
+					selectedLayer = true
+				}
+			case "unresolved_threads":
+				canonIrrelevant++
+				continue
+			case "world_state":
+				if state := maps.Clone(mapFromAny(preparation.payload(cl.Content))); len(state) > 0 {
+					if rawRules, ok := state["rules"]; ok {
+						keptRules := make([]any, 0, len(sliceFromAny(rawRules)))
+						for _, rawRule := range sliceFromAny(rawRules) {
+							signature := worldStateRuleSignature(cl.ChatSessionID, rawRule)
+							if signature != "" && selectedWorldRuleSignatures[signature] {
+								continue
+							}
+							keptRules = append(keptRules, rawRule)
+						}
+						if len(keptRules) == 0 {
+							delete(state, "rules")
+						} else {
+							state["rules"] = keptRules
+						}
+					}
+					hasStateContent := false
+					for key, value := range state {
+						switch key {
+						case "version", "confidence", "verification":
 							continue
 						}
-						keptRules = append(keptRules, rawRule)
+						if hasMeaningfulPayload(value) {
+							hasStateContent = true
+							break
+						}
 					}
-					if len(keptRules) == 0 {
-						delete(state, "rules")
+					if hasStateContent {
+						content = prepareTurnSurfaceText(state)
 					} else {
-						state["rules"] = keptRules
+						content = ""
 					}
 				}
-				hasStateContent := false
-				for key, value := range state {
-					switch key {
-					case "version", "confidence", "verification":
-						continue
-					}
-					if hasMeaningfulPayload(value) {
-						hasStateContent = true
-						break
-					}
+				if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
+					line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
+					canonLines = append(canonLines, line)
+					canonWorldLines = append(canonWorldLines, line)
+					appendPrepareTurnPrioritySourceMetadata(out, "world_state", "canonical_state_layers", "required", line,
+						prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+						prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
+					selectedLayer = true
 				}
-				if hasStateContent {
-					content = prepareTurnSurfaceText(state)
-				} else {
-					content = ""
+			default:
+				// Canonical current-state layers are already truth-filtered. One exact
+				// request/scene term is sufficient here; the stricter historical-memory
+				// threshold would discard concise location/state facts.
+				if prepareTurnDistinctiveRecallOverlapCount(prepareTurnDistinctiveRecallTerms(strings.TrimSpace(rawSupportQuery+"\n"+worldQuery)), content) > 0 {
+					line := fmt.Sprintf("- %s: %s", layer, content)
+					canonLines = append(canonLines, line)
+					canonWorldLines = append(canonWorldLines, line)
+					appendPrepareTurnPrioritySourceMetadata(out, "world_state", "canonical_state_layers", "required", line,
+						prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
+						prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
+					selectedLayer = true
 				}
 			}
-			if prepareTurnRequestFirstRelevant(rawSupportQuery, worldQuery, content) {
-				line := fmt.Sprintf("- %s: %s", stateLayerLabel(layer, cl), content)
-				canonLines = append(canonLines, line)
-				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
-					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
-				selectedLayer = true
+			if !selectedLayer {
+				canonIrrelevant++
+				continue
 			}
-		default:
-			// Canonical current-state layers are already truth-filtered. One exact
-			// request/scene term is sufficient here; the stricter historical-memory
-			// threshold would discard concise location/state facts.
-			if prepareTurnDistinctiveRecallOverlapCount(prepareTurnDistinctiveRecallTerms(strings.TrimSpace(rawSupportQuery+"\n"+worldQuery)), content) > 0 {
-				line := fmt.Sprintf("- %s: %s", layer, content)
-				canonLines = append(canonLines, line)
-				canonWorldLines = append(canonWorldLines, line)
-				appendPrepareTurnPrioritySourceMetadata(&out, "world_state", "canonical_state_layers", "required", line,
-					prepareTurnPriorityStoredOccurrence("canonical_state_layers", cl.ID, layer),
-					prepareTurnPriorityStoredRowID(cl.ID), canonicalObservedTurn(cl), cl.Confidence, cl.Confidence > 0, "general", "", nil)
-				selectedLayer = true
-			}
+			canonTypeCounts[layer]++
 		}
-		if !selectedLayer {
-			canonIrrelevant++
-			continue
-		}
-		canonTypeCounts[layer]++
+		out.CanonText = makePrepareTurnSection("[Canonical State]", canonLines)
+		out.CanonEventText = makePrepareTurnSection("[Canonical Events]", canonEventLines)
+		out.CanonCharacterText = makePrepareTurnSection("[Canonical Character States]", canonCharacterLines)
+		out.CanonRelationshipText = makePrepareTurnSection("[Canonical Relationships]", canonRelationshipLines)
+		out.CanonWorldText = makePrepareTurnSection("[Canonical World States]", canonWorldLines)
+		return canonLines, canonRelationshipLines, canonFiltered, canonIrrelevant, canonRelationshipIrrelevant, canonCharacterRosterOnlyDropped, canonTypeCounts
 	}
-	out.CanonText = makePrepareTurnSection("[Canonical State]", canonLines)
-	out.CanonEventText = makePrepareTurnSection("[Canonical Events]", canonEventLines)
-	out.CanonCharacterText = makePrepareTurnSection("[Canonical Character States]", canonCharacterLines)
-	out.CanonRelationshipText = makePrepareTurnSection("[Canonical Relationships]", canonRelationshipLines)
-	out.CanonWorldText = makePrepareTurnSection("[Canonical World States]", canonWorldLines)
+	canonLines, canonRelationshipLines, canonFiltered, canonIrrelevant, canonRelationshipIrrelevant, canonCharacterRosterOnlyDropped, canonTypeCounts := projectCanon(&out, selectedWorldRuleSignatures)
 	subjectiveRelationshipActive := false
 	for _, text := range []string{
 		out.CharacterPrivateText,
@@ -1056,21 +1182,39 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	} else {
 		out.Counts["subjective_relationship_lane_reason"] = "no_request_or_current_scene_evidence_selected"
 	}
-	deliveryBudgetContext := map[string]any{
-		"_memory_delivery_budget_mode":        memoryDeliveryBudgetMode,
-		"_memory_delivery_budgets":            memoryDeliveryBudgets,
-		"_priority_memory_query":              priorityMemoryQuery,
-		"_priority_memory_query_source":       priorityMemoryQuerySource,
-		prepareTurnPriorityQuerySetContextKey: priorityMemoryQuerySet,
+
+	// This template contains immutable request sources, not a previous query's
+	// selected candidate pool. Each question receives its own score/lineage maps.
+	template := out
+	template.Counts = clonePrepareTurnProjectionCounts(out.Counts)
+	template.PriorityFactSeeds, template.PrioritySourceMetadata = nil, nil
+	out.supplementProjection = func(shadow map[string]any, selection prepareTurnMemorySelectionContext) prepareTurnInjectionAssembly {
+		projected := template
+		projected.Counts = clonePrepareTurnProjectionCounts(template.Counts)
+		queries := prepareTurnProjectionQuerySet(selection, priorityMemoryQuery)
+		selected, _, _, _, hydrated := projectMemory(&projected, shadow, queries)
+		beforeWorld.appendTo(&projected)
+		_, _, signatures, _, _ := projectWorld(&projected, hydrated)
+		beforePending.appendTo(&projected)
+		projectPending(&projected, selection)
+		beforeHierarchy.appendTo(&projected)
+		projectHierarchy(&projected, selected)
+		beforeCanon.appendTo(&projected)
+		projectCanon(&projected, signatures)
+		if selection.PriorityEnabled {
+			prepareTurnResolvePrioritySourcePool(&projected, priorityMemoryQuery, queries, selection.CurrentTurn, selection.SemanticFacts)
+		}
+		return projected
 	}
-	if len(perspectiveContextArg) > 0 {
-		deliveryBudgetContext["_priority_memory_enabled"] = boolFromAny(perspectiveContextArg[0]["_priority_memory_enabled"])
-		deliveryBudgetContext["_priority_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_priority_memory_max_items"], 5)
-		deliveryBudgetContext["_core_objective_memory_max_items_present"] = boolFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items_present"])
-		deliveryBudgetContext["_core_objective_memory_max_items"] = intFromAny(perspectiveContextArg[0]["_core_objective_memory_max_items"], 0)
-		deliveryBudgetContext["_priority_memory_current_turn"] = intFromAny(perspectiveContextArg[0]["_priority_memory_current_turn"], 0)
-		deliveryBudgetContext[prepareTurnPrioritySemanticFactsContextKey] = perspectiveContextArg[0][prepareTurnPrioritySemanticFactsContextKey]
-		deliveryBudgetContext["_priority_precise_vector_trace"] = perspectiveContextArg[0]["_priority_precise_vector_trace"]
+	deliveryBudgetContext := selectionContext
+	deliveryBudgetContext.BudgetMode, deliveryBudgetContext.Budgets = input.BudgetMode, input.Budgets
+	deliveryBudgetContext.Query, deliveryBudgetContext.QuerySource = priorityMemoryQuery, priorityMemoryQuerySource
+	deliveryBudgetContext.QuerySet = priorityMemoryQuerySet
+	if !assembleDelivery {
+		if deliveryBudgetContext.PriorityEnabled {
+			prepareTurnResolvePrioritySourcePool(&out, strings.TrimSpace(priorityMemoryQuery), prepareTurnPriorityQuerySetFromAny(priorityMemoryQuerySet), deliveryBudgetContext.CurrentTurn, append([]prepareTurnPrioritySemanticFact(nil), deliveryBudgetContext.SemanticFacts...))
+		}
+		return out
 	}
 	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, maxChars, deliveryBudgetContext)
 	out.MemoryDeliveryLineage = finalizePrepareTurnMemoryDeliveryLineage(out.MemoryDeliveryLineage, out.MemoryDeliveryPlan)
@@ -1119,8 +1263,8 @@ func buildPrepareTurnInjectionAssemblyWithBudget(memories []store.Memory, kgTrip
 	out.Counts["support_candidate_limit"] = recallLimit
 	out.Counts["support_candidate_limit_source"] = "processing_safety_bound_independent_of_top_k_and_final_delivery"
 	out.Counts["top_k_definition"] = "vector_memory_search_limit_only"
-	out.Counts["priority_memory_max_items"] = intFromAny(deliveryBudgetContext["_priority_memory_max_items"], 0)
-	out.Counts["priority_memory_enabled"] = boolFromAny(deliveryBudgetContext["_priority_memory_enabled"])
+	out.Counts["priority_memory_max_items"] = deliveryBudgetContext.MaxItems
+	out.Counts["priority_memory_enabled"] = deliveryBudgetContext.PriorityEnabled
 	out.Counts["recent_memory_bound"] = len(memorySelection.Recent)
 	out.Counts["vector_memory_bound"] = len(memorySelection.VectorRelevant)
 	out.Counts["relevant_memory_bound"] = len(memorySelection.Relevant)

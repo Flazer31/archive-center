@@ -12,6 +12,15 @@ if (Test-Path -LiteralPath $installDir) {
     throw "Fresh install only: $installDir already exists. Updates use a separate path; nothing was changed."
 }
 
+$installLog = Join-Path $env:LOCALAPPDATA 'ArchiveCenter-install.log'
+$installTranscript = $false
+try {
+    if (Test-Path -LiteralPath $installLog) { Move-Item -LiteralPath $installLog -Destination ($installLog + '.1') -Force }
+    Start-Transcript -LiteralPath $installLog -Force | Out-Null
+    $installTranscript = $true
+    Write-Host "Installation log: $installLog"
+} catch { Write-Warning "Installation log unavailable: $($_.Exception.Message)" }
+
 $helperPath = Join-Path ([System.IO.Path]::GetTempPath()) ("archive-center-release-helper-" + [Guid]::NewGuid().ToString("N") + ".ps1")
 $reservationActive = $false
 try {
@@ -41,7 +50,12 @@ try {
     }
     $reservationActive = $false
     Remove-Item -LiteralPath (Join-Path $installDir ".archive-center-fresh-install-reservation") -Force -ErrorAction SilentlyContinue
+} catch {
+    Write-Host "Installation failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "Installation log: $installLog"
+    throw
 } finally {
+    if ($installTranscript) { try { Stop-Transcript | Out-Null } catch {} }
     Remove-Item -LiteralPath $helperPath -Force -ErrorAction SilentlyContinue
     if ($reservationActive -and (Test-Path -LiteralPath $installDir -PathType Container)) {
         Remove-Item -LiteralPath $installDir -Recurse -Force

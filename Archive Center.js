@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.3.1
+//@display-name Archive Center 4.4.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.3.1
+//@version 4.4.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.3.1";
-  const BUILD_ID = "4.3.1";
+  const VERSION = "4.4.0";
+  const BUILD_ID = VERSION;
   const BUILD_CHANNEL = "stable";
   const BUILD_TIME = "2026-09-10 KST";
-  const BUILD_NOTES = "Archive Center 4.3.1 stable: restored memory recall, faster context assembly and service port settings";
+  const BUILD_NOTES = "Archive Center 4.4.0 stable: shared preprocessing requests, reusable memory preparation, balanced budgets and diagnostics";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -88,58 +88,7 @@
   const REASONING_EFFORT_OPTIONS = Object.freeze(["none", "minimal", "low", "medium", "high", "xhigh", "max", "enable", "disable"]);
   const LLM_GATEWAY_SERVICE_TIER_OPTIONS = Object.freeze(["standard", "flex", "priority"]);
   const CLAUDE_PROMPT_CACHE_MODE_OPTIONS = Object.freeze(["off", "ephemeral_5m", "ephemeral_1h"]);
-  const REASONING_PRESET_GUIDE = Object.freeze({
-    gpt: {
-      label: "GPT",
-      effort: "medium",
-      budgetTokens: 0,
-      glmThinkingType: "disabled",
-      hint: "OpenAI reasoning 문서 기준 effort(low/medium/high 등)를 주로 쓰며, output token 상한을 함께 관리합니다.",
-    },
-    gemini: {
-      label: "Gemini",
-      effort: "high",
-      thinkingLevel: "high",
-      budgetTokens: 1024,
-      glmThinkingType: "disabled",
-      hint: "Google Gemini thinking 문서 기준 2.5 계열은 thinkingBudget(토큰 예산), 3 계열은 thinkingLevel이 핵심입니다.",
-    },
-    claude: {
-      label: "Claude",
-      effort: "high",
-      budgetTokens: 2048,
-      glmThinkingType: "disabled",
-      hint: "Anthropic extended thinking 문서 기준 thinking budget_tokens(또는 adaptive thinking)가 핵심입니다.",
-    },
-    glm: {
-      label: "GLM",
-      effort: "enable",
-      budgetTokens: 0,
-      glmThinkingType: "enabled",
-      hint: "GLM 5.2 이상은 추론 강도를 지원하고, 이전 GLM은 thinking.type enabled/disabled 토글을 사용합니다.",
-    },
-    deepseek_v4: {
-      label: "DeepSeek V4",
-      effort: "high",
-      budgetTokens: 0,
-      glmThinkingType: "disabled",
-      hint: "DeepSeek V4는 provider가 지원하는 low/high/max 추론 강도를 사용하며 별도 추론 토큰 예산을 사용하지 않습니다.",
-    },
-    custom: {
-      label: "Custom",
-      effort: "none",
-      budgetTokens: 0,
-      glmThinkingType: "disabled",
-      hint: "모델 계약이 확인되지 않으면 추론 필드를 자동으로 보내지 않습니다. 고급 필드는 Extra Body JSON에서만 명시합니다.",
-    },
-    none: {
-      label: "Auto",
-      effort: "none",
-      budgetTokens: 0,
-      glmThinkingType: "disabled",
-      hint: "입력된 모델에서 확인된 추론 제어 형식이 없으면 추론 필드를 보내지 않습니다.",
-    },
-  });
+
   // O-2a: Takeover mode — backend generation packet 적용 수준 (4단계)
   // off             → backend packet 무시, plugin local path 100%
   // shadow_compare  → backend packet 조립 + trace에 비교 기록, 실제 채팅 영향 없음
@@ -993,6 +942,7 @@
       "audit.loading": "감사 로그 로딩 중...",
       "audit.collapseBtn": "▾ 감사 기록 닫기",
       "audit.empty": "감사 로그가 없습니다.",
+      "audit.loadFailed": "감사 로그를 불러오지 못했습니다.",
       "audit.refreshBtn": "🔄 새로고침",
       "audit.totalCount": "총 {n}건",
       "audit.totalShown": "총 {total}건 (최근 {shown}건 표시)",
@@ -1398,6 +1348,8 @@
       "turn_hud.transport.connection_failed": "백엔드에 연결하지 못했습니다.",
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.preprocessing.title": "전처리 담당별 시간",
+      "turn_hud.preprocessing.requests": "전처리 요청",
+      "turn_hud.preprocessing.running_count": "{running}/{total}개 진행 중",
       "turn_hud.preprocessing.event_recent": "사건·진행",
       "turn_hud.preprocessing.character_objective": "인물 상태",
       "turn_hud.preprocessing.subjective_relationship": "주관 기억·관계",
@@ -2485,6 +2437,7 @@
       "audit.loading": "Loading audit logs...",
       "audit.collapseBtn": "▾ Close Audit Trail",
       "audit.empty": "No audit logs found.",
+      "audit.loadFailed": "Could not load audit logs.",
       "audit.refreshBtn": "🔄 Refresh",
       "audit.totalCount": "Total {n}",
       "audit.totalShown": "Total {total} (showing latest {shown})",
@@ -2683,6 +2636,8 @@
       "turn_hud.transport.connection_failed": "Could not connect to the backend.",
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.preprocessing.title": "Preprocessing call times",
+      "turn_hud.preprocessing.requests": "Preprocessing requests",
+      "turn_hud.preprocessing.running_count": "{running}/{total} running",
       "turn_hud.preprocessing.event_recent": "Events and recent history",
       "turn_hud.preprocessing.character_objective": "Objective character state",
       "turn_hud.preprocessing.subjective_relationship": "Subjective memory and relationships",
@@ -3730,6 +3685,7 @@
       "audit.loading": "監査ログ読み込み中...",
       "audit.collapseBtn": "▾ 監査記録を閉じる",
       "audit.empty": "監査ログがありません。",
+      "audit.loadFailed": "監査ログを読み込めませんでした。",
       "audit.refreshBtn": "🔄 更新",
       "audit.totalCount": "全{n}件",
       "audit.totalShown": "全{total}件（最新{shown}件表示）",
@@ -3966,6 +3922,8 @@
       "turn_hud.transport.connection_failed": "バックエンドに接続できませんでした。",
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.preprocessing.title": "前処理の担当別呼び出し時間",
+      "turn_hud.preprocessing.requests": "前処理リクエスト",
+      "turn_hud.preprocessing.running_count": "{running}/{total}件実行中",
       "turn_hud.preprocessing.event_recent": "事件・進行履歴",
       "turn_hud.preprocessing.character_objective": "人物の客観的状態",
       "turn_hud.preprocessing.subjective_relationship": "主観記憶・関係",
@@ -4864,6 +4822,11 @@
   };
   const _step23CaptureVerificationPosted = new Set();
   const _lastBridgeFailureByPath = new Map();
+  const _hostDiagnosticEvents = [];
+  let _hostDiagnosticStorageError = "";
+  let _hostDiagnosticWrite = null;
+  let _hostDiagnosticDirty = false;
+  let _hostDiagnosticLoaded = false;
   const _step13GovernorTurnOutcomeHistoryBySession = new Map();
   let _lastSupervisorFailureReason = "";
 
@@ -5427,13 +5390,118 @@
 
   function warnLog(...args) {
     console.warn(LOG_PREFIX, ...args);
+    recordHostDiagnostic({stage: "host", error: args.filter(v => typeof v === "string" || v instanceof Error).map(v => String(v)).join(" ")});
+  }
+
+  function diagnosticText(ko, en, ja) {
+    return settings.uiLanguage === "ja" ? ja : settings.uiLanguage === "en" ? en : ko;
+  }
+
+  function redactHostDiagnostic(value) {
+    let text = String(value == null ? "" : value);
+    for (const [key, secret] of Object.entries(settings || {})) {
+      if (/key|token|password|secret/i.test(key) && typeof secret === "string" && secret) text = text.split(secret).join("[REDACTED]");
+    }
+    return text.replace(/(Bearer\s+)[^\s"',;]+/gi, "$1[REDACTED]")
+      .replace(/((?:api[_-]?key|access[_-]?token|password|authorization|secret)["']?\s*[:=]\s*["']?)[^\s"',;&}]+/gi, "$1[REDACTED]")
+      .replace(/(https?:\/\/)[^/\s:@]+:[^/\s@]+@/gi, "$1[REDACTED]@")
+      .replace(/(?:sk-[A-Za-z0-9_-]{8,}|AIza[A-Za-z0-9_-]{20,})/g, "[REDACTED]");
+  }
+
+  function recordHostDiagnostic(event) {
+    // Host transport errors must remain available when Go cannot be reached.
+    // Device-local, bounded diagnostics only; no prompts, bodies or settings copy.
+    try {
+      const safe = {at: new Date().toISOString(), stage: String(event.stage || "host"),
+        path: redactHostDiagnostic(event.path || "").slice(0, 200), kind: String(event.kind || "warning"),
+        status: Number(event.status || 0), elapsed_ms: Number(event.elapsed_ms || 0),
+        error: redactHostDiagnostic(event.error).slice(0, 1200)};
+      _hostDiagnosticEvents.push(safe);
+      if (_hostDiagnosticEvents.length > 40) _hostDiagnosticEvents.splice(0, _hostDiagnosticEvents.length - 40);
+      _hostDiagnosticDirty = true;
+      if (_hostDiagnosticWrite) return;
+      _hostDiagnosticWrite = (async function() {
+        const storage = await getLocalSettingsStorage();
+        if (!storage) throw new Error("device-local diagnostic storage unavailable");
+        const key = "archive_center_host_diagnostics_v1";
+        if (!_hostDiagnosticLoaded) {
+          const saved = await storage.getItem(key);
+          let old = [];
+          try { old = JSON.parse(saved || "[]"); } catch { _hostDiagnosticStorageError = "previous diagnostic history could not be read"; }
+          if (Array.isArray(old)) _hostDiagnosticEvents.unshift(...old.slice(-40));
+          _hostDiagnosticEvents.splice(0, Math.max(0, _hostDiagnosticEvents.length - 40));
+          _hostDiagnosticLoaded = true;
+        }
+        do {
+          _hostDiagnosticDirty = false;
+          await storage.setItem(key, JSON.stringify(_hostDiagnosticEvents));
+        } while (_hostDiagnosticDirty);
+      })().catch(function(err) { _hostDiagnosticStorageError = String(err.message || err); })
+        .finally(function() { _hostDiagnosticWrite = null; });
+    } catch { /* Diagnostic failure never changes host processing. */ }
+  }
+
+  async function showDiagnosticReport() {
+    document.getElementById("mo-diagnostics-modal")?.remove();
+    const modal = document.createElement("div");
+    modal.id = "mo-diagnostics-modal"; modal.className = "mo-export-overlay";
+    modal.style.zIndex = "2147483647";
+    modal.innerHTML = '<div class="mo-export-panel"><div class="mo-export-hdr"><h3>'
+      + diagnosticText("오류·진단 보고서", "Diagnostic report", "診断レポート")
+      + '</h3><button class="mo-close" data-close>×</button></div><div data-status role="status" style="padding:12px 16px 0;font-size:13px;line-height:1.5">'
+      + diagnosticText("로그를 불러오는 중…", "Loading logs…", "ログを読み込み中…")
+      + '</div><div class="mo-export-actions"><button class="mo-btn mo-btn-primary" data-download disabled>'
+      + diagnosticText("보고서 저장", "Save report", "レポートを保存")
+      + '</button></div><div data-errors style="max-height:55vh;overflow:auto"></div></div>';
+    document.body.appendChild(modal);
+    modal.querySelector('[data-close]').onclick = () => modal.remove();
+    modal.onclick = e => { if (e.target === modal) modal.remove(); };
+    const backend = await bridgeFetch("/diagnostics/report", {timeoutMs: 5000});
+    // Load persisted host errors even if this page has not encountered a failure.
+    let stored = [];
+    try {
+      await _hostDiagnosticWrite;
+      const storage = await getLocalSettingsStorage();
+      if (storage) stored = JSON.parse(await storage.getItem("archive_center_host_diagnostics_v1") || "[]");
+    } catch (err) { _hostDiagnosticStorageError = String(err.message || err); }
+    const hostEvents = _hostDiagnosticLoaded || _hostDiagnosticEvents.length ? _hostDiagnosticEvents : (Array.isArray(stored) ? stored : []);
+    const report = {contract_version: "archive-center.support-report.v1", generated_at: new Date().toISOString(), plugin_version: VERSION,
+      backend_report_available: !!backend, backend: backend || null, host_storage_error: _hostDiagnosticStorageError,
+      host_errors: hostEvents.slice(-40), backend_report_error: backend ? null : redactHostDiagnostic(_lastBridgeFailureByPath.get("/diagnostics/report")?.detail || "Diagnostic report unavailable")};
+    const rows = report.host_errors.map(e => ({time:e.at, label:e.stage, error:e.error}));
+    for (const file of backend?.files || []) {
+      if (!/^backend\.log(?:\.[123])?$/.test(file.name)) continue;
+      for (const line of String(file.text || "").split("\n")) {
+        try {
+          const e = JSON.parse(line);
+          const labels = {"http request failed": "백엔드 요청 오류", "AI provider call failed": "AI 호출 실패", "preprocessing result": "전처리 응답 확인",
+            "critic processing failed": "평론가 처리 실패", "memory retrieval failed": "기억 검색 오류", "background job failed": "백그라운드 작업 오류"};
+          const roles = {event_recent:"사건·진행",character_objective:"인물 상태",subjective_relationship:"주관 기억·관계",world_state:"세계·사물",unresolved_goal:"미해결 목표"};
+          if (e.level === "ERROR" || e.level === "WARN") rows.push({time:e.time, label:[diagnosticText(labels[e.msg] || e.msg,e.msg,e.msg),roles[e.role] || e.role,e.round ? "#"+e.round : "",e.model].filter(Boolean).join(" · "),error: JSON.stringify(e,null,2)});
+        } catch {}
+      }
+    }
+    rows.sort((a,b) => (Date.parse(b.time) || 0) - (Date.parse(a.time) || 0));
+    const status = modal.querySelector('[data-status]');
+    status.textContent = backend ? diagnosticText("최근 오류 · 보고서는 파일로 저장됩니다.", "Recent errors · report saves to a file.", "最近のエラー・レポートを保存できます。")
+      : diagnosticText("백엔드 로그 조회 실패 · 기기 오류는 저장할 수 있습니다. 서버 로그는 07 진단 파일로 수집하세요.", "Backend log request failed. Host errors can be saved. Use the server's 07 diagnostic file for server logs.", "サーバーログ取得失敗。端末のエラーを保存できます。サーバーログは07診断ファイルで収集してください。");
+    if (report.host_storage_error || backend?.log_error) status.textContent += " · " + (report.host_storage_error || backend.log_error);
+    modal.querySelector('[data-errors]').innerHTML = rows.slice(0,20).map(e => '<details style="padding:8px;border-bottom:1px solid #444"><summary>'
+      + escapeAttr((formatDashboardTimestampLocal(e.time, {includeDate:true}) || "—") + " · " + e.label) + '</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">'
+      + escapeAttr(e.error) + '</pre></details>').join("") || '<p>'+diagnosticText("기록된 오류가 없습니다.", "No errors recorded.", "記録されたエラーはありません。")+'</p>';
+    const download = modal.querySelector('[data-download]'); download.disabled = false;
+    download.onclick = () => {
+      const url = URL.createObjectURL(new Blob([JSON.stringify(report,null,2)], {type:"application/json"}));
+      const a = document.createElement("a"); a.href = url; a.download = "Archive-Center-diagnostics-"+new Date().toISOString().replace(/[:.]/g,"-")+".json";
+      document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    };
   }
 
   function notifyLlmFailure(modelLabel, reason) {
     try {
       const safeModel = String(modelLabel || t("settings.model.directorLlm"));
       const safeReason = String(reason || t("common.unknownError"));
-      debugLog("[LLM_FAIL suppressed]", safeModel + ":", safeReason);
+      warnLog("[LLM_FAIL]", safeModel + ":", safeReason);
     } catch (err) {
       warnLog("notifyLlmFailure failed:", err && err.message);
     }
@@ -8071,6 +8139,8 @@
       request_message_count: Math.max(0, Math.trunc(Number(source.requestMessageCount || 0))),
       user_message_index: userMessageIndex,
       user_observed_pair_ordinal: Math.max(0, Math.trunc(Number(source.userObservedPairOrdinal || 0))),
+      user_input_group_ordinal: Math.max(0, Math.trunc(Number(source.userInputGroupOrdinal || 0))),
+      user_message_refs: Array.isArray(source.userMessageRefs) ? source.userMessageRefs.map(item => ({ ...item })) : [],
       user_message_chat_id: String(source.userMessageChatId || "").slice(0, 512),
       user_message_time_ms: Math.max(0, Math.trunc(Number(source.userMessageTimeMs || 0))),
       user_observed_content_hash: String(source.userObservedContentHash || "").slice(0, 128),
@@ -8110,6 +8180,8 @@
           requestMessageCount: item && item.request_message_count,
           userMessageIndex: item && item.user_message_index,
           userObservedPairOrdinal: item && item.user_observed_pair_ordinal,
+          userInputGroupOrdinal: item && item.user_input_group_ordinal,
+          userMessageRefs: item && item.user_message_refs,
           userMessageChatId: item && item.user_message_chat_id,
           userMessageTimeMs: item && item.user_message_time_ms,
           userObservedContentHash: item && item.user_observed_content_hash,
@@ -8126,6 +8198,8 @@
             requestMessageCount: marker.request_message_count,
             userMessageIndex: marker.user_message_index,
             userObservedPairOrdinal: marker.user_observed_pair_ordinal,
+            userInputGroupOrdinal: marker.user_input_group_ordinal,
+            userMessageRefs: marker.user_message_refs,
             userMessageChatId: marker.user_message_chat_id,
             userMessageTimeMs: marker.user_message_time_ms,
             userObservedContentHash: marker.user_observed_content_hash,
@@ -8157,6 +8231,8 @@
       requestMessageCount: Math.max(0, Math.trunc(Number(context.requestMessageCount || 0))),
       userMessageIndex,
       userObservedPairOrdinal: Math.max(0, Math.trunc(Number(context.userObservedPairOrdinal || 0))),
+      userInputGroupOrdinal: Math.max(0, Math.trunc(Number(context.userInputGroupOrdinal || 0))),
+      userMessageRefs: Array.isArray(context.userMessageRefs) ? context.userMessageRefs.map(item => ({ ...item })) : [],
       userMessageChatId: String(context.userMessageChatId || ""),
       userMessageTimeMs: Math.max(0, Math.trunc(Number(context.userMessageTimeMs || 0))),
       userObservedContentHash: String(context.userObservedContentHash || ""),
@@ -8218,6 +8294,8 @@
       message_disabled_state: "not_disabled",
       user_message_index: marker.userMessageIndex,
       user_observed_pair_ordinal: marker.userObservedPairOrdinal,
+      user_input_group_ordinal: marker.userInputGroupOrdinal,
+      user_message_refs: marker.userMessageRefs || [],
       user_message_chat_id: marker.userMessageChatId,
       user_message_chat_id_state: marker.userMessageChatId ? "observed_before_request" : "unobserved",
       user_message_time_ms: marker.userMessageTimeMs,
@@ -8242,7 +8320,15 @@
     const marker = _nextInputFinalizations.get(sid);
     if (!marker) return { owned: false, started: false, reason: "no_pending_previous_turn" };
     const currentUserIndex = Number(currentRequestContext && currentRequestContext.userMessageIndex);
-    if (!Number.isInteger(currentUserIndex) || currentUserIndex <= Number(marker.userMessageIndex)) {
+    const markerIds = new Set((marker.userMessageRefs || []).map(item => item.message_chat_id).filter(Boolean));
+    if (marker.userMessageChatId) markerIds.add(marker.userMessageChatId);
+    const currentIds = (currentRequestContext && currentRequestContext.userMessageRefs || [])
+      .map(item => item.message_chat_id).filter(Boolean);
+    if (currentRequestContext && currentRequestContext.userMessageChatId) currentIds.push(currentRequestContext.userMessageChatId);
+    const sameInputGroup = markerIds.size > 0 && currentIds.length > 0
+      ? currentIds.some(id => markerIds.has(id))
+      : (!Number.isInteger(currentUserIndex) || currentUserIndex <= Number(marker.userMessageIndex));
+    if (sameInputGroup) {
       return { owned: true, started: false, reason: "same_user_row_reroll_or_edit" };
     }
     if (marker.inFlight) return { owned: true, started: false, reason: "previous_turn_finalization_in_flight" };
@@ -8255,28 +8341,27 @@
       if (marker.hostChatId && chatId && marker.hostChatId !== chatId) {
         return { status: "skipped", reason: "pending_host_chat_not_active" };
       }
-      const sourceMessages = chat && Array.isArray(chat.message) ? chat.message : [];
-      const pendingUserMessage = sourceMessages[Number(marker.userMessageIndex)];
-      const pendingUserComparable = extractComparableMessageRoleAndContent(pendingUserMessage);
-      if (!pendingUserComparable || pendingUserComparable.role !== "user") {
-        return { status: "skipped", reason: "pending_user_row_not_observed" };
-      }
-      const observedUserChatId = String(pendingUserMessage && pendingUserMessage.chatId || "").trim();
-      const stableUserRowMatches = marker.userMessageChatId && observedUserChatId
-        ? marker.userMessageChatId === observedUserChatId
-        : computeOrchestrationDirtyHashOr1c(String(pendingUserComparable.content || "").trim()) === marker.userObservedContentHash;
-      if (!stableUserRowMatches) {
-        return { status: "skipped", reason: "pending_user_row_identity_changed" };
-      }
       const comparable = resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable, {
         source: "risu_next_host_signal_active_chat",
       });
       const pair = pairs.find(function(item) {
-        return Number(item && item.risuUserMessageIndex) === Number(marker.userMessageIndex);
+        const ids = (item.userMessageRefs || []).map(member => member.message_chat_id).filter(Boolean);
+        if (markerIds.size > 0 && ids.length > 0) return ids.some(id => markerIds.has(id));
+        return Number(item.risuUserMessageIndex) === Number(marker.userMessageIndex);
       });
       if (!pair) return { status: "skipped", reason: "pending_user_row_pair_not_observed" };
-      const finality = await buildNextInputSourceAcceptanceFinality(marker, pair, currentRequestContext, hostContext);
+      const lastMember = (pair.userMessageRefs || []).slice(-1)[0] || {};
+      const observedMarker = { ...marker,
+        userMessageIndex: pair.risuUserMessageIndex,
+        userObservedPairOrdinal: pair.observedPairOrdinal,
+        userInputGroupOrdinal: pair.observedInputGroupOrdinal,
+        userMessageRefs: pair.userMessageRefs || [],
+        userMessageChatId: lastMember.message_chat_id || marker.userMessageChatId || "",
+        userMessageTimeMs: lastMember.message_time_ms || marker.userMessageTimeMs || 0,
+        userObservedContentHash: computeOrchestrationDirtyHashOr1c(pair.userContent),
+      };
+      const finality = await buildNextInputSourceAcceptanceFinality(observedMarker, pair, currentRequestContext, hostContext);
       if (!finality) return { status: "skipped", reason: "next_host_signal_observation_unavailable" };
       return backfillOneActiveChatCompletedTurn(sid, pair, {
         source: "risu_next_host_signal_active_chat",
@@ -8359,6 +8444,7 @@
           activePair = {
             risuUserMessageIndex: observedUserMessageIndex,
             observedPairOrdinal,
+            observedInputGroupOrdinal: Number(hostTurnObservation.user_input_group_ordinal || 0),
             source: "official_after_request_user_anchor",
           };
           activePairMatchMode = "official_host_coordinate";
@@ -8440,6 +8526,10 @@
       let pendingAssistantCandidates = [];
       let pendingStartIndex = 0;
       let pendingUserMessageIndex = null;
+      let pendingUserRefs = [];
+      let observedInputGroupOrdinal = 0;
+      let groupHasUser = false;
+      let groupHasAssistant = false;
 
       function emitPending(endIndex) {
         const userContent = String(pendingUser || "").trim();
@@ -8461,6 +8551,8 @@
           });
         pairs.push({
           observedPairOrdinal,
+          observedInputGroupOrdinal,
+          userMessageRefs: pendingUserRefs.slice(),
           userContent,
           assistantContent,
           contextMessages,
@@ -8480,16 +8572,30 @@
         const content = rawContent.trim();
         if (!content && msg.role !== "user") continue;
         if (msg.role === "user") {
-          if (pendingUser && pendingAssistantCandidates.length > 0) {
-            emitPending(i);
+          if (!groupHasUser || groupHasAssistant) {
+            if (pendingUser && pendingAssistantCandidates.length > 0) emitPending(i);
+            pendingUser = "";
+            pendingUserRefs = [];
+            pendingAssistantCandidates = [];
+            pendingStartIndex = i;
+            observedInputGroupOrdinal++;
+            groupHasUser = true;
+            groupHasAssistant = false;
           }
-          pendingUser = content
+          const part = content
             ? (preserveAllUserInputs || !shouldSkipUserInputPersistence(content) ? content : "")
             : AUTO_CONTINUE_USER_INPUT_MARKER;
-          pendingAssistantCandidates = [];
-          pendingStartIndex = i;
+          if (part) pendingUser = pendingUser ? pendingUser + "\n\n" + part : part;
           pendingUserMessageIndex = Number.isInteger(msg.risuMessageIndex) ? msg.risuMessageIndex : null;
+          const raw = msg.raw && typeof msg.raw === "object" ? msg.raw : msg;
+          pendingUserRefs.push({
+            message_index: pendingUserMessageIndex,
+            message_chat_id: String(raw.chatId || "").trim(),
+            message_time_ms: typeof raw.time === "number" && Number.isFinite(raw.time) ? Math.trunc(raw.time) : 0,
+            content_hash: computeOrchestrationDirtyHashOr1c(content),
+          });
         } else if (msg.role === "assistant") {
+          if (groupHasUser) groupHasAssistant = true;
           if (!pendingUser) continue; // leading assistant messages are turn 0 starter candidates.
           const assistantContent = normalizeAssistantPersistenceCandidate(content);
           if (assistantContent) {
@@ -8521,6 +8627,14 @@
     for (const [key, value] of Object.entries(source)) {
       if (/api.?key|secret|token|auth|password/i.test(key)) continue;
       if (typeof value === "string") sourceAcceptanceFinality[key] = value.slice(0, 2000);
+      else if (key === "user_message_refs" && Array.isArray(value)) {
+        sourceAcceptanceFinality[key] = value.map(item => ({
+          message_index: item.message_index,
+          message_chat_id: String(item.message_chat_id || ""),
+          message_time_ms: Number(item.message_time_ms || 0),
+          content_hash: String(item.content_hash || ""),
+        }));
+      }
       else if (typeof value === "number" || typeof value === "boolean" || value == null) {
         sourceAcceptanceFinality[key] = value;
       }
@@ -11269,386 +11383,116 @@
     return sanitizeNumber(value, fallback, 0, 131072);
   }
 
-  function detectReasoningFamily(provider, preset, model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model);
-    if (/(^|\/)deepseek[-_]?v4($|[-_:])/.test(normalizedModel)) return "deepseek_v4";
-    if (/(^|\/)gemini[-_]/.test(normalizedModel)) return "gemini";
-    if (/(^|\/)glm[-_]/.test(normalizedModel)) return "glm";
-    if (/(^|\/)claude[-_]/.test(normalizedModel)) return "claude";
-    if (/(^|\/)(?:gpt[-_]?5(?:$|[-_.:])|o[134](?:$|[-_:]))/.test(normalizedModel)) return "gpt";
-    const normalizedProvider = normalizeLlmProvider(provider, "openai");
-    if (normalizedProvider === "gemini" || normalizedProvider === "vertex") return "gemini";
-    if (normalizedProvider === "claude") return "claude";
-    if (normalizedProvider === "ollama" && /(^|\/)(?:gpt[-_]?oss|qwen3|deepseek[-_]?r1|deepseek[-_]?v3\.1)(?:$|[-_:])/.test(normalizedModel)) {
-      return "ollama_thinking";
-    }
-    const normalizedPreset = normalizeReasoningPreset(preset, "auto");
-    if (normalizedPreset === "gpt" || normalizedPreset === "gemini" || normalizedPreset === "claude" || normalizedPreset === "glm") {
-      return normalizedPreset;
-    }
-    return "none";
-  }
 
-  function normalizeReasoningModelIdentifier(model) {
-    return String(model || "").trim().toLowerCase();
-  }
 
-  function resolveGLMReasoningMode(model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/_/g, "-");
-    const match = normalizedModel.match(/(?:^|\/)glm-?(\d+)(?:[.-](\d+))?(?:$|[-_:])/);
-    if (!match) return "toggle";
-    const major = parseInt(match[1], 10) || 0;
-    const minor = parseInt(match[2], 10) || 0;
-    return major > 5 || (major === 5 && minor >= 2) ? "effort" : "toggle";
-  }
 
-  function resolveGeminiThinkingMode(model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model);
-    if (normalizedModel.indexOf("gemini-2.5") !== -1) return "budget";
-    if (/gemini-3(?:\D|$)/.test(normalizedModel)) {
-      return "level";
-    }
-    return "none";
-  }
 
-  function resolveReasoningTransport(provider, endpoint) {
-    const normalizedProvider = normalizeLlmProvider(provider, "openai");
-    let endpointTransport = "";
-    try {
-      const parsed = new URL(String(endpoint || "").trim());
-      const hostname = String(parsed.hostname || "").trim().toLowerCase().replace(/\.$/, "");
-      if (hostname === "api.openai.com") endpointTransport = "openai";
-      else if (hostname === "openrouter.ai") endpointTransport = "openrouter";
-      else if (hostname === "api.llmgateway.io") endpointTransport = "llmgateway";
-      else if (hostname === "ai-gateway.vercel.sh") endpointTransport = "vercel";
-      else if (hostname === "api.neuralwatt.com") endpointTransport = "neuralwatt";
-      else if (hostname === "api.deepseek.com") endpointTransport = "deepseek";
-      else if (["localhost", "127.0.0.1", "::1"].includes(hostname) && parsed.port === "11434") endpointTransport = "ollama";
-    } catch {}
-    if (normalizedProvider === "custom") return endpointTransport === "deepseek" ? "deepseek" : "custom";
-    if (normalizedProvider === "openai" && endpointTransport === "deepseek") return "deepseek";
-    if (endpointTransport && endpointTransport !== normalizedProvider) return "conflict";
-    return normalizedProvider;
-  }
 
-  function resolveGeminiThinkingLevelOptions(model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model);
-    if (normalizedModel.indexOf("gemini-3.1-flash-lite-image") !== -1) return ["none", "minimal", "high"];
-    if (normalizedModel.indexOf("gemini-3-pro-preview") !== -1) return ["none", "low", "high"];
-    if (normalizedModel.indexOf("gemini-3.1-pro") !== -1 || normalizedModel.indexOf("gemini-3.7-flash") !== -1 || normalizedModel.indexOf("gemini-3.8-flash") !== -1) {
-      return ["none", "low", "medium", "high"];
-    }
-    if (/gemini-3(?:\.5|\.6)?-(?:flash|flash-lite)/.test(normalizedModel)) {
-      return ["none", "minimal", "low", "medium", "high"];
-    }
-    return ["none", "low", "high"];
-  }
 
-  function resolveClaudeThinkingMode(model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/[._]/g, "-");
-    const match = normalizedModel.match(/claude(?:-[a-z]+)*-(\d+)(?:-(\d{1,2})(?:-|$))?/);
-    if (!match) return "none";
-    const major = Number(match[1]);
-    const minor = match[2] === undefined ? -1 : Number(match[2]);
-    if (major >= 5 || (major === 4 && minor >= 6)) return "adaptive";
-    if ((major === 3 && minor === 7) || (major === 4 && (minor < 0 || minor <= 5))) return "manual_budget";
-    return "none";
-  }
 
-  function resolveGPTReasoningEffortOptions(model) {
-    const normalizedModel = normalizeReasoningModelIdentifier(model).replace(/_/g, "-");
-    if (/(^|\/)gpt-?5\.6(?:$|[-_:])/.test(normalizedModel)) {
-      return ["none", "low", "medium", "high", "xhigh", "max"];
-    }
-    if (/(^|\/)gpt-?5\.(?:2|5)(?:$|[-_:])/.test(normalizedModel)) {
-      return ["none", "low", "medium", "high", "xhigh"];
-    }
-    if (/(^|\/)gpt-?5(?:$|[-_:])/.test(normalizedModel)) {
-      return ["minimal", "low", "medium", "high"];
-    }
-    if (/(^|\/)o[134](?:$|[-_:])/.test(normalizedModel)) {
-      return ["none", "low", "medium", "high"];
-    }
-    return [];
-  }
 
-  function resolveReasoningControls(provider, preset, model, endpoint) {
-    const family = detectReasoningFamily(provider, preset, model);
-    const normalizedProvider = normalizeLlmProvider(provider, "openai");
-    const transport = resolveReasoningTransport(normalizedProvider, endpoint);
-    const geminiMode = resolveGeminiThinkingMode(model);
-    const geminiLevelOptions = resolveGeminiThinkingLevelOptions(model);
-    const claudeMode = resolveClaudeThinkingMode(model);
-    const gptEffortOptions = resolveGPTReasoningEffortOptions(model);
-    const glmMode = family === "glm" ? resolveGLMReasoningMode(model) : "none";
-    const deepSeekV4EffortOptions = transport === "neuralwatt" && /deepseek[-_]?v4(?:$|[-_:]).*flash/.test(normalizeReasoningModelIdentifier(model))
-      ? ["none", "high", "max"]
-      : ["none", "low", "high", "max"];
-    if (transport === "conflict") {
-      return {
-        family,
-        mode: "unsupported",
-        showEffort: false,
-        effortOptions: [],
-        effortLabel: "Reasoning Effort",
-        effortHint: "",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: "선택한 provider와 공식 endpoint가 서로 달라 추론 필드를 전달하지 않습니다.",
-      };
-    }
-    if (transport === "ollama" && family !== "none") {
-      const effortOptions = family === "glm"
-        ? (glmMode === "effort" ? ["none", "high"] : ["enable", "disable"])
-        : ["none", "low", "medium", "high"];
-      return {
-        family,
-        mode: "ollama_reasoning_effort",
-        showEffort: true,
-        effortOptions,
-        effortLabel: family === "glm" && glmMode === "toggle" ? "Reasoning Toggle" : "Reasoning Effort",
-        effortHint: family === "glm"
-          ? (glmMode === "effort"
-            ? "GLM 5.2 이상은 Ollama OpenAI 호환 규약에서 끄기/High만 전달합니다."
-            : "GLM 5.1 이하는 thinking 켜기/끄기만 선택하고 Ollama 전송값으로 변환합니다.")
-          : "Ollama endpoint 규약에 맞춰 none/low/medium/high만 전달합니다.",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: family === "glm"
-          ? "현재 모델/전송 규약: GLM " + (glmMode === "effort" ? "5.2+ effort" : "toggle") + " → Ollama reasoning_effort"
-          : "현재 전송 규약: Ollama OpenAI 호환 reasoning_effort",
-      };
-    }
-    if ((["llmgateway", "openrouter", "vercel", "neuralwatt"].includes(transport) && family !== "none") || (["custom", "opencode", "opencode-go"].includes(transport) && family === "deepseek_v4")) {
-      const gatewayEffortOptions = family === "deepseek_v4"
-        ? deepSeekV4EffortOptions
-        : (family === "gpt" && gptEffortOptions.length > 0
-          ? gptEffortOptions
-          : (family === "glm"
-            ? (glmMode === "effort" ? ["none", "high"] : ["enable", "disable"])
-            : (family === "gemini" && geminiMode !== "none"
-              ? geminiLevelOptions
-              : (family === "claude" && claudeMode !== "none" ? ["none", "low", "medium", "high", "max"] : []))));
-      if (gatewayEffortOptions.length > 0) {
-        return {
-          family,
-          mode: "gateway_reasoning_effort",
-          showEffort: true,
-          effortOptions: gatewayEffortOptions,
-          effortLabel: "Reasoning Effort",
-          effortHint: "선택한 gateway의 전송 형식으로 변환해 전달합니다.",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "",
-          guideModeText: "현재 전송 규약: " + transport + " reasoning",
-        };
-      }
-    }
-    if (family === "glm") {
-      if (glmMode === "effort") {
-        return {
-          family,
-          mode: "glm_reasoning_effort",
-          showEffort: true,
-          effortOptions: ["none", "high", "max"],
-          effortLabel: "Reasoning Effort",
-          effortHint: "GLM 5.2 이상은 none/high/max를 사용합니다. low/medium은 high, xhigh는 max로 정규화됩니다.",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "",
-          guideModeText: "현재 모델 감지: GLM 5.2+ thinking.type + reasoning_effort",
-        };
-      }
-      return {
-        family,
-        mode: "glm_toggle",
-        showEffort: true,
-        effortOptions: ["enable", "disable"],
-        effortLabel: "Reasoning Toggle",
-        effortHint: "GLM 5.1 이하는 enable/disable thinking toggle을 사용합니다.",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: "현재 모델 감지: GLM thinking.type",
-      };
-    }
-    if (family === "deepseek_v4" && transport === "deepseek") {
-      return {
-        family,
-        mode: "deepseek_v4_reasoning_effort",
-        showEffort: true,
-        effortOptions: deepSeekV4EffortOptions,
-        effortLabel: "Reasoning Effort",
-        effortHint: "DeepSeek V4는 provider가 지원하는 none/low/high/max를 사용합니다. 별도 추론 토큰 예산은 전달하지 않습니다.",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: "현재 전송 규약: DeepSeek V4 thinking.type + reasoning_effort",
-      };
-    }
-    if (family === "gemini") {
-      if (!["gemini", "vertex", "opencode"].includes(normalizedProvider) || geminiMode === "none") {
-        return {
-          family,
-          mode: "unsupported",
-          showEffort: false,
-          effortOptions: [],
-          effortLabel: "Reasoning Effort",
-          effortHint: "",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "",
-          guideModeText: "현재 Gemini 모델에서 확인된 추론 제어 형식이 없어 추론 필드를 전달하지 않습니다.",
-        };
-      }
-      return geminiMode === "level"
-        ? {
-          family,
-          mode: "thinking_level",
-          showEffort: true,
-          effortOptions: geminiLevelOptions,
-          effortLabel: "Thinking Level",
-          effortHint: "none은 thinking level을 전달하지 않습니다. Gemini 3 계열은 minimal/low/medium/high thinking level을 사용합니다.",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "Gemini 3 계열에서는 token budget 대신 thinking level을 사용합니다.",
-          guideModeText: "현재 모델 감지: Gemini 3 thinkingLevel",
-        }
-        : {
-          family,
-          mode: "thinking_budget",
-          showEffort: false,
-          effortOptions: [],
-          effortLabel: "Reasoning Effort",
-          effortHint: "",
-          showBudget: true,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "Gemini 2.5 계열은 thinkingBudget(토큰 예산)을 사용합니다.",
-          guideModeText: "현재 모델 감지: Gemini 2.5 thinkingBudget",
-        };
-    }
-    if (family === "claude") {
-      if (["claude", "opencode", "opencode-go"].includes(normalizedProvider) && claudeMode === "adaptive") {
-        return {
-          family,
-          mode: "claude_adaptive",
-          showEffort: true,
-          effortOptions: ["none", "low", "medium", "high", "max"],
-          effortLabel: "Reasoning Effort",
-          effortHint: "Claude 4.6 이상은 adaptive thinking과 effort를 사용합니다. 숫자 budget은 전달하지 않습니다.",
-          showBudget: false,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "",
-          guideModeText: "현재 모델 감지: Claude adaptive thinking + effort",
-        };
-      }
-      if (["claude", "opencode", "opencode-go"].includes(normalizedProvider) && claudeMode === "manual_budget") {
-        return {
-          family,
-          mode: "claude_manual_budget",
-          showEffort: false,
-          effortOptions: [],
-          effortLabel: "Reasoning Effort",
-          effortHint: "",
-          showBudget: true,
-          budgetLabel: "Reasoning Budget Tokens",
-          budgetHint: "Claude 3.7~4.5는 thinking budget_tokens를 사용하며 max completion보다 작아야 합니다.",
-          guideModeText: "현재 모델 감지: Claude manual thinking budget",
-        };
-      }
-    }
-    if (family !== "gpt" || gptEffortOptions.length === 0) {
-      return {
-        family,
-        mode: "unsupported",
-        showEffort: false,
-        effortOptions: [],
-        effortLabel: "Reasoning Effort",
-        effortHint: "",
-        showBudget: false,
-        budgetLabel: "Reasoning Budget Tokens",
-        budgetHint: "",
-        guideModeText: "현재 모델에서 확인된 추론 제어 형식이 없어 추론 필드를 전달하지 않습니다.",
-      };
-    }
-    return {
-      family,
-      mode: "reasoning_effort",
-      showEffort: true,
-      effortOptions: gptEffortOptions,
-      effortLabel: "Reasoning Effort",
-      effortHint: "선택한 OpenAI 모델 세대가 지원하는 reasoning_effort만 표시합니다.",
-      showBudget: false,
-      budgetLabel: "Reasoning Budget Tokens",
-      budgetHint: "",
-      guideModeText: "현재 모델 감지: reasoning effort",
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  function applyReasoningFieldsToPayload(payload, reasoningPreset, reasoningEffort, reasoningBudgetTokens) {
+    payload.reasoning_input = {
+      preset: reasoningPreset,
+      effort: reasoningEffort,
+      budget: reasoningBudgetTokens,
     };
-  }
-
-  function normalizeReasoningEffortForControls(value, controls) {
-    if (!controls || !controls.showEffort) return "none";
-    const options = Array.isArray(controls.effortOptions) ? controls.effortOptions.filter(Boolean) : [];
-    if (!options.length) return "none";
-    let normalizedValue = String(value || "").trim().toLowerCase();
-    if (controls.family === "glm") {
-      if (controls.mode === "glm_toggle" || (options.includes("enable") && options.includes("disable"))) {
-        normalizedValue = ["none", "minimal", "disable", "disabled", "off", "false"].includes(normalizedValue) ? "disable" : "enable";
-      } else {
-        if (["minimal", "disable", "disabled", "off", "false"].includes(normalizedValue)) normalizedValue = "none";
-        if (["enable", "enabled", "on", "true", "low", "medium"].includes(normalizedValue)) normalizedValue = "high";
-        if (normalizedValue === "xhigh") normalizedValue = options.includes("max") ? "max" : "high";
-        if (normalizedValue === "max" && !options.includes("max") && options.includes("high")) normalizedValue = "high";
-      }
-    }
-    if (controls.family === "deepseek_v4") {
-      if (normalizedValue === "low" && !options.includes("low")) normalizedValue = "high";
-      if (normalizedValue === "medium" && controls.mode !== "ollama_reasoning_effort") normalizedValue = "high";
-      if (normalizedValue === "xhigh") normalizedValue = "max";
-    }
-    const fallback = options[0];
-    return sanitizeEnumValue(normalizedValue, fallback, options);
-  }
-
-  function resolveReasoningDefaultEffortValue(presetInfo, controls) {
-    if (!controls || !controls.showEffort) return "none";
-    if (controls.mode === "thinking_level") {
-      return normalizeReasoningEffortForControls((presetInfo && presetInfo.thinkingLevel) || "high", controls);
-    }
-    return normalizeReasoningEffortForControls((presetInfo && presetInfo.effort) || controls.effortOptions[0], controls);
-  }
-
-  function buildReasoningGuideText(preset, presetInfo, controls) {
-    const prefix = preset === "auto" ? "자동 감지 결과" : "현재 프리셋";
-    const parts = [presetInfo && presetInfo.label, presetInfo && presetInfo.hint, controls && controls.guideModeText].filter(Boolean);
-    return prefix + ": " + parts.join(" · ");
-  }
-
-  function applyReasoningFieldsToPayload(payload, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens) {
-    if (!payload || typeof payload !== "object") return payload;
-    const controls = reasoningControls || {};
-    const effort = String(reasoningEffort || "").trim().toLowerCase();
-    if (reasoningPreset && String(reasoningPreset).trim().toLowerCase() !== "auto") {
-      payload.reasoning_preset = String(reasoningPreset).trim();
-    }
-    if (controls.mode === "glm_toggle") {
-      if (controls.showEffort && effort) {
-        payload.glm_thinking_type = (effort === "disable" || effort === "disabled") ? "disabled" : "enabled";
-      }
-    } else if (controls.mode === "glm_reasoning_effort") {
-      payload.glm_thinking_type = effort === "none" ? "disabled" : "enabled";
-      if (effort !== "none") payload.reasoning_effort = effort;
-    } else if (controls.mode === "deepseek_v4_reasoning_effort") {
-      payload.reasoning_effort = effort || "none";
-    } else if (controls.showEffort && effort && (effort !== "none" || controls.mode === "reasoning_effort" || controls.mode === "ollama_reasoning_effort" || controls.mode === "gateway_reasoning_effort")) {
-      payload.reasoning_effort = effort;
-    }
-    if (controls.showBudget && reasoningBudgetTokens > 0) {
-      payload.reasoning_budget_tokens = reasoningBudgetTokens;
-      payload.budget_tokens = reasoningBudgetTokens;
-    }
     return payload;
+  }
+
+  function renderLlmProviderOptions(selected) {
+    const providers = [
+      ["openai", "OpenAI"], ["claude", "Claude"], ["gemini", "Gemini"],
+      ["openrouter", "OpenRouter"], ["opencode", "OpenCode Zen"], ["opencode-go", "OpenCode Go"],
+      ["llmgateway", "LLM Gateway"], ["vercel", "Vercel AI Gateway"], ["neuralwatt", "NeuralWatt"],
+      ["vertex", "Vertex"], ["copilot", "Copilot"], ["ollama", "Ollama"], ["custom", "Custom"],
+    ];
+    return providers.map(([value, label]) => '<option value="' + value + '"' +
+      ((selected || "openai") === value ? " selected" : "") + '>' + label + '</option>').join("");
+  }
+
+  function bindLlmSettingsView(prefix, fetchView, options = {}) {
+    const field = (suffix) => document.getElementById(prefix + ((options.fields || {})[suffix] || suffix));
+    const providerEl = field("Provider");
+    const presetEl = field("ReasoningPreset");
+    if (!providerEl || !presetEl) return async () => {};
+    let latestRequest = 0;
+    const runSync = async () => {
+      const request = ++latestRequest;
+      const effortEl = field("ReasoningEffort");
+      const budgetEl = field("ReasoningBudgetTokens");
+      const guideEl = field("ReasoningGuide");
+      const draft = {
+        provider: providerEl.value,
+        endpoint: field("Endpoint")?.value || "",
+        model: field("Model")?.value || "",
+        preset: presetEl.value,
+        currentEffort: effortEl?.value || "",
+        currentBudget: budgetEl?.value || "",
+        previousSyncKey: presetEl.dataset.reasoningSyncKey || "",
+        isFirstSync: presetEl.dataset.reasoningSyncInitialized !== "1",
+        ...(options.draft ? options.draft() : {}),
+      };
+      try {
+        const view = await fetchView(draft);
+        // Only the latest draft may update this form. This is UI-local state.
+        if (request !== latestRequest || presetEl.isConnected === false) return;
+        if (!view) {
+          if (guideEl) guideEl.textContent = "추론 선택지 조회 실패 · 입력값은 유지됩니다.";
+          return;
+        }
+        const controls = view.controls;
+        if (field("Temperature")) {
+          field("Temperature").disabled = !!view.temperatureLocked;
+          field("Temperature").title = view.temperatureLocked ? '모델이 추론 모드에 맞는 온도를 사용합니다.' : '';
+        }
+        for (const option of presetEl.options) option.disabled = !view.allowedPresets.includes(option.value);
+        if (guideEl) guideEl.textContent = options.compact ? controls.guideModeText : view.guideText;
+        for (const [suffix, text] of [["ReasoningEffortLabel", controls.effortLabel], ["ReasoningEffortHint", controls.effortHint], ["ReasoningBudgetTokensLabel", controls.budgetLabel], ["ReasoningBudgetTokensHint", controls.budgetHint]]) {
+          const el = field(suffix);
+          if (el) el.textContent = text;
+        }
+        if (field("ReasoningEffortRow")) field("ReasoningEffortRow").style.display = controls.showEffort ? "" : "none";
+        if (field("ReasoningBudgetTokensRow")) field("ReasoningBudgetTokensRow").style.display = controls.showBudget ? "" : "none";
+        if (effortEl && controls.showEffort) {
+          // Preserve a choice edited while the display request was in flight.
+          const value = effortEl.value === draft.currentEffort ? view.nextEffort : effortEl.value;
+          const options = controls.effortOptions.slice();
+          if (value && !options.includes(value)) options.push(value);
+          effortEl.innerHTML = options.map((option) => '<option value="' + escapeAttr(option) + '">' + escapeAttr(option || '연결 기본값') + '</option>').join("");
+          effortEl.value = value;
+        }
+        if (budgetEl && budgetEl.value === draft.currentBudget) budgetEl.value = view.nextBudget;
+        presetEl.dataset.reasoningSyncKey = view.syncKey;
+        presetEl.dataset.reasoningSyncInitialized = "1";
+      } catch (err) {
+        if (request === latestRequest && guideEl && presetEl.isConnected !== false) guideEl.textContent = "추론 선택지 조회 실패 · 입력값은 유지됩니다.";
+      }
+    };
+    for (const suffix of ["Provider", "Endpoint", "Model", "ReasoningPreset"]) {
+      const el = field(suffix);
+      if (!el) continue;
+      el.addEventListener("change", runSync);
+      if (suffix === "Endpoint" || suffix === "Model") el.addEventListener("input", runSync);
+    }
+    runSync();
+    return runSync;
   }
 
   function applyProviderRequestOverrideFields(payload, source) {
@@ -11697,64 +11541,22 @@
     };
   }
 
-  function resolveReasoningSyncUiState(options) {
-    const source = options || {};
-    const provider = normalizeLlmProvider(source.provider, "openai");
-    const preset = normalizeReasoningPreset(source.preset, "auto");
-    const model = String(source.model || "").trim();
-    const endpoint = String(source.endpoint || "").trim();
-    const family = detectReasoningFamily(provider, preset, model);
-    const controls = resolveReasoningControls(provider, preset, model, endpoint);
-    const presetInfo = REASONING_PRESET_GUIDE[family] || REASONING_PRESET_GUIDE.none;
-    const syncKey = [provider, preset, normalizeReasoningModelIdentifier(model), controls.mode].join("|");
-    const previousSyncKey = String(source.previousSyncKey || "");
-    const isFirstSync = !!source.isFirstSync;
-    const shouldApplyPresetDefaults = !isFirstSync && previousSyncKey !== "" && previousSyncKey !== syncKey && preset !== "custom";
-    const currentEffort = String(source.currentEffort || "").trim();
-    const currentBudget = String(source.currentBudget !== undefined && source.currentBudget !== null ? source.currentBudget : "").trim();
-    const storedDeepSeekV4EffortCompatible = controls.mode === "deepseek_v4_reasoning_effort"
-      && ["medium", "xhigh"].indexOf(currentEffort.toLowerCase()) >= 0;
-    const currentEffortSupported = controls.effortOptions.indexOf(currentEffort) >= 0 || storedDeepSeekV4EffortCompatible;
-    const currentBudgetIsNumeric = currentBudget !== "" && isFinite(Number(currentBudget));
-    const defaultEffort = resolveReasoningDefaultEffortValue(presetInfo, controls);
-    const defaultBudget = String(normalizeReasoningBudgetTokens(presetInfo.budgetTokens, 0));
 
-    return {
-      family,
-      controls,
-      presetInfo,
-      syncKey,
-      guideText: buildReasoningGuideText(preset, presetInfo, controls),
-      nextEffort: controls.showEffort
-        ? ((shouldApplyPresetDefaults || (isFirstSync && preset !== "custom" && !currentEffortSupported))
-          ? defaultEffort
-          : normalizeReasoningEffortForControls(currentEffort, controls))
-        : "none",
-      nextBudget: controls.showBudget
-        ? ((shouldApplyPresetDefaults || (isFirstSync && preset !== "custom" && !currentBudgetIsNumeric))
-          ? defaultBudget
-          : currentBudget)
-        : "0",
-    };
-  }
 
-  function getAllowedReasoningPresetsForProvider(provider) {
-    // 프리셋은 provider와 독립적으로 수동 선택 가능해야 한다.
-    return ["auto", "gpt", "gemini", "claude", "glm", "custom"];
-  }
+
 
   function getRequestTimeoutSettingMs(value) {
     const source = value !== undefined ? value : (settings && settings.requestTimeoutMs);
     return sanitizeNumber(source, DEFAULT_SETTINGS.requestTimeoutMs, 1000, 300000);
   }
 
-  function resolveRequestTimeoutMs(overrideMs) {
+  function resolveRequestTimeoutMs(overrideMs, defaultMs) {
     if (overrideMs !== undefined && overrideMs !== null) {
       const parsed = Number(overrideMs);
       if (parsed === 0) return 0;
-      return Number.isFinite(parsed) && parsed > 0 ? parsed : getRequestTimeoutSettingMs();
+      return Number.isFinite(parsed) && parsed > 0 ? parsed : getRequestTimeoutSettingMs(defaultMs);
     }
-    return getRequestTimeoutSettingMs();
+    return getRequestTimeoutSettingMs(defaultMs);
   }
 
   function getCompleteTurnTimeoutMs() {
@@ -11948,9 +11750,6 @@
       getPluginMainReasoningPresetSetting(merged.pluginMainReasoningPreset),
       DEFAULT_SETTINGS.pluginMainReasoningPreset,
     );
-    if (getAllowedReasoningPresetsForProvider(merged.pluginMainProvider).indexOf(merged.pluginMainReasoningPreset) < 0) {
-      merged.pluginMainReasoningPreset = "auto";
-    }
     merged.pluginMainReasoningEffort = getPluginMainReasoningEffortSetting(merged.pluginMainReasoningEffort);
     merged.pluginMainReasoningBudgetTokens = getPluginMainReasoningBudgetTokensSetting(merged.pluginMainReasoningBudgetTokens);
     merged.pluginMainVertexFlexMode = normalizeVertexFlexModeSetting(merged.pluginMainVertexFlexMode);
@@ -11966,9 +11765,6 @@
       getSubLlmReasoningPresetSetting(merged.subLlmReasoningPreset),
       DEFAULT_SETTINGS.subLlmReasoningPreset,
     );
-    if (getAllowedReasoningPresetsForProvider(merged.subLlmProvider).indexOf(merged.subLlmReasoningPreset) < 0) {
-      merged.subLlmReasoningPreset = "auto";
-    }
     merged.subLlmReasoningEffort = getSubLlmReasoningEffortSetting(merged.subLlmReasoningEffort);
     merged.subLlmReasoningBudgetTokens = getSubLlmReasoningBudgetTokensSetting(merged.subLlmReasoningBudgetTokens);
     merged.subLlmVertexFlexMode = normalizeVertexFlexModeSetting(merged.subLlmVertexFlexMode);
@@ -11983,9 +11779,6 @@
     merged.sourceSearchPlannerTemperature = sanitizeNumber(merged.sourceSearchPlannerTemperature, DEFAULT_SETTINGS.sourceSearchPlannerTemperature, 0, 2);
     merged.sourceSearchPlannerMaxCompletionTokens = sanitizeNumber(merged.sourceSearchPlannerMaxCompletionTokens, DEFAULT_SETTINGS.sourceSearchPlannerMaxCompletionTokens, 1, 128000);
     merged.sourceSearchPlannerReasoningPreset = normalizeReasoningPreset(merged.sourceSearchPlannerReasoningPreset, DEFAULT_SETTINGS.sourceSearchPlannerReasoningPreset);
-    if (getAllowedReasoningPresetsForProvider(merged.sourceSearchPlannerProvider).indexOf(merged.sourceSearchPlannerReasoningPreset) < 0) {
-      merged.sourceSearchPlannerReasoningPreset = "auto";
-    }
     merged.sourceSearchPlannerReasoningEffort = normalizeReasoningEffort(merged.sourceSearchPlannerReasoningEffort, DEFAULT_SETTINGS.sourceSearchPlannerReasoningEffort);
     merged.sourceSearchPlannerReasoningBudgetTokens = normalizeReasoningBudgetTokens(merged.sourceSearchPlannerReasoningBudgetTokens, DEFAULT_SETTINGS.sourceSearchPlannerReasoningBudgetTokens);
     // Phase 4-D-2: 하드코딩 상수 설정화
@@ -13970,7 +13763,7 @@
       if (model) model.placeholder = hint.model;
       if (generationOptions) generationOptions.style.display = "";
       if (preset) {
-        const allowed = getAllowedReasoningPresetsForProvider(value);
+        const allowed = REASONING_PRESET_OPTIONS;
         Array.from(preset.options).forEach((option) => { option.hidden = !allowed.includes(option.value); });
         if (!allowed.includes(preset.value)) preset.value = "auto";
       }
@@ -14276,11 +14069,11 @@
   // ──────────────────────────────────────────────────────────────
 
   async function bridgeFetch(path, options = {}) {
-    const { method = "GET", body = null, timeoutMs, headers = null, rawBody = false } = options;
-    const timeout = resolveRequestTimeoutMs(timeoutMs);
+    const { method = "GET", body = null, timeoutMs, headers = null, rawBody = false, bridgeSettings = settings } = options;
+    const timeout = resolveRequestTimeoutMs(timeoutMs, bridgeSettings.requestTimeoutMs);
     const requestStartedAt = Date.now();
-    const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
-    const webDirectBridge = settings.webDirectBridgeEnabled === true;
+    const bridgeRoute = resolveBridgeRuntimeRoute(bridgeSettings.bridgeUrl);
+    const webDirectBridge = bridgeSettings.webDirectBridgeEnabled === true;
     const bridgeTransportMode = webDirectBridge ? "web_direct_experimental" : String(bridgeRoute.mode || "configured");
     const baseUrl = bridgeRoute.url;
     const targetUrl = baseUrl ? `${baseUrl}${path}` : "";
@@ -14291,7 +14084,7 @@
           kind: String(kind || "unknown"),
           path: String(path || ""),
           method: String(method || "GET").toUpperCase(),
-          configured_url: String(bridgeRoute.configuredUrl || settings.bridgeUrl || ""),
+          configured_url: String(bridgeRoute.configuredUrl || bridgeSettings.bridgeUrl || ""),
           target_url: targetUrl,
           route_mode: bridgeTransportMode,
           page_host: String(bridgeRoute.pageHost || ""),
@@ -14309,6 +14102,8 @@
           response_body: String(diagnostics.response_body || "").slice(0, 4000),
           at: recordedAt,
         });
+        recordHostDiagnostic({stage: "bridge", path: String(path || "").split("?")[0], kind, status,
+          error: detail, elapsed_ms: Math.max(0, recordedAt - requestStartedAt)});
       } catch { /* no-op */ }
     };
 
@@ -14418,59 +14213,42 @@
       // Response 객체의 status / ok 확인
       const status = response?.status || 0;
       const isOk = response && (response.ok === true || (status >= 200 && status < 300));
-      if (!isOk) {
-        const hint = (status === 500 || status === 0) ? " (서버가 꺼져 있을 수 있음)" : "";
-        let detail = "HTTP " + status;
-        let responseBody = "";
-        const responseReadErrors = [];
-        try {
-          const errPayload = await response.json();
-          detail = extractBridgeErrorDetail(errPayload, detail);
-          try {
-            responseBody = typeof errPayload === "string" ? errPayload : JSON.stringify(errPayload);
-          } catch (serializeErr) {
-            responseReadErrors.push(String(serializeErr && serializeErr.message || serializeErr || "response serialization failed"));
-          }
-        } catch (jsonReadErr) {
-          responseReadErrors.push(String(jsonReadErr && jsonReadErr.message || jsonReadErr || "response json read failed"));
-          try {
-            const errText = await response.text();
-            detail = extractBridgeErrorDetail(errText, detail);
-            responseBody = String(errText || "");
-          } catch (textReadErr) {
-            responseReadErrors.push(String(textReadErr && textReadErr.message || textReadErr || "response text read failed"));
-          }
+      // Read the transport body once; retain it even when JSON decoding fails.
+      let data, responseText = "", responseReadError = null;
+      try {
+        if (typeof response?.text === "function") {
+          responseText = await response.text();
+          data = webDirectBridge && !responseText.trim() ? null : JSON.parse(responseText);
+        } else {
+          data = await response.json();
+          responseText = typeof data === "string" ? data : (JSON.stringify(data) || "");
         }
+      } catch (err) {
+        responseReadError = err;
+      }
+      if (!isOk) {
+        const hint = status === 0 ? " (서버가 꺼져 있을 수 있음)" : "";
+        let detail = extractBridgeErrorDetail(responseReadError ? responseText : data, "HTTP " + status);
         warnLog(`bridgeFetch HTTP ${status} for ${path}${hint}`);
         if (bridgeRoute.remoteAuto) detail = `${detail}; remote_auto_bridge=${baseUrl}`;
         recordBridgeFailure(status > 0 ? "http_error" : "connection_failed", status, detail, {
-          response_read_error: responseReadErrors.join(" | "),
-          response_body: responseBody,
+          response_read_error: responseReadError ? String(responseReadError.message || responseReadError) : "",
+          response_body: responseText,
         });
         return null;
       }
 
-      // json 파싱 시도 (실패 시 text 파싱 fallback)
-      let data;
-      try {
-        data = await response.json();
-      } catch (jsonErr) {
-        let responseText = "";
-        try {
-          responseText = await response.text();
-          data = JSON.parse(responseText);
-          debugLog(`bridgeFetch OK (text→json) ${path}`);
-        } catch (textErr) {
-          warnLog(`bridgeFetch json parse failed for ${path}:`, jsonErr.message);
-          recordBridgeFailure("response_decode_failed", status, "json parse failed: " + String(jsonErr.message || "unknown"), {
-            error_name: String(jsonErr && jsonErr.name || ""),
-            error_code: String(jsonErr && jsonErr.code || ""),
-            error_message: String(jsonErr && jsonErr.message || jsonErr || "unknown"),
-            response_read_error: String(textErr && textErr.message || textErr || "unknown"),
-            response_body: responseText,
-          });
-          return null;
-        }
+      if (responseReadError) {
+        const detail = String(responseReadError.message || responseReadError);
+        warnLog(`bridgeFetch response decode failed for ${path}:`, detail);
+        recordBridgeFailure("response_decode_failed", status, detail, {
+          error_name: String(responseReadError.name || ""),
+          error_code: String(responseReadError.code || ""),
+          error_message: detail,
+          response_read_error: detail,
+          response_body: responseText,
+        });
+        return null;
       }
       debugLog(`bridgeFetch OK ${path}`, data);
       clearBridgeFailure();
@@ -14905,6 +14683,7 @@
         return `<tr><th scope="row" title="${escapeTurnWorkflowHUDHTML(label + " · " + t("turn_hud.preprocessing.total") + " " + duration(role.duration_ms))}" style="${cellStyle};text-align:left;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeTurnWorkflowHUDHTML(label)}</th>`
           + cells + `<td style="${cellStyle};color:#BBC3CF" title="${escapeTurnWorkflowHUDHTML(selection)}">${selectionLabel}</td></tr>`;
       }).join("") + `</tbody></table>`;
+
     }
     const search = view && view.preprocessing_search;
     if (search) {
@@ -15553,7 +15332,7 @@
   }
 
   function buildTurnWorkflowHUDStackPresentation(currentView, previousView, currentFinalizationMode = "immediate_after_response") {
-    const splitWorkflow = String(currentFinalizationMode || "") === "next_user_input" || !!previousView;
+    const splitWorkflow = String(currentFinalizationMode || "") === "next_user_input";
     const projectedCurrentView = currentView
       ? projectTurnWorkflowHUDPhaseView(currentView, splitWorkflow ? "generation" : "")
       : null;
@@ -16014,15 +15793,42 @@
     return response.body.getReader();
   }
 
-  async function consumeTurnWorkflowHUDStreamLine(line, token, requestId) {
+  function decodeTurnWorkflowHUDStreamLine(line, failureMessage) {
     const normalized = String(line || "").trim();
-    if (!normalized) return false;
-    let view;
+    if (!normalized) return null;
     try {
-      view = JSON.parse(normalized);
+      return { view: JSON.parse(normalized) };
     } catch {
-      throw turnWorkflowHUDStreamFailure("stream_decode_failed", "invalid NDJSON event");
+      throw turnWorkflowHUDStreamFailure("stream_decode_failed", failureMessage);
     }
+  }
+
+  async function readTurnWorkflowHUDNDJSON(reader, isActive, consumeLine) {
+    const decoder = new TextDecoder();
+    let buffered = "";
+    while (isActive()) {
+      const chunk = await reader.read();
+      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
+      let newlineIndex = buffered.indexOf("\n");
+      while (newlineIndex >= 0) {
+        const line = buffered.slice(0, newlineIndex);
+        buffered = buffered.slice(newlineIndex + 1);
+        if (await consumeLine(line)) return true;
+        newlineIndex = buffered.indexOf("\n");
+      }
+      if (chunk && chunk.done === true) {
+        buffered += decoder.decode();
+        if (buffered.trim() && await consumeLine(buffered)) return true;
+        return false;
+      }
+    }
+    return true;
+  }
+
+  async function consumeTurnWorkflowHUDStreamLine(line, token, requestId) {
+    const decoded = decodeTurnWorkflowHUDStreamLine(line, "invalid NDJSON event");
+    if (!decoded) return false;
+    const view = decoded.view;
     if (token !== _turnWorkflowHUDWatchToken || requestId !== _turnWorkflowHUDActiveRequestId) return true;
     if (String(view && view.request_id || "") !== requestId) {
       throw turnWorkflowHUDStreamFailure("stream_request_mismatch", "stream request mismatch");
@@ -16039,36 +15845,15 @@
   }
 
   async function consumeTurnWorkflowHUDStream(reader, token, requestId) {
-    const decoder = new TextDecoder();
-    let buffered = "";
-    while (token === _turnWorkflowHUDWatchToken && requestId === _turnWorkflowHUDActiveRequestId) {
-      const chunk = await reader.read();
-      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
-      let newlineIndex = buffered.indexOf("\n");
-      while (newlineIndex >= 0) {
-        const line = buffered.slice(0, newlineIndex);
-        buffered = buffered.slice(newlineIndex + 1);
-        if (await consumeTurnWorkflowHUDStreamLine(line, token, requestId)) return true;
-        newlineIndex = buffered.indexOf("\n");
-      }
-      if (chunk && chunk.done === true) {
-        buffered += decoder.decode();
-        if (buffered.trim() && await consumeTurnWorkflowHUDStreamLine(buffered, token, requestId)) return true;
-        return false;
-      }
-    }
-    return true;
+    return readTurnWorkflowHUDNDJSON(reader,
+      () => token === _turnWorkflowHUDWatchToken && requestId === _turnWorkflowHUDActiveRequestId,
+      line => consumeTurnWorkflowHUDStreamLine(line, token, requestId));
   }
 
   async function consumeTurnWorkflowHUDPreviousStreamLine(line, token, requestId) {
-    const normalized = String(line || "").trim();
-    if (!normalized) return false;
-    let view;
-    try {
-      view = JSON.parse(normalized);
-    } catch {
-      throw turnWorkflowHUDStreamFailure("stream_decode_failed", "invalid previous-turn NDJSON event");
-    }
+    const decoded = decodeTurnWorkflowHUDStreamLine(line, "invalid previous-turn NDJSON event");
+    if (!decoded) return false;
+    const view = decoded.view;
     if (
       token !== _turnWorkflowHUDPreviousWatchToken
       || requestId !== _turnWorkflowHUDPreviousRequestId
@@ -16088,31 +15873,9 @@
   }
 
   async function consumeTurnWorkflowHUDPreviousStream(reader, token, requestId) {
-    const decoder = new TextDecoder();
-    let buffered = "";
-    while (
-      token === _turnWorkflowHUDPreviousWatchToken
-      && requestId === _turnWorkflowHUDPreviousRequestId
-    ) {
-      const chunk = await reader.read();
-      if (chunk && chunk.value) buffered += decoder.decode(chunk.value, { stream: chunk.done !== true });
-      let newlineIndex = buffered.indexOf("\n");
-      while (newlineIndex >= 0) {
-        const line = buffered.slice(0, newlineIndex);
-        buffered = buffered.slice(newlineIndex + 1);
-        if (await consumeTurnWorkflowHUDPreviousStreamLine(line, token, requestId)) return true;
-        newlineIndex = buffered.indexOf("\n");
-      }
-      if (chunk && chunk.done === true) {
-        buffered += decoder.decode();
-        if (
-          buffered.trim()
-          && await consumeTurnWorkflowHUDPreviousStreamLine(buffered, token, requestId)
-        ) return true;
-        return false;
-      }
-    }
-    return true;
+    return readTurnWorkflowHUDNDJSON(reader,
+      () => token === _turnWorkflowHUDPreviousWatchToken && requestId === _turnWorkflowHUDPreviousRequestId,
+      line => consumeTurnWorkflowHUDPreviousStreamLine(line, token, requestId));
   }
 
   // The backend cannot publish a workflow ViewModel until /prepare-turn has
@@ -16424,10 +16187,11 @@
       + '</div>';
   }
 
-  async function checkArchiveCenterUpdate() {
+  async function checkArchiveCenterUpdate(bridgeSettings) {
     const data = await bridgeFetch("/update/check", {
       method: "GET",
       timeoutMs: 0,
+      bridgeSettings,
     });
     archiveUpdateState.lastCheck = data || null;
     return data;
@@ -16486,11 +16250,12 @@
     }
   }
 
-  async function applyArchiveCenterUpdate() {
+  async function applyArchiveCenterUpdate(bridgeSettings) {
     const data = await bridgeFetch("/update/apply", {
       method: "POST",
       body: {},
       timeoutMs: 0,
+      bridgeSettings,
     });
     archiveUpdateState.lastApply = data || null;
     return data;
@@ -16560,7 +16325,7 @@
       dashboard: null,
       trace: null,
     });
-    const data = await bridgeFetch(path, { timeoutMs: getRequestTimeoutSettingMs() });
+    const data = await bridgeFetch(path, { bridgeSettings: options.bridgeSettings, timeoutMs: getRequestTimeoutSettingMs(options.bridgeSettings && options.bridgeSettings.requestTimeoutMs) });
     if (!data) {
       updateRuntimeState("lastCriticLedgerProbe", "fail", {
         detail: formatBridgeFailureForDisplay(path, "critic ledger debug probe failed"),
@@ -18682,20 +18447,20 @@
       '</div>';
   }
 
-  async function testBridgeHealth() {
-    const health = await safeCall(() => bridgeFetch("/health"), null, "testBridgeHealth.health");
+  async function testBridgeHealth(bridgeSettings) {
+    const health = await safeCall(() => bridgeFetch("/health", { bridgeSettings }), null, "testBridgeHealth.health");
     if (!health) {
       updateRuntimeState("lastBridgeHealth", "fail", { detail: "unreachable" });
       return null;
     }
-    const ready = await safeCall(() => bridgeFetch("/ready"), null, "testBridgeHealth.ready");
+    const ready = await safeCall(() => bridgeFetch("/ready", { bridgeSettings }), null, "testBridgeHealth.ready");
     const summary = summarizeBridgeReadiness(health, ready);
     updateRuntimeState("lastBridgeHealth", summary.status, { detail: summary.detail });
     return { health, ready, status: summary.status };
   }
 
-  async function testSupervisorWakeup() {
-    const result = await safeCall(() => bridgeFetch("/wakeup"), null, "testSupervisorWakeup");
+  async function testSupervisorWakeup(bridgeSettings) {
+    const result = await safeCall(() => bridgeFetch("/wakeup", { bridgeSettings }), null, "testSupervisorWakeup");
     if (result) {
       updateRuntimeState("lastSupervisorWakeup", "ok", { detail: result });
     } else {
@@ -19993,6 +19758,39 @@
     return recoveryTransition;
   }
 
+  // Observe the existing ordered Host rows without changing their indexes.
+  // The backend owns the conversion from this input group to a canonical turn.
+  function observeActiveChatInputGroup(messages, lastUserIndex) {
+    let ordinal = 0;
+    let completed = false;
+    let members = [];
+    let parts = [];
+    const rows = Array.isArray(messages) ? messages : [];
+    for (let index = 0; index <= lastUserIndex && index < rows.length; index++) {
+      const row = rows[index];
+      if (!row || row.disabled === true) continue;
+      if (row.role === "user") {
+        if (members.length === 0 || completed) {
+          ordinal++;
+          members = [];
+          parts = [];
+          completed = false;
+        }
+        const text = typeof row.data === "string" ? row.data.trim() : "";
+        members.push({
+          message_index: index,
+          message_chat_id: typeof row.chatId === "string" ? row.chatId.trim() : "",
+          message_time_ms: typeof row.time === "number" && Number.isFinite(row.time) ? Math.trunc(row.time) : 0,
+          content_hash: computeOrchestrationDirtyHashOr1c(text),
+        });
+        parts.push(text);
+      } else if (row.role === "char" && members.length > 0) {
+        completed = true;
+      }
+    }
+    return { ordinal, members, content: parts.join("\n\n") };
+  }
+
   async function captureFinalConfirmationRequestContext(sessionId, type, requestId, hostContext = null) {
     const sid = String(sessionId || "").trim();
     if (!sid || !settings.enabled || !isSaveType(type) || !R) return null;
@@ -20055,10 +19853,11 @@
         }
         break;
       }
-      let userObservedPairOrdinal = 0;
-      for (let index = 0; index <= userMessageIndex; index++) {
-        const message = chat.message[index];
-        if (message && message.role === "user" && message.disabled !== true) userObservedPairOrdinal++;
+      const inputGroup = observeActiveChatInputGroup(chat.message, userMessageIndex);
+      const userObservedPairOrdinal = inputGroup.ordinal;
+      if (inputGroup.members.length > 0) {
+        userObservedContent = inputGroup.content;
+        userObservedContentHash = computeOrchestrationDirtyHashOr1c(userObservedContent);
       }
       const context = {
         sessionId: sid,
@@ -20070,6 +19869,8 @@
         requestMessageCount: chat.message.length,
         userMessageIndex,
         userObservedPairOrdinal,
+        userInputGroupOrdinal: inputGroup.ordinal,
+        userMessageRefs: inputGroup.members,
         userMessageChatId,
         userMessageTimeMs,
         userObservedContentHash,
@@ -20826,6 +20627,8 @@
         ? requestContext.userMessageIndex
         : -1,
       user_observed_pair_ordinal: Math.max(0, Math.floor(Number(requestContext.userObservedPairOrdinal || 0))),
+      user_input_group_ordinal: Math.max(0, Math.floor(Number(requestContext.userInputGroupOrdinal || 0))),
+      user_message_refs: requestContext.userMessageRefs || [],
       user_message_chat_id: String(requestContext.userMessageChatId || ""),
       user_message_chat_id_state: requestContext.userMessageChatId ? "observed_before_request" : "unobserved",
       user_message_time_ms: Number(requestContext.userMessageTimeMs || 0),
@@ -21640,6 +21443,7 @@
         binding_mode: String(observed.bindingMode || ""),
         risu_user_message_index: Number.isInteger(observed.risuUserMessageIndex) ? observed.risuUserMessageIndex : null,
         observed_pair_ordinal: Math.max(0, Math.floor(Number(observed.observedPairOrdinal || 0))),
+        observed_input_group_ordinal: Math.max(0, Math.floor(Number(observed.observedInputGroupOrdinal || 0))),
         ...(visibleCompletedTurns != null ? {
           visible_completed_turns: Math.max(0, Math.floor(Number(visibleCompletedTurns || 0))),
         } : {}),
@@ -21654,6 +21458,7 @@
             risu_user_message_index: Number.isInteger(pair && pair.risuUserMessageIndex) ? pair.risuUserMessageIndex : null,
             risu_assistant_message_index: risuAssistantMessageIndex,
             observed_pair_ordinal: Math.max(0, Math.floor(Number(pair && pair.observedPairOrdinal || 0))),
+            observed_input_group_ordinal: Math.max(0, Math.floor(Number(pair && pair.observedInputGroupOrdinal || 0))),
             assistant_message_id: String(pair && (pair.assistantMessageId || pair.assistant_message_id || pair.message_id) || ""),
             assistant_generation_id: String(pair && (pair.assistantGenerationId || pair.assistant_generation_id || pair.generation_id) || ""),
             assistant_content_hash: String(pair && (pair.assistantContentHash || pair.assistant_content_hash || pair.content_hash) || ""),
@@ -26694,9 +26499,7 @@
     const model    = settings.pluginMainModel.trim();
     const apiKey   = settings.pluginMainApiKey.trim();
     const reasoningPreset = typeof opts.reasoningPreset === "string" ? opts.reasoningPreset.trim() : configuredReasoningPreset;
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model, endpoint);
     const requestedReasoningEffort = typeof opts.reasoningEffort === "string" ? opts.reasoningEffort.trim() : configuredReasoningEffort;
-    const reasoningEffort = normalizeReasoningEffortForControls(requestedReasoningEffort, reasoningControls);
     const reasoningBudgetTokensRaw = typeof opts.reasoningBudgetTokens === "number"
       ? opts.reasoningBudgetTokens
       : configuredReasoningBudgetTokens;
@@ -26723,7 +26526,7 @@
     if (typeof opts.maxCompletionTokens === "number" || hasConfiguredMaxCompletionTokens) {
       proxyBody.max_completion_tokens = maxCompletionTokens;
     }
-    applyReasoningFieldsToPayload(proxyBody, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens);
+    applyReasoningFieldsToPayload(proxyBody, reasoningPreset, requestedReasoningEffort, reasoningBudgetTokens);
     applyProviderRequestOverrideFields(proxyBody, "main");
 
     // bridgeFetch는 성공 시 파싱된 data 객체, 실패 시 null 반환
@@ -27134,9 +26937,7 @@
     const model    = settings.subLlmModel.trim();
     const apiKey   = settings.subLlmApiKey.trim();
     const reasoningPreset = typeof opts.reasoningPreset === "string" ? opts.reasoningPreset.trim() : configuredReasoningPreset;
-    const reasoningControls = resolveReasoningControls(provider, reasoningPreset, model, endpoint);
     const requestedReasoningEffort = typeof opts.reasoningEffort === "string" ? opts.reasoningEffort.trim() : configuredReasoningEffort;
-    const reasoningEffort = normalizeReasoningEffortForControls(requestedReasoningEffort, reasoningControls);
     const reasoningBudgetTokensRaw = typeof opts.reasoningBudgetTokens === "number"
       ? opts.reasoningBudgetTokens
       : configuredReasoningBudgetTokens;
@@ -27162,7 +26963,7 @@
     if (typeof opts.maxCompletionTokens === "number" || hasConfiguredMaxCompletionTokens) {
       payload.max_completion_tokens = maxCompletionTokens;
     }
-    applyReasoningFieldsToPayload(payload, reasoningControls, reasoningPreset, reasoningEffort, reasoningBudgetTokens);
+    applyReasoningFieldsToPayload(payload, reasoningPreset, requestedReasoningEffort, reasoningBudgetTokens);
     applyProviderRequestOverrideFields(payload, "sub");
 
     const proxyPath = provider === "opencode-go"
@@ -35438,10 +35239,16 @@
       if (actualEmptyRawInput) {
         actualEmptyUserInput = true;
       }
+      const observedInputGroup = hostFinalityAccepted
+        && Array.isArray(sourceAcceptanceFinality.user_message_refs)
+        && sourceAcceptanceFinality.user_message_refs.length > 1;
+      if (observedInputGroup && String(sourceAcceptanceFinality.user_content || "").trim()) {
+        actualEmptyUserInput = false;
+      }
       if (
         hostFinalityAccepted
         && !actualEmptyUserInput
-        && shouldSkipUserInputPersistence(userInput)
+        && (observedInputGroup || shouldSkipUserInputPersistence(userInput))
         && isCanonicalHostUserInputText(sourceAcceptanceFinality.user_content)
       ) {
         userInput = String(sourceAcceptanceFinality.user_content || "");
@@ -39186,7 +38993,11 @@
         assistantTimelinePairs.forEach(function(pair) {
           const turnIndex = Number(pair.turnIndex);
           const existing = pairsByTurn.get(turnIndex);
+          const observedGroup = existing && Array.isArray(existing.userMessageRefs) && existing.userMessageRefs.length > 1;
           pairsByTurn.set(turnIndex, Object.assign({}, existing || {}, pair, {
+            userContent: observedGroup ? existing.userContent : pair.userContent,
+            risuUserMessageIndex: observedGroup ? existing.risuUserMessageIndex : pair.risuUserMessageIndex,
+            hash: observedGroup ? computeOrchestrationDirtyHashOr1c(existing.userContent + "\n---assistant---\n" + pair.assistantContent) : pair.hash,
             contextMessages: Array.isArray(existing && existing.contextMessages) && existing.contextMessages.length > 0
               ? existing.contextMessages
               : pair.contextMessages,
@@ -41853,11 +41664,13 @@
     items: [],
     total: 0,
     loading: false,
+    error: "",
     expanded: false,  // section collapsed by default
   };
 
   async function auditFetch() {
     _audit.loading = true;
+    _audit.error = "";
     try {
       const sid = explorerSessionId();
       let url = "/audit?limit=20";
@@ -41872,11 +41685,13 @@
       } else {
         _audit.items = [];
         _audit.total = 0;
+        _audit.error = extractBridgeErrorDetail(result, _lastBridgeFailureByPath.get(url)?.detail || t('audit.loadFailed'));
       }
     } catch (err) {
       debugLog("auditFetch error:", err.message);
       _audit.items = [];
       _audit.total = 0;
+      _audit.error = String(err.message || t('audit.loadFailed'));
     } finally {
       _audit.loading = false;
     }
@@ -41892,6 +41707,11 @@
 
     if (_audit.loading) {
       return '<div class="mo-note">' + t('audit.loading') + '</div>';
+    }
+
+    if (_audit.error) {
+      return `<button class="mo-btn mo-btn-info" id="mo-audit-collapse">${t('audit.collapseBtn')}</button>
+        <div class="mo-note" role="alert">${t('audit.loadFailed')}${_audit.error === t('audit.loadFailed') ? '' : ' ' + escapeAttr(_audit.error)}</div>`;
     }
 
     if (_audit.items.length === 0) {
@@ -51703,14 +51523,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       const publisher = getSettings();
       const field = (role, key, label, type = "text") => {
         const id = 'mo-ma-' + role + '-' + key;
-        return '<div class="mo-row"><label for="' + id + '">' + escapeAttr(label) + '</label><input id="' + id + '" type="' + type
+        return '<div class="mo-row" id="' + id + '-row"><label for="' + id + '">' + escapeAttr(label) + '</label><input id="' + id + '" type="' + type
           + '" value="' + escapeAttr(config.roles[role][key] == null ? '' : config.roles[role][key]) + '" autocomplete="off"'
           + (key === 'temperature' ? ' step="0.1"' : '') + '></div>';
       };
-      const select = (role, key, label, options) => {
+      const select = (role, key, label, options, selectedValue = config.roles[role][key] || '') => {
         const id = 'mo-ma-' + role + '-' + key;
         return '<div class="mo-row" id="' + id + '-row"><label for="' + id + '">' + escapeAttr(label) + '</label><select id="' + id + '">'
-          + options.map(([value, title]) => '<option value="' + value + '"' + ((config.roles[role][key] || '') === value ? ' selected' : '') + '>' + escapeAttr(title) + '</option>').join('') + '</select></div>';
+          + options.map(([value, title]) => '<option value="' + value + '"' + (selectedValue === value ? ' selected' : '') + '>' + escapeAttr(title) + '</option>').join('') + '</select></div>';
       };
       root.innerHTML = '<div class="mo-ma-heading"><div><div class="mo-ma-eyebrow">기억 준비 · 선택 기능</div><h3>전처리 다중 에이전트</h3>'
         + '<p class="mo-ma-copy">다섯 담당에 사용할 모델·API와 역할 프롬프트를 각각 지정하세요.<br>담당별로 서로 다른 AI를 사용할 수 있으며, 공통 지침도 직접 편집할 수 있습니다.</p></div>'
@@ -51720,27 +51540,30 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           const c = config.roles[role];
           return '<details class="mo-ma-role"' + (index === 0 ? ' open' : '') + '><summary><span class="mo-ma-number">' + String(index + 1).padStart(2, '0') + '</span>'
             + '<span class="mo-ma-role-title">' + escapeAttr(view.role_names[role]) + '</span><span class="mo-ma-connection" id="mo-ma-' + role + '-connection-label">'
-            + escapeAttr(c.use_publisher ? '출판사 연결 사용' : c.model || '개별 AI 설정') + '</span></summary><div class="mo-ma-role-body">'
+            + escapeAttr(c.use_role ? view.role_names[c.use_role] + ' 설정 사용' : c.use_publisher ? '출판사 연결 사용' : c.model || '개별 AI 설정') + '</span></summary><div class="mo-ma-role-body">'
             + '<div class="mo-ma-role-toolbar"><label class="mo-ma-check"><input id="mo-ma-' + role + '-enabled" type="checkbox"' + (c.enabled ? ' checked' : '') + '> 담당 사용</label>'
-            + '<label class="mo-ma-check"><input id="mo-ma-' + role + '-use_publisher" type="checkbox"' + (c.use_publisher ? ' checked' : '') + '> 출판사 연결 공유 (선택)</label></div>'
+            + select(role, 'settings_source', 'AI 설정', [['', '직접 설정'], ['publisher', '출판사 연결 사용'], ...view.role_order.filter(key => key !== role).map(key => [key, view.role_names[key] + ' 설정 사용'])], c.use_role || (c.use_publisher ? 'publisher' : '')) + '</div>'
             + '<div class="mo-ma-editor"><section><h4>AI 연결</h4><p class="mo-ma-copy">이 담당이 사용할 제공자·주소·모델·키를 지정하세요. 출판사 연결 공유를 켜도 담당 프롬프트는 각각 적용됩니다.</p>'
-            + '<div class="mo-ma-inherited" id="mo-ma-' + role + '-inherited"' + (c.use_publisher ? '' : ' hidden') + '><span>설정 → 일반 · 출판사 LLM</span><strong>'
-            + escapeAttr(publisher.pluginMainModel || '출판사 설정의 모델 사용') + '</strong><span>출판사의 Flex 설정도 함께 사용하며, 이 담당의 전용 프롬프트로 별도 호출합니다.</span></div>'
-            + '<fieldset aria-label="AI 연결 설정" id="mo-ma-' + role + '-connection"' + (c.use_publisher ? ' disabled hidden' : '') + '>'
+            + '<div class="mo-ma-inherited" id="mo-ma-' + role + '-inherited" hidden></div>'
+            + '<fieldset aria-label="AI 연결 설정" id="mo-ma-' + role + '-connection"' + (c.use_publisher || c.use_role ? ' disabled hidden' : '') + '>'
             + select(role, 'provider', '제공자', [['', '제공자 선택'], ...LLM_PROVIDER_OPTIONS.map(provider => [provider, ({ openai: 'OpenAI', gemini: 'Gemini · AI Studio', claude: 'Claude', llmgateway: 'LLM Gateway', vertex: 'Vertex AI', openrouter: 'OpenRouter', opencode: 'OpenCode Zen', 'opencode-go': 'OpenCode Go', neuralwatt: 'NeuralWatt', vercel: 'Vercel AI Gateway', copilot: 'Copilot', ollama: 'Ollama', custom: 'Custom' })[provider] || provider])])
             + field(role, 'endpoint', 'Endpoint') + field(role, 'model', '모델 ID')
             + field(role, 'api_key', 'API Key', 'password')
             + select(role, 'llm_gateway_service_tier', '처리 모드 · 지원 모델에서 사용', [['', '기본값'], ['standard', 'Standard'], ['flex', 'Flex'], ['priority', 'Priority']])
             + select(role, 'vertex_flex_mode', '처리 모드 · Vertex AI', [['', '기본값'], ['off', 'Flex 끄기'], ['provisioned_then_flex', '예약 용량 우선 · Flex'], ['flex_only', 'Flex 전용']])
             + '</fieldset>'
-            + '<div class="mo-ma-generation"><h4>생성 설정 · 담당별 적용</h4>'
+            + '<div class="mo-ma-generation" id="mo-ma-' + role + '-generation"' + (c.use_role ? ' hidden' : '') + '><h4>생성 설정 · 담당별 적용</h4>'
             + field(role, 'temperature', '온도 (Temperature)', 'number') + field(role, 'max_tokens', '최대 출력 토큰', 'number')
+            + '<select hidden id="mo-ma-' + role + '-reasoning_preset"><option value="auto">자동</option></select>'
+            + select(role, 'reasoning_effort', '추론 설정', [['', '연결 기본값'], ...(c.reasoning_effort ? [[c.reasoning_effort, c.reasoning_effort]] : [])])
+            + field(role, 'reasoning_budget_tokens', '추론 토큰 예산 · 빈칸은 연결 기본값', 'number')
+            + '<p class="mo-ma-copy" id="mo-ma-' + role + '-reasoning_guide" aria-live="polite"></p>'
             + '<p class="mo-ma-copy">1차·보충 분석의 각 호출에 적용합니다. 출판사 연결을 공유해도 이 값을 사용합니다.</p></div></section>'
             + '<section><div class="mo-ma-prompt-head"><h4>담당 프롬프트</h4><button type="button" class="mo-btn mo-btn-ghost" id="mo-ma-' + role + '-restore">기본값 복원</button></div>'
             + '<div class="mo-row"><label for="mo-ma-' + role + '-prompt">이 담당이 기억을 고를 때 따를 지침</label><textarea rows="10" id="mo-ma-' + role + '-prompt">'
             + escapeAttr(c.prompt || view.default_prompts[role]) + '</textarea></div><p class="mo-ma-copy">공통 지침과 함께 적용됩니다. 변경 내용은 저장 후 다음 요청부터 사용합니다.</p></section></div>'
             + '<details class="mo-ma-advanced"><summary>호출 세부 설정</summary><div class="mo-ma-advanced-grid">'
-            + field(role, 'timeout_ms', '호출 대기 한도 (ms)', 'number') + field(role, 'reasoning_effort', '추론 설정 · 빈칸이면 연결 기본값')
+            + field(role, 'timeout_ms', '호출 대기 한도 (ms)', 'number')
             + '</div></details></div></details>';
         }).join('')
         + '<details class="mo-ma-help" id="mo-ma-common-settings"><summary>공통 프롬프트·입력 설정</summary><p class="mo-ma-copy">공통 지침 뒤에 각 담당의 전용 프롬프트를 붙여 호출합니다. 첫 분석은 병렬이며, 필요한 담당만 한 번 더 분석합니다.</p>'
@@ -51760,6 +51583,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         root.querySelector('#mo-ma-status').textContent = '기본 공통 프롬프트를 불러왔습니다. 저장하면 적용됩니다.';
       });
       view.role_order.forEach(role => {
+        const syncReasoning = bindLlmSettingsView('mo-ma-' + role + '-', draft =>
+          bridgeFetch('/config/view-model', { method: 'POST', body: draft }), {
+            fields: { Provider: 'provider', Endpoint: 'endpoint', Model: 'model', Temperature: 'temperature', ReasoningPreset: 'reasoning_preset',
+              ReasoningEffort: 'reasoning_effort', ReasoningEffortRow: 'reasoning_effort-row',
+              ReasoningBudgetTokens: 'reasoning_budget_tokens', ReasoningBudgetTokensRow: 'reasoning_budget_tokens-row', ReasoningGuide: 'reasoning_guide' },
+            draft: () => ({ purpose: 'memory_preprocessing', usePublisher: root.querySelector('#mo-ma-' + role + '-settings_source').value === 'publisher' }),
+            compact: true,
+          });
         const syncFlexControls = () => {
           const provider = root.querySelector('#mo-ma-' + role + '-provider').value.trim().toLowerCase();
           root.querySelector('#mo-ma-' + role + '-llm_gateway_service_tier-row').hidden = !['openai', 'llmgateway', 'vercel', 'neuralwatt', 'custom', 'gemini'].includes(provider);
@@ -51767,12 +51598,23 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         };
         root.querySelector('#mo-ma-' + role + '-provider').addEventListener('change', syncFlexControls);
         syncFlexControls();
-        root.querySelector('#mo-ma-' + role + '-use_publisher').addEventListener('change', event => {
-          root.querySelector('#mo-ma-' + role + '-connection').disabled = event.target.checked;
-          root.querySelector('#mo-ma-' + role + '-connection').hidden = event.target.checked;
-          root.querySelector('#mo-ma-' + role + '-inherited').hidden = !event.target.checked;
-          root.querySelector('#mo-ma-' + role + '-connection-label').textContent = event.target.checked ? '출판사 연결 사용' : '개별 AI 설정';
-        });
+        const syncSource = () => {
+          const source = root.querySelector('#mo-ma-' + role + '-settings_source').value;
+          const peer = source && source !== 'publisher';
+          root.querySelector('#mo-ma-' + role + '-connection').disabled = !!source;
+          root.querySelector('#mo-ma-' + role + '-connection').hidden = !!source;
+          root.querySelector('#mo-ma-' + role + '-generation').hidden = !!peer;
+          const inherited = root.querySelector('#mo-ma-' + role + '-inherited');
+          inherited.hidden = !source;
+          const name = peer ? view.role_names[source] + ' 설정 사용' : '출판사 연결 사용';
+          const connection = (view.role_connections || {})[source] || {};
+          const model = peer ? connection.model || '' : publisher.pluginMainModel || '';
+          inherited.innerHTML = '<strong>' + escapeAttr(name) + '</strong><span>' + escapeAttr(model) + '</span>'
+            + '<span>' + (peer ? '연결·생성 설정을 함께 따릅니다. 담당 프롬프트는 아래에서 따로 설정합니다.' : '출판사 연결을 사용하며 생성 설정은 아래 담당별 값을 적용합니다.') + '</span>';
+          root.querySelector('#mo-ma-' + role + '-connection-label').textContent = source ? name : root.querySelector('#mo-ma-' + role + '-model').value || '개별 AI 설정';
+        };
+        root.querySelector('#mo-ma-' + role + '-settings_source').addEventListener('change', () => { syncSource(); syncReasoning(); });
+        syncSource();
         root.querySelector('#mo-ma-' + role + '-restore').addEventListener('click', () => {
           root.querySelector('#mo-ma-' + role + '-prompt').value = view.default_prompts[role];
           root.querySelector('#mo-ma-status').textContent = '기본 프롬프트를 불러왔습니다. 저장하면 적용됩니다.';
@@ -51785,9 +51627,18 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (next.shared_prompt === view.default_shared_prompt) next.shared_prompt = '';
         view.role_order.forEach(role => {
           const c = { ...config.roles[role] };
-          ['enabled', 'use_publisher'].forEach(key => { c[key] = root.querySelector('#mo-ma-' + role + '-' + key).checked; });
-          ['provider', 'endpoint', 'model', 'api_key', 'reasoning_effort', 'prompt', 'llm_gateway_service_tier', 'vertex_flex_mode'].forEach(key => { c[key] = root.querySelector('#mo-ma-' + role + '-' + key).value; });
-          ['temperature', 'max_tokens', 'timeout_ms'].forEach(key => { c[key] = Number(root.querySelector('#mo-ma-' + role + '-' + key).value); });
+          c.enabled = root.querySelector('#mo-ma-' + role + '-enabled').checked;
+          const source = root.querySelector('#mo-ma-' + role + '-settings_source').value;
+          c.use_publisher = source === 'publisher';
+          c.use_role = source && !c.use_publisher ? source : '';
+          c.prompt = root.querySelector('#mo-ma-' + role + '-prompt').value;
+          if (!c.use_role) {
+            ['provider', 'endpoint', 'model', 'api_key', 'reasoning_effort', 'llm_gateway_service_tier', 'vertex_flex_mode'].forEach(key => { c[key] = root.querySelector('#mo-ma-' + role + '-' + key).value; });
+            ['temperature', 'max_tokens', 'timeout_ms'].forEach(key => { c[key] = Number(root.querySelector('#mo-ma-' + role + '-' + key).value); });
+            const budget = root.querySelector('#mo-ma-' + role + '-reasoning_budget_tokens').value;
+            if (budget.trim() === '') delete c.reasoning_budget_tokens;
+            else c.reasoning_budget_tokens = Number(budget);
+          }
           if (c.prompt === view.default_prompts[role]) c.prompt = '';
           next.roles[role] = c;
         });
@@ -52157,19 +52008,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       <div class="mo-row">
         <label>${t('settings.label.publisherProvider')}</label>
         <select id="mo-pluginMainProvider">
-          <option value="openai"${s.pluginMainProvider === "openai" || !s.pluginMainProvider ? " selected" : ""}>OpenAI</option>
-          <option value="claude"${s.pluginMainProvider === "claude" ? " selected" : ""}>Claude</option>
-          <option value="gemini"${s.pluginMainProvider === "gemini" ? " selected" : ""}>Gemini</option>
-          <option value="openrouter"${s.pluginMainProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
-          <option value="opencode"${s.pluginMainProvider === "opencode" ? " selected" : ""}>OpenCode Zen</option>
-          <option value="opencode-go"${s.pluginMainProvider === "opencode-go" ? " selected" : ""}>OpenCode Go</option>
-          <option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
-          <option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
-          <option value="neuralwatt"${s.pluginMainProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
-          <option value="vertex"${s.pluginMainProvider === "vertex" ? " selected" : ""}>Vertex</option>
-          <option value="copilot"${s.pluginMainProvider === "copilot" ? " selected" : ""}>Copilot</option>
-          <option value="ollama"${s.pluginMainProvider === "ollama" ? " selected" : ""}>Ollama</option>
-          <option value="custom"${s.pluginMainProvider === "custom" ? " selected" : ""}>Custom</option>
+          ${renderLlmProviderOptions(s.pluginMainProvider)}
         </select>
       </div>
       <div class="mo-row">
@@ -52281,19 +52120,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       <div class="mo-row">
         <label>${t('settings.label.criticProvider')}</label>
         <select id="mo-subLlmProvider">
-          <option value="openai"${s.subLlmProvider === "openai" || !s.subLlmProvider ? " selected" : ""}>OpenAI</option>
-          <option value="claude"${s.subLlmProvider === "claude" ? " selected" : ""}>Claude</option>
-          <option value="gemini"${s.subLlmProvider === "gemini" ? " selected" : ""}>Gemini</option>
-          <option value="openrouter"${s.subLlmProvider === "openrouter" ? " selected" : ""}>OpenRouter</option>
-          <option value="opencode"${s.subLlmProvider === "opencode" ? " selected" : ""}>OpenCode Zen</option>
-          <option value="opencode-go"${s.subLlmProvider === "opencode-go" ? " selected" : ""}>OpenCode Go</option>
-          <option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>
-          <option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>
-          <option value="neuralwatt"${s.subLlmProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>
-          <option value="vertex"${s.subLlmProvider === "vertex" ? " selected" : ""}>Vertex</option>
-          <option value="copilot"${s.subLlmProvider === "copilot" ? " selected" : ""}>Copilot</option>
-          <option value="ollama"${s.subLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>
-          <option value="custom"${s.subLlmProvider === "custom" ? " selected" : ""}>Custom</option>
+          ${renderLlmProviderOptions(s.subLlmProvider)}
         </select>
       </div>
       <div class="mo-row">
@@ -52797,6 +52624,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
   </div>
   <div class="mo-footer">
     <button class="mo-btn mo-btn-primary" id="mo-save-btn">${t('settings.btn.save')}</button>
+    <button class="mo-btn" id="mo-diagnostics-btn">${diagnosticText("오류·진단 보고서", "Errors · diagnostic report", "エラー・診断レポート")}</button>
     <button class="mo-btn mo-btn-danger" id="mo-reset-btn">${t('settings.btn.resetDefaults')}</button>
     <span id="mo-save-status" style="font-size:12px;color:#a0a0b0;align-self:center;margin-left:auto"></span>
     <div class="mo-footer-language">
@@ -53073,6 +52901,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
   function attachSettingsEvents() {
     try {
       const $ = (id) => document.getElementById(id);
+      $("mo-diagnostics-btn")?.addEventListener("click", showDiagnosticReport);
       if (_settingsActiveTab === "reference") {
         attachReferenceLibraryEvents();
         if (_referenceLibraryState.works.length === 0) referenceLibraryLoadWorks().catch(() => {});
@@ -53495,157 +53324,18 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
 
 
       async function withUiBridgeSettings(fn) {
-        const prevUrl = settings.bridgeUrl;
-        const prevRequestTimeoutMs = settings.requestTimeoutMs;
-        const prevWebDirectBridgeEnabled = settings.webDirectBridgeEnabled === true;
-        settings.bridgeUrl = sanitizeBridgeUrl(((($("mo-bridgeUrl") || {}).value) || "").trim() || settings.bridgeUrl);
-        settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();
-        settings.webDirectBridgeEnabled = !!(($("mo-webDirectBridgeEnabled") || {}).checked);
-        try {
-          return await fn();
-        } finally {
-          settings.bridgeUrl = prevUrl;
-          settings.requestTimeoutMs = prevRequestTimeoutMs;
-          settings.webDirectBridgeEnabled = prevWebDirectBridgeEnabled;
-        }
+        const bridgeSettings = {
+          bridgeUrl: sanitizeBridgeUrl(((($("mo-bridgeUrl") || {}).value) || "").trim() || settings.bridgeUrl),
+          requestTimeoutMs: getCurrentUiRequestTimeoutMs(),
+          webDirectBridgeEnabled: !!(($("mo-webDirectBridgeEnabled") || {}).checked),
+        };
+        return await fn(bridgeSettings);
       }
 
-      const reasoningSyncRunners = [];
-      const syncReasoningPresetSelectForProvider = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId) => {
-        const providerEl = $(providerSelectId);
-        const endpointEl = endpointInputId ? $(endpointInputId) : null;
-        const modelEl = modelInputId ? $(modelInputId) : null;
-        const presetEl = $(presetSelectId);
-        if (!providerEl || !presetEl) return;
-        const guideEl = guideId ? $(guideId) : null;
-        const effortEl = effortSelectId ? $(effortSelectId) : null;
-        const effortRowEl = effortRowId ? $(effortRowId) : null;
-        const effortLabelEl = effortLabelId ? $(effortLabelId) : null;
-        const effortHintEl = effortHintId ? $(effortHintId) : null;
-        const budgetRowEl = budgetRowId ? $(budgetRowId) : null;
-        const budgetInputEl = budgetInputId ? $(budgetInputId) : null;
-        const budgetLabelEl = budgetLabelId ? $(budgetLabelId) : null;
-        const budgetHintEl = budgetHintId ? $(budgetHintId) : null;
-        const provider = normalizeLlmProvider(providerEl.value, "openai");
-        const allowed = getAllowedReasoningPresetsForProvider(provider);
-        const current = normalizeReasoningPreset(presetEl.value, "auto");
-        for (let i = 0; i < presetEl.options.length; i++) {
-          const option = presetEl.options[i];
-          option.disabled = allowed.indexOf(option.value) < 0;
-        }
-        if (allowed.indexOf(current) < 0) {
-          presetEl.value = "auto";
-        }
-        const syncState = resolveReasoningSyncUiState({
-          provider,
-          endpoint: endpointEl ? endpointEl.value : "",
-          preset: presetEl.value,
-          model: modelEl ? modelEl.value : "",
-          currentEffort: effortEl ? effortEl.value : "",
-          currentBudget: budgetInputEl ? budgetInputEl.value : "",
-          previousSyncKey: presetEl.dataset.reasoningSyncKey || "",
-          isFirstSync: presetEl.dataset.reasoningSyncInitialized !== "1",
-        });
-        const controls = syncState.controls;
-        if (guideEl) {
-          guideEl.textContent = syncState.guideText;
-        }
-
-        if (effortRowEl) {
-          effortRowEl.style.display = controls.showEffort ? "" : "none";
-        }
-        if (effortLabelEl) {
-          effortLabelEl.textContent = controls.effortLabel || "Reasoning Effort";
-        }
-        if (effortHintEl) {
-          effortHintEl.textContent = controls.effortHint || "";
-        }
-        if (effortEl && controls.showEffort) {
-          effortEl.innerHTML = controls.effortOptions
-            .map((value) => '<option value="' + value + '">' + value + '</option>')
-            .join("");
-          effortEl.value = syncState.nextEffort;
-        }
-        if (budgetRowEl) {
-          budgetRowEl.style.display = controls.showBudget ? "" : "none";
-        }
-        if (budgetLabelEl) {
-          budgetLabelEl.textContent = controls.budgetLabel || "Reasoning Budget Tokens";
-        }
-        if (budgetHintEl) {
-          budgetHintEl.textContent = controls.budgetHint || "";
-        }
-        if (budgetInputEl) {
-          budgetInputEl.value = syncState.nextBudget;
-        }
-        presetEl.dataset.reasoningSyncKey = syncState.syncKey;
-        presetEl.dataset.reasoningSyncInitialized = "1";
-      };
-
-      const bindProviderReasoningPresetSync = (providerSelectId, endpointInputId, modelInputId, presetSelectId, guideId, effortSelectId, effortRowId, effortLabelId, effortHintId, budgetRowId, budgetInputId, budgetLabelId, budgetHintId) => {
-        const providerEl = $(providerSelectId);
-        const endpointEl = endpointInputId ? $(endpointInputId) : null;
-        const modelEl = modelInputId ? $(modelInputId) : null;
-        const presetEl = $(presetSelectId);
-        if (!providerEl || !presetEl) return;
-        const runSync = () => syncReasoningPresetSelectForProvider(
-          providerSelectId,
-          endpointInputId,
-          modelInputId,
-          presetSelectId,
-          guideId,
-          effortSelectId,
-          effortRowId,
-          effortLabelId,
-          effortHintId,
-          budgetRowId,
-          budgetInputId,
-          budgetLabelId,
-          budgetHintId,
-        );
-        providerEl.addEventListener("change", runSync);
-        if (endpointEl) {
-          endpointEl.addEventListener("change", runSync);
-          endpointEl.addEventListener("input", runSync);
-        }
-        if (modelEl) {
-          modelEl.addEventListener("change", runSync);
-          modelEl.addEventListener("input", runSync);
-        }
-        presetEl.addEventListener("change", runSync);
-        reasoningSyncRunners.push(runSync);
-        runSync();
-      };
-
-      bindProviderReasoningPresetSync(
-        "mo-pluginMainProvider",
-        "mo-pluginMainEndpoint",
-        "mo-pluginMainModel",
-        "mo-pluginMainReasoningPreset",
-        "mo-pluginMainReasoningGuide",
-        "mo-pluginMainReasoningEffort",
-        "mo-pluginMainReasoningEffortRow",
-        "mo-pluginMainReasoningEffortLabel",
-        "mo-pluginMainReasoningEffortHint",
-        "mo-pluginMainReasoningBudgetTokensRow",
-        "mo-pluginMainReasoningBudgetTokens",
-        "mo-pluginMainReasoningBudgetTokensLabel",
-        "mo-pluginMainReasoningBudgetTokensHint",
-      );
-      bindProviderReasoningPresetSync(
-        "mo-subLlmProvider",
-        "mo-subLlmEndpoint",
-        "mo-subLlmModel",
-        "mo-subLlmReasoningPreset",
-        "mo-subLlmReasoningGuide",
-        "mo-subLlmReasoningEffort",
-        "mo-subLlmReasoningEffortRow",
-        "mo-subLlmReasoningEffortLabel",
-        "mo-subLlmReasoningEffortHint",
-        "mo-subLlmReasoningBudgetTokensRow",
-        "mo-subLlmReasoningBudgetTokens",
-        "mo-subLlmReasoningBudgetTokensLabel",
-        "mo-subLlmReasoningBudgetTokensHint",
+      const reasoningSyncRunners = ["mo-pluginMain", "mo-subLlm"].map((prefix) =>
+        bindLlmSettingsView(prefix, (draft) => withUiBridgeSettings((bridgeSettings) =>
+          bridgeFetch("/config/view-model", { method: "POST", body: draft, bridgeSettings })
+        ))
       );
       const vertexEndpointPlaceholder = "https://aiplatform.googleapis.com/v1/projects/PROJECT_ID/locations/global/publishers/google/models";
       const vertexServiceAccountPlaceholder = '{"type":"service_account",...}';
@@ -53983,7 +53673,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.health.loading') + '</div>';
         try {
-          const result = await withUiBridgeSettings(() => testBridgeHealth());
+          const result = await withUiBridgeSettings(bridgeSettings => testBridgeHealth(bridgeSettings));
           if (result) {
             resultEl.innerHTML = renderBridgeHealthSummary(result);
           } else {
@@ -54024,8 +53714,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           }
           const testTimeoutMs = getPluginMainTimeoutSettingMs((($("mo-pluginMainTimeoutMs") || {}).value));
           const testReasoningPreset = (($("mo-pluginMainReasoningPreset") || {}).value || "auto").trim();
-          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel, testEndpoint);
-          const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-pluginMainReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
+          const testReasoningEffort = (( $("mo-pluginMainReasoningEffort") || {}).value || "none").trim();
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-pluginMainReasoningBudgetTokens") || {}).value), 0);
           const testMaxCompletionTokens = getPluginMainMaxCompletionTokensSetting((($("mo-pluginMainMaxCompletionTokens") || {}).value));
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-pluginMainVertexFlexMode") || {}).value || "off").trim());
@@ -54044,7 +53733,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             timeout_ms: testTimeoutMs,
             max_completion_tokens: testMaxCompletionTokens,
           };
-          applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          applyReasoningFieldsToPayload(testBody, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
           }
@@ -54056,7 +53745,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           if (testProvider === "claude") {
             testBody.claude_prompt_cache_mode = testClaudePromptCacheMode;
           }
-          const data = await withUiBridgeSettings(() => bridgeFetch("/proxy/plugin-main", {
+          const data = await withUiBridgeSettings(bridgeSettings => bridgeFetch("/proxy/plugin-main", {
+            bridgeSettings,
             method: "POST",
             timeoutMs: testTimeoutMs,
             body: testBody,
@@ -54110,8 +53800,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           }
           const testTimeoutMs = getSubLlmTimeoutSettingMs((($("mo-subLlmTimeoutMs") || {}).value));
           const testReasoningPreset = (($("mo-subLlmReasoningPreset") || {}).value || "auto").trim();
-          const testReasoningControls = resolveReasoningControls(testProvider, testReasoningPreset, testModel, testEndpoint);
-          const testReasoningEffort = normalizeReasoningEffortForControls((($("mo-subLlmReasoningEffort") || {}).value || "none").trim(), testReasoningControls);
+          const testReasoningEffort = (( $("mo-subLlmReasoningEffort") || {}).value || "none").trim();
           const testReasoningBudgetTokens = normalizeReasoningBudgetTokens((($("mo-subLlmReasoningBudgetTokens") || {}).value), 0);
           const testVertexFlexMode = normalizeVertexFlexModeSetting((($("mo-subLlmVertexFlexMode") || {}).value || "off").trim());
           const testLlmGatewayServiceTier = normalizeLlmGatewayServiceTierSetting((($("mo-subLlmLlmGatewayServiceTier") || {}).value || "standard").trim());
@@ -54126,7 +53815,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             provider: testProvider,
             timeout_ms: testTimeoutMs,
           };
-          applyReasoningFieldsToPayload(testBody, testReasoningControls, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
+          applyReasoningFieldsToPayload(testBody, testReasoningPreset, testReasoningEffort, testReasoningBudgetTokens);
           if (testProvider === "vertex") {
             if (testVertexFlexMode && testVertexFlexMode !== "off") testBody.vertex_flex_mode = testVertexFlexMode;
           }
@@ -54139,7 +53828,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             testBody.claude_prompt_cache_mode = testClaudePromptCacheMode;
           }
           const testPath = "/proxy/plugin-main?connection_test=critic";
-          const data = await withUiBridgeSettings(() => bridgeFetch(testPath, {
+          const data = await withUiBridgeSettings(bridgeSettings => bridgeFetch(testPath, {
+            bridgeSettings,
             method: "POST",
             timeoutMs: testTimeoutMs,
             body: testBody,
@@ -54176,7 +53866,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.wakeup.loading') + '</div>';
         try {
-          const result = await withUiBridgeSettings(() => testSupervisorWakeup());
+          const result = await withUiBridgeSettings(bridgeSettings => testSupervisorWakeup(bridgeSettings));
           if (result) {
             resultEl.innerHTML = '<div class="mo-status mo-status-ok">' + t('test.wakeup.ok') + ' — ' + escapeAttr(JSON.stringify(result)) + '</div>';
           } else {
@@ -54193,7 +53883,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         if (!resultEl) return;
         resultEl.innerHTML = '<div class="mo-status mo-status-wait">' + t('test.stats.loading') + '</div>';
         try {
-          const result = await withUiBridgeSettings(() => safeCall(() => bridgeFetch("/stats"), null, "testDbStats"));
+          const result = await withUiBridgeSettings(bridgeSettings => safeCall(() => bridgeFetch("/stats", { bridgeSettings }), null, "testDbStats"));
           if (result && result.status === "ok") {
             resultEl.innerHTML = '<div class="mo-status mo-status-ok">✅ DB Stats — chat_logs: ' + result.chat_logs + ', memories: ' + result.memories + ', kg_triples: ' + result.kg_triples + '</div>';
           } else {
@@ -54212,7 +53902,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           updateCheckBtn.disabled = true;
           resultEl.innerHTML = '<div class="mo-status mo-status-wait">Checking GitHub release...</div>';
           try {
-            const data = await withUiBridgeSettings(() => checkArchiveCenterUpdate());
+            const data = await withUiBridgeSettings(bridgeSettings => checkArchiveCenterUpdate(bridgeSettings));
             resultEl.innerHTML = formatArchiveUpdateResult(data, "check");
           } catch (err) {
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">Update check failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
@@ -54231,7 +53921,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           updateDownloadBtn.disabled = true;
           resultEl.innerHTML = '<div class="mo-status mo-status-wait">Preparing verified update and restarting Archive Center...</div>';
           try {
-            const data = await withUiBridgeSettings(() => applyArchiveCenterUpdate());
+            const data = await withUiBridgeSettings(bridgeSettings => applyArchiveCenterUpdate(bridgeSettings));
             resultEl.innerHTML = formatArchiveUpdateResult(data, "apply");
           } catch (err) {
             resultEl.innerHTML = '<div class="mo-status mo-status-fail">Immediate update failed: ' + escapeAttr(err && err.message ? err.message : "unknown") + '</div>';
@@ -54253,7 +53943,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             resultEl.innerHTML = '<div class="mo-status mo-status-wait">Critic Ledger probe running...</div>';
           }
           try {
-            const data = await withUiBridgeSettings(() => runCriticLedgerDebugProbe());
+            const data = await withUiBridgeSettings(bridgeSettings => runCriticLedgerDebugProbe({ bridgeSettings }));
             if (resultEl) {
               if (data) {
                 const detail = criticLedgerProbeDetailFromResponse(data, data.session_id || "");

@@ -21,7 +21,15 @@ func Test43MemoryDeliveryBreadthBeyondCore(t *testing.T) {
 		rules = append(rules, store.WorldRule{ID: int64(i + 1), ChatSessionID: "contract", Scope: "root", Key: fmt.Sprintf("clause_%02d", i), ValueJSON: fmt.Sprintf("%q", detail), SourceTurn: 10})
 	}
 	for _, core := range []int{1, 5, len(details)} {
-		a := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, rules, nil, nil, nil, nil, nil, nil, nil, 5, 12000, "Recall the contract terms.", "default", nil, nil, nil, priorityMemoryTestContext(core))
+		a := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+			WorldRules:  rules,
+			TopK:        5,
+			MaxChars:    12000,
+			UserInput:   "Recall the contract terms.",
+			Profile:     "default",
+			BudgetMode:  "auto",
+			Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(core)),
+		})
 		text := extractionStringFromAny(a.MemoryDeliveryPlan["final_text"])
 		for _, detail := range details {
 			if !strings.Contains(text, detail) {
@@ -51,7 +59,14 @@ func Test43MemoryDeliveryPerspectiveUsesNormalSelection(t *testing.T) {
 	context["_character_perspective_text"] = candidateText
 	context["_character_perspective_fact_seeds"] = packet["_character_perspective_fact_seeds"]
 	context["_priority_memory_enabled"], context["_priority_memory_max_items"], context["_priority_memory_current_turn"] = true, 2, 100
-	a := buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, 5, 12000, "Review the garden work.", "default", nil, nil, nil, context)
+	a := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		TopK:        5,
+		MaxChars:    12000,
+		UserInput:   "Review the garden work.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(context),
+	})
 	if strings.Contains(a.ProtectedMemoryText, "Experience ") {
 		t.Fatal("ordinary experiences still occupy protected memory")
 	}
@@ -63,7 +78,7 @@ func Test43MemoryDeliveryPerspectiveUsesNormalSelection(t *testing.T) {
 			a.PriorityFactSeeds = append(a.PriorityFactSeeds, prepareTurnPriorityFactSeed{Lane: lane, SourceTable: "fixture_public_source", SourceOccurrence: lane, Fact: prepareTurnPriorityMemoryFact{Text: "Garden continuity for " + lane}, SourceTurn: 99, Visibility: "general"})
 		}
 	}
-	baseline := buildPrepareTurnPriorityMemoryDeliveryPlan(&a, 12000, 2, "auto", nil, context)
+	baseline := buildPrepareTurnPriorityMemoryDeliveryPlan(&a, 12000, 2, "auto", nil, testPrepareTurnMemorySelectionContext(context))
 	for _, lane := range multiAgentRoles {
 		found := false
 		for _, raw := range prepareTurnMemoryLineageSlice(baseline["classes"]) {
@@ -76,7 +91,7 @@ func Test43MemoryDeliveryPerspectiveUsesNormalSelection(t *testing.T) {
 			t.Errorf("populated lane %s was starved", lane)
 		}
 	}
-	facts, sums := multiAgentCandidatePool(&a, context)
+	facts, sums := multiAgentCandidatePool(&a)
 	subjective := []prepareTurnPriorityMemoryCandidate{}
 	for _, c := range facts {
 		if c.Lane == "subjective_relationship" {
@@ -120,7 +135,7 @@ func Test43MemoryDeliveryPerspectiveUsesNormalSelection(t *testing.T) {
 				selection.Roles = append(selection.Roles, role)
 			}
 			a.Preprocessing = selection
-			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&a, 12000, 2, "auto", nil, context)
+			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&a, 12000, 2, "auto", nil, testPrepareTurnMemorySelectionContext(context))
 			if mode == "no_recommendation" && plan["final_text"] != baseline["final_text"] {
 				t.Fatal("empty recommendations changed ordinary Go output")
 			}
@@ -155,7 +170,15 @@ func Test43MemoryDeliveryPerspectiveRetainsSourceTime(t *testing.T) {
 
 func deliveryRepairStateAssembly(layers []store.CanonicalStateLayer) prepareTurnInjectionAssembly {
 	q := "Is the home garden rapeseed still planned?"
-	return buildPrepareTurnInjectionAssembly(nil, nil, nil, nil, nil, nil, nil, nil, layers, nil, nil, nil, nil, 5, 12000, q, "default", nil, nil, nil, map[string]any{"_priority_memory_enabled": true, "_priority_memory_max_items": 5, "_priority_memory_query": q, "_priority_memory_current_turn": 13})
+	return buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CanonicalLayers: layers,
+		TopK:            5,
+		MaxChars:        12000,
+		UserInput:       q,
+		Profile:         "default",
+		BudgetMode:      "auto",
+		Perspective:     testPrepareTurnAssemblyPerspective(map[string]any{"_priority_memory_enabled": true, "_priority_memory_max_items": 5, "_priority_memory_query": q, "_priority_memory_current_turn": 13}),
+	})
 }
 
 func Test43MemoryDeliveryCurrentStateIndependentOfQuery(t *testing.T) {
@@ -166,7 +189,7 @@ func Test43MemoryDeliveryCurrentStateIndependentOfQuery(t *testing.T) {
 		if !strings.Contains(text, "completed") || strings.Contains(text, "status: planned") {
 			t.Errorf("query replaced the latest current field: %s", text)
 		}
-		facts, _ := multiAgentCandidatePool(&a, nil)
+		facts, _ := multiAgentCandidatePool(&a)
 		found := false
 		for _, c := range facts {
 			found = found || strings.Contains(c.CompleteText, "completed")
@@ -179,8 +202,8 @@ func Test43MemoryDeliveryCurrentStateIndependentOfQuery(t *testing.T) {
 		t.Run(fmt.Sprintf("supplement_failure_%t", failSecond), func(t *testing.T) {
 			first := deliveryRepairStateAssembly(layers[:1])
 			searched := deliveryRepairStateAssembly(layers[1:])
-			f1, s1 := multiAgentCandidatePool(&first, nil)
-			f2, s2 := multiAgentCandidatePool(&searched, nil)
+			f1, s1 := multiAgentCandidatePool(&first)
+			f2, s2 := multiAgentCandidatePool(&searched)
 			oldID, newID := "", ""
 			for _, c := range f1 {
 				if strings.Contains(c.CompleteText, "planned") {
@@ -246,7 +269,7 @@ func Test43MemoryDeliveryCurrentStateIndependentOfQuery(t *testing.T) {
 			}
 			result.captureBaseline(first.MemoryDeliveryPlan)
 			first.Preprocessing = result
-			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&first, 12000, 5, "auto", nil, nil)
+			plan := buildPrepareTurnPriorityMemoryDeliveryPlan(&first, 12000, 5, "auto", nil, testPrepareTurnMemorySelectionContext(nil))
 			text := extractionStringFromAny(plan["final_text"])
 			wanted := "completed"
 			if failSecond {

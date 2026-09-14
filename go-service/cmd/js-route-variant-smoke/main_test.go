@@ -629,8 +629,8 @@ func TestArchiveCenterJSProjectConfigGUIRuntimeMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	required := []string{
 		`"ollama", "custom"`,
-		`<option value="ollama"${s.pluginMainProvider === "ollama" ? " selected" : ""}>Ollama</option>`,
-		`<option value="ollama"${s.subLlmProvider === "ollama" ? " selected" : ""}>Ollama</option>`,
+		`${renderLlmProviderOptions(s.pluginMainProvider)}`,
+		`${renderLlmProviderOptions(s.subLlmProvider)}`,
 		`<option value="ollama"${s.embeddingProvider === "ollama" ? " selected" : ""}>Ollama</option>`,
 		`normalized === "other" || normalized === "otherax" || normalized === "other_ax"`,
 		`return "custom";`,
@@ -676,12 +676,12 @@ func TestArchiveCenterJSOpenAICompatibleGatewayAndServiceTierMarkers(t *testing.
 	src := readArchiveCenterJS(t)
 	required := []string{
 		`"openrouter", "llmgateway", "vercel", "neuralwatt", "vertex"`,
-		`<option value="llmgateway"${s.pluginMainProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
-		`<option value="llmgateway"${s.subLlmProvider === "llmgateway" ? " selected" : ""}>LLM Gateway</option>`,
-		`<option value="vercel"${s.pluginMainProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
-		`<option value="vercel"${s.subLlmProvider === "vercel" ? " selected" : ""}>Vercel AI Gateway</option>`,
-		`<option value="neuralwatt"${s.pluginMainProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>`,
-		`<option value="neuralwatt"${s.subLlmProvider === "neuralwatt" ? " selected" : ""}>NeuralWatt</option>`,
+		`${renderLlmProviderOptions(s.pluginMainProvider)}`,
+		`${renderLlmProviderOptions(s.subLlmProvider)}`,
+		`${renderLlmProviderOptions(s.pluginMainProvider)}`,
+		`${renderLlmProviderOptions(s.subLlmProvider)}`,
+		`${renderLlmProviderOptions(s.pluginMainProvider)}`,
+		`${renderLlmProviderOptions(s.subLlmProvider)}`,
 		`pluginMainLlmGatewayServiceTier: "standard"`,
 		`subLlmLlmGatewayServiceTier: "standard"`,
 		`function normalizeLlmGatewayServiceTierSetting(value)`,
@@ -900,8 +900,6 @@ func TestSeq01SettingsSaveResetAndBridgeConfigMarkers(t *testing.T) {
 		`<input type="text" id="mo-bridgeUrl"`,
 		`<input type="number" id="mo-requestTimeoutMs"`,
 		`<input type="number" id="mo-recentConversationReferenceCount"`,
-		`settings.bridgeUrl = sanitizeBridgeUrl(`,
-		`settings.requestTimeoutMs = getCurrentUiRequestTimeoutMs();`,
 		`recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value`,
 		`failedQueueMaxAttempts: failedQueueMaxAttempts(),`,
 		`criticReprocessingIntervalSec: sanitizeNumber(s.criticReprocessingIntervalSec, DEFAULT_SETTINGS.criticReprocessingIntervalSec, 1, 3600),`,

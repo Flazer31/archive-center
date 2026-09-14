@@ -191,93 +191,120 @@ func TestSourceCandidateExtractionUsesCompactReferencesAndExhaustionContract(t *
 	}
 }
 
-func TestSourceDiscoveryStructuralRosterSeedsAllEvidenceAndDedupes(t *testing.T) {
-	section := func(kind, headingPath, name, locator string, anchored bool) any {
-		item := map[string]any{
-			"section_kind": kind, "heading_path": headingPath, "excerpt": name,
-			"source_url": "https://reference.example/wiki/fixture", "source_type": "community_wiki", "document_sha256": "dense-hash",
-			"locator": map[string]any{"type": kind, "value": locator},
-		}
-		if anchored {
-			item["anchors"] = []any{map[string]any{"text": name, "href": "/wiki/" + url.PathEscape(name)}}
-		}
-		return item
+func referencePageNoiseFixture() (string, []any) {
+	raw := `<html><body><main><h2>원작 인물</h2>
+	<!-- hidden_comment -->
+	<div class="advertisement"><p>marked_ad</p></div>
+	<div class="comments"><p>reader_comment</p></div>
+	<ul><li><a href="/wiki/1">[</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/2">{</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/3">(</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/4">의</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/5">는</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/6">에</a> 문장의 링크 조각.</li>
+	<li><a href="/wiki/l">L</a>은 문지기다.</li>
+	<li><a href="/wiki/ren">렌</a>은 길잡이다.</li>
+	<li><a href="/wiki/signup">무료 가입</a>하고 할인 혜택을 받으세요.</li>
+	<li><a href="/wiki/sale">특별 할인</a> 상품을 확인하세요.</li></ul>
+	<p id="setting-note">각주: 렌의 능력은 밤에만 작동한다.</p>
+	</main></body></html>`
+	sum := sha256.Sum256([]byte(raw))
+	sections := discoveryHTMLSections([]byte(raw))
+	for _, section := range sections {
+		section["source_url"] = "https://reference.example/wiki/fixture"
+		section["source_type"] = "community_wiki"
+		section["document_sha256"] = hex.EncodeToString(sum[:])
 	}
-	sections := []any{
-		section("heading", "Index > Arin", "Arin", "h1", false), section("heading", "Index > Bera", "Bera", "h2", false),
-		section("list_item", "Index > Group", "Cato", "li1", true), section("list_item", "Index > Group", "Dara", "li2", true),
-		section("table_cell", "Index > Registry", "Eren", "td1", true), section("table_cell", "Index > Registry", "Fara", "td2", true),
-		section("table_cell", "Index > Registry", "1998", "td3", false),
+	return raw, mapsToAny(sections)
+}
+
+func TestSourceDiscoveryLinksRemainSourceWithoutExtractor(t *testing.T) {
+	raw, sections := referencePageNoiseFixture()
+	candidates, _, trace, err := runSourceCandidateExtraction(context.Background(), completeTurnLLMConfig{}, store.SourceDiscoveryInput{}, map[string]any{"section_candidates": sections})
+	if err != nil {
+		t.Fatal(err)
 	}
-	first := sourceDiscoveryStructuralRosterCandidates(sections)
-	if len(first) != 2 {
-		t.Fatalf("seeded=%d want=2 candidates=%#v", len(first), first)
+	if len(candidates) != 0 || trace["processing_incomplete"] != true || int64FromMap(trace, "llm_call_count", -1) != 0 || int64FromMap(trace, "remaining_sections", -1) != int64(len(sections)) {
+		t.Fatalf("source was treated as extracted facts: candidates=%#v trace=%#v", candidates, trace)
 	}
-	for _, candidate := range first {
-		if stringFromMap(candidate, "canonical_name") == "" || stringFromMap(candidate, "document_sha256") != "dense-hash" || len(mapFromAny(candidate["locator"])) == 0 || stringFromMap(candidate, "evidence_excerpt") == "" {
-			t.Fatalf("candidate is not evidence-bound: %#v", candidate)
-		}
+	ref := &sourceDiscoveryAdmissionFake{documents: map[string]*store.ReferenceDocument{}}
+	hash := stringFromMap(mapFromAny(sections[0]), "document_sha256")
+	counts, err := stageSourceDiscoveryResult(context.Background(), ref, "job-no-model", "work-1", "continuity-1", []map[string]any{{"raw_text": raw, "document_sha256": hash, "source_url": "https://reference.example/wiki/fixture", "media_type": "text/html"}}, candidates)
+	if err != nil {
+		t.Fatal(err)
 	}
-	reconciled, _ := reconcileSourceCandidates(nil, first)
-	reconciled, duplicates := reconcileSourceCandidates(reconciled, sourceDiscoveryStructuralRosterCandidates(sections))
-	if len(reconciled) != len(first) || duplicates != len(first) {
-		t.Fatalf("repeated analysis did not dedupe: candidates=%d duplicates=%d", len(reconciled), duplicates)
+	if counts["entities"] != 0 || counts["claims"] != 0 || len(ref.entities) != 0 || len(ref.claims) != 0 || len(ref.reviews) != 0 || len(ref.documents) != 1 {
+		t.Fatalf("unexamined links became stored items: counts=%v ref=%#v", counts, ref)
 	}
-	for _, candidate := range reconciled {
-		if len(sliceFromAny(candidate["evidence_set"])) != 1 {
-			t.Fatalf("duplicate evidence was retained: %#v", candidate)
+	for _, doc := range ref.documents {
+		if doc.RawText != raw {
+			t.Fatal("source retention changed")
 		}
 	}
 }
 
-func TestSourceDiscoveryHTMLRosterUsesAnchorNameAndFullSectionEvidence(t *testing.T) {
-	sections := discoveryHTMLSections([]byte(`<main><h2>Roster</h2><ul><li><a href="/a">Arin</a> keeps the eastern gate.</li><li><a href="/b">Bera</a> maps the lower hall.</li></ul></main>`))
-	for _, section := range sections {
-		section["source_url"] = "https://reference.example/wiki/fixture"
-		section["source_type"] = "community_wiki"
-		section["document_sha256"] = "anchor-hash"
-	}
-	candidates := sourceDiscoveryStructuralRosterCandidates(mapsToAny(sections))
-	if len(candidates) != 2 || stringFromMap(candidates[0], "canonical_name") != "Arin" || stringFromMap(candidates[1], "canonical_name") != "Bera" {
-		t.Fatalf("anchor roster candidates=%#v sections=%#v", candidates, sections)
-	}
-	if stringFromMap(candidates[0], "evidence_excerpt") != "Arin keeps the eastern gate." {
-		t.Fatalf("full section evidence was not retained: %#v", candidates[0])
-	}
-}
-
-func TestSourceDiscoveryStructuralRosterRejectsMetadataLinks(t *testing.T) {
-	body := []byte(`<main>
-		<h2>Roster</h2><ul><li><a href="/wiki/Arin">Arin</a></li><li><a href="/w/Bera">Bera</a></li></ul>
-		<h2>Metadata</h2><ul>
-			<li><a href="/wiki/Category%3A2012">2012 novel</a></li>
-			<li><a href="/wiki/poster.jpg">poster.jpg</a></li>
-			<li><a href="https://publisher.example/work">Publisher</a></li>
-			<li><a href="#cite-note-1">↑</a></li>
-			<li><a href="/w/index.php?title=work&amp;action=edit">Edit</a></li>
-		</ul>
-		<table><tr><td><a href="/wiki/Publisher">Publisher</a></td><td><a href="/wiki/Broadcaster">Broadcaster</a></td></tr></table>
-	</main>`)
-	sections := discoveryHTMLSections(body)
-	for _, section := range sections {
-		section["source_url"] = "https://reference.example/wiki/fixture"
-		section["source_type"] = "community_wiki"
-		section["document_sha256"] = "metadata-hash"
-	}
-	candidates := sourceDiscoveryStructuralRosterCandidates(mapsToAny(sections))
-	if len(candidates) != 2 || stringFromMap(candidates[0], "canonical_name") != "Arin" || stringFromMap(candidates[1], "canonical_name") != "Bera" {
-		t.Fatalf("metadata links leaked into roster: %#v", candidates)
-	}
-	foundHref := false
-	for _, section := range sections {
-		for _, anchor := range sliceMapFromAny(section["anchors"]) {
-			if stringFromMap(anchor, "text") == "Arin" && stringFromMap(anchor, "href") == "/wiki/Arin" {
-				foundHref = true
+func TestSourceDiscoveryExtractedNamesAndNotesWithoutPageNoise(t *testing.T) {
+	_, sections := referencePageNoiseFixture()
+	refFor := func(phrase string) string {
+		for i, raw := range sections {
+			if strings.Contains(stringFromMap(mapFromAny(raw), "excerpt"), phrase) {
+				return fmt.Sprintf("s%d", i+1)
 			}
 		}
+		t.Fatalf("missing source phrase %q", phrase)
+		return ""
 	}
-	if !foundHref {
-		t.Fatalf("parser did not retain anchor href and text: %#v", sections)
+	lRef, renRef, noteRef, adRef := refFor("L 은"), refFor("렌 은"), refFor("각주:"), refFor("무료 가입")
+	content := map[string]any{"records": map[string]any{
+		"entities": []any{
+			map[string]any{"canonical_name": "L", "entity_type": "character", "source_ref": lRef, "canon_scope_status": "in_world"},
+			map[string]any{"canonical_name": "렌", "entity_type": "character", "source_ref": renRef, "canon_scope_status": "in_world"},
+			map[string]any{"canonical_name": "무료 가입", "entity_type": "other", "source_ref": adRef, "canon_scope_status": "external_metadata"},
+		},
+		"facts": []any{map[string]any{"subject": "렌", "statement": "렌의 능력은 밤에만 작동한다.", "source_ref": noteRef, "canon_scope_status": "in_world"}},
+	}, "follow_up_queries": []any{}}
+	encoded, _ := json.Marshal(content)
+	calls := 0
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		var request map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			w.WriteHeader(400)
+			return
+		}
+		messages := sliceMapFromAny(request["messages"])
+		joined := fmt.Sprint(request["messages"])
+		if len(messages) < 2 || !containsAll(stringFromMap(messages[0], "content"), "surface fragments", "advertising", "factual footnotes", "external_metadata") {
+			t.Errorf("source interpretation contract absent: %v", messages)
+		}
+		for _, excluded := range []string{"marked_ad", "reader_comment", "hidden_comment"} {
+			if strings.Contains(joined, excluded) {
+				t.Errorf("excluded HTML returned to model: %s", excluded)
+			}
+		}
+		for _, present := range []string{"L 은", "렌 은", "밤에만", "무료 가입"} {
+			if !strings.Contains(joined, present) {
+				t.Errorf("context lost before interpretation: %s", present)
+			}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(encoded)}}}})
+	}))
+	defer upstream.Close()
+	candidates, _, trace, err := runSourceCandidateExtraction(context.Background(), completeTurnLLMConfig{Provider: "openai", APIKey: "fixture", Endpoint: upstream.URL, Model: "fixture", TimeoutMs: 5000, MaxTokens: 5000}, store.SourceDiscoveryInput{}, map[string]any{"section_candidates": sections})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := &sourceDiscoveryAdmissionFake{documents: map[string]*store.ReferenceDocument{}}
+	counts, err := stageSourceDiscoveryCandidates(context.Background(), ref, "job-model", "work-1", "continuity-1", candidates)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 || counts["entities"] != 2 || counts["claims"] != 1 || int64FromMap(trace, "rejected_external_metadata_candidates", -1) != 1 {
+		t.Fatalf("unexpected extraction/staging: calls=%d counts=%v trace=%v", calls, counts, trace)
+	}
+	if len(ref.entities) != 2 || ref.entities[0].CanonicalName != "L" || ref.entities[1].CanonicalName != "렌" || len(ref.claims) != 1 || ref.claims[0].ClaimText != "렌의 능력은 밤에만 작동한다." || len(ref.reviews) != 0 {
+		t.Fatalf("staged content changed: entities=%#v claims=%#v reviews=%v", ref.entities, ref.claims, ref.reviews)
 	}
 }
 
@@ -344,7 +371,7 @@ func TestSourceDiscoveryTypedDenseProductionExtractionStagesAllCategoriesBounded
 	if err != nil {
 		t.Fatal(err)
 	}
-	if llmCalls != 1 || int64FromMap(trace, "llm_call_count", 0) != 1 || int64FromMap(trace, "structural_roster_candidates", 0) != 2 {
+	if llmCalls != 1 || int64FromMap(trace, "llm_call_count", 0) != 1 || int64FromMap(trace, "structural_roster_candidates", -1) != 0 {
 		t.Fatalf("calls=%d trace=%#v", llmCalls, trace)
 	}
 	requestText := fmt.Sprint(request["messages"])
@@ -377,8 +404,8 @@ func TestSourceDiscoveryTypedDenseProductionExtractionStagesAllCategoriesBounded
 		if err := json.Unmarshal([]byte(entity.MetadataJSON), &metadata); err != nil {
 			t.Fatal(err)
 		}
-		if metadata["structural_provenance"] != "deterministic_structural_roster.v1" {
-			t.Fatalf("structural provenance missing from persisted entity: %#v", metadata)
+		if stringFromMap(metadata, "origin_kind") != "source_discovery" || stringFromMap(metadata, "structural_provenance") != "" {
+			t.Fatalf("model-derived entity acquired structural provenance: %#v", metadata)
 		}
 	}
 	var relationMetadata map[string]any

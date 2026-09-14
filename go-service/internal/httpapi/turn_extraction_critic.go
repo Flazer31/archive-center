@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -344,7 +345,14 @@ func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any) ma
 	return languageContext
 }
 
-func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, inputPolicy completeTurnCriticInputPolicy, replay completeTurnCriticInputReplay, languageContextArg ...map[string]any) (map[string]any, map[string]any, error) {
+func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, outputLanguageOverride *map[string]any, cfg completeTurnLLMConfig, canonicalChatLogs bool, inputPolicy completeTurnCriticInputPolicy, replay completeTurnCriticInputReplay, languageContextArg ...map[string]any) (result map[string]any, resultTrace map[string]any, resultErr error) {
+	startedDiagnostic := time.Now()
+	defer func() {
+		if resultErr != nil {
+			slog.ErrorContext(ctx, "critic processing failed", "session_id", sid, "turn_index", turnIndex, "provider", cfg.Provider, "model", cfg.Model,
+				"duration_ms", time.Since(startedDiagnostic).Milliseconds(), "error", scrubCriticFailureText(resultErr.Error(), cfg.APIKey))
+		}
+	}()
 	if !cfg.hasConfig() {
 		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
 		return nil, criticFailureTrace("", cfg, 0, err, ""), err
@@ -595,19 +603,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		Temperature:         &temp,
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
-	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
-		req.ReasoningEffort = &cfg.ReasoningEffort
-	}
-	if strings.TrimSpace(cfg.ReasoningPreset) != "" {
-		req.ReasoningPreset = &cfg.ReasoningPreset
-	}
-	if cfg.ReasoningBudgetTokens > 0 {
-		req.ReasoningBudgetTokens = &cfg.ReasoningBudgetTokens
-		req.BudgetTokens = &cfg.ReasoningBudgetTokens
-	}
-	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
-		req.GlmThinkingType = &cfg.GlmThinkingType
-	}
+	applyProxyReasoningFromLLMConfig(&req, cfg)
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	jsonPolicy := proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_critic", SessionID: sid}
 
@@ -875,19 +871,7 @@ func (s *Server) runCompleteTurnWorldRuleAudit(ctx context.Context, sid string, 
 		Temperature:         &temp,
 		TimeoutMs:           &cfg.TimeoutMs,
 	}
-	if strings.TrimSpace(cfg.ReasoningEffort) != "" {
-		req.ReasoningEffort = &cfg.ReasoningEffort
-	}
-	if strings.TrimSpace(cfg.ReasoningPreset) != "" {
-		req.ReasoningPreset = &cfg.ReasoningPreset
-	}
-	if cfg.ReasoningBudgetTokens > 0 {
-		req.ReasoningBudgetTokens = &cfg.ReasoningBudgetTokens
-		req.BudgetTokens = &cfg.ReasoningBudgetTokens
-	}
-	if strings.TrimSpace(cfg.GlmThinkingType) != "" {
-		req.GlmThinkingType = &cfg.GlmThinkingType
-	}
+	applyProxyReasoningFromLLMConfig(&req, cfg)
 	applyProxyOverridesFromLLMConfig(&req, cfg)
 	trace["llm_call_attempt"] = true
 	upstream, _, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, req, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "complete_turn_world_rule_audit", SessionID: sid})

@@ -83,18 +83,21 @@ func TestPrepareTurnLegacyCharacterProjectionDoesNotTruncateBeforeClassBudget(t 
 	perspective := prepareTurnPerspectiveWithNarrativeState(map[string]any{}, nil, []store.ActiveState{{
 		StateType: "scene", TurnIndex: 9, Content: `{"present_entities":["Mira","Juno"]}`,
 	}})
-	assembly := buildPrepareTurnInjectionAssembly(
-		nil, nil, nil, nil, nil, nil,
-		[]store.CharacterState{{
+	assembly := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{
+		CharacterStates: []store.CharacterState{{
 			CharacterName:     "Mira",
 			StatusJSON:        mustCompactJSON(map[string]any{"state": status}),
 			SpeechStyleJSON:   mustCompactJSON(map[string]any{"principle": voice}),
 			RelationshipsJSON: mustCompactJSON(map[string]any{"Juno": map[string]any{"description": relationship}}),
 			TurnIndex:         9,
 		}},
-		nil, nil, nil, nil, nil, nil,
-		5, 20000, "Mira speaks with Juno.", "default", nil, nil, nil, perspective,
-	)
+		TopK:        5,
+		MaxChars:    20000,
+		UserInput:   "Mira speaks with Juno.",
+		Profile:     "default",
+		BudgetMode:  "auto",
+		Perspective: testPrepareTurnAssemblyPerspective(perspective),
+	})
 	for marker, text := range map[string]string{
 		"status-tail-marker":       assembly.CharacterObjectiveText,
 		"voice-tail-marker":        assembly.CharacterObjectiveText,
