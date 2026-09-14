@@ -2,6 +2,10 @@
 
 ## 2026-09-15 — 4.4.0 release promotion
 
+Windows env-path validation also covers the 02 connection check's `Import-DotEnv`.
+Use explicit UTF-8 there, matching the writer and the main launcher. A local UTF-8
+system locale passing is not proof of the default Windows runner's ANSI decoding.
+
 The stable source/build version is 4.4.0; historical test identifiers remain only in
 evidence documents and fixtures. This promotion changes version metadata and public
 documentation, not memory policy or lifecycle behavior. See the [release record](docs/archive-center-4.4-release-verification.md).

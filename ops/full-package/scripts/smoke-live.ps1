@@ -12,7 +12,7 @@ if ($null -ne $RequestTimeoutSeconds -and $RequestTimeoutSeconds -lt 1) {
 
 function Import-DotEnv([string]$Path) {
     if (Test-Path -LiteralPath $Path -PathType Leaf) {
-        Get-Content -LiteralPath $Path | ForEach-Object {
+        Get-Content -LiteralPath $Path -Encoding UTF8 | ForEach-Object {
             $line = $_.Trim()
             if ($line -eq "" -or $line.StartsWith("#")) { return }
             $idx = $line.IndexOf("=")

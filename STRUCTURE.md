@@ -2,6 +2,10 @@
 
 ## 2026-09-15 — 4.4.0 release promotion
 
+Windows CI additionally exposed the same UTF-8 env-path issue in the 02 connection
+check (`ops/full-package/scripts/smoke-live.ps1`). Its env reader now explicitly
+uses UTF-8; the existing saved-port test exercises the production HTTP URL boundary.
+
 The stable source/build version is 4.4.0; historical test identifiers remain only in
 evidence documents and fixtures. This promotion changes version metadata and public
 documentation, not memory policy or lifecycle behavior. See the [release record](docs/archive-center-4.4-release-verification.md).
