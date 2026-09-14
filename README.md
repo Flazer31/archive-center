@@ -25,6 +25,8 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 **4.4.0 정식 버전**은 test.17까지 검증한 변경과 Windows 한글 경로 읽기 수정을 포함합니다.
 JS·백엔드·HUD·설치 패키지는 `4.4.0`으로 표시합니다. 과거 test 번호는 변경 이력에만 남습니다.
 신규 설치와 관리형 업데이트의 진입점은 유지합니다. RisuAI에 등록한 JS도 별도로 같은 버전으로 업데이트하세요.
+2026-09-15 공개 후 원본 4.3.1의 실제 GitHub 다운로드·자동 4.4.0 재시작·DB/설정 보존까지 확인했습니다.
+Windows·Linux·macOS CI와 공개 자산 검증은 [4.4 배포 기록](docs/archive-center-4.4-release-verification.md)에 정리했습니다.
 
 **이후 기억 작업의 기준은 4.3.1로 고정합니다.** [보존 기준](docs/archive-center-memory-recall-restoration-plan.md#memory-baseline-431)에
 회수 폭·검색 근거·선정·중요도·전처리 선택 동작을 정리합니다. 기본 기억만 사용할 때도 이 기준을

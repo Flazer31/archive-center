@@ -2,6 +2,13 @@
 
 ## 2026-09-15 — 4.4.0 release promotion
 
+Published tag `v4.4.0` targets `77e597f71afe5e967adee603ae409535c8359fd9`.
+All four release CI jobs and eight public asset hashes passed. The original published
+4.3.1 Windows package downloaded the public 4.4.0 asset through its update APIs,
+automatically restarted/committed and preserved the synthetic DB row, env and ports;
+58 installed managed files match the release. This was an isolated API verification,
+not a new live RisuAI click; the user's existing services were preserved.
+
 Windows CI additionally exposed the same UTF-8 env-path issue in the 02 connection
 check (`ops/full-package/scripts/smoke-live.ps1`). Its env reader now explicitly
 uses UTF-8; the existing saved-port test exercises the production HTTP URL boundary.

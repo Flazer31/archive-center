@@ -2,6 +2,11 @@
 
 ## 2026-09-15 — 4.4.0 release promotion
 
+The [release record](docs/archive-center-4.4-release-verification.md) now separates
+successful public original-4.3.1 update/API verification from the earlier browser
+callback fixture. Public hashes, tag, automatic restart and retained synthetic data
+are verified; do not imply that backend updates replace registered RisuAI JavaScript.
+
 Windows env-path validation also covers the 02 connection check's `Import-DotEnv`.
 Use explicit UTF-8 there, matching the writer and the main launcher. A local UTF-8
 system locale passing is not proof of the default Windows runner's ANSI decoding.
