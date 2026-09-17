@@ -1,0 +1,13 @@
+# Verified synthetic test fixtures and documentation examples in published history.
+7295382d6557cc21639634f173322cee060fd90f:go-service/cmd/archive-center-go/main_test.go:generic-api-key:17
+7295382d6557cc21639634f173322cee060fd90f:go-service/cmd/archive-center-go/main_test.go:generic-api-key:19
+7295382d6557cc21639634f173322cee060fd90f:go-service/cmd/archive-center-go/main_test.go:generic-api-key:37
+a1bf29fd55cff27d2c1480f7bee40b8f9962137f:docs/narrative-guide-authority-review.md:generic-api-key:2830
+f51910760c97e21587ddc607d797e0119dff1d8d:docs/3.6-narrative-guide-authority-review.md:generic-api-key:1383
+f9ae1fc5888ded6ff89fa1ce2f07bbdf609623a1:Risu Recomposer.js:generic-api-key:7087
+c6baf2cf9c105e236b49031b7ad6051b818e9eed:go-service/internal/httpapi/group_turn_seq215_part03_test.go:generic-api-key:948
+6eaebf6438ba0c91eb3ad7206fa172dc97de1389:go-service/internal/httpapi/group_proxy_part02_test.go:generic-api-key:483
+6eaebf6438ba0c91eb3ad7206fa172dc97de1389:go-service/internal/httpapi/group_turn_seq215_part03_test.go:generic-api-key:948
+314e348e08806b0efbeba9352e07a56daeb95e02:Risu Recomposer.js:generic-api-key:2851
+2633b6f75a3c65cdfb9869cd5d84eebe12a9319e:go-service/internal/httpapi/group_proxy_test.go:generic-api-key:1388
+2633b6f75a3c65cdfb9869cd5d84eebe12a9319e:go-service/internal/httpapi/group_turn_seq215_test.go:generic-api-key:3226

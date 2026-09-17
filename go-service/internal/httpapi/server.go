@@ -1,0 +1,373 @@
+// Package httpapi provides HTTP handlers for the Archive Center Go shadow service.
+// Route groups are split by domain (health, turn, memory, proxy, admin, narrative)
+// to keep files small and focused.
+package httpapi
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/diagnostics"
+	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
+)
+
+const (
+	// UpdateApplyExitCode is the process exit code emitted after POST
+	// /update/apply has staged a verified package and requested a graceful
+	// shutdown. Managed launchers use this documented code to distinguish an
+	// update handoff from an ordinary service stop.
+	UpdateApplyExitCode = 75
+	// UpdateApplyManagedLauncherMode is the explicit launcher capability token
+	// required before the backend exposes the update shutdown callback.
+	UpdateApplyManagedLauncherMode = "managed_launcher_exit_75"
+)
+
+// Server holds the HTTP handler dependencies.
+type Server struct {
+	Cfg                      config.Config
+	Started                  time.Time
+	BackendInstanceID        string
+	Store                    store.Store
+	StoreOpenError           error
+	Vector                   vector.VectorStore
+	VectorOpenError          error
+	ReferenceVector          vector.VectorStore
+	ReferenceVectorOpenError error
+	RuntimeConfig            RuntimeConfig
+	RuntimeConfigMu          sync.RWMutex
+	memoryWorkerWake         chan struct{}
+	memoryWorkerWakeOnce     sync.Once
+	memoryWorkerStartOnce    sync.Once
+	AdminJobs                *adminJobManager
+	CompleteTurns            *completeTurnRequestLedger
+	TurnWorkflows            *turnWorkflowHUDLedger
+	SourceAcceptances        *completeTurnSourceAcceptanceLedger
+	RollbackDecisions        *rollbackDecisionLedger
+	RequestShutdown          func(exitCode int)
+	DiagnosticWriter         *diagnostics.Writer
+}
+
+// ValidateRuntimeDependencies verifies live dependencies before the HTTP
+// service advertises readiness. Chroma Health checks both the configured API
+// heartbeat and collection endpoint without deleting existing data.
+func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
+	if s.StoreOpenError != nil && s.Cfg.StoreMode == config.StoreModeMariaDBAuthority {
+		return fmt.Errorf("mariadb startup preflight failed: %w", s.StoreOpenError)
+	}
+	if !s.Cfg.ChromaEnabled || strings.TrimSpace(s.Cfg.ChromaEndpoint) == "" {
+		return nil
+	}
+	if s.VectorOpenError != nil {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, s.VectorOpenError)
+	}
+	health, err := s.Vector.Health(ctx)
+	if err != nil {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, err)
+	}
+	if strings.TrimSpace(health.Status) != "ok" || !health.ModelReady {
+		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): status=%s model_ready=%t", s.Cfg.ChromaAPIPath, health.Status, health.ModelReady)
+	}
+	// Original-work reference retrieval is an optional capability. Its separate
+	// collection health is reported by /ready and must not block the main store,
+	// session-memory vector lane, or turn runtime from starting.
+	return nil
+}
+
+// NewServer creates a Server with the given configuration.
+func NewServer(cfg config.Config) *Server {
+	started := time.Now().UTC()
+	st, storeErr := newStoreForConfig(cfg)
+	var vs vector.VectorStore
+	var vectorErr error
+	var referenceVS vector.VectorStore
+	var referenceVectorErr error
+	switch {
+	case cfg.ChromaEnabled && strings.TrimSpace(cfg.ChromaEndpoint) != "":
+		vs, vectorErr = vector.NewChromaStore(cfg.ChromaEndpoint, cfg.ChromaCollection, cfg.ChromaAPIPath)
+		referenceVS, referenceVectorErr = vector.NewChromaStore(cfg.ChromaEndpoint, cfg.ReferenceChromaCollection, cfg.ChromaAPIPath)
+	default:
+		vs = vector.NewFakeVectorStore()
+		referenceVS = vector.NewFakeVectorStore()
+	}
+	if vectorErr != nil {
+		vs = vector.NewFakeVectorStore()
+	}
+	if referenceVectorErr != nil {
+		referenceVS = vector.NewFakeVectorStore()
+	}
+	vs = vector.NewMutationFencedStore(vs)
+	referenceVS = vector.NewMutationFencedStore(referenceVS)
+	return &Server{
+		Cfg:                      cfg,
+		Started:                  started,
+		BackendInstanceID:        newBackendInstanceID(started),
+		Store:                    st,
+		StoreOpenError:           storeErr,
+		Vector:                   vs,
+		VectorOpenError:          vectorErr,
+		ReferenceVector:          referenceVS,
+		ReferenceVectorOpenError: referenceVectorErr,
+		memoryWorkerWake:         make(chan struct{}, 1),
+		AdminJobs:                newAdminJobManager(),
+		CompleteTurns:            newCompleteTurnRequestLedger(),
+		TurnWorkflows:            newTurnWorkflowHUDLedger(),
+		SourceAcceptances:        newCompleteTurnSourceAcceptanceLedger(),
+		RollbackDecisions:        newRollbackDecisionLedger(),
+	}
+}
+
+func newBackendInstanceID(started time.Time) string {
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return hex.EncodeToString(raw[:])
+	}
+	return fmt.Sprintf("started-%d", started.UnixNano())
+}
+
+func (s *Server) backendInstanceID() string {
+	if s == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.BackendInstanceID)
+}
+
+// newStoreForConfig picks the store implementation based on the config store mode.
+func newStoreForConfig(cfg config.Config) (store.Store, error) {
+	switch cfg.StoreMode {
+	case config.StoreModeDualShadow:
+		return store.NewDualWriteStore(store.NewNoopStore(), store.NewNoopStore()), nil
+	case config.StoreModeMariaDBShadow:
+		maria, err := store.OpenMariaDB(cfg.MariaDBDSN)
+		if err != nil {
+			return store.NewNoopStore(), err
+		}
+		return store.NewDualWriteStore(store.NewNoopStore(), maria), nil
+	case config.StoreModeMariaDBReadShadow:
+		maria, err := store.OpenMariaDB(cfg.MariaDBDSN)
+		if err != nil {
+			return store.NewNoopStore(), err
+		}
+		return store.NewReadOnlyStore(maria), nil
+	case config.StoreModeMariaDBAuthority:
+		maria, err := store.OpenMariaDB(cfg.MariaDBDSN)
+		if err != nil {
+			return store.NewNoopStore(), err
+		}
+		return maria, nil
+	case config.StoreModeFixtureShadow:
+		fixture, err := store.NewFixtureStoreFromExportDir(cfg.StoreFixtureDir)
+		if err != nil {
+			return store.NewNoopStore(), err
+		}
+		return fixture, nil
+	default:
+		return store.NewNoopStore(), nil
+	}
+}
+
+func (s *Server) usesShadowWriteStore() bool {
+	if errors.Is(s.StoreOpenError, store.ErrNotEnabled) {
+		return false
+	}
+	return s.Cfg.StoreMode == config.StoreModeDualShadow ||
+		s.Cfg.StoreMode == config.StoreModeMariaDBShadow ||
+		s.Cfg.StoreMode == config.StoreModeMariaDBAuthority
+}
+
+func (s *Server) storeWriteSource() string {
+	switch s.Cfg.StoreMode {
+	case config.StoreModeMariaDBAuthority:
+		return "mariadb_authority"
+	case config.StoreModeMariaDBShadow:
+		return "mariadb_shadow"
+	case config.StoreModeDualShadow:
+		return "dual_shadow"
+	default:
+		return "shadow"
+	}
+}
+
+// RegisterRoutes mounts all handler routes on the provided mux.
+// Tier mapping (mirrors contracts/go-route-group-design.md):
+//
+//	R0: health, config static, chroma-shadow probes
+//	R1: search, retrieval-index read, explorer read, narrative read, metrics read, audit
+//	R2: turn write, memory write, proxy config write, admin ops, narrative write, import
+func (s *Server) RegisterRoutes(mux *http.ServeMux) {
+	sub := http.NewServeMux()
+	s.registerHealthRoutes(sub)    // R0 + R1 read
+	s.registerConfigRoutes(sub)    // R1 read + R2 write
+	s.registerTurnRoutes(sub)      // R2 write
+	s.registerMemoryRoutes(sub)    // R1 read + R2 write
+	s.registerCanonicalRoutes(sub) // R1 store-backed canonical shadow
+	// Deprecated vector shadow/proof routes are intentionally not mounted in
+	// the active 2.0 runtime. ChromaDB is the selected vector accelerator.
+	s.registerProxyRoutes(sub)        // R2 write
+	s.registerAdminRoutes(sub)        // R2 write
+	s.registerTimelineRoutes(sub)     // R1 read
+	s.registerDashboardRoutes(sub)    // R1 presentation model
+	s.registerPresentationRoutes(sub) // R1 timeline/explorer presentation model
+	s.registerSessionMigrationRoutes(sub)
+	s.registerNarrativeRoutes(sub) // R1 read + R2 write
+	s.registerPersonaRoutes(sub)   // R1 read + R2 write
+	s.registerCriticLedgerRoutes(sub)
+	s.registerStep22ValidationRoutes(sub)
+	s.registerStep23ConsequenceRoutes(sub)
+	s.registerStep23PsychologyRoutes(sub)
+	s.registerStep23ForkLineageRoutes(sub)
+	s.registerStep23ThemeOffscreenRoutes(sub)
+	s.registerStep23CaptureVerificationRoutes(sub)
+	s.registerStatusSchemaRoutes(sub)
+	s.registerReferenceLibraryRoutes(sub)
+	s.registerLorebookReferenceRoutes(sub)
+	s.registerCanonPackPreviewRoutes(sub)
+	s.registerSourceDiscoveryRoutes(sub)
+	s.registerUpdateRoutes(sub)
+	sub.HandleFunc("GET /diagnostics/report", s.handleDiagnosticReport)
+	sub.HandleFunc("POST /diagnostics/logging", s.handleDiagnosticLogging)
+	mux.Handle("/", s.diagnosticMiddleware(s.corsMiddleware(s.authMiddleware(s.reverseProxyBasePathMiddleware(sub)))))
+}
+
+func (s *Server) reverseProxyBasePathMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		strippedPath, ok := stripUnknownReverseProxyBasePath(r.URL.Path)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
+		}
+		clone := r.Clone(r.Context())
+		urlCopy := *clone.URL
+		urlCopy.Path = strippedPath
+		urlCopy.RawPath = ""
+		clone.URL = &urlCopy
+		next.ServeHTTP(w, clone)
+	})
+}
+
+func stripUnknownReverseProxyBasePath(requestPath string) (string, bool) {
+	path := strings.TrimSpace(requestPath)
+	if path == "" || path == "/" || !strings.HasPrefix(path, "/") {
+		return requestPath, false
+	}
+	parts := strings.SplitN(strings.TrimPrefix(path, "/"), "/", 3)
+	if len(parts) < 2 {
+		return requestPath, false
+	}
+	first := strings.TrimSpace(parts[0])
+	second := strings.TrimSpace(parts[1])
+	if first == "" || second == "" || isArchiveRouteRoot(first) || !isArchiveRouteRoot(second) {
+		return requestPath, false
+	}
+	if len(parts) == 2 {
+		return "/" + second, true
+	}
+	return "/" + second + "/" + parts[2], true
+}
+
+func isArchiveRouteRoot(segment string) bool {
+	switch strings.ToLower(strings.TrimSpace(segment)) {
+	case "active-states",
+		"admin",
+		"arc",
+		"arcs",
+		"canonical",
+		"characters",
+		"chapter",
+		"chapters",
+		"chroma-shadow",
+		"complete-turn",
+		"config",
+		"continuity-pack",
+		"diagnostics",
+		"effective-inputs",
+		"episodes",
+		"explorer",
+		"feedback",
+		"health",
+		"import",
+		"intent-routing",
+		"kg",
+		"long-session-health",
+		"maintenance",
+		"maintenance-pass",
+		"metrics",
+		"momentum-packet",
+		"narrative-control",
+		"pending-threads",
+		"persona-capsules",
+		"prepare-turn",
+		"prompts",
+		"proxy",
+		"ready",
+		"retrieval-index",
+		"rollback",
+		"saga",
+		"sagas",
+		"search",
+		"session",
+		"session-state",
+		"sessions",
+		"stats",
+		"status-schema",
+		"step22",
+		"step23",
+		"storylines",
+		"subjective-entity-memories",
+		"supervisor",
+		"timeline",
+		"turns",
+		"turn-workflow",
+		"update",
+		"validation",
+		"version",
+		"wakeup",
+		"world-rules":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) corsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		origin := strings.TrimSpace(r.Header.Get("Origin"))
+		allowed := s.resolveAllowedOrigin(origin)
+		if allowed != "" {
+			w.Header().Set("Access-Control-Allow-Origin", allowed)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization,Content-Type")
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) resolveAllowedOrigin(origin string) string {
+	origins := s.Cfg.AllowedOrigins
+	if len(origins) == 0 {
+		origins = []string{"*"}
+	}
+	for _, item := range origins {
+		item = strings.TrimSpace(item)
+		switch {
+		case item == "*":
+			return "*"
+		case origin != "" && strings.EqualFold(item, origin):
+			return origin
+		}
+	}
+	return ""
+}

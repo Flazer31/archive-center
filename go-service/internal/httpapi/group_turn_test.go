@@ -1,0 +1,1633 @@
+package httpapi
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/store"
+	"github.com/risulongmemory/archive-center-go/internal/vector"
+)
+
+// turnRecordingStore implements store.Store and records all save/read calls.
+type turnRecordingStore struct {
+	memoryFakeStore
+	savedChatLogs             []*store.ChatLog
+	savedEffectiveInputs      []*store.EffectiveInput
+	savedAuditLogs            []*store.AuditLog
+	savedCriticFeedback       []*store.CriticFeedback
+	returnMemories            []store.Memory
+	savedMemories             []*store.Memory
+	updatedImportance         map[int64]float64
+	savedEvidence             []*store.DirectEvidence
+	savedKGTriples            []*store.KGTriple
+	savedStorylines           []*store.Storyline
+	savedWorldRules           []*store.WorldRule
+	savedEntities             []*store.Entity
+	savedTrusts               []*store.Trust
+	savedCharacterEvents      []*store.CharacterEvent
+	savedCharacterStates      []*store.CharacterState
+	returnStatusDefinitions   []store.StatusSchemaDefinition
+	savedStatusDefinitions    []store.StatusSchemaDefinition
+	returnStatusCurrent       []store.StatusCurrentValue
+	savedStatusCurrent        []store.StatusCurrentValue
+	savedStatusEvents         []store.StatusChangeEvent
+	savedStatusEffects        []store.StatusEffect
+	savedPendingThreads       []*store.PendingThread
+	savedActiveStates         []*store.ActiveState
+	savedCanonicalLayers      []*store.CanonicalStateLayer
+	returnKGTriples           []store.KGTriple
+	returnEvidence            []store.DirectEvidence
+	listEvidenceCalls         int
+	returnChatLogs            []store.ChatLog
+	returnResumePack          *store.ResumePack
+	returnStorylines          []store.Storyline
+	returnWorldRules          []store.WorldRule
+	returnCharStates          []store.CharacterState
+	returnPendingThreads      []store.PendingThread
+	returnActiveStates        []store.ActiveState
+	returnCanonicalLayers     []store.CanonicalStateLayer
+	returnEpisodeSums         []store.EpisodeSummary
+	returnPersonaEntries      []store.PersonaMemoryEntry
+	returnEntityMemories      []store.ProtagonistEntityMemory
+	returnEntityOwners        []store.ProtagonistEntityMemoryOwner
+	returnActiveInteractions  []store.PreciseMemoryUnit
+	lastEpisodeLimit          int
+	lastPersonaLimit          int
+	lastEntityMemoryLimit     int
+	entityMemoryReadCount     int
+	entityMemoryFilters       []store.ProtagonistEntityMemoryFilter
+	savedEntityMemories       []*store.ProtagonistEntityMemory
+	createdPersonaCapsules    []*store.PersonaMemoryCapsule
+	createdPersonaEntries     []store.PersonaMemoryEntry
+	deletedStorylineIDs       []int64
+	deletedWorldRuleIDs       []int64
+	logicalTurnReplacements   []store.LogicalTurnReplacement
+	logicalTurnRollbacks      []store.LogicalTurnRollback
+	savedCriticInputSnapshots map[string]struct {
+		JSON string
+		Hash string
+	}
+	criticInputSnapshotErr error
+}
+
+func (f *turnRecordingStore) SaveCriticInputSnapshot(
+	_ context.Context,
+	_ string,
+	revision string,
+	snapshotJSON string,
+	snapshotHash string,
+	_ time.Time,
+) error {
+	if f.criticInputSnapshotErr != nil {
+		return f.criticInputSnapshotErr
+	}
+	if f.savedCriticInputSnapshots == nil {
+		f.savedCriticInputSnapshots = map[string]struct {
+			JSON string
+			Hash string
+		}{}
+	}
+	f.savedCriticInputSnapshots[revision] = struct {
+		JSON string
+		Hash string
+	}{JSON: snapshotJSON, Hash: snapshotHash}
+	return nil
+}
+
+func (f *turnRecordingStore) ListActiveInteractionMemoryUnits(_ context.Context, chatSessionID string) ([]store.PreciseMemoryUnit, error) {
+	out := make([]store.PreciseMemoryUnit, 0, len(f.returnActiveInteractions))
+	for _, unit := range f.returnActiveInteractions {
+		if unit.ChatSessionID == "" || unit.ChatSessionID == chatSessionID {
+			out = append(out, unit)
+		}
+	}
+	return out, nil
+}
+
+type auditFailingTurnStore struct {
+	*turnRecordingStore
+}
+
+func (f *auditFailingTurnStore) SaveAuditLog(context.Context, *store.AuditLog) error {
+	return errors.New("audit store unavailable")
+}
+
+type maintenanceAuditFailingTurnStore struct {
+	*turnRecordingStore
+}
+
+func (f *maintenanceAuditFailingTurnStore) SaveAuditLog(ctx context.Context, item *store.AuditLog) error {
+	if item != nil && item.EventType == "maintenance_audit_recorded" {
+		return errors.New("maintenance audit store unavailable")
+	}
+	return f.turnRecordingStore.SaveAuditLog(ctx, item)
+}
+
+func (f *turnRecordingStore) ReplaceLogicalTurn(ctx context.Context, replacement store.LogicalTurnReplacement) error {
+	f.logicalTurnReplacements = append(f.logicalTurnReplacements, replacement)
+	f.returnChatLogs = []store.ChatLog{
+		{ChatSessionID: replacement.ChatSessionID, TurnIndex: replacement.TurnIndex, Role: "user", Content: replacement.UserContent, CreatedAt: replacement.CreatedAt},
+		{ChatSessionID: replacement.ChatSessionID, TurnIndex: replacement.TurnIndex, Role: "assistant", Content: replacement.AssistantContent, CreatedAt: replacement.CreatedAt},
+	}
+	f.returnMemories = nil
+	f.returnEvidence = nil
+	f.returnKGTriples = nil
+	f.returnStorylines = nil
+	f.returnWorldRules = nil
+	f.returnCharStates = nil
+	f.returnPendingThreads = nil
+	f.returnActiveStates = nil
+	f.returnCanonicalLayers = nil
+	f.returnEpisodeSums = nil
+	f.returnEntityMemories = nil
+	return nil
+}
+
+func (f *turnRecordingStore) RollbackCanonicalTail(_ context.Context, rollback store.LogicalTurnRollback) error {
+	f.logicalTurnRollbacks = append(f.logicalTurnRollbacks, rollback)
+	fromTurn := rollback.TurnIndex
+	kept := f.returnChatLogs[:0]
+	for _, item := range f.returnChatLogs {
+		if item.TurnIndex < fromTurn {
+			kept = append(kept, item)
+		}
+	}
+	f.returnChatLogs = kept
+	return nil
+}
+
+type turnRecordingVectorStore struct {
+	docs                []vector.VectorDocument
+	deletedDocumentIDs  []string
+	upsertErr           error
+	deleteErr           error
+	upsertCalls         int
+	deleteSessionCalls  int
+	deleteDocumentCalls int
+	rebuildCalls        int
+}
+
+func (f *turnRecordingVectorStore) Search(ctx context.Context, sessionID string, query []float32, limit int, filter string) ([]vector.VectorDocument, error) {
+	return nil, vector.ErrNotFound
+}
+
+func (f *turnRecordingVectorStore) Upsert(ctx context.Context, sessionID string, docs []vector.VectorDocument) error {
+	f.upsertCalls++
+	if f.upsertErr != nil {
+		return f.upsertErr
+	}
+	f.docs = append(f.docs, docs...)
+	return nil
+}
+
+func (f *turnRecordingVectorStore) DeleteSession(ctx context.Context, sessionID string) error {
+	f.deleteSessionCalls++
+	return nil
+}
+
+func (f *turnRecordingVectorStore) DeleteDocuments(ctx context.Context, ids []string) error {
+	f.deleteDocumentCalls++
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedDocumentIDs = append(f.deletedDocumentIDs, ids...)
+	remove := map[string]bool{}
+	for _, id := range ids {
+		remove[id] = true
+	}
+	out := f.docs[:0]
+	for _, doc := range f.docs {
+		if !remove[doc.ID] {
+			out = append(out, doc)
+		}
+	}
+	f.docs = out
+	return nil
+}
+
+func (f *turnRecordingVectorStore) Rebuild(ctx context.Context, sessionID string) error {
+	f.rebuildCalls++
+	return nil
+}
+
+func (f *turnRecordingVectorStore) Health(ctx context.Context) (vector.HealthSnapshot, error) {
+	return vector.HealthSnapshot{Status: "ok", Collection: "test"}, nil
+}
+
+func (f *turnRecordingVectorStore) Count(ctx context.Context, sessionID string) (int, error) {
+	if sessionID == "" {
+		return len(f.docs), nil
+	}
+	count := 0
+	for _, doc := range f.docs {
+		if doc.ChatSessionID == sessionID {
+			count++
+		}
+	}
+	return count, nil
+}
+
+func (f *turnRecordingVectorStore) ListDocuments(ctx context.Context, sessionID string) ([]vector.VectorDocument, error) {
+	out := []vector.VectorDocument{}
+	for _, doc := range f.docs {
+		if sessionID == "" || doc.ChatSessionID == sessionID {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
+}
+
+func (f *turnRecordingVectorStore) GetDocuments(_ context.Context, ids []string) ([]vector.VectorDocument, error) {
+	wanted := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		wanted[id] = true
+	}
+	out := []vector.VectorDocument{}
+	for _, doc := range f.docs {
+		if wanted[doc.ID] {
+			out = append(out, doc)
+		}
+	}
+	return out, nil
+}
+
+func (f *turnRecordingVectorStore) Close(ctx context.Context) error { return nil }
+
+func (f *turnRecordingStore) SaveChatLog(ctx context.Context, log *store.ChatLog) error {
+	f.savedChatLogs = append(f.savedChatLogs, log)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveEffectiveInput(ctx context.Context, in *store.EffectiveInput) error {
+	f.savedEffectiveInputs = append(f.savedEffectiveInputs, in)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveAuditLog(ctx context.Context, a *store.AuditLog) error {
+	f.savedAuditLogs = append(f.savedAuditLogs, a)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveCriticFeedback(ctx context.Context, cf *store.CriticFeedback) error {
+	f.savedCriticFeedback = append(f.savedCriticFeedback, cf)
+	return nil
+}
+
+func (f *turnRecordingStore) ListMemories(ctx context.Context, sid string, fromTurn, toTurn int) ([]store.Memory, error) {
+	return f.returnMemories, nil
+}
+
+func (f *turnRecordingStore) DeleteMemoryByID(ctx context.Context, sid string, memoryID int64) error {
+	for i := range f.returnMemories {
+		if f.returnMemories[i].ID == memoryID && f.returnMemories[i].ChatSessionID == sid {
+			f.returnMemories = append(f.returnMemories[:i], f.returnMemories[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *turnRecordingStore) UpdateMemoryImportance(ctx context.Context, chatSessionID string, memoryID int64, importance float64) error {
+	if f.updatedImportance == nil {
+		f.updatedImportance = map[int64]float64{}
+	}
+	f.updatedImportance[memoryID] = importance
+	return nil
+}
+
+func (f *turnRecordingStore) ListKGTriples(ctx context.Context, sid string) ([]store.KGTriple, error) {
+	return f.returnKGTriples, nil
+}
+
+func (f *turnRecordingStore) ListEvidence(ctx context.Context, sid string) ([]store.DirectEvidence, error) {
+	f.listEvidenceCalls++
+	return f.returnEvidence, nil
+}
+
+func (f *turnRecordingStore) ListChatLogs(ctx context.Context, sid string, fromTurn, toTurn int) ([]store.ChatLog, error) {
+	return f.returnChatLogs, nil
+}
+
+func (f *turnRecordingStore) GetResumePack(ctx context.Context, sid, trigger string) (*store.ResumePack, error) {
+	return f.returnResumePack, nil
+}
+
+func (f *turnRecordingStore) ListStorylines(ctx context.Context, sid string) ([]store.Storyline, error) {
+	return f.returnStorylines, nil
+}
+
+func (f *turnRecordingStore) DeleteStoryline(ctx context.Context, storylineID int64) error {
+	for i := range f.returnStorylines {
+		if f.returnStorylines[i].ID == storylineID {
+			f.deletedStorylineIDs = append(f.deletedStorylineIDs, storylineID)
+			f.returnStorylines = append(f.returnStorylines[:i], f.returnStorylines[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListWorldRules(ctx context.Context, sid string) ([]store.WorldRule, error) {
+	return f.returnWorldRules, nil
+}
+
+func (f *turnRecordingStore) DeleteWorldRule(ctx context.Context, ruleID int64) error {
+	for i := range f.returnWorldRules {
+		if f.returnWorldRules[i].ID == ruleID {
+			f.deletedWorldRuleIDs = append(f.deletedWorldRuleIDs, ruleID)
+			f.returnWorldRules = append(f.returnWorldRules[:i], f.returnWorldRules[i+1:]...)
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListCharacterStates(ctx context.Context, sid string) ([]store.CharacterState, error) {
+	return f.returnCharStates, nil
+}
+
+func (f *turnRecordingStore) GetCharacterState(ctx context.Context, sid, characterName string) (*store.CharacterState, error) {
+	for _, item := range f.returnCharStates {
+		if sid != "" && item.ChatSessionID != "" && item.ChatSessionID != sid {
+			continue
+		}
+		if strings.EqualFold(item.CharacterName, characterName) {
+			cp := item
+			return &cp, nil
+		}
+	}
+	return nil, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListPendingThreads(ctx context.Context, sid, status string) ([]store.PendingThread, error) {
+	return f.returnPendingThreads, nil
+}
+
+func (f *turnRecordingStore) ListActiveStates(ctx context.Context, sid, stateType string) ([]store.ActiveState, error) {
+	return f.returnActiveStates, nil
+}
+
+func (f *turnRecordingStore) ListCanonicalStateLayers(ctx context.Context, sid, layerType string) ([]store.CanonicalStateLayer, error) {
+	return f.returnCanonicalLayers, nil
+}
+
+func (f *turnRecordingStore) ListEpisodeSummaries(ctx context.Context, sid string, limit, fromTurn, toTurn int) ([]store.EpisodeSummary, error) {
+	f.lastEpisodeLimit = limit
+	return f.returnEpisodeSums, nil
+}
+
+func (f *turnRecordingStore) CreatePersonaMemoryCapsule(ctx context.Context, capsule *store.PersonaMemoryCapsule, entries []store.PersonaMemoryEntry) (*store.PersonaMemoryCapsule, error) {
+	f.createdPersonaCapsules = append(f.createdPersonaCapsules, capsule)
+	f.createdPersonaEntries = append(f.createdPersonaEntries, entries...)
+	return capsule, nil
+}
+
+func (f *turnRecordingStore) ListPersonaMemoryCapsules(ctx context.Context, filter store.PersonaCapsuleFilter) ([]store.PersonaMemoryCapsule, error) {
+	return nil, nil
+}
+
+func (f *turnRecordingStore) GetPersonaMemoryCapsule(ctx context.Context, capsuleID int64) (*store.PersonaMemoryCapsule, []store.PersonaMemoryEntry, error) {
+	return nil, nil, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) DeletePersonaMemoryCapsule(ctx context.Context, capsuleID int64) error {
+	return nil
+}
+
+func (f *turnRecordingStore) AttachPersonaMemoryCapsule(ctx context.Context, attachment *store.PersonaCapsuleAttachment) error {
+	return nil
+}
+
+func (f *turnRecordingStore) DetachPersonaMemoryCapsule(ctx context.Context, capsuleID int64, targetChatSessionID string) error {
+	return nil
+}
+
+func (f *turnRecordingStore) ListPersonaCapsuleAttachments(ctx context.Context, targetChatSessionID string) ([]store.PersonaCapsuleAttachment, error) {
+	return nil, nil
+}
+
+func (f *turnRecordingStore) ListAttachedPersonaMemoryEntries(ctx context.Context, targetChatSessionID string, limit int) ([]store.PersonaMemoryEntry, error) {
+	f.lastPersonaLimit = limit
+	return f.returnPersonaEntries, nil
+}
+
+func (f *turnRecordingStore) CreateProtagonistEntityMemory(ctx context.Context, item *store.ProtagonistEntityMemory) (*store.ProtagonistEntityMemory, error) {
+	cp := *item
+	if cp.ID <= 0 {
+		cp.ID = int64(len(f.savedEntityMemories) + 1)
+	}
+	f.savedEntityMemories = append(f.savedEntityMemories, &cp)
+	return &cp, nil
+}
+
+func (f *turnRecordingStore) ListProtagonistEntityMemories(ctx context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemory, error) {
+	f.lastEntityMemoryLimit = filter.Limit
+	f.entityMemoryReadCount++
+	f.entityMemoryFilters = append(f.entityMemoryFilters, filter)
+	ownerKeys := map[string]bool{}
+	for _, key := range filter.OwnerEntityKeys {
+		ownerKeys[strings.TrimSpace(key)] = true
+	}
+	out := []store.ProtagonistEntityMemory{}
+	for _, item := range f.returnEntityMemories {
+		if filter.SourceChatSessionID != "" && item.SourceChatSessionID != filter.SourceChatSessionID {
+			continue
+		}
+		if filter.OwnerEntityRole != "" && item.OwnerEntityRole != filter.OwnerEntityRole {
+			continue
+		}
+		if filter.OwnerVisibility != "" && item.OwnerVisibility != filter.OwnerVisibility {
+			continue
+		}
+		if filter.OwnerEntityKey != "" && item.OwnerEntityKey != filter.OwnerEntityKey {
+			continue
+		}
+		if len(ownerKeys) > 0 && !ownerKeys[item.OwnerEntityKey] {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) ListProtagonistEntityMemoryOwners(ctx context.Context, filter store.ProtagonistEntityMemoryFilter) ([]store.ProtagonistEntityMemoryOwner, error) {
+	if len(f.returnEntityOwners) > 0 {
+		return append([]store.ProtagonistEntityMemoryOwner(nil), f.returnEntityOwners...), nil
+	}
+	// Mirror the MariaDB owner-index projection for tests that provide source
+	// memories directly: the production owner list is derived from those rows.
+	seen := map[string]bool{}
+	owners := []store.ProtagonistEntityMemoryOwner{}
+	for _, item := range f.returnEntityMemories {
+		if filter.SourceChatSessionID != "" && item.SourceChatSessionID != filter.SourceChatSessionID {
+			continue
+		}
+		if filter.OwnerEntityRole != "" && item.OwnerEntityRole != filter.OwnerEntityRole {
+			continue
+		}
+		if filter.OwnerVisibility != "" && item.OwnerVisibility != filter.OwnerVisibility {
+			continue
+		}
+		key := strings.TrimSpace(item.OwnerEntityKey)
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		owners = append(owners, store.ProtagonistEntityMemoryOwner{OwnerEntityKey: key, OwnerEntityName: item.OwnerEntityName})
+	}
+	return owners, nil
+}
+
+func (f *turnRecordingStore) SaveMemory(ctx context.Context, m *store.Memory) error {
+	f.savedMemories = append(f.savedMemories, m)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveEvidence(ctx context.Context, e *store.DirectEvidence) error {
+	if e.ID <= 0 {
+		e.ID = int64(len(f.savedEvidence) + 1)
+	}
+	f.savedEvidence = append(f.savedEvidence, e)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveKGTriple(ctx context.Context, t *store.KGTriple) error {
+	f.savedKGTriples = append(f.savedKGTriples, t)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveCharacterEvent(ctx context.Context, e *store.CharacterEvent) error {
+	f.savedCharacterEvents = append(f.savedCharacterEvents, e)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveStoryline(ctx context.Context, s *store.Storyline) error {
+	f.savedStorylines = append(f.savedStorylines, s)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveWorldRule(ctx context.Context, w *store.WorldRule) error {
+	if w.ID <= 0 {
+		w.ID = int64(len(f.savedWorldRules) + 1)
+	}
+	f.savedWorldRules = append(f.savedWorldRules, w)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveEntity(ctx context.Context, e *store.Entity) error {
+	f.savedEntities = append(f.savedEntities, e)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveTrust(ctx context.Context, t *store.Trust) error {
+	f.savedTrusts = append(f.savedTrusts, t)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveCharacterState(ctx context.Context, c *store.CharacterState) error {
+	f.savedCharacterStates = append(f.savedCharacterStates, c)
+	return nil
+}
+
+func (f *turnRecordingStore) GetStatusSchemaDefinitionByKey(ctx context.Context, chatSessionID, statusKey, ownerScope string) (store.StatusSchemaDefinition, error) {
+	for _, item := range f.returnStatusDefinitions {
+		if item.ChatSessionID == chatSessionID && item.StatusKey == statusKey && item.OwnerScope == ownerScope && item.RegistryState == "active" {
+			return item, nil
+		}
+	}
+	return store.StatusSchemaDefinition{}, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListStatusSchemaDefinitions(ctx context.Context, chatSessionID, registryState string, limit int) ([]store.StatusSchemaDefinition, error) {
+	out := []store.StatusSchemaDefinition{}
+	for _, item := range f.returnStatusDefinitions {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if registryState != "" && item.RegistryState != registryState {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusSchemaDefinitions(ctx context.Context, definitions []store.StatusSchemaDefinition) ([]store.StatusSchemaDefinition, error) {
+	out := make([]store.StatusSchemaDefinition, 0, len(definitions))
+	for _, item := range definitions {
+		if item.ID <= 0 {
+			item.ID = int64(len(f.savedStatusDefinitions) + len(out) + 1)
+		}
+		if item.RegistryState == "" {
+			item.RegistryState = "active"
+		}
+		f.savedStatusDefinitions = append(f.savedStatusDefinitions, item)
+		f.returnStatusDefinitions = append(f.returnStatusDefinitions, item)
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) ListStatusCurrentValues(ctx context.Context, chatSessionID, ownerScope, ownerID, statusKey string, limit int) ([]store.StatusCurrentValue, error) {
+	out := []store.StatusCurrentValue{}
+	for _, item := range f.returnStatusCurrent {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if ownerScope != "" && item.OwnerScope != ownerScope {
+			continue
+		}
+		if ownerID != "" && item.OwnerID != ownerID {
+			continue
+		}
+		if statusKey != "" && item.StatusKey != statusKey {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusCurrentValue(ctx context.Context, value store.StatusCurrentValue) (store.StatusCurrentValue, error) {
+	if value.ID <= 0 {
+		value.ID = int64(len(f.savedStatusCurrent) + 1)
+	}
+	f.savedStatusCurrent = append(f.savedStatusCurrent, value)
+	replaced := false
+	for i := range f.returnStatusCurrent {
+		item := f.returnStatusCurrent[i]
+		if item.ChatSessionID == value.ChatSessionID && item.RegistryID == value.RegistryID && item.OwnerScope == value.OwnerScope && item.OwnerID == value.OwnerID {
+			f.returnStatusCurrent[i] = value
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		f.returnStatusCurrent = append(f.returnStatusCurrent, value)
+	}
+	return value, nil
+}
+
+func (f *turnRecordingStore) ListStatusChangeEvents(ctx context.Context, chatSessionID, ownerScope, ownerID, statusKey string, limit int) ([]store.StatusChangeEvent, error) {
+	return append([]store.StatusChangeEvent(nil), f.savedStatusEvents...), nil
+}
+
+func (f *turnRecordingStore) SaveStatusChangeEvent(ctx context.Context, event store.StatusChangeEvent) (store.StatusChangeEvent, error) {
+	if event.ID <= 0 {
+		event.ID = int64(len(f.savedStatusEvents) + 1)
+	}
+	f.savedStatusEvents = append(f.savedStatusEvents, event)
+	return event, nil
+}
+
+func (f *turnRecordingStore) ApplyReversibleStatusTransition(_ context.Context, transition store.ReversibleStatusTransition) (store.ReversibleStatusTransitionResult, error) {
+	if existing, err := f.GetReversibleStatusEventBySourceUnit(context.Background(), transition.Event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID); err == nil {
+		return store.ReversibleStatusTransitionResult{Event: existing, Replayed: true}, nil
+	}
+	result := store.ReversibleStatusTransitionResult{}
+	if transition.CurrentValue != nil {
+		current, err := f.SaveStatusCurrentValue(context.Background(), *transition.CurrentValue)
+		if err != nil {
+			return result, err
+		}
+		result.CurrentValue = current
+		transition.Event.StatusValueID = current.ID
+	}
+	event, err := f.SaveStatusChangeEvent(context.Background(), transition.Event)
+	if err != nil {
+		return store.ReversibleStatusTransitionResult{}, err
+	}
+	result.Event = event
+	return result, nil
+}
+
+func (f *turnRecordingStore) GetReversibleStatusEventBySourceUnit(_ context.Context, chatSessionID, sourceRevision, sourceUnitID string) (store.StatusChangeEvent, error) {
+	for index := len(f.savedStatusEvents) - 1; index >= 0; index-- {
+		event := f.savedStatusEvents[index]
+		if event.ChatSessionID != chatSessionID {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		if extractionStringFromAny(evidence["source_revision"]) == sourceRevision &&
+			extractionStringFromAny(evidence["source_unit_id"]) == sourceUnitID {
+			return event, nil
+		}
+	}
+	return store.StatusChangeEvent{}, store.ErrNotFound
+}
+
+func (f *turnRecordingStore) ListReversibleStatusCurrentValues(_ context.Context, chatSessionID, ownerScope string, statusKeys []string) ([]store.StatusCurrentValue, error) {
+	allowed := map[string]bool{}
+	for _, key := range statusKeys {
+		allowed[key] = true
+	}
+	out := []store.StatusCurrentValue{}
+	for _, value := range f.returnStatusCurrent {
+		if value.ChatSessionID == chatSessionID && value.OwnerScope == ownerScope &&
+			allowed[value.StatusKey] && value.WriteState == "current" {
+			out = append(out, value)
+		}
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) ListLatestReversibleCurrentProjectionEvents(_ context.Context, chatSessionID string, statusKeys []string) ([]store.StatusChangeEvent, error) {
+	allowed := map[string]bool{}
+	for _, key := range statusKeys {
+		allowed[key] = true
+	}
+	latest := map[string]store.StatusChangeEvent{}
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || !allowed[event.StatusKey] {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		currentProjection, _ := evidence["current_projection"].(bool)
+		if !currentProjection {
+			continue
+		}
+		key := event.StatusKey + "\x00" + event.OwnerScope + "\x00" + event.OwnerID
+		if previous, ok := latest[key]; !ok || event.SourceTurn > previous.SourceTurn ||
+			(event.SourceTurn == previous.SourceTurn && event.ID > previous.ID) {
+			latest[key] = event
+		}
+	}
+	out := make([]store.StatusChangeEvent, 0, len(latest))
+	for _, event := range latest {
+		out = append(out, event)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) GetStatusChangeEventBySourceRevision(_ context.Context, chatSessionID, statusKey, sourceRevision string, sourceTurn int) (store.StatusChangeEvent, error) {
+	var latest store.StatusChangeEvent
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || event.StatusKey != statusKey || event.SourceTurn != sourceTurn {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		if extractionStringFromAny(evidence["source_revision"]) != sourceRevision {
+			continue
+		}
+		if event.ID > latest.ID {
+			latest = event
+		}
+	}
+	if latest.ID == 0 {
+		return store.StatusChangeEvent{}, store.ErrNotFound
+	}
+	return latest, nil
+}
+
+func (f *turnRecordingStore) GetLatestCurrentProjectionStatusChangeEvent(_ context.Context, chatSessionID, statusKey string) (store.StatusChangeEvent, error) {
+	var latest store.StatusChangeEvent
+	for _, event := range f.savedStatusEvents {
+		if event.ChatSessionID != chatSessionID || event.StatusKey != statusKey {
+			continue
+		}
+		evidence := map[string]any{}
+		_ = json.Unmarshal([]byte(event.EvidenceJSON), &evidence)
+		currentProjection, _ := evidence["current_projection"].(bool)
+		if !currentProjection {
+			continue
+		}
+		if latest.ID == 0 || event.SourceTurn > latest.SourceTurn ||
+			(event.SourceTurn == latest.SourceTurn && event.ID > latest.ID) {
+			latest = event
+		}
+	}
+	if latest.ID == 0 {
+		return store.StatusChangeEvent{}, store.ErrNotFound
+	}
+	return latest, nil
+}
+
+func (f *turnRecordingStore) ListStatusEffects(ctx context.Context, chatSessionID, ownerScope, ownerID, effectState string, limit int) ([]store.StatusEffect, error) {
+	out := []store.StatusEffect{}
+	for _, item := range f.savedStatusEffects {
+		if chatSessionID != "" && item.ChatSessionID != chatSessionID {
+			continue
+		}
+		if ownerScope != "" && item.OwnerScope != ownerScope {
+			continue
+		}
+		if ownerID != "" && item.OwnerID != ownerID {
+			continue
+		}
+		if effectState != "" && item.EffectState != effectState {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out, nil
+}
+
+func (f *turnRecordingStore) SaveStatusEffect(ctx context.Context, effect store.StatusEffect) (store.StatusEffect, error) {
+	if effect.ID <= 0 {
+		effect.ID = int64(len(f.savedStatusEffects) + 1)
+	}
+	f.savedStatusEffects = append(f.savedStatusEffects, effect)
+	return effect, nil
+}
+
+func (f *turnRecordingStore) UpdateStatusEffectState(ctx context.Context, id int64, effectState, clearedEvidenceJSON string, clearedTurn int) error {
+	for i := range f.savedStatusEffects {
+		if f.savedStatusEffects[i].ID == id {
+			f.savedStatusEffects[i].EffectState = effectState
+			f.savedStatusEffects[i].ClearedEvidenceJSON = clearedEvidenceJSON
+			f.savedStatusEffects[i].ClearedTurn = clearedTurn
+			return nil
+		}
+	}
+	return store.ErrNotFound
+}
+
+type relationshipAccumulatingTurnStore struct {
+	turnRecordingStore
+	characterStates map[string]store.CharacterState
+}
+
+func newRelationshipAccumulatingTurnStore(initial []store.CharacterState) *relationshipAccumulatingTurnStore {
+	f := &relationshipAccumulatingTurnStore{characterStates: map[string]store.CharacterState{}}
+	for _, item := range initial {
+		f.characterStates[relationshipStateKey(item.ChatSessionID, item.CharacterName)] = item
+		f.returnCharStates = append(f.returnCharStates, item)
+	}
+	return f
+}
+
+func relationshipStateKey(sid, characterName string) string {
+	return sid + "\x00" + strings.ToLower(strings.TrimSpace(characterName))
+}
+
+func (f *relationshipAccumulatingTurnStore) GetCharacterState(ctx context.Context, sid, characterName string) (*store.CharacterState, error) {
+	if item, ok := f.characterStates[relationshipStateKey(sid, characterName)]; ok {
+		cp := item
+		return &cp, nil
+	}
+	return f.turnRecordingStore.GetCharacterState(ctx, sid, characterName)
+}
+
+func (f *relationshipAccumulatingTurnStore) ListCharacterStates(ctx context.Context, sid string) ([]store.CharacterState, error) {
+	out := []store.CharacterState{}
+	for _, item := range f.characterStates {
+		if sid == "" || item.ChatSessionID == sid {
+			out = append(out, item)
+		}
+	}
+	return out, nil
+}
+
+func (f *relationshipAccumulatingTurnStore) SaveCharacterState(ctx context.Context, c *store.CharacterState) error {
+	cp := *c
+	f.savedCharacterStates = append(f.savedCharacterStates, &cp)
+	f.characterStates[relationshipStateKey(cp.ChatSessionID, cp.CharacterName)] = cp
+	return nil
+}
+
+func (f *turnRecordingStore) SavePendingThread(ctx context.Context, p *store.PendingThread) error {
+	f.savedPendingThreads = append(f.savedPendingThreads, p)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveActiveState(ctx context.Context, a *store.ActiveState) error {
+	f.savedActiveStates = append(f.savedActiveStates, a)
+	return nil
+}
+
+func (f *turnRecordingStore) SaveCanonicalStateLayer(ctx context.Context, item *store.CanonicalStateLayer) error {
+	f.savedCanonicalLayers = append(f.savedCanonicalLayers, item)
+	return nil
+}
+
+func TestCompleteTurnNoopModeDoesNotWrite(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	srv := NewServer(cfg)
+	srv.Store = fake
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"sess-noop","turn_index":3,"user_input":"hello","assistant_content":"hi","improvement_trace":{"score":8,"feedback_type":"style"}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp["save_ok"] != false {
+		t.Errorf("save_ok = %v, want false", resp["save_ok"])
+	}
+	if resp["chat_logs_saved"] != float64(0) {
+		t.Errorf("chat_logs_saved = %v, want 0", resp["chat_logs_saved"])
+	}
+	if resp["effective_input_saved"] != float64(0) {
+		t.Errorf("effective_input_saved = %v, want 0", resp["effective_input_saved"])
+	}
+	if resp["audit_saved"] != float64(0) {
+		t.Errorf("audit_saved = %v, want 0", resp["audit_saved"])
+	}
+	if resp["critic_feedback_saved"] != float64(0) {
+		t.Errorf("critic_feedback_saved = %v, want 0", resp["critic_feedback_saved"])
+	}
+	if resp["store_write_attempted"] != float64(0) {
+		t.Errorf("store_write_attempted = %v, want 0", resp["store_write_attempted"])
+	}
+
+	note, _ := resp["note"].(string)
+	if !strings.Contains(note, "no mutations") {
+		t.Errorf("note = %q, expected 'no mutations'", note)
+	}
+
+	if len(fake.savedChatLogs) != 0 {
+		t.Errorf("expected 0 saved chat logs, got %d", len(fake.savedChatLogs))
+	}
+
+	wp, ok := resp["writeback_plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("writeback_plan is not an object")
+	}
+	if wp["status"] != "ready" {
+		t.Errorf("writeback_plan.status = %v, want ready", wp["status"])
+	}
+	if wp["store_write_enabled"] != false {
+		t.Errorf("writeback_plan.store_write_enabled = %v, want false", wp["store_write_enabled"])
+	}
+	if wp["would_write"] != false {
+		t.Errorf("writeback_plan.would_write = %v, want false", wp["would_write"])
+	}
+	wpTargets, _ := wp["targets"].([]any)
+	if len(wpTargets) == 0 {
+		t.Errorf("writeback_plan.targets is empty")
+	}
+	wpNotes, _ := wp["notes"].(string)
+	if !strings.Contains(wpNotes, "R1 read-shadow") {
+		t.Errorf("writeback_plan.notes missing R1 marker: %q", wpNotes)
+	}
+}
+
+func TestCompleteTurnDualShadowWritesAll(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"sess-dual","turn_index":4,"user_input":"user text","assistant_content":"assistant text","improvement_trace":{"score":7,"suggestion":"be more concise"}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp["save_ok"] != true {
+		t.Errorf("save_ok = %v, want true", resp["save_ok"])
+	}
+	if resp["source"] != "dual_shadow" {
+		t.Errorf("source = %v, want dual_shadow", resp["source"])
+	}
+	if resp["chat_logs_saved"] != float64(2) {
+		t.Errorf("chat_logs_saved = %v, want 2", resp["chat_logs_saved"])
+	}
+	if resp["effective_input_saved"] != float64(0) {
+		t.Errorf("effective_input_saved = %v, want 0 without a verified final-payload observation", resp["effective_input_saved"])
+	}
+	if len(fake.savedEffectiveInputs) != 0 {
+		t.Fatalf("complete-turn fabricated effective input from raw user/assistant text: %+v", fake.savedEffectiveInputs)
+	}
+	if resp["audit_saved"] != float64(1) {
+		t.Errorf("audit_saved = %v, want 1", resp["audit_saved"])
+	}
+	if resp["store_write_attempted"] != float64(4) {
+		t.Errorf("store_write_attempted = %v, want 4", resp["store_write_attempted"])
+	}
+	if resp["memories_saved"] != float64(0) {
+		t.Errorf("memories_saved = %v, want 0 without critic config", resp["memories_saved"])
+	}
+	if resp["evidence_saved"] != float64(0) {
+		t.Errorf("evidence_saved = %v, want 0 without critic config", resp["evidence_saved"])
+	}
+	if resp["kg_triples_saved"] != float64(0) {
+		t.Errorf("kg_triples_saved = %v, want 0 without critic config", resp["kg_triples_saved"])
+	}
+	if len(fake.savedMemories) != 0 {
+		t.Errorf("savedMemories count = %d, want 0 without critic config", len(fake.savedMemories))
+	}
+	if len(fake.savedEvidence) != 0 {
+		t.Errorf("savedEvidence count = %d, want 0 without critic config", len(fake.savedEvidence))
+	}
+	if len(fake.savedKGTriples) != 0 {
+		t.Errorf("savedKGTriples count = %d, want 0 without critic config", len(fake.savedKGTriples))
+	}
+
+	wp, ok := resp["writeback_plan"].(map[string]any)
+	if !ok {
+		t.Fatalf("writeback_plan is not an object")
+	}
+	if wp["status"] != "ready" {
+		t.Errorf("writeback_plan.status = %v, want ready", wp["status"])
+	}
+	if wp["store_write_enabled"] != true {
+		t.Errorf("writeback_plan.store_write_enabled = %v, want true", wp["store_write_enabled"])
+	}
+	if wp["would_write"] != true {
+		t.Errorf("writeback_plan.would_write = %v, want true", wp["would_write"])
+	}
+	wpTargets, _ := wp["targets"].([]any)
+	if len(wpTargets) == 0 {
+		t.Errorf("writeback_plan.targets is empty")
+	}
+	wpPreview, _ := wp["content_preview"].(string)
+	if !strings.Contains(wpPreview, "user text") {
+		t.Errorf("writeback_plan.content_preview missing user input: %q", wpPreview)
+	}
+}
+
+func TestCompleteTurnRawSaveSurvivesDerivedAuditFailure(t *testing.T) {
+	base := &turnRecordingStore{}
+	fake := &auditFailingTurnStore{turnRecordingStore: base}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeDualShadow
+	srv := NewServer(cfg)
+	srv.Store = fake
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-derived-fail","turn_index":4,"user_input":"user text",` +
+		`"assistant_content":"assistant text","client_meta":{"idempotency_key":"derived-fail-key"}}`
+	for attempt := 0; attempt < 2; attempt++ {
+		req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("attempt %d status=%d body=%s", attempt+1, rec.Code, rec.Body.String())
+		}
+		var resp map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("attempt %d decode: %v", attempt+1, err)
+		}
+		for field, want := range map[string]any{
+			"status":                  "ok",
+			"save_ok":                 true,
+			"raw_committed":           true,
+			"commit_state":            "committed",
+			"derived_retry_required":  false,
+			"reconciliation_required": false,
+			"queue_action":            "",
+			"retryable":               false,
+		} {
+			if got := resp[field]; got != want {
+				t.Fatalf("attempt %d %s=%v, want %v; body=%s", attempt+1, field, got, want, rec.Body.String())
+			}
+		}
+	}
+	if len(base.savedChatLogs) != 2 {
+		t.Fatalf("idempotent retry replayed raw logs: saved=%d, want 2", len(base.savedChatLogs))
+	}
+}
+
+func TestCompleteTurnMaintenanceAuditFailureDoesNotBecomeDerivedPersistenceFailure(t *testing.T) {
+	base := &turnRecordingStore{}
+	fake := &maintenanceAuditFailingTurnStore{turnRecordingStore: base}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+	srv.TurnWorkflows.begin("maintenance-audit-hud", "sess-maintenance-audit-fail", 4)
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-maintenance-audit-fail","turn_index":4,"user_input":"user text",` +
+		`"assistant_content":"assistant text","client_meta":{"turn_workflow_request_id":"maintenance-audit-hud"}}`
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatal(err)
+	}
+	pipeline, _ := resp["persistence_pipeline"].(map[string]any)
+	derived, _ := pipeline["derived"].(map[string]any)
+	if derived["status"] != "delayed" {
+		t.Fatalf("maintenance audit failure changed derived persistence status: response=%#v", resp)
+	}
+	hud, _ := resp["turn_workflow_hud"].(map[string]any)
+	facts, _ := hud["facts"].([]any)
+	var derivedFact map[string]any
+	for _, item := range facts {
+		fact, _ := item.(map[string]any)
+		if fact["key"] == "derived_memory" {
+			derivedFact = fact
+			break
+		}
+	}
+	if derivedFact["status"] != "delayed" || derivedFact["disposition"] != "deferred" || derivedFact["severity"] != "notice" {
+		t.Fatalf("maintenance audit failure changed derived HUD fact: hud=%#v", hud)
+	}
+	if hud["severity"] != "warning" || hud["dismissal_policy"] != "x_only" {
+		t.Fatalf("maintenance audit failure must remain a separate warning: hud=%#v", hud)
+	}
+}
+
+func TestCompleteTurnMariaDBAuthorityWritesAll(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	verifiedEffectiveInput := "verified assembled input"
+	body := fmt.Sprintf(
+		`{"chat_session_id":"sess-auth","turn_index":5,"user_input":"authority input","assistant_content":"authority reply","improvement_trace":{"score":9},"client_meta":{"effective_input_observation":{"contract_version":"effective_input_observation.v1","status":"verified","capture_stage":"before_request_return","effective_input":%q,"effective_input_hash":%q,"hash_algorithm":"or1c_utf16_djb2.v1","payload_content_match":true}}}`,
+		verifiedEffectiveInput,
+		prepareOR1CHash(verifiedEffectiveInput),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	if resp["save_ok"] != true {
+		t.Errorf("save_ok = %v, want true", resp["save_ok"])
+	}
+	if resp["source"] != "mariadb_authority" {
+		t.Errorf("source = %v, want mariadb_authority", resp["source"])
+	}
+	if resp["chat_logs_saved"] != float64(2) {
+		t.Errorf("chat_logs_saved = %v, want 2", resp["chat_logs_saved"])
+	}
+	if resp["effective_input_saved"] != float64(1) {
+		t.Errorf("effective_input_saved = %v, want 1", resp["effective_input_saved"])
+	}
+	if len(fake.savedEffectiveInputs) != 1 || fake.savedEffectiveInputs[0].EffectiveInput != verifiedEffectiveInput {
+		t.Fatalf("verified effective input was not persisted exactly: %+v", fake.savedEffectiveInputs)
+	}
+	if resp["memories_saved"] != float64(0) {
+		t.Errorf("memories_saved = %v, want 0 without critic config", resp["memories_saved"])
+	}
+	if resp["evidence_saved"] != float64(0) {
+		t.Errorf("evidence_saved = %v, want 0 without critic config", resp["evidence_saved"])
+	}
+	if resp["kg_triples_saved"] != float64(0) {
+		t.Errorf("kg_triples_saved = %v, want 0 without critic config", resp["kg_triples_saved"])
+	}
+	if resp["derived_artifacts_saved"] != float64(0) {
+		t.Errorf("derived_artifacts_saved = %v, want 0 without critic config", resp["derived_artifacts_saved"])
+	}
+	llmTrace, ok := resp["llm_config_trace"].(map[string]any)
+	if !ok {
+		t.Fatalf("llm_config_trace missing from complete-turn response: %+v", resp)
+	}
+	criticTrace, ok := llmTrace["critic"].(map[string]any)
+	if !ok {
+		t.Fatalf("critic trace missing: %+v", llmTrace)
+	}
+	if criticTrace["configured"] != false {
+		t.Fatalf("critic trace configured = %v, want false without critic config", criticTrace["configured"])
+	}
+	missingFields, _ := criticTrace["missing_fields"].([]any)
+	if len(missingFields) == 0 {
+		t.Fatalf("critic missing_fields should explain why derived extraction was skipped: %+v", criticTrace)
+	}
+	if resp["store_write_attempted"] != float64(6) {
+		t.Errorf("store_write_attempted = %v, want 6", resp["store_write_attempted"])
+	}
+	if len(fake.savedMemories) != 0 {
+		t.Errorf("savedMemories count = %d, want 0 without critic config", len(fake.savedMemories))
+	}
+	if len(fake.savedEvidence) != 0 {
+		t.Errorf("savedEvidence count = %d, want 0 without critic config", len(fake.savedEvidence))
+	}
+	if len(fake.savedKGTriples) != 0 {
+		t.Errorf("savedKGTriples count = %d, want 0 without critic config", len(fake.savedKGTriples))
+	}
+	note, _ := resp["note"].(string)
+	if !strings.Contains(note, "mariadb_authority") {
+		t.Errorf("note = %q, want mariadb_authority marker", note)
+	}
+}
+
+func TestCompleteTurnPreservesWhitespaceInVerifiedEffectiveInput(t *testing.T) {
+	fake := &turnRecordingStore{}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	verifiedEffectiveInput := "  exact input with surrounding whitespace\n"
+	body := fmt.Sprintf(
+		`{"chat_session_id":"sess-effective-whitespace","turn_index":1,"user_input":"input","assistant_content":"reply","client_meta":{"effective_input_observation":{"contract_version":"effective_input_observation.v1","status":"verified","capture_stage":"before_request_return","effective_input":%q,"effective_input_hash":%q,"hash_algorithm":"or1c_utf16_djb2.v1","payload_content_match":true}}}`,
+		verifiedEffectiveInput,
+		prepareOR1CHash(verifiedEffectiveInput),
+	)
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	if len(fake.savedEffectiveInputs) != 1 || fake.savedEffectiveInputs[0].EffectiveInput != verifiedEffectiveInput {
+		t.Fatalf("verified effective input whitespace changed: %#v", fake.savedEffectiveInputs)
+	}
+
+	wrongHashBody := fmt.Sprintf(
+		`{"chat_session_id":"sess-effective-whitespace","turn_index":2,"user_input":"input 2","assistant_content":"reply 2","client_meta":{"effective_input_observation":{"contract_version":"effective_input_observation.v1","status":"verified","capture_stage":"before_request_return","effective_input":%q,"effective_input_hash":"or1c_wrong","hash_algorithm":"or1c_utf16_djb2.v1","payload_content_match":true}}}`,
+		verifiedEffectiveInput,
+	)
+	wrongHashReq := httptest.NewRequest(http.MethodPost, "/complete-turn", strings.NewReader(wrongHashBody))
+	wrongHashReq.Header.Set("Content-Type", "application/json")
+	wrongHashRec := httptest.NewRecorder()
+	mux.ServeHTTP(wrongHashRec, wrongHashReq)
+	if wrongHashRec.Code != http.StatusOK {
+		t.Fatalf("wrong-hash status = %d, want 200: %s", wrongHashRec.Code, wrongHashRec.Body.String())
+	}
+	if len(fake.savedEffectiveInputs) != 1 {
+		t.Fatalf("wrong hash persisted effective input: %#v", fake.savedEffectiveInputs)
+	}
+}
+
+func TestCompleteTurnIdempotentReplaySkipsDuplicateDerivedWrites(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-retry", TurnIndex: 5, Role: "user", Content: "retry user"},
+			{ID: 2, ChatSessionID: "sess-retry", TurnIndex: 5, Role: "assistant", Content: "retry assistant"},
+		},
+		returnMemories: []store.Memory{{ID: 10, ChatSessionID: "sess-retry", TurnIndex: 5, SummaryJSON: `{"turn_summary":"retry already derived"}`}},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+
+	body := `{"chat_session_id":"sess-retry","turn_index":5,"user_input":"retry user","assistant_content":"retry assistant","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["save_ok"] != true {
+		t.Fatalf("save_ok = %v, want true", resp["save_ok"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) {
+		t.Fatalf("idempotent replay should not write duplicate artifacts: %+v", resp)
+	}
+	if resp["critic_triggered"] != false {
+		t.Fatalf("critic_triggered = %v, want false for idempotent replay", resp["critic_triggered"])
+	}
+	trace, ok := resp["trace_handoff"].(map[string]any)
+	if !ok || trace["idempotent_replay"] != true {
+		t.Fatalf("trace_handoff missing idempotent replay marker: %+v", resp["trace_handoff"])
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("idempotent replay should not save duplicate rows, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+}
+
+func TestCompleteTurnExistingRawWithoutDerivedRetriesCriticWithoutDuplicateLogs(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-raw-only", TurnIndex: 3, Role: "user", Content: "Mina found a brass key."},
+			{ID: 2, ChatSessionID: "sess-raw-only", TurnIndex: 3, Role: "assistant", Content: "Mina gave Rowan the brass key."},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	extraction := map[string]any{
+		"turn_summary":      "Mina found a brass key and gave it to Rowan.",
+		"importance_score":  7,
+		"evidence_excerpts": []any{"Mina found a brass key."},
+		"kg_triples":        []any{testEntityScalarKG("item_fact", "Mina", "character", "found", "a brass key", "string", "Mina found a brass key.")},
+		"entities":          map[string]any{"characters": []any{map[string]any{"name": "Mina"}}, "items": []any{map[string]any{"name": "brass key"}}},
+	}
+	extractionBytes := []byte(criticWireJSONForTest(extraction))
+	chatResp, _ := json.Marshal(map[string]any{
+		"model":   "critic-model",
+		"choices": []any{map[string]any{"message": map[string]any{"content": string(extractionBytes)}}},
+	})
+	oldClient := proxyHTTPClient
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(chatResp)),
+		}, nil
+	})}
+	defer func() { proxyHTTPClient = oldClient }()
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-raw-only","turn_index":3,"user_input":"Mina found a brass key.","assistant_content":"Mina gave Rowan the brass key.","client_meta":{"critic":{"api_key":"k","endpoint":"https://api.example.com/v1/chat/completions","model":"critic-model","provider":"openai","timeout_ms":45000}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["critic_triggered"] != true {
+		t.Fatalf("critic_triggered = %v, want true for raw-only retry", resp["critic_triggered"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || len(fake.savedChatLogs) != 0 {
+		t.Fatalf("raw-only retry must not duplicate chat logs, resp=%+v saved=%#v", resp, fake.savedChatLogs)
+	}
+	if len(fake.savedMemories) != 1 || len(fake.savedEvidence) != 1 || len(fake.savedKGTriples) != 1 {
+		t.Fatalf("raw-only retry should save derived artifacts, memories=%d evidence=%d kg=%d", len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	if fake.savedMemories[0].TurnIndex != 3 || fake.savedEvidence[0].TurnAnchor != 3 || fake.savedKGTriples[0].SourceTurn != 3 {
+		t.Fatalf("raw-only retry must derive against original turn 3, memory=%d evidence=%d kg=%d", fake.savedMemories[0].TurnIndex, fake.savedEvidence[0].TurnAnchor, fake.savedKGTriples[0].SourceTurn)
+	}
+}
+
+func TestCompleteTurnConflictingExistingRawPairDoesNotDuplicateArtifacts(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-conflict", TurnIndex: 2, Role: "user", Content: "old user text"},
+			{ID: 2, ChatSessionID: "sess-conflict", TurnIndex: 2, Role: "assistant", Content: "old assistant text"},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-conflict","turn_index":2,"user_input":"new user text","assistant_content":"new assistant text","client_meta":{"active_chat_backfill":{"source":"risu_active_chat_complete_turn_backfill","preserve_requested_turn_index":true},"critic":{"api_key":"","endpoint":"","model":""}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["chat_logs_saved"] != float64(0) || len(fake.savedChatLogs) != 0 {
+		t.Fatalf("conflicting raw pair must not duplicate chat logs, resp=%+v saved=%#v", resp, fake.savedChatLogs)
+	}
+	if len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("conflicting raw pair must not create derived duplicates, memories=%d evidence=%d kg=%d", len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	failReasons, _ := resp["fail_reasons"].([]any)
+	if len(failReasons) == 0 || failReasons[0] != "raw_turn_content_conflict" {
+		t.Fatalf("fail_reasons = %#v, want raw_turn_content_conflict", resp["fail_reasons"])
+	}
+}
+
+func TestCompleteTurnConflictingExistingRawPairWithoutPreserveDoesNotDuplicateArtifacts(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-native-conflict", TurnIndex: 14, Role: "user", Content: "old user text"},
+			{ID: 2, ChatSessionID: "sess-native-conflict", TurnIndex: 14, Role: "assistant", Content: "old assistant text"},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-native-conflict","turn_index":14,"user_input":"new user text","assistant_content":"new assistant text","client_meta":{"critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(14) || resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) {
+		t.Fatalf("conflicting native replay must not append duplicate turn rows: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("conflicting native replay must not save rows, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	failReasons, _ := resp["fail_reasons"].([]any)
+	if len(failReasons) == 0 || failReasons[0] != "raw_turn_content_conflict" {
+		t.Fatalf("fail_reasons = %#v, want raw_turn_content_conflict", resp["fail_reasons"])
+	}
+}
+
+func TestCompleteTurnPartialExistingRawKeepsRequestedTurnIndex(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-partial-raw", TurnIndex: 7, Role: "user", Content: "same user text"},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-partial-raw","turn_index":7,"user_input":"same user text","assistant_content":"assistant repaired later","client_meta":{"critic":{"api_key":"","endpoint":"","model":""}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(7) {
+		t.Fatalf("turn_index = %v, want partial raw retry to keep requested turn 7", resp["turn_index"])
+	}
+	if len(fake.savedChatLogs) != 1 || fake.savedChatLogs[0].TurnIndex != 7 || fake.savedChatLogs[0].Role != "assistant" {
+		t.Fatalf("partial raw retry should save only missing assistant at turn 7, saved=%#v", fake.savedChatLogs)
+	}
+}
+
+func TestCompleteTurnActiveChatBackfillPreservesRequestedTurnIndex(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-active-rebuild", TurnIndex: 35, Role: "user", Content: "existing late user"},
+			{ID: 2, ChatSessionID: "sess-active-rebuild", TurnIndex: 35, Role: "assistant", Content: "existing late assistant"},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-active-rebuild","turn_index":6,"user_input":"early missing user","assistant_content":"early missing assistant","client_meta":{"active_chat_backfill":{"source":"active_chat_recent_rebuild","preserve_requested_turn_index":true},"critic":{"api_key":"","endpoint":"","model":""}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(6) {
+		t.Fatalf("turn_index = %v, want requested turn 6 preserved", resp["turn_index"])
+	}
+	if len(fake.savedChatLogs) != 2 {
+		t.Fatalf("savedChatLogs = %d, want 2", len(fake.savedChatLogs))
+	}
+	for _, log := range fake.savedChatLogs {
+		if log.TurnIndex != 6 {
+			t.Fatalf("saved chat log turn = %d, want 6; logs=%#v", log.TurnIndex, fake.savedChatLogs)
+		}
+	}
+}
+
+func TestCompleteTurnExactPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-pair-replay", TurnIndex: 5, Role: "user", Content: "same user text"},
+			{ID: 2, ChatSessionID: "sess-pair-replay", TurnIndex: 5, Role: "assistant", Content: "same assistant text"},
+			{ID: 3, ChatSessionID: "sess-pair-replay", TurnIndex: 7, Role: "user", Content: "later user text"},
+			{ID: 4, ChatSessionID: "sess-pair-replay", TurnIndex: 7, Role: "assistant", Content: "later assistant text"},
+		},
+		returnMemories: []store.Memory{
+			{ID: 10, ChatSessionID: "sess-pair-replay", TurnIndex: 5, SummaryJSON: `{"summary":"same pair already derived"}`},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	body := `{"chat_session_id":"sess-pair-replay","turn_index":8,"user_input":"same user text","assistant_content":"same assistant text","client_meta":{"turn_workflow_request_id":"duplicate-pair-hud","critic":{"api_key":"k","endpoint":"https://example.test/v1/chat/completions","model":"m","provider":"openai","timeout_ms":45000}}}`
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader([]byte(body)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(5) {
+		t.Fatalf("turn_index = %v, want existing turn 5", resp["turn_index"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) || resp["critic_triggered"] != false {
+		t.Fatalf("exact pair replay must not save duplicate raw/derived rows: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("exact pair replay saved duplicate artifacts, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	trace, _ := resp["trace_handoff"].(map[string]any)
+	if trace["duplicate_guard"] != "same_session_exact_pair_exists_on_another_turn" {
+		t.Fatalf("duplicate_guard = %v, want same_session_exact_pair_exists_on_another_turn; resp=%+v", trace["duplicate_guard"], resp)
+	}
+	hud, ok := resp["turn_workflow_hud"].(map[string]any)
+	if !ok {
+		t.Fatalf("turn_workflow_hud missing from duplicate response: %+v", resp)
+	}
+	if hud["display_mode"] != "notice" || hud["status"] != "completed" ||
+		hud["severity"] != "notice" || hud["dismissal_policy"] != "card_or_x" {
+		t.Fatalf("duplicate HUD status = %+v", hud)
+	}
+	if hud["title_key"] != "turn_hud.notice.duplicate_suspected" || hud["notice_code"] != "DUPLICATE_PAIR_REPLAY" {
+		t.Fatalf("duplicate HUD presentation = %+v", hud)
+	}
+	if hud["logical_turn"] != float64(8) {
+		t.Fatalf("duplicate HUD logical_turn = %v, want attempted turn 8", hud["logical_turn"])
+	}
+}
+
+func TestCompleteTurnPostprocessorPairAlreadyPersistedOnAnotherTurnSkipsDuplicate(t *testing.T) {
+	fake := &turnRecordingStore{
+		returnChatLogs: []store.ChatLog{
+			{ID: 1, ChatSessionID: "sess-post-replay", TurnIndex: 7, Role: "user", Content: "same selected option"},
+			{ID: 2, ChatSessionID: "sess-post-replay", TurnIndex: 7, Role: "assistant", Content: `<ReKoCompare><ReKoBefore>draft text</ReKoBefore><ReKoAfter>final polished text</ReKoAfter><ReKoMeta>mode=KR</ReKoMeta></ReKoCompare>`},
+		},
+		returnMemories: []store.Memory{
+			{ID: 10, ChatSessionID: "sess-post-replay", TurnIndex: 7, SummaryJSON: `{"summary":"already derived"}`},
+		},
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store = fake
+	srv.StoreOpenError = nil
+
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	bodyBytes, err := json.Marshal(map[string]any{
+		"chat_session_id":   "sess-post-replay",
+		"turn_index":        8,
+		"user_input":        "same selected option",
+		"assistant_content": "final polished text",
+		"client_meta": map[string]any{
+			"critic": map[string]any{
+				"api_key":    "k",
+				"endpoint":   "https://example.test/v1/chat/completions",
+				"model":      "m",
+				"provider":   "openai",
+				"timeout_ms": 45000,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(bodyBytes))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", rec.Code, rec.Body.String())
+	}
+	var resp map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp["turn_index"] != float64(7) {
+		t.Fatalf("turn_index = %v, want existing turn 7", resp["turn_index"])
+	}
+	if resp["chat_logs_saved"] != float64(0) || resp["derived_artifacts_saved"] != float64(0) || resp["critic_triggered"] != false {
+		t.Fatalf("postprocessor replay must not save duplicate rows: %+v", resp)
+	}
+	if len(fake.savedChatLogs) != 0 || len(fake.savedMemories) != 0 || len(fake.savedEvidence) != 0 || len(fake.savedKGTriples) != 0 {
+		t.Fatalf("postprocessor replay saved duplicate artifacts, logs=%d memories=%d evidence=%d kg=%d", len(fake.savedChatLogs), len(fake.savedMemories), len(fake.savedEvidence), len(fake.savedKGTriples))
+	}
+	trace, _ := resp["trace_handoff"].(map[string]any)
+	if trace["duplicate_guard"] != "same_session_exact_pair_exists_on_another_turn" {
+		t.Fatalf("duplicate_guard = %v, want same_session_exact_pair_exists_on_another_turn; resp=%+v", trace["duplicate_guard"], resp)
+	}
+}

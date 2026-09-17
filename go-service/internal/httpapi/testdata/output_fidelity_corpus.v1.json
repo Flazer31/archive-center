@@ -1,0 +1,500 @@
+{
+  "contract_version": "archive_center.output_fidelity_corpus.v1",
+  "status": "preparatory",
+  "owner_packet": "3.5-A",
+  "production_behavior_changed": false,
+  "judgement_contract": {
+    "aggregate_score_allowed": false,
+    "exact_text_match_required": false,
+    "outcomes": [
+      "fulfilled",
+      "omitted",
+      "violated",
+      "not_applicable",
+      "unobserved"
+    ],
+    "required_observation_stages": [
+      "source",
+      "retrieval",
+      "execution_contract",
+      "payload",
+      "final_output"
+    ],
+    "model_policy": "Record the runtime provider and model for every live run. Do not bind policy, expectations, or pass criteria to a model name."
+  },
+  "guide_matrix": [
+    "off",
+    "weak",
+    "medium",
+    "strong"
+  ],
+  "required_live_result_fields": [
+    "provider",
+    "model",
+    "seed_or_cohort_id",
+    "archive_center_request_correlation_id",
+    "official_risu_request_id_state",
+    "first_generation_id",
+    "active_final_generation_id",
+    "final_display_observed",
+    "first_output_disposition",
+    "reroll_reason"
+  ],
+  "source_annotation_contract": {
+    "source_kinds": [
+      "user_input",
+      "assistant_output",
+      "storyline_state"
+    ],
+    "lifecycle_states": [
+      "current_observation",
+      "accepted_history",
+      "active_final",
+      "current_state"
+    ]
+  },
+  "criteria_catalog": [
+    {
+      "criterion_id": "current_input_response",
+      "kind": "fulfillment",
+      "description": "The final output materially responds to the current user input."
+    },
+    {
+      "criterion_id": "setting_continuity",
+      "kind": "fulfillment",
+      "description": "The final output preserves source-backed prior events, commitments, answers, and current setting."
+    },
+    {
+      "criterion_id": "knowledge_boundary",
+      "kind": "fulfillment",
+      "description": "Each character acts only on knowledge supported for that character."
+    },
+    {
+      "criterion_id": "identity_uncertainty",
+      "kind": "fulfillment",
+      "description": "An unproven alias or hidden identity remains unresolved instead of being merged or split by guess."
+    },
+    {
+      "criterion_id": "already_realized_repetition",
+      "kind": "violation",
+      "description": "The final output repeats a source-backed realized event as if it were happening for the first time."
+    },
+    {
+      "criterion_id": "unsupported_assertion",
+      "kind": "violation",
+      "description": "The final output invents a fact, identity, memory, event, or relationship not supported by the supplied sources."
+    },
+    {
+      "criterion_id": "secret_leakage",
+      "kind": "violation",
+      "description": "A character gains protected information without a source establishing that knowledge."
+    },
+    {
+      "criterion_id": "user_agency_override",
+      "kind": "violation",
+      "description": "The final output decides the user or player character's action, feeling, or commitment without authority."
+    },
+    {
+      "criterion_id": "relationship_jump",
+      "kind": "violation",
+      "description": "The final output asserts a relationship transition that is not supported by the supplied sources."
+    },
+    {
+      "criterion_id": "premature_closure",
+      "kind": "violation",
+      "description": "The final output expands a local resolution into an unsupported ending of the wider story."
+    },
+    {
+      "criterion_id": "forced_difference",
+      "kind": "violation",
+      "description": "Guidance changes a no-support turn despite having no eligible source-backed item."
+    }
+  ],
+  "cases": [
+    {
+      "case_id": "ko_reencounter_supported_v1",
+      "class": "eligible",
+      "language": "ko",
+      "genre_dimension": "interpersonal_drama",
+      "continuity_kind": "reencounter",
+      "counterfactual_pair_id": "ko_reencounter_pair_v1",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:ko-reencounter:turn-004:active-final",
+          "source_kind": "assistant_output",
+          "source_lifecycle": "active_final",
+          "source_span": "turn-004 assistant event",
+          "content_summary": "B와 주인공은 서로 이름을 밝히고 돌다리에서 다시 만나기로 했다.",
+          "replay_text": "B는 주인공의 이름을 되뇌며 고개를 끄덕였다. \"다음에는 돌다리에서 만나자.\"",
+          "knowledge_scope": [
+            "protagonist",
+            "B"
+          ]
+        },
+        {
+          "source_id": "src:fixture:ko-reencounter:turn-021:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-021 user message",
+          "content_summary": "시간이 흐른 뒤 주인공이 약속한 돌다리에서 B를 다시 부른다.",
+          "replay_text": "여러 날이 흐른 뒤, 나는 약속한 돌다리에서 B의 이름을 불렀다.",
+          "knowledge_scope": [
+            "protagonist"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "current_input_response",
+          "expected_outcome": "fulfilled",
+          "description": "B의 반응은 돌다리에서 자신을 부른 현재 행동에 직접 이어져야 한다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter:turn-021:user-input"
+          ]
+        },
+        {
+          "criterion_id": "setting_continuity",
+          "expected_outcome": "fulfilled",
+          "description": "B는 주인공을 이전에 만난 사람으로 취급하되 근거 없는 친밀감을 추가하지 않아야 한다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter:turn-004:active-final",
+            "src:fixture:ko-reencounter:turn-021:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "already_realized_repetition",
+          "violation_outcome": "violated",
+          "description": "B가 주인공에게 처음 만난 사람처럼 이름이나 정체를 다시 묻는다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter:turn-004:active-final"
+          ]
+        },
+        {
+          "criterion_id": "relationship_jump",
+          "violation_outcome": "violated",
+          "description": "한 번의 만남을 연인이나 절친 관계로 과장한다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter:turn-004:active-final"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    },
+    {
+      "case_id": "ko_reencounter_no_support_v1",
+      "class": "no_support",
+      "language": "ko",
+      "genre_dimension": "interpersonal_drama",
+      "continuity_kind": "reencounter_counterfactual",
+      "counterfactual_pair_id": "ko_reencounter_pair_v1",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:ko-reencounter-counterfactual:turn-001:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-001 user message",
+          "content_summary": "주인공이 돌다리에서 낯선 여행자 B와 마주친다. 이전 만남 근거는 없다.",
+          "replay_text": "돌다리에 도착하자 처음 보는 여행자 B가 길을 막고 서 있었다.",
+          "knowledge_scope": [
+            "protagonist"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "current_input_response",
+          "expected_outcome": "fulfilled",
+          "description": "출력은 현재의 첫 대면에 반응하되 과거 만남을 기억한 척하지 않아야 한다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter-counterfactual:turn-001:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "unsupported_assertion",
+          "violation_outcome": "violated",
+          "description": "B가 주인공과 과거에 만났다고 단정한다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter-counterfactual:turn-001:user-input"
+          ]
+        },
+        {
+          "criterion_id": "forced_difference",
+          "violation_outcome": "violated",
+          "description": "지원 근거가 없는데 출력 guide가 회상이나 관계 정보를 만들어 낸다.",
+          "source_refs": [
+            "src:fixture:ko-reencounter-counterfactual:turn-001:user-input"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    },
+    {
+      "case_id": "en_prior_answer_supported_v1",
+      "class": "eligible",
+      "language": "en",
+      "genre_dimension": "adventure",
+      "continuity_kind": "prior_answer",
+      "counterfactual_pair_id": "",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:en-prior-answer:turn-006:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "accepted_history",
+          "source_span": "turn-006 user message",
+          "content_summary": "The protagonist told B that they came north to find their sister Yuna.",
+          "replay_text": "I came north to find my sister, Yuna.",
+          "knowledge_scope": [
+            "protagonist",
+            "B"
+          ]
+        },
+        {
+          "source_id": "src:fixture:en-prior-answer:turn-019:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-019 user message",
+          "content_summary": "Days later, B and the protagonist continue toward the northern gate.",
+          "replay_text": "Days later, B and I continue toward the northern gate.",
+          "knowledge_scope": [
+            "protagonist"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "setting_continuity",
+          "expected_outcome": "fulfilled",
+          "description": "B should retain the already supplied reason for the journey without requiring an exact mention of Yuna.",
+          "source_refs": [
+            "src:fixture:en-prior-answer:turn-006:user-input",
+            "src:fixture:en-prior-answer:turn-019:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "already_realized_repetition",
+          "violation_outcome": "violated",
+          "description": "B asks why the protagonist came north as though the earlier direct answer never occurred.",
+          "source_refs": [
+            "src:fixture:en-prior-answer:turn-006:user-input"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    },
+    {
+      "case_id": "en_alias_identity_ambiguous_v1",
+      "class": "ambiguous",
+      "language": "en",
+      "genre_dimension": "mystery",
+      "continuity_kind": "identity_uncertain",
+      "counterfactual_pair_id": "",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:en-alias:turn-008:active-final",
+          "source_kind": "assistant_output",
+          "source_lifecycle": "active_final",
+          "source_span": "turn-008 assistant event",
+          "content_summary": "A masked courier used the name Ash. No hidden identity was revealed.",
+          "replay_text": "The masked courier introduced themself only as Ash; their face and true name remained hidden.",
+          "knowledge_scope": [
+            "protagonist",
+            "Ash"
+          ]
+        },
+        {
+          "source_id": "src:fixture:en-alias:turn-014:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-014 user message",
+          "content_summary": "A person named Mira enters the archive. No source links Mira to Ash.",
+          "replay_text": "Mira enters the archive and asks for the sealed ledger.",
+          "knowledge_scope": [
+            "protagonist"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "identity_uncertainty",
+          "expected_outcome": "fulfilled",
+          "description": "The output must leave the relationship between Ash and Mira unresolved.",
+          "source_refs": [
+            "src:fixture:en-alias:turn-008:active-final",
+            "src:fixture:en-alias:turn-014:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "unsupported_assertion",
+          "violation_outcome": "violated",
+          "description": "The output asserts that Ash and Mira are either definitely the same person or definitely different people.",
+          "source_refs": [
+            "src:fixture:en-alias:turn-008:active-final",
+            "src:fixture:en-alias:turn-014:user-input"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    },
+    {
+      "case_id": "ko_secret_boundary_adversarial_v1",
+      "class": "adversarial",
+      "language": "ko",
+      "genre_dimension": "mystery",
+      "continuity_kind": "protected_knowledge",
+      "counterfactual_pair_id": "",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:ko-secret:turn-011:active-final",
+          "source_kind": "assistant_output",
+          "source_lifecycle": "active_final",
+          "source_span": "turn-011 assistant event",
+          "content_summary": "B만 북문 암호를 들었고 C는 그 자리에 없었다.",
+          "replay_text": "문지기는 B에게만 북문 암호를 속삭였다. C는 그 자리에 없었다.",
+          "knowledge_scope": [
+            "B"
+          ]
+        },
+        {
+          "source_id": "src:fixture:ko-secret:turn-017:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-017 user message",
+          "content_summary": "주인공과 C가 북문 앞에 도착한다.",
+          "replay_text": "나는 C와 함께 굳게 닫힌 북문 앞에 도착했다.",
+          "knowledge_scope": [
+            "protagonist",
+            "C"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "knowledge_boundary",
+          "expected_outcome": "fulfilled",
+          "description": "C의 행동은 C가 암호를 모르는 상태를 유지해야 한다.",
+          "source_refs": [
+            "src:fixture:ko-secret:turn-011:active-final",
+            "src:fixture:ko-secret:turn-017:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "secret_leakage",
+          "violation_outcome": "violated",
+          "description": "C가 별도 전달 근거 없이 북문 암호를 말하거나 사용한다.",
+          "source_refs": [
+            "src:fixture:ko-secret:turn-011:active-final"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    },
+    {
+      "case_id": "en_agency_closure_adversarial_v1",
+      "class": "adversarial",
+      "language": "en",
+      "genre_dimension": "adventure",
+      "continuity_kind": "agency_and_closure",
+      "counterfactual_pair_id": "",
+      "evidence_sources": [
+        {
+          "source_id": "src:fixture:en-agency:turn-023:user-input",
+          "source_kind": "user_input",
+          "source_lifecycle": "current_observation",
+          "source_span": "turn-023 user message",
+          "content_summary": "The protagonist hesitates after being offered command of the expedition.",
+          "replay_text": "I hesitate instead of answering the offer to command the expedition.",
+          "knowledge_scope": [
+            "protagonist"
+          ]
+        },
+        {
+          "source_id": "src:fixture:en-agency:thread-state",
+          "source_kind": "storyline_state",
+          "source_lifecycle": "current_state",
+          "source_span": "active thread state",
+          "content_summary": "The command offer is one unresolved thread; the wider journey remains active.",
+          "replay_text": "Active storyline state: the command offer is unresolved, and the wider journey remains active.",
+          "knowledge_scope": [
+            "protagonist",
+            "expedition_members"
+          ]
+        }
+      ],
+      "expected_fulfillments": [
+        {
+          "criterion_id": "current_input_response",
+          "expected_outcome": "fulfilled",
+          "description": "Other characters may react to the hesitation while leaving the decision to the protagonist.",
+          "source_refs": [
+            "src:fixture:en-agency:turn-023:user-input"
+          ]
+        }
+      ],
+      "forbidden_violations": [
+        {
+          "criterion_id": "user_agency_override",
+          "violation_outcome": "violated",
+          "description": "The output decides that the protagonist accepts or rejects command.",
+          "source_refs": [
+            "src:fixture:en-agency:turn-023:user-input"
+          ]
+        },
+        {
+          "criterion_id": "premature_closure",
+          "violation_outcome": "violated",
+          "description": "Resolving the offer is treated as the end of the entire journey.",
+          "source_refs": [
+            "src:fixture:en-agency:thread-state"
+          ]
+        }
+      ],
+      "stage_record_template": {
+        "source": "unobserved",
+        "retrieval": "unobserved",
+        "execution_contract": "unobserved",
+        "payload": "unobserved",
+        "final_output": "unobserved"
+      }
+    }
+  ]
+}

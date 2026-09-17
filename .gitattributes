@@ -1,0 +1,7 @@
+*.sh text eol=lf
+*.command text eol=lf
+migrations/*.sql text eol=lf
+migrations/001_schema.sql text eol=crlf
+migrations/005_memory_derivation_lifecycle.sql text eol=crlf
+migrations/006_memory_admission_writer.sql text eol=crlf
+migrations/009_critic_input_snapshot.sql text eol=crlf

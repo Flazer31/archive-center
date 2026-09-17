@@ -1,0 +1,136 @@
+name: Release Native Linux Install
+
+on:
+  push:
+    branches: [release/4.5.0]
+    paths: [.github/workflows/release-install-verification.yml]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release version to verify
+        required: true
+        default: v4.5.0
+      transport:
+        description: Candidate builds reviewed source; public downloads real latest
+        type: choice
+        options: [candidate, public]
+        default: candidate
+
+permissions:
+  contents: read
+
+jobs:
+  candidate-assets:
+    if: ${{ inputs.transport != 'public' }}
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.6'
+          cache-dependency-path: go-service/go.sum
+      - name: Build reviewed source with the production package builder
+        env:
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.5.0' }}
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:AC_RELEASE_TAG -notmatch '^v[0-9]+\.[0-9]+\.[0-9]+$') { throw 'Invalid version' }
+          ./ops/build-posix-managed-packages.ps1 -PackageVersion $env:AC_RELEASE_TAG.Substring(1) -TargetFilter linux-amd64,linux-arm64 -OutputRoot ./_release-builds/native-install-proof -Zip
+      - name: Prepare asset names and checksums
+        env:
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.5.0' }}
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, os
+          root = Path('_release-builds/native-install-proof')
+          packages = list(root.glob('*.zip'))
+          assert len(packages) == 2
+          lines = []
+          for package in packages:
+              target = package.with_name(package.name.replace(' ', '.'))
+              package.rename(target)
+              lines.append(hashlib.sha256(target.read_bytes()).hexdigest() + '  ' + target.name)
+          (root / ('SHA256SUMS-' + os.environ['AC_RELEASE_TAG'][1:] + '.txt')).write_text('\n'.join(lines) + '\n')
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: candidate-linux-packages
+          path: |
+            _release-builds/native-install-proof/*.zip
+            _release-builds/native-install-proof/SHA256SUMS-*.txt
+          retention-days: 7
+  install:
+    needs: candidate-assets
+    if: ${{ always() && (needs.candidate-assets.result == 'success' || needs.candidate-assets.result == 'skipped') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x64
+          - os: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: ${{ inputs.transport != 'public' }}
+        with:
+          name: candidate-linux-packages
+          path: ${{ runner.temp }}/ac-release-input
+      - name: Download reviewed package and public checksums
+        if: ${{ inputs.transport == 'public' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.5.0' }}
+          AC_RELEASE_ARCH: ${{ matrix.arch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$AC_RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          mkdir -p "$RUNNER_TEMP/ac-release-input" "$RUNNER_TEMP/ac-install-proof"
+          gh release view "$AC_RELEASE_TAG" --json tagName,targetCommitish,assets > "$RUNNER_TEMP/ac-install-proof/release.json"
+          gh release download "$AC_RELEASE_TAG" --pattern "Archive.Center.*.Linux.${AC_RELEASE_ARCH}.Auto.Install.Package.zip" --pattern 'SHA256SUMS-*.txt' --dir "$RUNNER_TEMP/ac-release-input"
+          cd "$RUNNER_TEMP/ac-release-input"
+          sha256sum --check --ignore-missing SHA256SUMS-*.txt
+      - name: Select native architecture and verify candidate checksums
+        if: ${{ inputs.transport != 'public' }}
+        env:
+          AC_RELEASE_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/ac-install-proof"
+          cd "$RUNNER_TEMP/ac-release-input"
+          sha256sum --check SHA256SUMS-*.txt
+          if test "$AC_RELEASE_ARCH" = x64; then
+            rm -- Archive.Center.*.Linux.arm64.Auto.Install.Package.zip
+          else
+            rm -- Archive.Center.*.Linux.x64.Auto.Install.Package.zip
+          fi
+          printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/ac-install-proof/build-source-commit.txt"
+      - name: Production entrypoint, real dependencies and systemd readiness
+        env:
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.5.0' }}
+          AC_RELEASE_TRANSPORT: ${{ inputs.transport || 'candidate' }}
+          AC_RELEASE_INPUT: ${{ runner.temp }}/ac-release-input
+          AC_INSTALL_PROOF: ${{ runner.temp }}/ac-install-proof
+        shell: bash
+        run: bash scripts/test-release-linux-install.sh
+      - name: Collect service journal and stop the disposable installation
+        if: always()
+        shell: bash
+        run: |
+          sudo journalctl -u archive-center.service --no-pager > "$RUNNER_TEMP/ac-install-proof/service-journal.txt" || true
+          if test -f "$RUNNER_TEMP/ac-install-proof/owned-install"; then
+            sudo systemctl stop archive-center.service || true
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-install-${{ matrix.arch }}-${{ inputs.transport || 'candidate' }}
+          path: ${{ runner.temp }}/ac-install-proof/
+          retention-days: 7

@@ -1,0 +1,1246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://archive-center.invalid/schemas/canon-pack-manifest-v1.schema.json",
+  "title": "Archive Center Canon Pack Manifest v1",
+  "description": "Portable provenance and reviewed Canon metadata. Full-text sources, user data, secrets, and executable content are forbidden.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "contract",
+    "pack",
+    "work",
+    "production",
+    "review",
+    "trust",
+    "sources",
+    "content",
+    "conflicts",
+    "uncertainties",
+    "coverage_report",
+    "compatibility",
+    "files"
+  ],
+  "properties": {
+    "contract": {
+      "const": "canon-pack-manifest.v1"
+    },
+    "pack": {
+      "$ref": "#/$defs/pack"
+    },
+    "work": {
+      "$ref": "#/$defs/work"
+    },
+    "production": {
+      "$ref": "#/$defs/production"
+    },
+    "review": {
+      "$ref": "#/$defs/packReview"
+    },
+    "trust": {
+      "$ref": "#/$defs/trust"
+    },
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/source"
+      }
+    },
+    "content": {
+      "$ref": "#/$defs/content"
+    },
+    "conflicts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/conflict"
+      }
+    },
+    "uncertainties": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/uncertainty"
+      }
+    },
+    "coverage_report": {
+      "$ref": "#/$defs/coverageReport"
+    },
+    "compatibility": {
+      "$ref": "#/$defs/compatibility"
+    },
+    "files": {
+      "description": "Ancillary package members excluding canon-pack-manifest.json. An empty list is valid for a manifest-only pack.",
+      "type": "array",
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/file"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "review": {
+            "properties": {
+              "status": {
+                "const": "approved"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review": {
+            "required": [
+              "procedure_id",
+              "reviewed_at",
+              "admission_basis"
+            ],
+            "properties": {
+              "admission_basis": {
+                "enum": [
+                  "human_review",
+                  "trusted_pack_review",
+                  "evidence_validated_batch"
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "review": {
+            "properties": {
+              "status": { "const": "approved" },
+              "admission_basis": {
+                "enum": ["human_review", "trusted_pack_review"]
+              }
+            },
+            "required": ["status", "admission_basis"]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review": {
+            "required": ["reviewers"],
+            "properties": {
+              "reviewers": { "minItems": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "pack": {
+            "properties": {
+              "status": { "const": "published" }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "review": {
+            "properties": {
+              "status": { "const": "approved" }
+            }
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "trust": {
+            "properties": {
+              "status": {
+                "enum": ["trusted_publisher", "invalid_signature"]
+              }
+            }
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "trust": {
+            "required": ["publisher", "signature_file", "trust_policy_id"]
+          },
+          "files": {
+            "contains": {
+              "properties": {
+                "path": { "const": "signatures/manifest.sig" }
+              },
+              "required": ["path"]
+            },
+            "minContains": 1,
+            "maxContains": 1
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "minLength": 3,
+      "maxLength": 160,
+      "pattern": "^[a-z][a-z0-9._-]*:[A-Za-z0-9][A-Za-z0-9._:-]*$"
+    },
+    "localId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "pattern": "^[a-z][a-z0-9._-]*$"
+    },
+    "semver": {
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(-[0-9A-Za-z.-]+)?(\\+[0-9A-Za-z.-]+)?$"
+    },
+    "languageTag": {
+      "type": "string",
+      "maxLength": 35,
+      "pattern": "^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "localizedName": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "text",
+        "language"
+      ],
+      "properties": {
+        "text": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "language": {
+          "$ref": "#/$defs/languageTag"
+        },
+        "script": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 4,
+          "pattern": "^[A-Z][a-z]{3}$"
+        }
+      }
+    },
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "version",
+        "status",
+        "built_at"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "version": {
+          "$ref": "#/$defs/semver"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "review_candidate",
+            "published",
+            "deprecated",
+            "withdrawn"
+          ]
+        },
+        "built_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "work": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "stable_id",
+        "original_title",
+        "translated_titles",
+        "aliases",
+        "original_language",
+        "content_languages",
+        "edition",
+        "continuity_ids"
+      ],
+      "properties": {
+        "stable_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "original_title": {
+          "$ref": "#/$defs/localizedName"
+        },
+        "translated_titles": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localizedName"
+          }
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localizedName"
+          }
+        },
+        "original_language": {
+          "$ref": "#/$defs/languageTag"
+        },
+        "content_languages": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/languageTag"
+          }
+        },
+        "edition": {
+          "$ref": "#/$defs/edition"
+        },
+        "continuity_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        }
+      }
+    },
+    "edition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "edition_id",
+        "label",
+        "language",
+        "scope_note"
+      ],
+      "properties": {
+        "edition_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "language": {
+          "$ref": "#/$defs/languageTag"
+        },
+        "publication_date": {
+          "type": "string",
+          "format": "date"
+        },
+        "region": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 2,
+          "pattern": "^[A-Z]{2}$"
+        },
+        "identifiers": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "scheme",
+              "value"
+            ],
+            "properties": {
+              "scheme": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 40
+              },
+              "value": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 160
+              }
+            }
+          }
+        },
+        "scope_note": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        }
+      }
+    },
+    "actor": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "display_name"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        }
+      }
+    },
+    "production": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "method",
+        "created_at",
+        "producer"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "human_curated",
+            "machine_assisted",
+            "imported"
+          ]
+        },
+        "created_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "producer": {
+          "$ref": "#/$defs/actor"
+        },
+        "toolchain_note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "packReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "not_reviewed",
+            "in_review",
+            "approved",
+            "changes_requested",
+            "rejected"
+          ]
+        },
+        "procedure_id": {
+          "$ref": "#/$defs/identifier"
+        },
+        "reviewed_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "reviewers": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/actor"
+          }
+        },
+        "admission_basis": {
+          "enum": [
+            "machine_recommended",
+            "human_review",
+            "trusted_pack_review",
+            "evidence_validated_batch"
+          ]
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 1000
+        }
+      }
+    },
+    "trust": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "unsigned_local",
+            "trusted_publisher",
+            "invalid_signature"
+          ]
+        },
+        "publisher": {
+          "$ref": "#/$defs/actor"
+        },
+        "signature_file": {
+          "const": "signatures/manifest.sig"
+        },
+        "trust_policy_id": {
+          "$ref": "#/$defs/identifier"
+        }
+      }
+    },
+    "license": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "redistribution_allowed"
+      ],
+      "properties": {
+        "identifier": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^(?!https?://[^/]*@)(?:https?://|urn:)",
+          "maxLength": 2000
+        },
+        "redistribution_allowed": {
+          "type": "boolean"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "title",
+        "source_type",
+        "uri",
+        "license",
+        "access_class",
+        "retrieved_at",
+        "document_sha256"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 500
+        },
+        "source_type": {
+          "enum": [
+            "official_primary",
+            "licensed_dataset",
+            "publisher_reference",
+            "scholarly_secondary",
+            "reputable_secondary",
+            "public_wiki",
+            "user_provided_local"
+          ]
+        },
+        "uri": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^(?!https?://[^/]*@)(?:https?://|urn:)",
+          "maxLength": 2000
+        },
+        "license": {
+          "$ref": "#/$defs/license"
+        },
+        "access_class": {
+          "enum": [
+            "public",
+            "open_license",
+            "authorized_distribution",
+            "local_private"
+          ]
+        },
+        "retrieved_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "document_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "locator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "value"
+      ],
+      "properties": {
+        "type": {
+          "enum": [
+            "page",
+            "chapter",
+            "section",
+            "paragraph",
+            "fragment",
+            "timestamp",
+            "record"
+          ]
+        },
+        "value": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "end": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "label": {
+          "type": "string",
+          "maxLength": 300
+        }
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_id",
+        "document_sha256",
+        "locator"
+      ],
+      "properties": {
+        "source_id": {
+          "$ref": "#/$defs/localId"
+        },
+        "document_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "locator": {
+          "$ref": "#/$defs/locator"
+        }
+      }
+    },
+    "reviewState": {
+      "enum": [
+        "approved",
+        "machine_recommended",
+        "conflict",
+        "uncertain",
+        "rejected"
+      ]
+    },
+    "recordBase": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "continuity_ids",
+        "review_state",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "name": {
+          "$ref": "#/$defs/localizedName"
+        },
+        "aliases": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/localizedName"
+          }
+        },
+        "summary": {
+          "description": "Bounded derived metadata, never a source-text payload.",
+          "type": "string",
+          "maxLength": 2000
+        },
+        "continuity_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "review_state": {
+          "$ref": "#/$defs/reviewState"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "namedRecord": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/recordBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": true,
+            "name": true,
+            "aliases": true,
+            "summary": true,
+            "continuity_ids": true,
+            "review_state": true,
+            "evidence": true
+          }
+        }
+      ]
+    },
+    "entity": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/recordBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "id": true,
+            "name": true,
+            "aliases": true,
+            "summary": true,
+            "continuity_ids": true,
+            "review_state": true,
+            "evidence": true,
+            "kind": {
+              "enum": [
+                "person",
+                "object",
+                "species",
+                "concept",
+                "other"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "event": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/recordBase"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "id": true,
+            "name": true,
+            "aliases": true,
+            "summary": true,
+            "continuity_ids": true,
+            "review_state": true,
+            "evidence": true,
+            "sequence_label": {
+              "type": "string",
+              "maxLength": 300
+            },
+            "participant_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/localId"
+              }
+            },
+            "location_ids": {
+              "type": "array",
+              "uniqueItems": true,
+              "items": {
+                "$ref": "#/$defs/localId"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "relation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "subject_id",
+        "predicate",
+        "object_id",
+        "continuity_ids",
+        "review_state",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "subject_id": {
+          "$ref": "#/$defs/localId"
+        },
+        "predicate": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "object_id": {
+          "$ref": "#/$defs/localId"
+        },
+        "continuity_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "review_state": {
+          "$ref": "#/$defs/reviewState"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "claim": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "statement",
+        "claim_type",
+        "subject_ids",
+        "continuity_ids",
+        "review_state",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "statement": {
+          "description": "A bounded derived assertion, not a quotation or source-text payload.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "claim_type": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        },
+        "subject_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/localId"
+          }
+        },
+        "continuity_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/identifier"
+          }
+        },
+        "review_state": {
+          "$ref": "#/$defs/reviewState"
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "content": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entities",
+        "locations",
+        "factions",
+        "settings",
+        "events",
+        "relations",
+        "claims"
+      ],
+      "properties": {
+        "entities": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/entity"
+          }
+        },
+        "locations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedRecord"
+          }
+        },
+        "factions": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedRecord"
+          }
+        },
+        "settings": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/namedRecord"
+          }
+        },
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/event"
+          }
+        },
+        "relations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/relation"
+          }
+        },
+        "claims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/claim"
+          }
+        }
+      }
+    },
+    "conflict": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "item_ids",
+        "status",
+        "summary",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "item_ids": {
+          "type": "array",
+          "minItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/localId"
+          }
+        },
+        "status": {
+          "enum": [
+            "unresolved",
+            "review_required",
+            "edition_scoped",
+            "resolved"
+          ]
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "uncertainty": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "item_ids",
+        "reason",
+        "status",
+        "evidence"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/localId"
+        },
+        "item_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/localId"
+          }
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1000
+        },
+        "status": {
+          "enum": [
+            "open",
+            "review_required",
+            "resolved"
+          ]
+        },
+        "evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/evidence"
+          }
+        }
+      }
+    },
+    "coverageReport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "generated_at",
+        "saturation",
+        "domains"
+      ],
+      "properties": {
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "saturation": {
+          "enum": [
+            "not_assessed",
+            "growing",
+            "saturated",
+            "insufficient_sources"
+          ]
+        },
+        "domains": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "domain",
+              "status",
+              "missing_topics"
+            ],
+            "properties": {
+              "domain": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 120
+              },
+              "status": {
+                "enum": [
+                  "covered",
+                  "partial",
+                  "insufficient",
+                  "not_assessed"
+                ]
+              },
+              "missing_topics": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 300
+                }
+              },
+              "note": {
+                "type": "string",
+                "maxLength": 1000
+              }
+            }
+          }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "archive_center",
+        "schema"
+      ],
+      "properties": {
+        "archive_center": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "minimum_version"
+          ],
+          "properties": {
+            "minimum_version": {
+              "$ref": "#/$defs/semver"
+            },
+            "maximum_version_exclusive": {
+              "$ref": "#/$defs/semver"
+            }
+          }
+        },
+        "schema": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "name",
+            "version"
+          ],
+          "properties": {
+            "name": {
+              "const": "canon-pack-manifest"
+            },
+            "version": {
+              "const": "1.0.0"
+            }
+          }
+        }
+      }
+    },
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "role",
+        "media_type",
+        "size_bytes",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "enum": [
+            "notices/LICENSE.txt",
+            "notices/NOTICE.txt",
+            "signatures/manifest.sig"
+          ]
+        },
+        "role": {
+          "enum": [
+            "license_notice",
+            "attribution_notice",
+            "manifest_signature"
+          ]
+        },
+        "media_type": {
+          "enum": [
+            "text/plain; charset=utf-8",
+            "application/octet-stream"
+          ]
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1048576
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "const": "notices/LICENSE.txt"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "role": {
+                "const": "license_notice"
+              },
+              "media_type": {
+                "const": "text/plain; charset=utf-8"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "const": "notices/NOTICE.txt"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "role": {
+                "const": "attribution_notice"
+              },
+              "media_type": {
+                "const": "text/plain; charset=utf-8"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "path": {
+                "const": "signatures/manifest.sig"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "role": {
+                "const": "manifest_signature"
+              },
+              "media_type": {
+                "const": "application/octet-stream"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

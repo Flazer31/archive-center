@@ -1,0 +1,22 @@
+{
+  "contract_version": "assistant_timeline_recovery_cases.v1",
+  "cases": [
+    {
+      "id": "deleted_tail_36_38_poisoned_client_anchor",
+      "stored_turns": 38,
+      "observed_assistant_turns": 35,
+      "client_candidate_from_turn": 3,
+      "expected_from_turn": 36
+    },
+    {
+      "id": "deleted_user_inputs_keep_all_assistant_outputs",
+      "raw_message_count": 179,
+      "parsed_message_count": 176,
+      "complete_pair_count": 15,
+      "assistant_output_count": 84,
+      "expected_stored_pair_recovered": 15,
+      "expected_assistant_only": 69,
+      "expected_processable_turns": 84
+    }
+  ]
+}

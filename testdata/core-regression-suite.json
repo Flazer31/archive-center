@@ -1,0 +1,35 @@
+{
+  "contract_version": "archive_center.core_regression.v1",
+  "isolation": {
+    "real_database_allowed": false,
+    "real_vector_store_allowed": false,
+    "real_user_session_allowed": false,
+    "fixture_policy": "source-extracted JavaScript functions, httptest, fake Store, and fake Vector only"
+  },
+  "suites": [
+    {
+      "name": "risu_adapter_input_output",
+      "package": "./cmd/js-route-variant-smoke",
+      "expected_tests": 8,
+      "run": "^(TestActualInputAndBootstrapProductionObservationRuntime|TestArchiveCenterJSOnlyModelTypeEntersPersistence|TestArchiveCenterJSModelSourceOwnershipComesFromGo|TestRegisteredRequestCallbacksDetachExactBeforeRequestContext|TestCurrentChatIndexFailureFallsBackOnlyToIdentityMatchedCurrentCharacter|TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure|TestTimelineLoadReconcilesDeletedAssistantBeforeRead|TestPostprocessorReplacementRebuildsDeletionSnapshot)$"
+    },
+    {
+      "name": "source_and_bootstrap_contract",
+      "package": "./internal/httpapi",
+      "expected_tests": 4,
+      "run": "^(TestPrepareTurnCurrentInputDecisionUsesLifecycleFacts|TestPrepareTurnSessionBootstrapPreservesOrderedSources|TestPrepareTurnProductionRouteSuppressesUnverifiedInputBeforeStoreReads|TestPrepareTurnProductionRouteCarriesSourceContractWithoutWrites)$"
+    },
+    {
+      "name": "persistence_and_partial_success",
+      "package": "./internal/httpapi",
+      "expected_tests": 4,
+      "run": "^(TestCompleteTurnIdempotentExecutionRunsWriterOnce|TestCompleteTurnIdempotentReplaySkipsDuplicateDerivedWrites|TestCompleteTurnPostprocessorPairAlreadyPersistedOnAnotherTurnSkipsDuplicate|TestCompleteTurnEmbeddingProviderFailureReportsWarning)$"
+    },
+    {
+      "name": "rollback_and_session_migration",
+      "package": "./internal/httpapi",
+      "expected_tests": 6,
+      "run": "^(TestRollbackLiveWriteExecutesDeletions|TestRollbackMinFromTurnClampsAttachedSessionDelete|TestSessionMigratePreviewDryRunBlocksNonEmptyTarget|TestSessionMigratePreviewAllowsEmptyTargetDryRun|TestSessionMigrateCompleteRunsFullManifestExecutorAndLeavesVectorPhasePending|TestSessionMigrationSourceLockExcludesPrepareSearchAndCompleteTurn)$"
+    }
+  ]
+}

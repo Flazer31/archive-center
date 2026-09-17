@@ -1,0 +1,127 @@
+# Archive Center 2.0 workspace ignores
+# These protect against accidental commit of runtime artifacts.
+
+# Environment and secrets
+.env
+.env.*
+!.env.example
+!**/.env*.example
+
+# Databases and SQLite
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+*.sqlite-journal
+
+# Go build cache and artifacts
+.gocache/
+.runtime/
+.runtime-cache/
+.updates/
+go-service/*.exe
+go-service/*.dll
+go-service/*.so
+go-service/*.dylib
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+*.egg
+
+# Logs and temp
+*.log
+*.tmp
+.tmp-*/
+.vt-scan-*/
+_codex_recovery/
+_security-audit/
+temp/
+tmp/
+_tmp/
+tmp_*.py
+repair*.py
+repair*.txt
+patch_*.py
+debug*.py
+debug*.txt
+check_*.py
+!tools/check_*.py
+find_*.py
+*_dump*.txt
+_dump_*.txt
+_style_block*.txt
+style_block_dump.txt
+
+# ChromaDB / vector persist dirs
+.chroma_shadow/
+chroma_data/
+
+# Historical/future-only Milvus artifacts must not ship unless a later
+# explicit post-checklist decision reopens that vector lane.
+milvus_data/
+milvus.db
+
+# Backup and release artifacts
+backup/
+release/
+deploy/
+_dist/
+_dist-*/
+_release-builds/
+_test-builds/
+_runtime-*/
+_live-test-pack/
+_2.3_build_paths.json
+_rc7_build_paths.json
+Archive Center.js.codex-backup-*
+Risu Output Quality Layer 2.5.js
+Risu Recomposer*.js
+AGENTS.md
+AC Recomposer Agent.js
+Archive Center 3.4-C.js
+.github/copilot-instructions.md
+prompts/*복사본*.txt
+prompts/critic_system.pre-first-compression-20260808.txt
+docs/**/_ui_slice_*.txt
+home.webp
+*.bak
+*.backup
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local development instructions and research are not public source.
+AI_GUARDRAILS.md
+.agents/
+skills-lock.json
+
+# Public documentation allowlist. Review content before adding a new entry.
+docs/*
+!docs/2.3-github-install-update-contract.md
+!docs/3.7-critic-derived-memory-reprocessing-runbook.md
+!docs/archive-center-4.5-release-notes.md
+!docs/archive-center-4.5-release-verification.md
+!docs/archive-center-4.5-detailed-logging.md
+!docs/canon-identity-provenance-dedup-v1.md
+!docs/canon-pack-manifest-v1.example.json
+!docs/canon-pack-manifest-v1.md
+!docs/canon-pack-manifest-v1.schema.json
+!docs/canon-storage-and-migration-scope-v1.md
+!docs/chromadb-port-configuration.md
+!docs/oracle-cloud-systemd-update-guide.md
+!docs/permanent-risu-host-backend-boundary.md
+!docs/pocketrisu-termux-tailscale-https-runbook.md
+!docs/public-release-scope.md
+!docs/simple-fresh-install.md
+!docs/source-discovery-pipeline-v1.md
+
+# Retain schema/tooling inputs; keep historical planning notes local.
+contracts/*
+!contracts/go-route-group-design.md
+!contracts/openapi-contract-summary.json
+!contracts/openapi-schema-freeze.json
+ops/packaging-hygiene.md

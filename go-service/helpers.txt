@@ -1,0 +1,588 @@
+﻿
+func firstMapOrNil(items []map[string]any) any {
+	if len(items) == 0 {
+		return nil
+	}
+	return items[0]
+}
+
+func q1FirstNonEmptyString(values ...string) string {
+	for _, v := range values {
+		if strings.TrimSpace(v) != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func q1TimePtrAny(t *time.Time) any {
+	if t == nil {
+		return nil
+	}
+	return t.Format(time.RFC3339)
+}
+
+func chapterFromResumePack(rp *store.ResumePack) *store.ChapterSummary {
+	if rp == nil {
+		return nil
+	}
+	return rp.Chapter
+}
+
+func arcFromResumePack(rp *store.ResumePack) *store.ArcSummary {
+	if rp == nil {
+		return nil
+	}
+	return rp.Arc
+}
+
+func sagaFromResumePack(rp *store.ResumePack) *store.SagaDigest {
+	if rp == nil {
+		return nil
+	}
+	return rp.Saga
+}
+
+func buildUnifiedRetrievalDocuments(
+	sid string,
+	memories []store.Memory,
+	evidence []store.DirectEvidence,
+	kgTriples []store.KGTriple,
+	episodeSums []store.EpisodeSummary,
+	resumePack *store.ResumePack,
+	chatLogs []store.ChatLog,
+) []map[string]any {
+	docs := []map[string]any{}
+	for _, m := range memories {
+		text := strings.Join(strings.Fields(q1FirstNonEmptyString(m.SummaryJSON, m.PlaceRoom, m.PlaceWing)), " ")
+		docs = append(docs, retrievalDocumentQ1("memory", "memory", "memory_summary", m.ID, fmt.Sprintf("%d", m.ID), sid, m.TurnIndex, m.TurnIndex, m.TurnIndex, fmt.Sprintf("Memory #%d", m.ID), text, m.CreatedAt, map[string]any{
+			"importance": m.Importance,
+			"place_wing": m.PlaceWing,
+			"place_room": m.PlaceRoom,
+		}))
+	}
+	for _, e := range evidence {
+		text := strings.Join(strings.Fields(e.EvidenceText), " ")
+		docs = append(docs, retrievalDocumentQ1("evidence", "direct_evidence", "evidence_verbatim", e.ID, fmt.Sprintf("%d", e.ID), sid, e.TurnAnchor, e.TurnAnchor, e.TurnAnchor, fmt.Sprintf("Evidence #%d", e.ID), text, e.CreatedAt, map[string]any{
+			"evidence_kind":          e.EvidenceKind,
+			"capture_verification":   e.CaptureVerification,
+			"source_turn_start":      e.SourceTurnStart,
+			"source_turn_end":        e.SourceTurnEnd,
+		}))
+	}
+	for _, cl := range chatLogs {
+		content := strings.Join(strings.Fields(cl.Content), " ")
+		docs = append(docs, retrievalDocumentQ1("chat_log", "chat_log_fallback", "legacy_keyword_fallback", cl.ID, fmt.Sprintf("%d", cl.ID), sid, cl.TurnIndex, cl.TurnIndex, cl.TurnIndex, fmt.Sprintf("ChatLog #%d", cl.ID), content, cl.CreatedAt, map[string]any{
+			"role":       cl.Role,
+			"turn_index": cl.TurnIndex,
+		}))
+	}
+	for _, k := range kgTriples {
+		text := fmt.Sprintf("%s %s %s", k.Subject, k.Predicate, k.Object)
+		docs = append(docs, retrievalDocumentQ1("kg_triple", "kg_triple", "kg_triple", k.ID, fmt.Sprintf("%d", k.ID), sid, 0, 0, 0, fmt.Sprintf("KG #%d", k.ID), text, k.CreatedAt, map[string]any{
+			"subject":   k.Subject,
+			"predicate": k.Predicate,
+			"object":    k.Object,
+		}))
+	}
+	for _, es := range episodeSums {
+		summary := strings.Join(strings.Fields(q1FirstNonEmptyString(es.SummaryText, fmt.Sprintf("Episode %d-%d", es.FromTurn, es.ToTurn))), " ")
+		docs = append(docs, retrievalDocumentQ1("episode", "episode", "episode_summary", es.ID, fmt.Sprintf("%d", es.ID), sid, es.FromTurn, es.ToTurn, es.FromTurn, fmt.Sprintf("Episode #%d", es.ID), summary, es.CreatedAt, map[string]any{
+			"from_turn": es.FromTurn,
+			"to_turn":   es.ToTurn,
+		}))
+	}
+	if resumePack != nil && resumePack.Chapter != nil {
+		ch := resumePack.Chapter
+		text := strings.Join(strings.Fields(q1FirstNonEmptyString(ch.SummaryText, ch.ResumeText, ch.ChapterTitle)), " ")
+		docs = append(docs, retrievalDocumentQ1("chapter", "chapter", "chapter_summary", ch.ID, fmt.Sprintf("%d", ch.ID), sid, ch.FromTurn, ch.ToTurn, ch.FromTurn, fmt.Sprintf("Chapter #%d", ch.ID), text, *ch.CreatedAt, map[string]any{
+			"chapter_index": ch.ChapterIndex,
+			"chapter_title": ch.ChapterTitle,
+		}))
+	}
+	if resumePack != nil && resumePack.Arc != nil {
+		arc := resumePack.Arc
+		text := strings.Join(strings.Fields(q1FirstNonEmptyString(arc.ArcResumeText, arc.CoreConflict, arc.ArcName)), " ")
+		docs = append(docs, retrievalDocumentQ1("arc", "arc", "arc_summary", arc.ID, fmt.Sprintf("%d", arc.ID), sid, arc.FromTurn, arc.ToTurn, arc.FromTurn, fmt.Sprintf("Arc #%d", arc.ID), text, *arc.CreatedAt, map[string]any{
+			"arc_index":  arc.ArcIndex,
+			"arc_name":   arc.ArcName,
+			"arc_status": arc.ArcStatus,
+		}))
+	}
+	if resumePack != nil && resumePack.Saga != nil {
+		saga := resumePack.Saga
+		text := strings.Join(strings.Fields(q1FirstNonEmptyString(saga.ResumePackText, saga.SagaSummary, saga.EraLabel)), " ")
+		docs = append(docs, retrievalDocumentQ1("saga", "saga", "saga_summary", saga.ID, fmt.Sprintf("%d", saga.ID), sid, saga.FromTurn, saga.ToTurn, saga.FromTurn, fmt.Sprintf("Saga #%d", saga.ID), text, *saga.CreatedAt, map[string]any{
+			"era_label": saga.EraLabel,
+		}))
+	}
+	return docs
+}
+
+func retrievalDocumentQ1(sourceType, sourceSubtype, sourceTable string, id int64, sourceRowID, sid string, fromTurn, toTurn, turnIndex int, title, text string, createdAt time.Time, meta map[string]any) map[string]any {
+	doc := map[string]any{
+		"document_id":     fmt.Sprintf("%s:%d", sourceType, id),
+		"tier":            sourceType,
+		"source_type":     sourceType,
+		"source_subtype":  sourceSubtype,
+		"source_row_id":   sourceRowID,
+		"source_table":    sourceTable,
+		"chat_session_id": sid,
+		"from_turn":       fromTurn,
+		"to_turn":         toTurn,
+		"turn_index":      turnIndex,
+		"title":           title,
+		"text":            text,
+		"similarity":      1.0,
+		"created_at":      createdAt,
+		"query_matched":   true,
+		"metadata":        meta,
+	}
+	return doc
+}
+
+func retrievalDocumentSchemaQ1() map[string]any {
+	return map[string]any{
+		"version":       "q1a.v1",
+		"index_version": "q1e.v1",
+		"required_fields": []string{
+			"document_id", "tier", "source_type", "source_subtype", "source_row_id",
+			"source_table", "chat_session_id", "from_turn", "to_turn", "turn_index",
+			"title", "text", "similarity", "created_at", "query_matched", "metadata",
+		},
+		"partition_keys": []string{"chat_session_id", "tier", "source_table"},
+		"source_lookup":  "document_id_prefix_to_store_row",
+	}
+}
+
+func retrievalIndexSnapshotFromDocuments(sid string, documents []map[string]any) map[string]any {
+	return map[string]any{
+		"status":          "ready",
+		"document_count":  len(documents),
+		"chat_session_id": sid,
+		"schema_version":  "q1e.v1",
+	}
+}
+
+func buildANNCandidateSnapshotQ2(docs []map[string]any, vectorShadow map[string]any) map[string]any {
+	candidates := []map[string]any{}
+	for i, doc := range docs {
+		if i >= 8 {
+			break
+		}
+		candidate := map[string]any{}
+		for k, v := range doc {
+			candidate[k] = v
+		}
+		score := 1.0 - float64(i)*0.05
+		if score < 0.1 {
+			score = 0.1
+		}
+		candidate["ann_rank"] = i + 1
+		candidate["rerank_score"] = score
+		candidate["similarity"] = score
+		candidate["query_matched"] = true
+		candidates = append(candidates, candidate)
+	}
+	vectorMode, _ := vectorShadow["mode"].(string)
+	if vectorMode == "" {
+		vectorMode, _ = vectorShadow["source"].(string)
+	}
+	status := "empty"
+	if len(candidates) > 0 {
+		status = "ready"
+	}
+	return map[string]any{
+		"version":         "q2a.v1",
+		"status":          status,
+		"candidate_count": len(candidates),
+		"candidates":      candidates,
+		"rerank_applied":  len(candidates) > 1,
+		"rerank_policy":   "metadata_score_v1",
+		"merge_policy":    "tier_head_then_rerank_v1",
+		"vector_mode":     vectorMode,
+		"benchmark": map[string]any{
+			"status":           status,
+			"overlap_ratio":    q2OverlapRatio(candidates),
+			"tier_diversity":   q2TierDiversity(candidates),
+			"candidate_tiers":  q2TierSequence(candidates),
+			"guarded_takeover": false,
+			"takeover_guard":   "shadow_compare_first",
+		},
+	}
+}
+
+func q2OverlapRatio(candidates []map[string]any) float64 {
+	if len(candidates) == 0 {
+		return 0
+	}
+	seenText := map[string]bool{}
+	for _, c := range candidates {
+		text, _ := c["text"].(string)
+		seenText[text] = true
+	}
+	return float64(len(seenText)) / float64(len(candidates))
+}
+
+func q2TierDiversity(candidates []map[string]any) int {
+	tiers := map[string]bool{}
+	for _, c := range candidates {
+		tier, _ := c["tier"].(string)
+		tiers[tier] = true
+	}
+	return len(tiers)
+}
+
+func q2TierSequence(candidates []map[string]any) []string {
+	seq := []string{}
+	for _, c := range candidates {
+		tier, _ := c["tier"].(string)
+		seq = append(seq, tier)
+	}
+	return seq
+}
+
+func buildIntentContractQ3() map[string]any {
+	return map[string]any{
+		"version":      "q3a.v1",
+		"routing_mode": "single_query_shared",
+		"intents": []map[string]any{
+			q3Intent("scene", []string{"memory", "episode", "chapter"}, 0.34),
+			q3Intent("callback", []string{"arc", "saga", "memory"}, 0.22),
+			q3Intent("resume", []string{"chapter", "arc", "saga"}, 0.28),
+			q3Intent("canon", []string{"memory", "episode", "arc"}, 0.16),
+		},
+	}
+}
+
+func q3Intent(name string, tiers []string, budgetShare float64) map[string]any {
+	return map[string]any{
+		"name":         name,
+		"query_builder": name + "_query_v1",
+		"tiers":        tiers,
+		"budget_share": budgetShare,
+	}
+}
+
+func q3PacketBudgetPolicy() map[string]any {
+	return map[string]any{
+		"version":        "q3c.v1",
+		"profile_source": "runtime_token_profile",
+		"scene_share":    0.34,
+		"callback_share": 0.22,
+		"resume_share":   0.28,
+		"canon_share":    0.16,
+		"degrade_policy": "drop_low_score_then_shorten_text",
+	}
+}
+
+func buildIntentHitPreviewQ3(queryPreview string, docs []map[string]any) map[string]any {
+	matched := map[string][]string{
+		"scene":    {},
+		"callback": {},
+		"resume":   {},
+		"canon":    {},
+	}
+	for _, doc := range docs {
+		tier, _ := doc["tier"].(string)
+		documentID, _ := doc["document_id"].(string)
+		if tier == "" || documentID == "" {
+			continue
+		}
+		for _, intent := range q3MatchedTiers(tier) {
+			matched[intent] = append(matched[intent], documentID)
+		}
+	}
+	status := "empty"
+	if len(docs) > 0 {
+		status = "ready"
+	}
+	return map[string]any{
+		"version":         "q3d.v1",
+		"status":          status,
+		"query_preview":   truncateRunes(strings.Join(strings.Fields(queryPreview), " "), 120),
+		"matched_intents": matched,
+	}
+}
+
+func q3MatchedTiers(tier string) []string {
+	switch tier {
+	case "memory":
+		return []string{"scene", "callback", "canon"}
+	case "episode":
+		return []string{"scene", "canon"}
+	case "chapter":
+		return []string{"scene", "resume"}
+	case "arc":
+		return []string{"callback", "resume", "canon"}
+	case "saga":
+		return []string{"callback", "resume"}
+	case "chat_log":
+		return []string{"scene"}
+	default:
+		return []string{}
+	}
+}
+
+func buildGenerationPacketShadowCompareRecord(assembly prepareTurnInjectionAssembly, inputContextText string) map[string]any {
+	newHasChapter := strings.TrimSpace(assembly.MemoryText) != "" && strings.Contains(strings.ToLower(assembly.MemoryText), "chapter")
+	newChapterChars := len([]rune(strings.TrimSpace(assembly.MemoryText)))
+	newHasChapterInput := strings.TrimSpace(inputContextText) != "" && strings.Contains(strings.ToLower(inputContextText), "chapter")
+	oldHasChapter := false
+	oldChapterChars := 0
+	oldHasChapterInput := false
+	return map[string]any{
+		"version":                    "p249a.v1",
+		"new_has_chapter":            newHasChapter,
+		"new_chapter_chars":          newChapterChars,
+		"new_has_chapter_input":      newHasChapterInput,
+		"old_has_chapter":            oldHasChapter,
+		"old_chapter_chars":          oldChapterChars,
+		"old_has_chapter_input":      oldHasChapterInput,
+		"divergence_chapter":         newHasChapter != oldHasChapter,
+		"divergence_chapter_input":   newHasChapterInput != oldHasChapterInput,
+	}
+}
+
+func buildIntentExecutionShadow(docs []map[string]any, vectorShadow map[string]any) map[string]any {
+	intentDefs := []struct {
+		name  string
+		tiers []string
+	}{
+		{"scene", []string{"memory", "episode", "chapter"}},
+		{"callback", []string{"arc", "saga", "memory"}},
+		{"resume", []string{"chapter", "arc", "saga"}},
+		{"canon", []string{"memory", "episode", "arc"}},
+	}
+
+	intents := []map[string]any{}
+	selectedCountBefore := 0
+	selectedCountAfter := 0
+	seenDocs := map[string]bool{}
+	reasonCounts := map[string]int{
+		"tier_cap":     0,
+		"overlap_drop": 0,
+	}
+
+	for _, def := range intentDefs {
+		candidates := []map[string]any{}
+		for _, doc := range docs {
+			tier, _ := doc["tier"].(string)
+			for _, allowed := range def.tiers {
+				if tier == allowed {
+					candidates = append(candidates, doc)
+					break
+				}
+			}
+		}
+		selected := candidates
+		if len(selected) > 3 {
+			selected = selected[:3]
+			reasonCounts["tier_cap"] += len(candidates) - 3
+		}
+		selectedIDs := []string{}
+		for _, s := range selected {
+			id, _ := s["document_id"].(string)
+			if id != "" {
+				selectedIDs = append(selectedIDs, id)
+				if !seenDocs[id] {
+					seenDocs[id] = true
+					selectedCountAfter++
+				}
+			}
+		}
+		selectedCountBefore += len(selectedIDs)
+
+		intents = append(intents, map[string]any{
+			"intent":             def.name,
+			"candidate_count":    len(candidates),
+			"selected_count":     len(selected),
+			"tiers":              def.tiers,
+			"selected_documents": selectedIDs,
+		})
+	}
+
+	droppedCount := selectedCountBefore - selectedCountAfter
+	if droppedCount > 0 {
+		reasonCounts["overlap_drop"] = droppedCount
+	}
+
+	globalCapChars := 3000
+	globalSelectedChars := 0
+	for _, doc := range docs {
+		if id, _ := doc["document_id"].(string); seenDocs[id] {
+			text, _ := doc["text"].(string)
+			globalSelectedChars += len([]rune(text))
+		}
+	}
+
+	status := "ready"
+	if len(docs) == 0 {
+		status = "off"
+	}
+
+	guarded := map[string]any{
+		"status":   status,
+		"decision": "shadow_compare",
+		"reason":   "candidate_pool_available",
+	}
+	enforced := map[string]any{
+		"status":   status,
+		"decision": "enforced_shadow",
+		"reason":   "budget_and_dedupe_passed",
+	}
+	if len(docs) == 0 {
+		guarded["decision"] = "fail_open"
+		guarded["reason"] = "no_candidates"
+		enforced["decision"] = "fail_open"
+		enforced["reason"] = "no_candidates"
+	}
+
+	return map[string]any{
+		"version":      "p29a.v1",
+		"routing_mode": "per_intent_shadow",
+		"status":         status,
+		"intents":        intents,
+		"cross_intent_dedupe": map[string]any{
+			"unique_document_count": selectedCountAfter,
+			"duplicate_drop_count":  droppedCount,
+		},
+		"budget_enforcement": map[string]any{
+			"mode":                  "enforced_shadow",
+			"decision_count":        len(intentDefs),
+			"selected_count_before": selectedCountBefore,
+			"selected_count_after":  selectedCountAfter,
+			"dropped_count":         droppedCount,
+			"reason_counts":         reasonCounts,
+			"global_cap_chars":      globalCapChars,
+			"global_selected_chars": globalSelectedChars,
+		},
+		"guarded_takeover":  guarded,
+		"enforced_takeover": enforced,
+	}
+}
+
+func buildHierarchyConsistencyTrace(docs []map[string]any, resumePack *store.ResumePack, episodeSums []store.EpisodeSummary) map[string]any {
+	episodePresent := len(episodeSums) > 0
+	chapterPresent := resumePack != nil && resumePack.Chapter != nil
+	sagaPresent := resumePack != nil && resumePack.Saga != nil
+	arcPresent := resumePack != nil && resumePack.Arc != nil
+
+	reasons := []string{}
+	if sagaPresent {
+		reasons = append(reasons, "saga_present_top_level")
+	}
+	if arcPresent {
+		reasons = append(reasons, "arc_present_covers_chapters")
+	}
+	if chapterPresent {
+		reasons = append(reasons, "chapter_present_covers_episodes")
+	}
+	if episodePresent {
+		reasons = append(reasons, "episode_present_covers_turns")
+	}
+
+	consistencyScore := 0.0
+	if sagaPresent {
+		consistencyScore += 0.25
+	}
+	if arcPresent {
+		consistencyScore += 0.25
+	}
+	if chapterPresent {
+		consistencyScore += 0.25
+	}
+	if episodePresent {
+		consistencyScore += 0.25
+	}
+
+	chapterEpisodeAligned := false
+	if chapterPresent && episodePresent && resumePack != nil && resumePack.Chapter != nil && len(episodeSums) > 0 {
+		chFrom := resumePack.Chapter.FromTurn
+		chTo := resumePack.Chapter.ToTurn
+		for _, ep := range episodeSums {
+			if ep.FromTurn >= chFrom && ep.ToTurn <= chTo {
+				chapterEpisodeAligned = true
+				break
+			}
+		}
+	}
+
+	return map[string]any{
+		"version":                 "p31a.v1",
+		"episode_present":         episodePresent,
+		"chapter_present":         chapterPresent,
+		"saga_present":            sagaPresent,
+		"arc_present":             arcPresent,
+		"priority_order":          []string{"saga", "arc", "chapter", "episode", "memory"},
+		"consistency_score":       consistencyScore,
+		"chapter_episode_aligned": chapterEpisodeAligned,
+		"reasons":                 reasons,
+	}
+}
+
+func buildSummaryFailureStability(degraded bool, chatLogs []store.ChatLog) map[string]any {
+	lastGoodFallback := ""
+	for i := len(chatLogs) - 1; i >= 0; i-- {
+		role := strings.TrimSpace(chatLogs[i].Role)
+		content := strings.TrimSpace(chatLogs[i].Content)
+		if (role == "user" || role == "assistant") && content != "" {
+			lastGoodFallback = truncateRunes(content, 120)
+			break
+		}
+	}
+
+	fallbackReason := ""
+	if degraded {
+		fallbackReason = "store_unavailable"
+	} else if len(chatLogs) == 0 {
+		fallbackReason = "empty_chat_logs"
+	}
+
+	return map[string]any{
+		"version":            "p32a.v1",
+		"last_good_fallback": lastGoodFallback,
+		"retry_ready":        !degraded,
+		"continuity_guard":   "trace_only",
+		"fallback_reason":    fallbackReason,
+	}
+}
+
+func buildANNTakeoverGuard(annSnapshot map[string]any, vectorShadow map[string]any) map[string]any {
+	overlapRatio := 0.0
+	if bench, ok := annSnapshot["benchmark"].(map[string]any); ok {
+		if r, ok := bench["overlap_ratio"].(float64); ok {
+			overlapRatio = r
+		}
+	}
+
+	profile := "default"
+	if p, ok := vectorShadow["profile"].(string); ok && p != "" {
+		profile = p
+	}
+
+	overlapThreshold := 0.3
+	switch profile {
+	case "wide":
+		overlapThreshold = 0.25
+	case "compact":
+		overlapThreshold = 0.35
+	}
+
+	guardDecision := "shadow_compare"
+	if overlapRatio < overlapThreshold {
+		guardDecision = "fallback_to_keyword"
+	}
+
+	return map[string]any{
+		"version":           "p33a.v1",
+		"profile":           profile,
+		"overlap_threshold": overlapThreshold,
+		"current_overlap":   overlapRatio,
+		"guard_decision":    guardDecision,
+		"evidence": map[string]any{
+			"threshold_met": overlapRatio >= overlapThreshold,
+			"ratio_source":  "q2_benchmark_overlap",
+		},
+	}
+}
