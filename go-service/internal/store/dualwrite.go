@@ -1149,6 +1149,31 @@ func (d *dualWriteStore) GetCharacterState(ctx context.Context, chatSessionID, c
 	return d.primary.GetCharacterState(ctx, chatSessionID, characterName)
 }
 
+func (d *dualWriteStore) ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error) {
+	reader, ok := d.primary.(CharacterStateHistoryStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListCharacterStateHistory(ctx, chatSessionID, characterName, limit, offset)
+}
+
+func (d *dualWriteStore) ApplyCharacterProvenanceRepair(ctx context.Context, before, after CharacterState, operationID string) (CharacterEvent, error) {
+	writer, ok := d.primary.(CharacterProvenanceRepairStore)
+	if !ok {
+		return CharacterEvent{}, ErrNotEnabled
+	}
+	result, err := writer.ApplyCharacterProvenanceRepair(ctx, before, after, operationID)
+	if err != nil {
+		return result, err
+	}
+	if shadow, ok := d.shadow.(CharacterProvenanceRepairStore); ok {
+		if _, err := shadow.ApplyCharacterProvenanceRepair(ctx, before, after, operationID); err != nil {
+			d.recordShadowErr(err)
+		}
+	}
+	return result, nil
+}
+
 // SaveCharacterState writes to primary then shadow when both stores support it.
 func (d *dualWriteStore) SaveCharacterState(ctx context.Context, c *CharacterState) error {
 	if primary, ok := d.primary.(interface {
@@ -1700,6 +1725,16 @@ func (d *dualWriteStore) ApplyReversibleStatusTransition(ctx context.Context, tr
 		}
 	}
 	return result, nil
+}
+
+func (d *dualWriteStore) ListBodyRepairArtifacts(ctx context.Context, sid, entityID, name string) ([]StateRepairArtifactChange, error) {
+	if reader, ok := d.primary.(StateRepairArtifactReader); ok {
+		return reader.ListBodyRepairArtifacts(ctx, sid, entityID, name)
+	}
+	if reader, ok := d.shadow.(StateRepairArtifactReader); ok {
+		return reader.ListBodyRepairArtifacts(ctx, sid, entityID, name)
+	}
+	return nil, ErrNotEnabled
 }
 
 func (d *dualWriteStore) GetReversibleStatusEventBySourceUnit(ctx context.Context, chatSessionID, sourceRevision, sourceUnitID string) (StatusChangeEvent, error) {

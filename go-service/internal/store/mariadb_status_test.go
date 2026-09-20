@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -25,6 +26,136 @@ var reversibleStatusEventColumns = []string{
 	"story_clock_json", "event_state", "created_at",
 }
 
+func expectNarrativePendingSnapshots46(mock sqlmock.Sqlmock, sid string, snapshots ...string) {
+	mock.ExpectExec("(?s)DELETE current_value FROM status_current_values.*projection_action.*remove").WithArgs(sid).WillReturnResult(sqlmock.NewResult(0, 0))
+	rows := sqlmock.NewRows([]string{"value_json"})
+	for _, snapshot := range snapshots {
+		rows.AddRow(snapshot)
+	}
+	mock.ExpectQuery("(?s)SELECT current_value.value_json.*JOIN memory_source_revisions source_revision.*source_revision.chat_session_id = current_value.chat_session_id.*source_revision.lifecycle_state = 'active'.*current_value.chat_session_id = \\?.*current_value.status_key = 'narrative_state'.*pending_thread").
+		WithArgs(sid, sid).WillReturnRows(rows)
+}
+
+func narrativePendingSnapshot46(t *testing.T, p PendingThread) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"pending_thread": p})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
+}
+
+func TestMariaDBNarrativePendingProjectionSharesTransitionTransaction46(t *testing.T) {
+	for _, failPending := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending_failure_%t", failPending), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			transition := reversibleStatusTransitionFixture()
+			p := PendingThread{ChatSessionID: transition.Event.ChatSessionID, ThreadKey: "promise-occurrence-1", Description: "Return the borrowed book", Status: "resolved", CreatedTurn: 1, SourceTurn: transition.Event.SourceTurn, ResolvedTurn: transition.Event.SourceTurn, HookType: "promise", HookMetadataJSON: `{"lifecycle_state":"completed"}`, CreatedAt: reversibleStatusTestTime(), UpdatedAt: reversibleStatusTestTime()}
+			transition.Event.StatusKey, transition.CurrentValue.StatusKey = "narrative_state", "narrative_state"
+			transition.Event.NewValueJSON = narrativePendingSnapshot46(t, p)
+			transition.CurrentValue.ValueJSON = transition.Event.NewValueJSON
+			event := transition.Event
+			mock.ExpectBegin()
+			expectActiveReversibleSource(mock, event.ChatSessionID, transition.SourceRevision)
+			expectNoReversibleStatusEvent(mock, event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID)
+			mock.ExpectQuery("SELECT COALESCE").WillReturnError(sql.ErrNoRows)
+			mock.ExpectQuery("(?s)FROM status_change_events.*projection_action.*remove").WillReturnError(sql.ErrNoRows)
+			mock.ExpectExec("INSERT INTO status_current_values").WillReturnResult(sqlmock.NewResult(101, 1))
+			expectNoPriorActiveStatusEvent(mock, event)
+			mock.ExpectExec("INSERT INTO status_change_events").WillReturnResult(sqlmock.NewResult(202, 1))
+			for range 2 {
+				mock.ExpectExec("INSERT INTO memory_derivation_dependencies").WillReturnResult(sqlmock.NewResult(303, 1))
+			}
+			mock.ExpectQuery("SELECT id FROM pending_threads").WithArgs(p.ChatSessionID, p.ThreadKey).
+				WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(int64(88)))
+			pendingErr := errors.New("pending projection failed")
+			pending := mock.ExpectExec("(?s)UPDATE pending_threads.*WHERE id = \\?").WithArgs(p.Description, p.Status, p.ResolvedTurn, p.SourceTurn, 0, p.HookType, p.HookMetadataJSON, p.UpdatedAt, int64(88))
+			if failPending {
+				pending.WillReturnError(pendingErr)
+				mock.ExpectRollback()
+			} else {
+				pending.WillReturnResult(sqlmock.NewResult(0, 1))
+				mock.ExpectCommit()
+			}
+			_, err = (&mariadbStore{db: db}).ApplyReversibleStatusTransition(context.Background(), transition)
+			if failPending && !errors.Is(err, pendingErr) {
+				t.Fatalf("error = %v, want projection error", err)
+			}
+			if !failPending && err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMariaDBNarrativePendingRollbackRestoresSurvivingOccurrence46(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	ctx := context.Background()
+	p := PendingThread{ID: 88, ChatSessionID: "session-1", ThreadKey: "promise-occurrence-1", Description: "Return the book", Status: "open", CreatedTurn: 2, SourceTurn: 2, HookType: "promise", HookMetadataJSON: `{"lifecycle_state":"active","lifecycle_instance_id":"promise-occurrence-1"}`, CreatedAt: reversibleStatusTestTime(), UpdatedAt: reversibleStatusTestTime()}
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT turn_index FROM chat_logs").WithArgs(p.ChatSessionID).WillReturnRows(sqlmock.NewRows([]string{"turn_index"}).AddRow(5))
+	mock.ExpectQuery("SELECT source_revision").WithArgs(p.ChatSessionID, 5).WillReturnRows(sqlmock.NewRows([]string{"source_revision"}))
+	expectCanonicalTailCleanup44(mock, p.ChatSessionID, 5, false, true, 1)
+	mock.ExpectExec("(?s)INSERT INTO status_current_values.*source_revision.lifecycle_state = 'active'.*NOT EXISTS").WithArgs(p.ChatSessionID).WillReturnResult(sqlmock.NewResult(0, 1))
+	expectNarrativePendingSnapshots46(mock, p.ChatSessionID, narrativePendingSnapshot46(t, p))
+	mock.ExpectQuery("SELECT id FROM pending_threads").WithArgs(p.ChatSessionID, p.ThreadKey).WillReturnError(sql.ErrNoRows)
+	mock.ExpectExec("INSERT INTO pending_threads").WithArgs(p.ChatSessionID, p.ThreadKey, p.Description, "open", p.CreatedTurn, 0, p.SourceTurn, 0, p.HookType, p.HookMetadataJSON, false, false, false, p.CreatedAt, p.UpdatedAt).WillReturnResult(sqlmock.NewResult(99, 1))
+	mock.ExpectCommit()
+	if err := (&mariadbStore{db: db}).RollbackCanonicalTail(ctx, LogicalTurnRollback{ChatSessionID: p.ChatSessionID, TurnIndex: 5, LifecycleAction: LogicalTurnLifecycleDeleted}); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBListStatusCurrentValuesUncappedPreservesLegacy46(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(requiredSQLMatcher(
+		[]string{"from status_current_values", "left join memory_source_revisions", "source_revision.lifecycle_state = 'active'", "write_state = 'current'", "status_key = ?", "or source_revision.source_revision is not null"},
+		[]string{"owner_scope = ?", "limit"},
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("all narrative owner scopes").WithArgs("session-1", "narrative_state").WillReturnRows(sqlmock.NewRows(reversibleStatusCurrentColumns))
+	if _, err := (&mariadbStore{db: db}).ListStatusCurrentValues(context.Background(), "session-1", "", "", "narrative_state", -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestMariaDBListStatusChangeEventsUncapped46(t *testing.T) {
+	db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(requiredSQLMatcher(
+		[]string{"from status_change_events", "chat_session_id = ?", "status_key = ?", "order by created_at desc, id desc"},
+		[]string{"limit"},
+	)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	mock.ExpectQuery("complete narrative history").WithArgs("session-1", "narrative_state").WillReturnRows(sqlmock.NewRows(reversibleStatusEventColumns))
+	if _, err := (&mariadbStore{db: db}).ListStatusChangeEvents(context.Background(), "session-1", "", "", "narrative_state", -1); err != nil {
+		t.Fatal(err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestMariaDBStoreApplyReversibleStatusTransitionCommitsCurrentAndEventTogether(t *testing.T) {
 	db, mock, err := sqlmock.New()
 	if err != nil {
@@ -40,9 +171,10 @@ func TestMariaDBStoreApplyReversibleStatusTransitionCommitsCurrentAndEventTogeth
 	mock.ExpectBegin()
 	expectActiveReversibleSource(mock, event.ChatSessionID, transition.SourceRevision)
 	expectNoReversibleStatusEvent(mock, event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID)
-	mock.ExpectQuery("SELECT source_turn").
+	mock.ExpectQuery("SELECT COALESCE").
 		WithArgs(current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("(?s)FROM status_change_events.*projection_action.*remove").WithArgs(current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs(
 			current.ChatSessionID, current.RegistryID, current.StatusKey, current.OwnerScope, current.OwnerID,
@@ -95,9 +227,10 @@ func TestMariaDBStoreApplyReversibleStatusTransitionRollsBackWhenEventInsertFail
 	mock.ExpectBegin()
 	expectActiveReversibleSource(mock, event.ChatSessionID, transition.SourceRevision)
 	expectNoReversibleStatusEvent(mock, event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID)
-	mock.ExpectQuery("SELECT source_turn").
+	mock.ExpectQuery("SELECT COALESCE").
 		WithArgs(current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).
 		WillReturnError(sql.ErrNoRows)
+	mock.ExpectQuery("(?s)FROM status_change_events.*projection_action.*remove").WithArgs(current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).WillReturnError(sql.ErrNoRows)
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WillReturnResult(sqlmock.NewResult(101, 1))
 	expectNoPriorActiveStatusEvent(mock, event)
@@ -185,7 +318,7 @@ func TestMariaDBStoreApplyReversibleStatusTransitionRejectsStaleCurrentProjectio
 	mock.ExpectBegin()
 	expectActiveReversibleSource(mock, transition.Event.ChatSessionID, transition.SourceRevision)
 	expectNoReversibleStatusEvent(mock, transition.Event.ChatSessionID, transition.SourceRevision, transition.SourceUnitID)
-	mock.ExpectQuery("SELECT source_turn").
+	mock.ExpectQuery("SELECT COALESCE").
 		WithArgs(current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).
 		WillReturnRows(sqlmock.NewRows([]string{"source_turn"}).AddRow(current.SourceTurn + 1))
 	mock.ExpectRollback()
@@ -313,7 +446,10 @@ func TestMariaDBStoreListLatestReversibleCurrentProjectionEventsUsesActiveLatest
 			"newer_source.lifecycle_state = 'active'",
 			"newer.owner_scope = e.owner_scope",
 			"newer.owner_id = e.owner_id",
-			"newer.source_turn > e.source_turn",
+			"json_extract(newer.evidence_json, '$.repair_recorded_turn')",
+			"json_extract(e.evidence_json, '$.repair_recorded_turn')",
+			"newer.source_turn, 0)",
+			"e.source_turn, 0)",
 		},
 		[]string{"limit"},
 	)))

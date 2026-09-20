@@ -194,7 +194,7 @@ func normalizeRelationEntry(as store.ActiveState) map[string]any {
 		// Fallback: treat content as raw relation text
 		return map[string]any{
 			"relative_label":           as.Content,
-			"anchor":                   "current_story_clock",
+			"anchor":                   "unknown",
 			"offset_value_min":         nil,
 			"offset_value_max":         nil,
 			"offset_unit":              "unknown",
@@ -214,7 +214,7 @@ func normalizeRelationEntry(as store.ActiveState) map[string]any {
 	relativeLabel := seq19StringFromMap(parsed, "relative_label", "relativeLabel", "label")
 	anchor := seq19StringFromMap(parsed, "anchor", "anchorRef", "anchor_ref")
 	if anchor == "" {
-		anchor = "current_story_clock"
+		anchor = "unknown"
 	}
 	offsetUnit := seq19StringFromMap(parsed, "offset_unit", "offsetUnit", "unit")
 	if offsetUnit == "" {
@@ -768,7 +768,7 @@ func storyClockPromptProjection(currentClock map[string]any) map[string]any {
 	for _, key := range []string{
 		"version", "observation_kind", "source_observation_kind", "scene_scope",
 		"precision", "absolute", "partial", "relative", "range", "sequence",
-		"duration", "source_turn",
+		"duration", "source_turn", "calendar",
 	} {
 		if value, ok := currentClock[key]; ok {
 			out[key] = value

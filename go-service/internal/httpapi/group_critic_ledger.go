@@ -263,6 +263,23 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	var narrativeValues []store.StatusCurrentValue
+	var narrativeErr error
+	if valueStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
+		narrativeValues, narrativeErr = valueStore.ListStatusCurrentValues(ctx, req.ChatSessionID, "", "", narrativeStateStatusKey, -1)
+	}
+	if narrativeErr != nil {
+		builder.warn("narrative_current_values_unavailable: " + narrativeErr.Error())
+	}
+	builder.sourceCounts["narrative_current_values"] = len(narrativeValues)
+	lifecycleReadings := prepareTurnLifecycleReadings(narrativeValues)
+	lifecycleText := func(key string) string {
+		lines := []string{}
+		for _, part := range lifecycleReadings[key] {
+			lines = append(lines, part.Label+": "+part.Value)
+		}
+		return strings.Join(lines, "\n")
+	}
 
 	if evidence, err := s.Store.ListEvidence(ctx, req.ChatSessionID); err != nil {
 		builder.warn("direct_evidence_unavailable: " + err.Error())
@@ -308,12 +325,41 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 				break
 			}
 			text := ledgerSummaryFromJSONOrText(item.SummaryJSON)
+			facts, _ := prepareTurnPriorityFactsFromMemory(item)
+			linked := map[string]bool{}
+			for _, fact := range facts {
+				key := normalizeNarrativeLifecycleKey(fact.LifecycleKey)
+				if !linked[key] {
+					if current := lifecycleText(key); current != "" {
+						text += "\n" + current
+						linked[key] = true
+					}
+				}
+			}
 			builder.add("recent_accepted_memory", fmt.Sprintf("memory_%d", item.ID), "mariadb_canonical", "accepted", text, item.CreatedAt, map[string]any{
 				"type":       "memory",
 				"id":         item.ID,
 				"turn_index": item.TurnIndex,
 			})
 		}
+	}
+
+	// Closed lifecycle evidence is still part of the Critic's existing resolution
+	// lane even after it has disappeared from the open pending-thread projection.
+	seenLifecycle := map[string]bool{}
+	for _, view := range narrativeCurrentStateViews(narrativeValues) {
+		if builder.laneCount("recent_resolution_event") >= limits.MaxItemsPerLane || builder.full() {
+			break
+		}
+		key := normalizeNarrativeLifecycleKey(stringFromMap(view.Payload, "lifecycle_key"))
+		text := lifecycleText(key)
+		if text == "" || seenLifecycle[key] {
+			continue
+		}
+		seenLifecycle[key] = true
+		builder.add("recent_resolution_event", fmt.Sprintf("narrative_current_%d", view.Value.ID), "mariadb_canonical", stringFromMap(view.Payload, "transition"), text, view.Value.UpdatedAt, map[string]any{
+			"type": "status_current_value", "id": view.Value.ID, "lifecycle_key": key, "source_turn": view.Value.SourceTurn,
+		})
 	}
 
 	if states, err := s.Store.ListActiveStates(ctx, req.ChatSessionID, ""); err != nil {
@@ -370,6 +416,9 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 			}
 			if lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(parseJSONMap(item.HookMetadataJSON), "lifecycle_key")); lifecycleKey != "" {
 				sourceRef["lifecycle_key"] = lifecycleKey
+				if current := lifecycleText(lifecycleKey); current != "" {
+					text += "\n" + current
+				}
 			}
 			builder.add("unresolved_pending_thread", fmt.Sprintf("pending_thread_%d", item.ID), "mariadb_canonical", firstNonEmptyLedgerString(item.Status, "open"), text, item.UpdatedAt, sourceRef)
 		}

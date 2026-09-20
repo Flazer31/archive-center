@@ -86,7 +86,7 @@ var tableColumns = map[string][]string{
 	},
 	"character_states": {
 		"id", "chat_session_id", "character_name", "appearance_json", "personality_json",
-		"status_json", "relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
+		"status_json", "relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 	},
 	"pending_threads": {
 		"id", "chat_session_id", "thread_key", "description", "status", "created_turn",
@@ -136,11 +136,12 @@ var jsonColumns = map[string]map[string]bool{
 		"value_json": true,
 	},
 	"character_states": {
-		"appearance_json":    true,
-		"personality_json":   true,
-		"status_json":        true,
-		"relationships_json": true,
-		"speech_style_json":  true,
+		"appearance_json":       true,
+		"personality_json":      true,
+		"status_json":           true,
+		"relationships_json":    true,
+		"speech_style_json":     true,
+		"field_provenance_json": true,
 	},
 	"pending_threads": {
 		"hook_metadata_json": true,

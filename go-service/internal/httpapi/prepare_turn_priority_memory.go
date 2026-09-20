@@ -68,7 +68,9 @@ type prepareTurnPrioritySourceMetadata struct {
 
 type prepareTurnPriorityMemoryFact struct {
 	SourcePath          string
+	SourceFieldPath     string                    // Explicit containing field, independent of display/source-path identity.
 	Reading             *prepareTurnMemoryContext `json:"-"`
+	TemporalContext     map[string]any            // Source observation metadata; computed relations remain request-local.
 	Text                string
 	FamilyKey           string
 	ValueKey            string
@@ -122,6 +124,7 @@ type prepareTurnPriorityFactSeed struct {
 	SourceRowID                  any
 	SourceOccurrence             string
 	SourceTurn                   int
+	FieldObservationTurn         int // Used by marked character-field readings; SourceTurn retains source-record identity.
 	Importance                   float64
 	ImportancePresent            bool
 	Visibility                   string
@@ -142,6 +145,7 @@ type prepareTurnPriorityFactSeed struct {
 
 type prepareTurnPriorityMemoryCandidate struct {
 	SourcePath                   string
+	SourceFieldPath              string
 	Reading                      *prepareTurnMemoryContext `json:"-"`
 	Minimum                      *prepareTurnMemoryForm    `json:"-"`
 	OriginalRelevance            float64
@@ -767,6 +771,9 @@ func prepareTurnPrioritySplitFact(line string) []prepareTurnPriorityMemoryFact {
 					structured = nil
 					break
 				}
+				for i := range facts {
+					facts[i].SourceFieldPath = prepareTurnMemoryPath([]string{field}) + facts[i].SourcePath
+				}
 				structured = append(structured, facts...)
 				continue
 			}
@@ -774,7 +781,8 @@ func prepareTurnPrioritySplitFact(line string) []prepareTurnPriorityMemoryFact {
 				continue
 			}
 			structured = append(structured, prepareTurnPriorityMemoryFact{
-				Text: factPrefix + ": " + value, EntitySurface: prefix,
+				SourceFieldPath: prepareTurnMemoryPath([]string{field}),
+				Text:            factPrefix + ": " + value, EntitySurface: prefix,
 				FamilyKey: collapseTextKey(factPrefix), ValueKey: collapseTextKey(value), Structured: true,
 			})
 		}
@@ -1017,6 +1025,7 @@ func prepareTurnPrioritySemanticFactsFromAny(value any) []prepareTurnPrioritySem
 
 func prepareTurnPriorityFactsFromMemory(item store.Memory) ([]prepareTurnPriorityMemoryFact, string) {
 	parsed := parseJSONMap(item.SummaryJSON)
+	temporal := mapFromAny(parsed["temporal_context"])
 	facts := []prepareTurnPriorityMemoryFact{}
 	for _, key := range []string{
 		"narrative_events", "character_deltas", "state_claims", "reversible_states",
@@ -1027,6 +1036,7 @@ func prepareTurnPriorityFactsFromMemory(item store.Memory) ([]prepareTurnPriorit
 		for index, raw := range sliceFromAny(parsed[key]) {
 			items := prepareTurnPriorityStructuredMemoryItemFacts(key, raw)
 			for j := range items {
+				items[j].TemporalContext = prepareTurnSourceTemporalContext(temporal, mapFromAny(raw))
 				items[j].SourcePath = fmt.Sprintf("/%s/%d/expression", key, index)
 				if items[j].Reading != nil {
 					reading := *items[j].Reading
@@ -1059,6 +1069,7 @@ func prepareTurnPriorityFactsFromMemory(item store.Memory) ([]prepareTurnPriorit
 		stringFromMap(parsed, "storyline"), stringFromMap(parsed, "arc"), stringFromMap(parsed, "plotline"),
 	))
 	for index := range fallbackFacts {
+		fallbackFacts[index].TemporalContext = prepareTurnSourceTemporalContext(temporal, nil)
 		fallbackFacts[index].SpeakerSurface = strings.Join(speakers, " ")
 		fallbackFacts[index].LocationSurface = strings.Join(locations, " ")
 		fallbackFacts[index].StorylineSurface = storyline
@@ -1599,6 +1610,7 @@ func prepareTurnPrioritySummaryID(sourceRef, text string) string {
 
 func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryCandidate) []prepareTurnPriorityTurnSummaryCandidate {
 	bySource := map[string]*prepareTurnPriorityTurnSummaryCandidate{}
+	linkedBySource := map[string][]prepareTurnPriorityMemoryCandidate{}
 	order := []string{}
 	for _, candidate := range resolved {
 		if candidate.SourceTable != "memories" || strings.TrimSpace(candidate.ParentLineText) == "" {
@@ -1607,6 +1619,9 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 		key := strings.TrimSpace(candidate.SourceRef)
 		if key == "" {
 			key = prepareTurnPrioritySourceRef(candidate.SourceTable, candidate.SourceRowID, candidate.ParentLineText)
+		}
+		if candidate.Minimum != nil {
+			linkedBySource[key] = append(linkedBySource[key], candidate)
 		}
 		summary := bySource[key]
 		if summary == nil {
@@ -1649,7 +1664,45 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 	}
 	summaries := make([]prepareTurnPriorityTurnSummaryCandidate, 0, len(order))
 	for _, key := range order {
-		summaries = append(summaries, *bySource[key])
+		summary := bySource[key]
+		// A complete historical summary can win instead of its identical atomic
+		// promise. Preserve the same current/evidence reading in that route too.
+		var form *prepareTurnMemoryForm
+		seen := map[string]bool{}
+		for _, candidate := range linkedBySource[key] {
+			for _, part := range candidate.Minimum.Parts {
+				if !strings.HasPrefix(part.Key, "@lifecycle/") && !strings.HasPrefix(part.Key, "@temporal/") {
+					continue
+				}
+				if form == nil {
+					form = &prepareTurnMemoryForm{Group: candidate.Minimum.Group, Parts: []prepareTurnMemoryFormPart{{Key: "/@summary", Text: summary.CompleteText}}}
+					if summary.Minimum != nil {
+						*form = *summary.Minimum
+						form.Parts = append([]prepareTurnMemoryFormPart(nil), summary.Minimum.Parts...)
+					} else if summary.CompleteText == candidate.CompleteText {
+						*form = *candidate.Minimum
+						form.Parts = append([]prepareTurnMemoryFormPart(nil), candidate.Minimum.Parts...)
+					}
+					for _, existing := range form.Parts {
+						seen[existing.Key] = true
+					}
+				}
+				if !seen[part.Key] {
+					form.Parts = append(form.Parts, part)
+					seen[part.Key] = true
+				}
+			}
+		}
+		if form != nil {
+			lines := make([]string, 0, len(form.Parts))
+			for _, part := range form.Parts {
+				lines = append(lines, part.Text)
+			}
+			form.Text = strings.Join(lines, "\n")
+			form.Chars = len([]rune(form.Text))
+			summary.Minimum = form
+		}
+		summaries = append(summaries, *summary)
 	}
 	sort.SliceStable(summaries, func(i, j int) bool {
 		if summaries[i].FinalScore != summaries[j].FinalScore {
@@ -1732,6 +1785,10 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 	seededParentKeys := map[string]bool{}
 	prepareSource := func(seed prepareTurnPriorityFactSeed) prepareTurnSourceTemplate {
 		fact := seed.Fact
+		observationTurn := seed.SourceTurn
+		if strings.HasSuffix(seed.ProjectionSource, ":field_provenance") {
+			observationTurn = seed.FieldObservationTurn
+		}
 		sourceRef := prepareTurnPrioritySourceRef(seed.SourceTable, seed.SourceRowID, seed.ParentLineKey)
 		entityKey := prepareTurnPriorityEntityKey(fact.EntitySurface, out.PriorityEntityAliases)
 		if fact.MemoryRole == "identity_metadata" {
@@ -1779,12 +1836,12 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 			factIdentity += "\x1f" + sourceRef + "\x1f" + strconv.Itoa(seed.SourceTurn) + "\x1f" + fact.Text
 		}
 		return prepareTurnSourceTemplate{candidate: prepareTurnPriorityMemoryCandidate{
-			SourcePath: fact.SourcePath, Reading: fact.Reading,
+			SourcePath: fact.SourcePath, SourceFieldPath: fact.SourceFieldPath, Reading: fact.Reading,
 			CanonicalFactID: prepareTurnPriorityFactID(factIdentity),
 			CanonicalKey:    identity, SourceTable: seed.SourceTable, SourceRef: sourceRef,
 			SourceRowID: seed.SourceRowID, SourceOccurrence: seed.SourceOccurrence,
 			Lane: seed.Lane, Tier: seed.Tier, CompleteText: fact.Text,
-			SourceTurn: seed.SourceTurn, Importance: importance,
+			SourceTurn: observationTurn, Importance: importance,
 			ContinuityBonus: prepareTurnPriorityContinuityBonus(seed.Lane, seed.SourceTable, fact.Text),
 			SpeakerBias:     speakerBias, LocationBias: locationBias, StorylineBias: storylineBias, StructuredBias: structuredBias,
 			Chars: len([]rune(fact.Text)), Visibility: strings.TrimSpace(seed.Visibility),
@@ -2077,6 +2134,17 @@ func finalizePrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAsse
 
 func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssembly, maxChars, maxItems int, budgetMode string, budgets map[string]int, selection prepareTurnMemorySelectionContext, resolved []prepareTurnPriorityMemoryCandidate, turnSummaries []prepareTurnPriorityTurnSummaryCandidate, superseded []prepareTurnPriorityMemoryCandidate, identityMetadata []prepareTurnPriorityIdentityMetadata) map[string]any {
 	deliveryCap := maxInt(maxChars, 0)
+	bodyCap := out.BodyTrackingBudgetChars
+	deliveryOrder := append([]string(nil), prepareTurnMemoryDeliveryOrder...)
+	if bodyCap > 0 {
+		deliveryOrder = append(deliveryOrder, "body_tracking")
+	}
+	budgetLane := func(candidate prepareTurnPriorityMemoryCandidate) string {
+		if bodyCap > 0 && strings.HasPrefix(candidate.ProjectionSource, "body_tracking:") {
+			return "body_tracking"
+		}
+		return candidate.Lane
+	}
 	if maxItems < 1 {
 		maxItems = 1
 	}
@@ -2092,6 +2160,11 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		multiAgentOrderCandidates(out.Preprocessing, resolved, turnSummaries)
 	}
 	laneCaps, configuredLaneBudgets := prepareTurnPriorityDeliveryCaps(deliveryCap, budgetMode, budgets)
+	// Reserve the measured separator inside the extra budget. Main memory never
+	// borrows this space and body readings never consume the main allocation.
+	if bodyCap > 0 {
+		laneCaps["body_tracking"] = maxInt(bodyCap-2, 0)
+	}
 	laneReservations := map[string]int{}
 	for lane, cap := range laneCaps {
 		laneReservations[lane] = cap
@@ -2151,13 +2224,17 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	}
 	budgetReason := func(lane string, newChars int) (int, string) {
 		delta := newChars - usedByLane[lane]
-		if usedByLane[lane] == 0 && newChars > 0 && usedGlobal > 0 {
+		mainUsed := usedGlobal - usedByLane["body_tracking"]
+		if lane != "body_tracking" && usedByLane[lane] == 0 && newChars > 0 && mainUsed > 0 {
 			delta += 2
 		}
 		if newChars > laneCaps[lane] {
+			if lane == "body_tracking" {
+				return delta, "body_tracking_char_budget_reached"
+			}
 			return delta, "memory_lane_char_budget_reached"
 		}
-		if usedGlobal+delta > deliveryCap {
+		if lane != "body_tracking" && mainUsed+delta > deliveryCap {
 			return delta, "memory_char_budget_reached"
 		}
 		return delta, ""
@@ -2278,7 +2355,9 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		edit := layoutFor(lane).preview(row)
 		newChars := appendedChars(lane, edit.delta, nil)
 		delta, reason := budgetReason(lane, newChars)
-		if reason != "" && out.Preprocessing == nil {
+		// Review-mode budgeting belongs to the request, even when a role keeps
+		// its original recommendation after an unavailable Jev response.
+		if reason != "" && (out.Preprocessing == nil || out.Preprocessing.JevReview != nil || out.Preprocessing.usesJev("event_recent")) {
 			summary.SelectionStatus = "deferred"
 			summary.SelectionReason = reason
 			return
@@ -2301,6 +2380,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	identityMetadataApplied := map[string]bool{}
 	appendFact := func(index int) {
 		candidate := &resolved[index]
+		lane := budgetLane(*candidate)
 		aiSelected := out.Preprocessing.usesAI(candidate.Lane)
 		if !multiAgentWants(out.Preprocessing, candidate.Lane, candidate.CanonicalFactID, false) {
 			candidate.SelectionStatus, candidate.SelectionReason = "deferred", "ai_not_selected"
@@ -2325,7 +2405,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		candidate.RenderedText = prepareTurnMemoryReadingText(*candidate)
 		if candidate.SourceTurn > 0 {
 			candidate.RenderedText = fmt.Sprintf("[source turn %d] %s", candidate.SourceTurn, prepareTurnMemoryReadingText(*candidate))
-			if candidate.SourceTable == "character_states" {
+			if candidate.SourceTable == "character_states" && !strings.HasSuffix(candidate.ProjectionSource, ":field_provenance") {
 				candidate.RenderedText = fmt.Sprintf("[state snapshot turn %d; fields may be older] %s", candidate.SourceTurn, prepareTurnMemoryReadingText(*candidate))
 			}
 		}
@@ -2333,22 +2413,22 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 			candidate.RenderedText = "[" + ref + "] " + candidate.RenderedText
 		}
 		line := "- " + candidate.RenderedText
-		order := rememberLineOrder(candidate.Lane, line)
+		order := rememberLineOrder(lane, line)
 		extraGuidance := guidanceForCandidate(candidate)
 		ref := ""
 		if aiSelected {
 			ref = preprocessingRefs[candidate.CanonicalFactID]
 		}
 		row := prepareTurnMemoryCandidateRow(*candidate, order, ref)
-		edit := layoutFor(candidate.Lane).preview(row)
-		newChars := appendedChars(candidate.Lane, edit.delta, extraGuidance)
-		delta, reason := budgetReason(candidate.Lane, newChars)
-		if reason != "" && out.Preprocessing == nil {
+		edit := layoutFor(lane).preview(row)
+		newChars := appendedChars(lane, edit.delta, extraGuidance)
+		delta, reason := budgetReason(lane, newChars)
+		if reason != "" && (out.Preprocessing == nil || out.Preprocessing.JevReview != nil || out.Preprocessing.usesJev(candidate.Lane) || lane == "body_tracking") {
 			candidate.SelectionStatus = "deferred"
 			candidate.SelectionReason = reason
 			return
 		}
-		if candidate.EntityKey != "" && !identityMetadataApplied[candidate.EntityKey] {
+		if lane != "body_tracking" && candidate.EntityKey != "" && !identityMetadataApplied[candidate.EntityKey] {
 			metadataIndexes := identityMetadataByEntity[candidate.EntityKey]
 			metadataText := []string{}
 			seenMetadata := map[string]bool{}
@@ -2368,12 +2448,12 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 				if candidate.Minimum != nil {
 					enrichedRow.Parts = append(append([]prepareTurnMemoryFormPart(nil), row.Parts...), prepareTurnMemoryFormPart{Key: "identity_metadata", Text: "identity_metadata: " + strings.Join(metadataText, "; ")})
 				}
-				enrichedEdit := layoutFor(candidate.Lane).preview(enrichedRow)
-				enrichedChars := appendedChars(candidate.Lane, enrichedEdit.delta, extraGuidance)
-				enrichedDelta, enrichedReason := budgetReason(candidate.Lane, enrichedChars)
+				enrichedEdit := layoutFor(lane).preview(enrichedRow)
+				enrichedChars := appendedChars(lane, enrichedEdit.delta, extraGuidance)
+				enrichedDelta, enrichedReason := budgetReason(lane, enrichedChars)
 				if enrichedReason == "" {
 					candidate.RenderedText = enrichedText
-					lineOrder[candidate.Lane]["- "+enrichedText] = order
+					lineOrder[lane]["- "+enrichedText] = order
 					candidate.IdentityMetadata = append([]string(nil), metadataText...)
 					line = "- " + enrichedText
 					newChars = enrichedChars
@@ -2389,17 +2469,17 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 			}
 		}
 		if len(extraGuidance) > 0 {
-			guidanceByLane[candidate.Lane] = append(guidanceByLane[candidate.Lane], extraGuidance...)
+			guidanceByLane[lane] = append(guidanceByLane[lane], extraGuidance...)
 			guidanceSourceApplied[candidate.SourceTable] = true
 		}
-		selected[candidate.Lane] = append(selected[candidate.Lane], line)
-		candidate.RenderedText = strings.TrimPrefix(layoutFor(candidate.Lane).apply(edit), "- ")
+		selected[lane] = append(selected[lane], line)
+		candidate.RenderedText = strings.TrimPrefix(layoutFor(lane).apply(edit), "- ")
 		if candidate.Minimum != nil {
 			candidate.DeliveredContextRefs = append([]string(nil), candidate.Minimum.Refs...)
 		}
 		priorityExactKeys[collapseTextKey(candidate.CompleteText)] = true
 		usedGlobal += delta
-		usedByLane[candidate.Lane] = newChars
+		usedByLane[lane] = newChars
 		priorityFactSelected++
 		quotaSelected[candidate.Lane]++
 		candidate.SelectionStatus = "selected"
@@ -2480,7 +2560,9 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	if budgetMode != "custom" {
 		borrowing = true
 		for lane := range laneCaps {
-			laneCaps[lane] = deliveryCap
+			if lane != "body_tracking" {
+				laneCaps[lane] = deliveryCap
+			}
 		}
 		appendAuthority("protected_secret", protectedRemaining, true)
 		selectPriorityItems()
@@ -2504,6 +2586,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 
 	classes := []map[string]any{}
 	parts := []string{}
+	bodyText := ""
 	classEligible := map[string]int{}
 	classDeferred := map[string]int{}
 	classEligible["event_recent"] += len(turnSummaries)
@@ -2513,20 +2596,25 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		}
 	}
 	for _, candidate := range resolved {
-		classEligible[candidate.Lane]++
+		classEligible[budgetLane(candidate)]++
 		if candidate.SelectionStatus != "selected" {
-			classDeferred[candidate.Lane]++
+			classDeferred[budgetLane(candidate)]++
 		}
 	}
 	for _, candidate := range superseded {
-		classEligible[candidate.Lane]++
-		classDeferred[candidate.Lane]++
+		classEligible[budgetLane(candidate)]++
+		classDeferred[budgetLane(candidate)]++
 	}
-	for _, lane := range prepareTurnMemoryDeliveryOrder {
+	for _, lane := range deliveryOrder {
 		text := makePrepareTurnSection("["+prepareTurnMemoryDeliveryTitles[lane]+"]", renderLaneItems(lane, selected[lane], nil))
+		if lane == "body_tracking" {
+			bodyText = text
+		}
 		selectionPolicy := "independent_lane_priority_score"
 		if lane == "direct_evidence" || lane == "protected_secret" {
 			selectionPolicy = "authority_exempt"
+		} else if out.Preprocessing.usesJev(lane) {
+			selectionPolicy = "jev_ranking_with_go_budget"
 		} else if out.Preprocessing.usesAI(lane) {
 			selectionPolicy = "ai_recommendation_order"
 		} else if out.Preprocessing != nil {
@@ -2554,12 +2642,21 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	deliveredContextSeen := map[string]bool{}
 	exclusionReasons := map[string]int{}
 	priorityCandidateChars := 0
+	bodyCandidateChars, bodySelectedCount := 0, 0
 	projectionCounts := map[string]int{}
 	for _, candidate := range resolved {
+		if budgetLane(candidate) == "body_tracking" {
+			bodyCandidateChars += candidate.Chars
+			if candidate.SelectionStatus == "selected" {
+				bodySelectedCount++
+			}
+		}
 		priorityCandidateChars += candidate.Chars
 		projectionCounts[candidate.ProjectionSource]++
 		exposeText := candidate.SourceTable != "protagonist_entity_memories" || candidate.SelectionStatus == "selected"
-		priorityItems = append(priorityItems, prepareTurnPriorityCandidateMap(candidate, exposeText))
+		item := prepareTurnPriorityCandidateMap(candidate, exposeText)
+		item["delivery_lane"] = budgetLane(candidate)
+		priorityItems = append(priorityItems, item)
 		if candidate.SelectionStatus == "selected" {
 			selectedFactIDs = append(selectedFactIDs, candidate.CanonicalFactID)
 			for _, id := range candidate.DeliveredContextRefs {
@@ -2655,12 +2752,14 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	return map[string]any{
 		"contract_version":     prepareTurnPriorityMemoryPlanVersion,
 		"preprocessing":        out.Preprocessing,
-		"budget_overrun_chars": maxInt(len([]rune(finalText))-deliveryCap, 0),
+		"budget_overrun_chars": maxInt(len([]rune(finalText))-deliveryCap-bodyCap, 0),
 		"status":               "ready", "mode": budgetMode, "owner": "go",
 		"score_version":      prepareTurnPriorityMemoryScoreVersion,
 		"score_formula":      "relevance*0.60+importance*0.25+turn_distance_recency*0.15+continuity_bonus+structured_bias",
 		"final_budget_owner": "go_priority_memory_delivery_plan",
-		"global_cap_chars":   maxChars, "delivery_cap_chars": deliveryCap,
+		"global_cap_chars":   maxChars + bodyCap, "delivery_cap_chars": deliveryCap + bodyCap,
+		"main_memory_cap_chars":            maxChars,
+		"body_tracking_budget":             map[string]any{"cap_chars": bodyCap, "used_chars": usedByLane["body_tracking"], "candidate_count": classEligible["body_tracking"], "candidate_chars": maxInt(bodyCandidateChars, usedByLane["body_tracking"]), "selected_count": bodySelectedCount, "final_text": bodyText, "relationship_to_main": "independent_additive_non_borrowing"},
 		"priority_memory_max_items":        maxItems,
 		"priority_candidate_count":         len(turnSummaries) + len(resolved) + len(superseded),
 		"priority_resolved_count":          len(resolved),
@@ -2691,7 +2790,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		"final_delivery_chars":             len([]rune(finalText)),
 		"excluded_count":                   totalCandidateCount - totalSelectedCount,
 		"exclusion_reasons":                exclusionReasons,
-		"used_chars":                       len([]rune(finalText)), "order": prepareTurnMemoryDeliveryOrder,
+		"used_chars":                       len([]rune(finalText)), "order": deliveryOrder,
 		"selection_order":                   "core_round_robin_then_remaining_score_within_character_budgets",
 		"priority_k_semantics":              "core_priority_target_per_group_not_delivery_maximum",
 		"low_score_backfill_after_k":        true,

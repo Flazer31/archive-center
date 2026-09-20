@@ -96,11 +96,17 @@ func finalizeCanonicalStateWriteCost(cost *canonicalStateWriteCostMeasurement) {
 
 func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, turnIndex int, extraction map[string]any, content string, embCfg completeTurnEmbeddingConfig, now time.Time, existingEvidenceArg ...[]store.DirectEvidence) artifactSaveResult {
 	result := artifactSaveResult{EmbeddingStatus: "not_requested", VectorStatus: "not_requested"}
+	extraction = s.captureSourceStoryClock(ctx, sid, turnIndex, extraction, content)
 	var resolved bool
 	extraction, resolved = s.resolveCommittedMemoryAdmissionExtraction(ctx, sid, extraction, &result)
 	if !resolved {
 		return result
 	}
+	observation := mapFromAny(mapFromAny(extraction["temporal_context"])["observed_at"])
+	if len(observation) == 0 {
+		observation = map[string]any{"kind": "source_observation", "story_time": "unknown"}
+	}
+	ctx = context.WithValue(ctx, sourceStoryClockObservationContextKey{}, observation)
 	if len(sliceFromAny(extraction["user_interaction_profile"])) > 0 {
 		extraction["user_interaction_profile"] = []any{}
 		result.addSkipReason("user_interaction_profile", "explicit_host_ooc_observation_required", nil)
@@ -287,8 +293,8 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 		s.savePreciseMemoryUnitsFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	}
 	s.saveSubjectiveEntityMemoriesFromExtraction(ctx, sid, turnIndex, extraction, content, now, &result)
-	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 	s.saveStoryClockFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
+	s.saveNarrativeStateFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 
 	for tripleIndex, item := range sliceFromAny(extraction["kg_triples"]) {
 		triple := mapFromAny(item)
@@ -357,6 +363,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	// provider aliases without sampling the Critic or rewriting canonical memory.
 	characterStateExtraction["character_deltas"] = normalizeCriticCharacterDeltas(extraction["character_deltas"])
 	s.saveCharacterAndStateArtifacts(ctx, sid, turnIndex, characterStateExtraction, content, embCfg, now, &result, existingCanonicalLayers, cost, identityProjection)
+	s.saveBodyTrackingFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
 	s.saveReversibleStatesFromExtraction(ctx, sid, turnIndex, extraction, content, existingEvidence, identityProjection, now, &result)
 	finalizeCanonicalStateWriteCost(cost)
 	if cost.StateWriteCount > 0 {

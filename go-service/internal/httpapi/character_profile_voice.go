@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"strings"
 	"time"
@@ -154,17 +155,20 @@ func (s *Server) saveCharacterProjectionGroup(
 
 	profileChanged := false
 	voiceChanged := false
+	fieldSources := map[string]*store.PreciseMemoryUnit{}
 	for _, candidate := range group.units {
 		switch candidate.class {
 		case "profile", "habit":
 			if profileWritable && !stringSliceContains(stringsFromAny(profile["evidence_fingerprints"]), candidate.fingerprint) {
 				mergeCharacterProfileEvidence(profile, candidate)
 				profileChanged = true
+				fieldSources["/personality/"] = candidate.unit
 			}
 		case "voice":
 			if voiceWritable && !stringSliceContains(stringsFromAny(voice["evidence_fingerprints"]), candidate.fingerprint) {
 				mergeVoiceBehaviorEvidence(voice, candidate)
 				voiceChanged = true
+				fieldSources["/speech_style/"] = candidate.unit
 			}
 		}
 	}
@@ -187,6 +191,24 @@ func (s *Server) saveCharacterProjectionGroup(
 		next.CreatedAt = now
 	}
 	next.UpdatedAt = now
+	next.FieldProvenanceJSON = ""
+	next.FieldProvenanceJSON = store.MergeCharacterStateFieldProvenance(current, next)
+	fields := store.DecodeCharacterFieldProvenance(next.FieldProvenanceJSON)
+	priorValues := store.CharacterStateFieldValues(*current)
+	for path, value := range store.CharacterStateFieldValues(next) {
+		if prior, exists := priorValues[path]; exists && reflect.DeepEqual(prior, value) {
+			continue
+		}
+		for prefix, source := range fieldSources {
+			if strings.HasPrefix(path, prefix) {
+				fields[path]["source_turn"] = source.SourceTurnEnd
+				fields[path]["source_session_id"] = source.ChatSessionID
+				fields[path]["source_revision"] = source.SourceRevision
+				fields[path]["evidence_excerpt"] = source.EvidenceExcerpt
+			}
+		}
+	}
+	next.FieldProvenanceJSON = mustCompactJSON(map[string]any{"contract_version": store.CharacterFieldProvenanceContract, "fields": fields})
 	result.Attempted++
 	if err := saver.SaveCharacterState(ctx, &next); err != nil {
 		result.Errors++

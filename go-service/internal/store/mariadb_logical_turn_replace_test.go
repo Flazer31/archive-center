@@ -90,6 +90,7 @@ func TestMariaDBReplaceLogicalTurnAtomicallyReplacesCanonicalTail(t *testing.T) 
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	expectNarrativePendingSnapshots46(mock, "session-1")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs("session-1", 3, "user text", created).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -190,6 +191,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedImmediateTail(t *testing.T) {
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-1").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	expectNarrativePendingSnapshots46(mock, "session-1")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs("session-1", 15, "user text", created).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -225,6 +227,7 @@ func TestMariaDBReplaceLogicalTurnRecreatesDeletedFirstTurnInEmptySession(t *tes
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs("session-empty").
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	expectNarrativePendingSnapshots46(mock, "session-empty")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs("session-empty", 1, "first user", created).
 		WillReturnResult(sqlmock.NewResult(1, 1))
@@ -266,6 +269,7 @@ func TestMariaDBRollbackCanonicalTailIsAtomicAndIdempotent(t *testing.T) {
 		mock.ExpectExec("(?s)INSERT INTO status_current_values.*JOIN memory_source_revisions source_revision.*source_revision.lifecycle_state = 'active'.*NOT EXISTS").
 			WithArgs("session-1").
 			WillReturnResult(sqlmock.NewResult(0, 0))
+		expectNarrativePendingSnapshots46(mock, "session-1")
 		mock.ExpectCommit()
 	}
 

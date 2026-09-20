@@ -122,6 +122,149 @@ func TestPrepareTurnProductionProjectionExposesVectorRecallQueryDiagnostics(t *t
 	}
 }
 
+func TestPrepareTurnCompactQueryTextIsSharedWithoutChangingDelivery(t *testing.T) {
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+	events := make([]map[string]any, 100)
+	for i := range events {
+		events[i] = map[string]any{"event": fmt.Sprintf("Mina returned archive permit %04d to district keeper %04d.", i, i), "visibility": "public"}
+	}
+	summary, err := json.Marshal(map[string]any{"turn_summary": "Mina completed the archive permit returns.", "narrative_events": events})
+	if err != nil {
+		t.Fatal(err)
+	}
+	query := "Mina returns to the archive and remembers the permits. " + strings.Repeat("The keeper examines the archive permits before proceeding to the next shelf. ", 500)
+	request := map[string]any{
+		"chat_session_id": "compact-query-regression", "raw_user_input": query,
+		"client_meta": map[string]any{"chroma_query_vector": []float32{1, 0}},
+		"settings":    map[string]any{"top_k": 1, "guide_strength": "none", "max_injection_chars": 4500},
+	}
+	run := func(compact bool) (*httptest.ResponseRecorder, map[string]any) {
+		t.Helper()
+		srv := setupTestServer()
+		srv.Store = &prepareTurnPerfRangeStore{turnRecordingStore: &turnRecordingStore{}, memoryTurn: 25, memorySummary: string(summary)}
+		srv.Vector = &prepareTurnPerfVectorStore{turnRecordingVectorStore: &turnRecordingVectorStore{}, results: []vector.VectorDocument{{
+			ID: "memory:compact-query-regression:25", ChatSessionID: "compact-query-regression", SourceTable: "memories", SourceRowID: "25",
+			Similarity: 0.91, SimilarityAvailable: true, SimilaritySource: "cosine_from_query_and_stored_embedding", DocumentText: "Mina completed the archive permit returns.",
+		}}}
+		srv.Cfg.ChromaEndpoint = "http://configured.invalid"
+		if compact {
+			request["response_projection"] = prepareTurnProductionProjectionV1
+		}
+		body, err := json.Marshal(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return prepareTurnPerfRequest(t, srv, string(body))
+	}
+	_, legacy := run(false)
+	compactRec, compact := run(true)
+	if compact["response_projection"] != prepareTurnProductionProjectionV1 {
+		t.Fatal("compact response branch not exercised")
+	}
+	legacyPlan := mapFromAny(mapFromAny(legacy["injection_pack"])["memory_delivery_plan"])
+	compactPlan := mapFromAny(mapFromAny(compact["injection_pack"])["memory_delivery_plan"])
+	catalog := mapFromAny(compactPlan["recall_query_texts"])
+	if len(catalog) != 1 {
+		t.Fatalf("one shared query expected, got %d entries", len(catalog))
+	}
+	compactItems := prepareTurnMemoryLineageSlice(compactPlan["priority_items"])
+	legacyItems := prepareTurnMemoryLineageSlice(legacyPlan["priority_items"])
+	if len(compactItems) < len(events) || len(compactItems) != len(legacyItems) {
+		t.Fatalf("candidate coverage changed: compact=%d legacy=%d events=%d", len(compactItems), len(legacyItems), len(events))
+	}
+	compactBytes, _ := json.Marshal(compactPlan)
+	legacyBytes, _ := json.Marshal(legacyPlan)
+	observed := 0
+	for i, raw := range compactItems {
+		legacyQueries := prepareTurnMemoryLineageSlice(mapFromAny(mapFromAny(legacyItems[i])["score_lineage"])["recall_queries"])
+		for j, rawObservation := range prepareTurnMemoryLineageSlice(mapFromAny(mapFromAny(raw)["score_lineage"])["recall_queries"]) {
+			observation := mapFromAny(rawObservation)
+			if _, exists := observation["query"]; exists {
+				t.Fatal("query text was repeated inside a compact candidate")
+			}
+			ref := extractionStringFromAny(observation["query_ref"])
+			if ref == "" || j >= len(legacyQueries) || catalog[ref] != mapFromAny(legacyQueries[j])["query"] {
+				t.Fatal("compact query reference lost exact original text")
+			}
+			// Re-expand only in this assertion to compare every existing diagnostic.
+			observation["query"] = catalog[ref]
+			delete(observation, "query_ref")
+			observed++
+		}
+		if !reflect.DeepEqual(raw, legacyItems[i]) {
+			t.Fatalf("candidate %d changed beyond query representation", i)
+		}
+	}
+	if observed < len(events) || len(legacyBytes)-len(compactBytes) < (observed-len(catalog))*len(query)/2 {
+		t.Fatalf("query amplification remains: legacy=%d compact=%d observations=%d", len(legacyBytes), len(compactBytes), observed)
+	}
+	for _, key := range []string{"final_text", "final_text_sha256", "rendering_hash", "selected_fact_ids", "selected_turn_summary_ids", "classes", "used_chars", "delivery_cap_chars", "exclusion_reasons", "turn_summary_items", "preprocessing"} {
+		if !reflect.DeepEqual(compactPlan[key], legacyPlan[key]) {
+			t.Fatalf("delivery plan %s changed", key)
+		}
+	}
+	if !reflect.DeepEqual(compact["payload_application_plan"], legacy["payload_application_plan"]) {
+		t.Fatal("wire compaction changed the Host application plan")
+	}
+	t.Logf("compact response bytes=%d; memory plan bytes before=%d after=%d; query bytes=%d repeated observations=%d; delivered chars=%v", compactRec.Body.Len(), len(legacyBytes), len(compactBytes), len(query), observed, compactPlan["used_chars"])
+}
+
+func TestCompactPrepareTurnMemoryQueryTextPreservesObservations(t *testing.T) {
+	queries := []any{
+		map[string]any{"query": "  예전 약속\n그 뒤의 이야기 🌙", "source": "current", "query_index": 0, "rank": 1, "similarity": 0.9},
+		map[string]any{"query": "  예전 약속\n그 뒤의 이야기 🌙", "source": "recent", "query_index": 2, "rank": 7, "similarity": 0.6},
+		map[string]any{"query": "different query", "source": "recent", "query_index": 3, "similarity_observed": false},
+		map[string]any{"source": "unobserved", "rank": 4},
+		nil,
+	}
+	plan := map[string]any{
+		"final_text": "Unchanged memory.", "preprocessing": map[string]any{"status": "disabled"},
+		"priority_items": []map[string]any{
+			{"canonical_fact_id": "first", "score_lineage": map[string]any{"recall_queries": queries}},
+			{"canonical_fact_id": "second", "score_lineage": map[string]any{"recall_queries": queries}},
+			{"canonical_fact_id": "without_observations"},
+		},
+	}
+	before, _ := json.Marshal(plan)
+	compact := compactPrepareTurnMemoryQueryText(plan)
+	after, _ := json.Marshal(plan)
+	if !bytes.Equal(before, after) {
+		t.Fatal("response projection mutated the internal memory plan")
+	}
+	catalog := mapFromAny(compact["recall_query_texts"])
+	if len(catalog) != 2 {
+		t.Fatalf("shared text catalog has %d entries, want distinct query texts only", len(catalog))
+	}
+	once, _ := json.Marshal(compact)
+	twice, _ := json.Marshal(compactPrepareTurnMemoryQueryText(compact))
+	if !bytes.Equal(once, twice) {
+		t.Fatal("projecting a compact plan twice changed its references")
+	}
+	for _, raw := range prepareTurnMemoryLineageSlice(compact["priority_items"]) {
+		for _, observation := range prepareTurnMemoryLineageSlice(mapFromAny(mapFromAny(raw)["score_lineage"])["recall_queries"]) {
+			item := mapFromAny(observation)
+			if ref, ok := item["query_ref"].(string); ok {
+				text, present := catalog[ref]
+				if !present {
+					t.Fatal("dangling query text reference")
+				}
+				item["query"] = text
+				delete(item, "query_ref")
+			}
+		}
+	}
+	delete(compact, "recall_query_texts")
+	restored, _ := json.Marshal(compact)
+	if !bytes.Equal(before, restored) {
+		t.Fatal("query text reference expansion changed the original diagnostics")
+	}
+	for _, empty := range []map[string]any{nil, {}, {"priority_items": []any{nil, map[string]any{"score_lineage": map[string]any{"recall_queries": []any{nil}}}}}} {
+		if !reflect.DeepEqual(compactPrepareTurnMemoryQueryText(empty), empty) {
+			t.Fatal("empty or unobserved diagnostics changed")
+		}
+	}
+}
+
 func TestPrepareTurnMemoryRecallPlanKeepsUnobservedRequirementsUnobserved(t *testing.T) {
 	for _, tc := range []struct {
 		name     string

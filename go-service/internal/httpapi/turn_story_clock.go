@@ -21,6 +21,82 @@ const (
 	storyClockOwnerID         = "current"
 )
 
+type sourceStoryClockObservationContextKey struct{}
+
+// Capture source-time metadata before admission freezes its extraction. Replay
+// subsequently replaces this proposal with the exact committed source result.
+func (s *Server) captureSourceStoryClock(ctx context.Context, sid string, turnIndex int, extraction map[string]any, content string) map[string]any {
+	out := make(map[string]any, len(extraction)+1)
+	for key, value := range extraction {
+		out[key] = value
+	}
+	temporal := storyClockJSONMap(mapFromAny(extraction["temporal_context"]))
+	unknown := map[string]any{"kind": "source_observation", "story_time": "unknown"}
+	if source, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok && s != nil && s.Store != nil {
+		if reader, ok := s.Store.(store.SourceRevisionStore); ok && source.Revision != "" {
+			if stored, err := reader.GetSourceRevision(ctx, sid, source.Revision); err == nil {
+				if _, frozen, _ := storedMemoryAdmissionExtraction(stored); frozen {
+					return out
+				}
+			}
+		}
+	}
+	if s == nil || s.Store == nil || turnIndex <= 0 {
+		if _, explicit := temporal["observed_at"]; !explicit {
+			temporal["observed_at"] = unknown
+		}
+		out["temporal_context"] = temporal
+		return out
+	}
+	if memories, err := s.Store.ListMemories(ctx, sid, turnIndex, turnIndex); err == nil {
+		for _, memory := range memories {
+			if memory.ChatSessionID == sid && memory.TurnIndex == turnIndex && memory.ID > 0 {
+				stored := storyClockJSONMap(mapFromAny(parseJSONMap(memory.SummaryJSON)["temporal_context"]))
+				if len(stored) == 0 {
+					stored["observed_at"] = unknown
+				}
+				out["temporal_context"] = stored
+				return out
+			}
+		}
+	}
+	observation := unknown
+	if reader, ok := s.Store.(store.StatusCurrentValueStore); ok {
+		values, err := reader.ListStatusCurrentValues(ctx, sid, storyClockOwnerScope, storyClockOwnerID, storyClockStatusKey, 1)
+		if err == nil {
+			previous := storyClockCurrentValue(values)
+			clock := map[string]any{}
+			basis := "last_confirmed_clock"
+			if previous.SourceTurn <= turnIndex {
+				clock = parseJSONMap(previous.ValueJSON)
+			} else {
+				// A later global clock cannot date an earlier source. Its own
+				// explicit date still can; only relative borrowing loses anchor.
+				previous = store.StatusCurrentValue{}
+			}
+			if _, accepted := storyClockSourceMetadata(ctx, sid, turnIndex, content); accepted {
+				if proposal := normalizeStoryClockProposal(extraction["story_clock"]); len(proposal) > 0 {
+					if resolved, _ := storyClockResolvedCurrent(proposal, previous); len(resolved) > 0 {
+						clock, basis = resolved, "accepted_source_proposal"
+					}
+				}
+			}
+			if len(clock) > 0 {
+				captured := storyClockPromptProjection(clock)
+				if calendar, exists := clock["calendar"]; exists {
+					captured["calendar"] = calendar
+				}
+				observation = map[string]any{"kind": "source_observation", "story_clock": captured, "resolution_source": basis}
+			}
+		}
+	}
+	if _, explicit := temporal["observed_at"]; !explicit {
+		temporal["observed_at"] = observation
+	}
+	out["temporal_context"] = temporal
+	return out
+}
+
 var (
 	storyClockObservationKinds = map[string]bool{
 		"absolute": true, "partial": true, "relative": true, "bounded_range": true, "unknown": true,
@@ -104,6 +180,11 @@ func validateStoryClockProposal(value any) error {
 	switch kind {
 	case "absolute":
 		absolute := mapFromAny(raw["absolute"])
+		if len(mapFromAny(raw["calendar"])) > 0 {
+			// Fictional labels and explicit day coordinates stay in their own
+			// calendar. They do not require an invented Gregorian equivalent.
+			break
+		}
 		if strings.TrimSpace(extractionStringFromAny(absolute["date"])) == "" &&
 			strings.TrimSpace(extractionStringFromAny(absolute["datetime"])) == "" {
 			return errors.New("critic schema field story_clock.absolute requires date or datetime")
@@ -164,6 +245,9 @@ func validateStoryClockProposal(value any) error {
 		}
 		startTime, _, startOK := parseStoryClockAbsolute(start)
 		endTime, _, endOK := parseStoryClockAbsolute(end)
+		if len(mapFromAny(start["calendar"])) > 0 || len(mapFromAny(end["calendar"])) > 0 {
+			break
+		}
 		if !startOK || !endOK {
 			return errors.New("critic schema field story_clock.range bounds must use valid ISO dates or RFC3339 datetimes")
 		}
@@ -260,7 +344,7 @@ func normalizeStoryClockProposal(value any) map[string]any {
 		"evidence_excerpt": strings.TrimSpace(extractionStringFromAny(raw["evidence_excerpt"])),
 		"transition":       transition,
 	}
-	for _, key := range []string{"absolute", "partial", "relative", "range", "sequence", "duration"} {
+	for _, key := range []string{"absolute", "partial", "relative", "range", "sequence", "duration", "calendar"} {
 		if nested := mapFromAny(raw[key]); len(nested) > 0 {
 			out[key] = storyClockJSONMap(nested)
 		}
@@ -472,6 +556,28 @@ func unresolvedRelativeStoryClock(proposal map[string]any) map[string]any {
 }
 
 func resolveRelativeStoryClock(anchor, proposal map[string]any) (map[string]any, bool) {
+	relative := mapFromAny(proposal["relative"])
+	customCalendar := len(mapFromAny(anchor["calendar"])) > 0 || len(mapFromAny(mapFromAny(mapFromAny(anchor["range"])["start"])["calendar"])) > 0
+	if customCalendar && relative["anchor"] == "story_clock.current" {
+		sourceRelative := storyClockJSONMap(relative)
+		sourceRelative["anchor"] = "source_observation"
+		resolved := storyTimeRelative(anchor, sourceRelative)
+		if len(resolved) == 0 {
+			return nil, false
+		}
+		out := storyClockJSONMap(proposal)
+		out["observation_kind"], out["precision"] = "absolute", "exact"
+		if resolved["range"] != nil {
+			out["observation_kind"], out["precision"] = "bounded_range", "bounded_range"
+		}
+		for key, value := range resolved {
+			out[key] = value
+		}
+		out["source_observation_kind"] = "relative"
+		delete(out, "relative")
+		out["resolved_from"] = map[string]any{"anchor_source_turn": previousSourceTurn(anchor), "anchor": "story_clock.current", "relative": relative}
+		return out, true
+	}
 	if strings.TrimSpace(extractionStringFromAny(anchor["observation_kind"])) != "absolute" {
 		return nil, false
 	}
@@ -480,7 +586,6 @@ func resolveRelativeStoryClock(anchor, proposal map[string]any) (map[string]any,
 	if !ok {
 		return nil, false
 	}
-	relative := mapFromAny(proposal["relative"])
 	if strings.TrimSpace(extractionStringFromAny(relative["anchor"])) != "story_clock.current" {
 		return nil, false
 	}
@@ -541,7 +646,7 @@ func storyClockAbsoluteForTime(value time.Time, layoutKind, unit string) (map[st
 	absolute := map[string]any{}
 	switch layoutKind {
 	case "datetime":
-		absolute["datetime"] = value.Format(time.RFC3339)
+		absolute["datetime"] = value.Format(time.RFC3339Nano)
 	case "date_time":
 		absolute["date"] = value.Format("2006-01-02")
 		absolute["time"] = value.Format("15:04:05")

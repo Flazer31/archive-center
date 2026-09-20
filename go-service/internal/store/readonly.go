@@ -242,6 +242,14 @@ func (r *readOnlyStore) GetCharacterState(ctx context.Context, chatSessionID, ch
 	return r.delegate.GetCharacterState(ctx, chatSessionID, characterName)
 }
 
+func (r *readOnlyStore) ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error) {
+	reader, ok := r.delegate.(CharacterStateHistoryStore)
+	if !ok {
+		return nil, ErrNotEnabled
+	}
+	return reader.ListCharacterStateHistory(ctx, chatSessionID, characterName, limit, offset)
+}
+
 // ListPendingThreads delegates to the underlying store.
 func (r *readOnlyStore) ListPendingThreads(ctx context.Context, chatSessionID, status string) ([]PendingThread, error) {
 	return r.delegate.ListPendingThreads(ctx, chatSessionID, status)

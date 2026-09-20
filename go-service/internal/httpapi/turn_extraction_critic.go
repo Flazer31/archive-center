@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"log/slog"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 )
 
 var (
+	criticLanguageMarkupPattern      = regexp.MustCompile(`<[^>]*>`)
 	criticAuthorizationSecretPattern = regexp.MustCompile(`(?i)(authorization\s*[:=]\s*)(?:bearer\s+)?[^\s,;}\]]+`)
 	criticBearerSecretPattern        = regexp.MustCompile(`(?i)\bbearer\s+[a-z0-9._~+/=-]+`)
 	criticJSONSecretPattern          = regexp.MustCompile(`(?i)("(?:x-api-key|api[_-]?key|password|client_secret|access_token|refresh_token)"\s*:\s*)"[^"]*"`)
@@ -313,7 +315,7 @@ func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid
 	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{})
 }
 
-func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any) map[string]any {
+func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any, assistantContent ...string) map[string]any {
 	languageContext := normalizeCompleteTurnLanguageContext(raw)
 	if languageContext == nil {
 		languageContext = map[string]any{
@@ -324,6 +326,47 @@ func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any) ma
 	}
 
 	observed := strings.ToLower(strings.TrimSpace(extractionStringFromAny(languageContext["assistant_output_language"])))
+	// The accepted final prose is the language authority, including canonical-log
+	// rescans and snapshot replay. Host metadata can be absent or stale; it must
+	// not turn Japanese output into Korean memory. This observes language only:
+	// it never rewrites evidence or rejects a turn or an extracted field.
+	if len(assistantContent) > 0 {
+		text := html.UnescapeString(criticLanguageMarkupPattern.ReplaceAllString(assistantContent[0], " "))
+		var hangul, kana, han, latin int
+		for _, r := range text {
+			switch {
+			case unicode.In(r, unicode.Hangul):
+				hangul++
+			case unicode.In(r, unicode.Hiragana, unicode.Katakana):
+				kana++
+			case unicode.In(r, unicode.Han):
+				han++
+			case (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z'):
+				latin++
+			}
+		}
+		if kana > 0 {
+			kana += han
+		}
+		scores := []struct {
+			code  string
+			count int
+		}{{"ko", hangul}, {"ja", kana}, {"en", latin}}
+		slices.SortStableFunc(scores, func(a, b struct {
+			code  string
+			count int
+		}) int {
+			return b.count - a.count
+		})
+		observed = "unknown"
+		if scores[0].count > 0 {
+			observed = scores[0].code
+			if float64(scores[0].count) < max(8, float64(scores[1].count)*2.5) &&
+				float64(scores[1].count) >= max(8, float64(scores[0].count)*0.35) {
+				observed = "mixed"
+			}
+		}
+	}
 	effective := "auto"
 	source := "assistant_output_unknown"
 	confidence := float64(0)
@@ -424,7 +467,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 		criticAssistantContent = snapshot.AssistantContent
 		criticContextMessages = snapshot.ContextMessages
 		selectedActiveWorldRules = snapshot.ActiveWorldRules
-		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(snapshot.LanguageContext)
+		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(snapshot.LanguageContext, criticAssistantContent)
 		criticArchiveLedgerPromptInput = cloneMapAny(snapshot.ArchiveLedger)
 		if criticArchiveLedgerPromptInput != nil {
 			ledgerLanguage := cloneMapAny(mapFromAny(criticArchiveLedgerPromptInput["language"]))
@@ -458,7 +501,7 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			"prompt_hash_match": true,
 		}
 	} else {
-		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(languageContext)
+		languageContext = completeTurnCriticLanguageContextFromAssistantOutput(languageContext, criticAssistantContent)
 		criticContextMessages = sanitizeContextMessagesForCriticInput(contextMessages)
 		contextSelectionTrace = map[string]any{"mode": "host_context", "host_messages_used": len(criticContextMessages)}
 		relevantMemoryContext := []map[string]any{}
@@ -466,6 +509,30 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			criticContextMessages, relevantMemoryContext, contextSelectionTrace = s.buildCompleteTurnCriticCanonicalContext(ctx, sid, turnIndex, criticUserInput+"\n"+criticAssistantContent, len(criticContextMessages))
 		}
 		criticArchiveLedgerPromptInput, criticArchiveLedgerTrace = s.buildCompleteTurnCriticArchiveLedgerInput(ctx, sid, turnIndex, criticAssistantContent, extractionStringFromAny(languageContext["session_output_language"]))
+		nameQuery := criticUserInput + "\n" + criticAssistantContent
+		for index, message := range criticContextMessages {
+			if stringFromMap(message, "source") == "previous_canonical_turn" ||
+				(!canonicalChatLogs && index >= len(criticContextMessages)-2) {
+				nameQuery += "\n" + stringFromMap(message, "content")
+			}
+		}
+		characterNames, nameTrace := s.buildCompleteTurnCriticCharacterNames(ctx, sid, turnIndex, nameQuery)
+		criticArchiveLedgerTrace["character_names"] = nameTrace
+		if len(characterNames) > 0 {
+			if criticArchiveLedgerPromptInput == nil {
+				criticArchiveLedgerPromptInput = map[string]any{"language": map[string]any{
+					"assistant_final_language": extractionStringFromAny(languageContext["session_output_language"]),
+					"source":                   "request_assistant_final_language", "override_applied": false,
+				}}
+			}
+			criticArchiveLedgerPromptInput["character_names"] = characterNames
+		}
+		if bodyContext := s.bodyTrackingCriticContext(ctx, sid); len(bodyContext) > 0 {
+			if criticArchiveLedgerPromptInput == nil {
+				criticArchiveLedgerPromptInput = map[string]any{}
+			}
+			criticArchiveLedgerPromptInput["body_tracking"] = bodyContext
+		}
 		activeWorldRules, activeTrace := s.buildCompleteTurnActiveWorldRuleInput(ctx, sid)
 		activeWorldRuleTrace = activeTrace
 		selectedActiveWorldRules = activeWorldRules
@@ -489,6 +556,18 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 			}
 			activeWorldRuleTrace["selected_count"] = len(selectedActiveWorldRules)
 		} else {
+			// Host-context callers retain their existing context policy. The new
+			// name support still uses the same whole-item auxiliary budget owner.
+			if len(characterNames) > 0 {
+				_, nameLedger, nameSelection := applyCompleteTurnCriticAuxiliaryBudget(nil, nil,
+					map[string]any{"character_names": characterNames, "language": criticArchiveLedgerPromptInput["language"]},
+					nil, nameQuery, inputPolicy)
+				delete(criticArchiveLedgerPromptInput, "character_names")
+				if selectedNames := sliceFromAny(nameLedger["character_names"]); len(selectedNames) > 0 {
+					criticArchiveLedgerPromptInput["character_names"] = selectedNames
+				}
+				criticArchiveLedgerTrace["character_name_selection"] = nameSelection
+			}
 			if len(relevantMemoryContext) > 0 {
 				if criticArchiveLedgerPromptInput == nil {
 					criticArchiveLedgerPromptInput = map[string]any{}
@@ -1097,6 +1176,99 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 	return contextMessages, relevantMemories, trace
 }
 
+// Name support reuses the active identity catalog and its reviewed-link read
+// projection. Lexical overlap selects reference candidates only: it never adds
+// an alias, merges identities, or changes the completed-turn write contract.
+func (s *Server) buildCompleteTurnCriticCharacterNames(ctx context.Context, sid string, turnIndex int, query string) ([]any, map[string]any) {
+	trace := map[string]any{"status": "empty", "candidate_count": 0}
+	catalog, err := s.characterIdentityCatalogForSession(ctx, sid)
+	if err != nil {
+		trace["status"] = "unavailable"
+		trace["reason"] = err.Error()
+		return nil, trace
+	}
+	// Read the prior-turn catalog, including when an old turn is rerolled.
+	// Reprocessing with a saved input bypasses this read and reuses that input.
+	for id, identity := range catalog.Identities {
+		if turnIndex > 0 && identity.SourceTurn >= turnIndex {
+			delete(catalog.Identities, id)
+		}
+	}
+	surfaces := catalog.Surfaces[:0]
+	for _, surface := range catalog.Surfaces {
+		if turnIndex > 0 && surface.SourceTurn >= turnIndex {
+			continue
+		}
+		surfaces = append(surfaces, surface)
+	}
+	catalog.Surfaces = surfaces
+	links := catalog.Links[:0]
+	for _, link := range catalog.Links {
+		if turnIndex > 0 && intFromAny(parseJSONMap(link.EvidenceJSON)["source_turn"], 0) >= turnIndex {
+			continue
+		}
+		links = append(links, link)
+	}
+	catalog.Links = links
+	canonical := s.characterCanonicalSurfaceMapForRead(ctx, sid, catalog)
+	byID := map[string]map[string]any{}
+	for id, identity := range catalog.Identities {
+		name := firstNonEmpty(canonical[comparableEntityKey(identity.CanonicalLabel)], identity.CanonicalLabel)
+		if strings.TrimSpace(name) == "" {
+			continue
+		}
+		byID[id] = map[string]any{"entity_id": id, "identity_namespace": identity.IdentityNamespace, "name": name, "aliases": []string{}}
+		if identity.CanonicalLabel != name {
+			byID[id]["aliases"] = []string{identity.CanonicalLabel}
+		}
+	}
+	for _, surface := range catalog.Surfaces {
+		if item := byID[surface.StableEntityID]; item != nil && strings.TrimSpace(surface.SurfaceText) != "" && surface.SurfaceText != stringFromMap(item, "name") {
+			item["aliases"] = appendUniqueString(stringsFromAny(item["aliases"]), surface.SurfaceText)
+		}
+	}
+	ids := make([]string, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	slices.SortFunc(ids, func(a, b string) int {
+		if order := strings.Compare(stringFromMap(byID[a], "name"), stringFromMap(byID[b], "name")); order != 0 {
+			return order
+		}
+		return strings.Compare(a, b)
+	})
+	// Short names must not disappear merely because they are the shortest
+	// words in this sentence; keep the existing recall term forms unranked.
+	terms := prepareTurnRecallTerms(query)
+	selected := []any{}
+	for _, id := range ids {
+		item := byID[id]
+		name := stringFromMap(item, "name")
+		aliases := stringsFromAny(item["aliases"])
+		slices.Sort(aliases)
+		item["aliases"] = aliases
+		related := false
+		for _, surface := range append([]string{name}, aliases...) {
+			if prepareTurnPrioritySurfaceMatches(query, surface) {
+				related = true
+			}
+			// A short reference can retrieve a full-name candidate without
+			// inventing a surname split or asserting that it is a known alias.
+			for _, term := range terms {
+				if prepareTurnRecallContainsAnchor(surface, term) {
+					related = true
+				}
+			}
+		}
+		if related {
+			selected = append(selected, item)
+		}
+	}
+	trace["status"] = "ready"
+	trace["candidate_count"] = len(selected)
+	return selected, trace
+}
+
 func applyCompleteTurnCriticAuxiliaryBudget(
 	contextMessages []map[string]any,
 	relevantMemories []map[string]any,
@@ -1140,11 +1312,22 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 	delete(ledgerBase, "items")
 	delete(ledgerBase, "relevant_turn_memories")
 	delete(ledgerBase, "active_world_rules")
+	characterNames := sliceFromAny(ledgerBase["character_names"])
+	delete(ledgerBase, "character_names")
 
 	candidates := []completeTurnCriticAuxiliaryCandidate{}
 	excluded := []map[string]any{}
 	order := 0
 	pairAdded := map[int]bool{}
+	if len(characterNames) > 0 {
+		// Keep the related name set together so budget selection cannot turn
+		// a shared alias into an apparently unique person by dropping its peer.
+		candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+			Kind: "character_names", ID: "related_characters", Order: order,
+			Value: map[string]any{"entries": characterNames},
+		})
+		order++
+	}
 	for _, memory := range relevantMemories {
 		turn := intFromAny(memory["turn_index"], 0)
 		summary := stringFromMap(memory, "summary")
@@ -1204,6 +1387,12 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 	}
 
 	slices.SortStableFunc(candidates, func(a, b completeTurnCriticAuxiliaryCandidate) int {
+		if (a.Kind == "character_names") != (b.Kind == "character_names") {
+			if a.Kind == "character_names" {
+				return -1
+			}
+			return 1
+		}
 		aRelevant := a.Relevance > 0
 		bRelevant := b.Relevance > 0
 		if aRelevant != bRelevant {
@@ -1238,11 +1427,12 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 	selectedMemories := []map[string]any{}
 	selectedLedgerItems := []any{}
 	selectedWorldRules := []map[string]any{}
+	selectedCharacterNames := []any{}
 	selectedMemoryTurns := map[int]bool{}
 	selected := []map[string]any{}
 	truncated := []map[string]any{}
 	buildLedger := func() map[string]any {
-		if len(selectedLedgerItems) == 0 && len(selectedMemories) == 0 && len(selectedWorldRules) == 0 {
+		if len(selectedLedgerItems) == 0 && len(selectedMemories) == 0 && len(selectedWorldRules) == 0 && len(selectedCharacterNames) == 0 && len(mapFromAny(ledgerBase["body_tracking"])) == 0 {
 			return nil
 		}
 		out := cloneMapAny(ledgerBase)
@@ -1250,6 +1440,9 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 			out = map[string]any{}
 		}
 		out["items"] = append([]any(nil), selectedLedgerItems...)
+		if len(selectedCharacterNames) > 0 {
+			out["character_names"] = selectedCharacterNames
+		}
 		if len(selectedMemories) > 0 {
 			items := make([]any, 0, len(selectedMemories))
 			for _, item := range selectedMemories {
@@ -1293,6 +1486,8 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 		}
 		before := used
 		switch candidate.Kind {
+		case "character_names":
+			selectedCharacterNames = sliceFromAny(candidate.Value["entries"])
 		case "relevant_memory":
 			selectedMemories = append(selectedMemories, candidate.Value)
 		case "relevant_memory_source_turn":
@@ -1306,6 +1501,8 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 		if used > budget {
 			attemptedChars := used - before
 			switch candidate.Kind {
+			case "character_names":
+				selectedCharacterNames = nil
 			case "relevant_memory":
 				selectedMemories = selectedMemories[:len(selectedMemories)-1]
 			case "relevant_memory_source_turn":
@@ -1475,6 +1672,7 @@ func buildCompleteTurnCriticPrompt(sid string, turnIndex int, userInput string, 
 }
 
 func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int, userInput string, assistantContent string, contextMessages []map[string]any, _ *map[string]any, languageContext map[string]any, archiveLedger ...map[string]any) string {
+	languageContext = completeTurnCriticLanguageContextFromAssistantOutput(languageContext, assistantContent)
 	ctx, _ := json.Marshal(contextMessages)
 	langCtx, _ := json.Marshal(normalizeCompleteTurnLanguageContext(languageContext))
 	var ledgerInput any
@@ -1494,6 +1692,12 @@ func buildCompleteTurnCriticPromptWithLanguageContext(sid string, turnIndex int,
 		fmt.Sprintf("input_mode: %s", inputMode),
 		fmt.Sprintf("user_input_state: %s", userInputState),
 		"When input_mode is assistant_only, extract only claims grounded in the assistant output. Do not invent missing user actions or dialogue. Keep every independently valid extracted item even when another field has no grounded item.",
+		"<Memory_Generation_Language>",
+		fmt.Sprintf("Observed final assistant prose language: %s. Use this language for EVERY generated natural-language value, not only turn_summary.", extractionStringFromAny(languageContext["summary_language"])),
+		"The completed [Assistant] prose determines memory language. User-input language, UI/preset settings, earlier turns and retained-memory language do not select it. If the observation is auto, identify the language from that completed prose itself instead of choosing a language from settings or support material.",
+		"This includes character_deltas status/action/behavior/condition, entity and relationship descriptions, voice_observations speech principles, profiles, subjective memories, beliefs, events, states, threads and rules. Rephrase supported input/context facts in this language; do not copy foreign-language prose into generated values.",
+		"Preserve exact evidence, source-bound copies, names and quotes; keep keys, enums, IDs and numbers stable. Retain every grounded item and its meaning.",
+		"</Memory_Generation_Language>",
 		"",
 		"<Latest_Turn>",
 		"[User]",
@@ -1923,7 +2127,7 @@ func validateCriticExtractionSchema(raw map[string]any) (map[string]any, map[str
 				out[field] = append(sliceFromAny(out[field]), text)
 				recognizedPayload = true
 			}
-		case "kg_triples", "character_deltas", "pending_threads", "speaker_attributions", "world_rules", "reversible_states",
+		case "kg_triples", "character_deltas", "pending_threads", "speaker_attributions", "world_rules", "reversible_states", "body_events",
 			"physical_conditions", "entity_conditions", "narrative_events", "state_claims", "belief_updates",
 			"subjective_entity_memories", "protected_secrets", "character_identity_accuracy", "persona_capsule_candidates",
 			"interaction_events", "relationship_observations", "interaction_boundaries", "habit_observations",
@@ -2346,13 +2550,19 @@ func criticObjectiveItemConflictsWithPerspectiveClaim(item map[string]any, claim
 		stringFromMap(item, "evidence"),
 		stringFromMap(item, "source_excerpt"),
 	))
-	encoded, _ := json.Marshal(item)
+	// A citation can support both an objective event and a character's reaction.
+	// Compare the claimed content, not the shared source quotation.
+	content := make(map[string]any, len(item))
+	for key, value := range item {
+		switch key {
+		case "evidence_excerpt", "evidence_excerpts", "evidence", "source_excerpt":
+			continue
+		}
+		content[key] = value
+	}
+	encoded, _ := json.Marshal(content)
 	text := strings.TrimSpace(string(encoded))
 	for _, protected := range claims {
-		if evidence != "" && protected.evidence != "" &&
-			normalizeArtifactDedupeText(evidence) == normalizeArtifactDedupeText(protected.evidence) {
-			return true
-		}
 		if protected.claim != "" &&
 			criticProtectedClaimSupported(protected.claim, text, protected.owner) {
 			return true
@@ -2560,6 +2770,9 @@ func normalizeCriticExtraction(raw map[string]any) map[string]any {
 	out["state_deltas"] = mapFromAny(raw["state_deltas"])
 	out["world_rules"] = sliceFromAny(raw["world_rules"])
 	out["reversible_states"] = sliceFromAny(raw["reversible_states"])
+	if _, exists := raw["body_events"]; exists {
+		out["body_events"] = sliceFromAny(raw["body_events"])
+	}
 	out["physical_conditions"] = sliceFromAny(raw["physical_conditions"])
 	out["entity_conditions"] = sliceFromAny(raw["entity_conditions"])
 	out["narrative_events"] = sliceFromAny(raw["narrative_events"])
@@ -2763,6 +2976,9 @@ func criticDirectEvidenceExcerpts(extraction map[string]any, userInput, assistan
 	}
 	if clock := mapFromAny(extraction["story_clock"]); len(clock) > 0 {
 		add(stringFromMap(clock, "evidence_excerpt"))
+	}
+	for _, raw := range sliceFromAny(extraction["body_events"]) {
+		add(stringFromMap(mapFromAny(raw), "evidence_excerpt"))
 	}
 	return out
 }

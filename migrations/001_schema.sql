@@ -388,6 +388,7 @@ CREATE TABLE IF NOT EXISTS character_states (
     status_json     JSON,
     relationships_json JSON,
     speech_style_json JSON,
+    field_provenance_json JSON NULL,
     turn_index      INT,
     created_at      DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) NOT NULL,
     updated_at      DATETIME(3)     DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) NOT NULL,

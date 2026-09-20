@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.5.0
+//@display-name Archive Center 4.6.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.5.0
+//@version 4.6.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.5.0";
+  const VERSION = "4.6.0";
   const BUILD_ID = VERSION;
   const BUILD_CHANNEL = "stable";
-  const BUILD_TIME = "2026-09-10 KST";
-  const BUILD_NOTES = "Archive Center 4.5.0 stable: context-preserving memory, shared reading text, reliable turn preparation and detailed diagnostics";
+  const BUILD_TIME = "2026-09-21 KST";
+  const BUILD_NOTES = "Archive Center 4.6.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -594,6 +594,7 @@
       "dash.preview.payloadBudget.final": "최종",
       "dash.preview.payloadBudget.excluded": "제외",
       "dash.preview.payloadBudget.lane.long_term_memory": "일반 기억",
+      "dash.preview.payloadBudget.lane.body_tracking": "신체 상태 · 추가 예산",
       "dash.preview.payloadBudget.lane.original_work": "원작 DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "로어북",
       "dash.preview.payloadBudget.lane.output_guidance": "출판사 안내",
@@ -2105,6 +2106,7 @@
       "dash.preview.payloadBudget.final": "Final",
       "dash.preview.payloadBudget.excluded": "Excluded",
       "dash.preview.payloadBudget.lane.long_term_memory": "Memory",
+      "dash.preview.payloadBudget.lane.body_tracking": "Body state · additional budget",
       "dash.preview.payloadBudget.lane.original_work": "Original-work DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "Lorebook",
       "dash.preview.payloadBudget.lane.output_guidance": "Publisher guidance",
@@ -3369,6 +3371,7 @@
       "dash.preview.payloadBudget.final": "最終",
       "dash.preview.payloadBudget.excluded": "除外",
       "dash.preview.payloadBudget.lane.long_term_memory": "一般記憶",
+      "dash.preview.payloadBudget.lane.body_tracking": "身体状態 · 追加予算",
       "dash.preview.payloadBudget.lane.original_work": "原作DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "ロアブック",
       "dash.preview.payloadBudget.lane.output_guidance": "パブリッシャー案内",
@@ -14778,8 +14781,8 @@
           return `<td style="${cellStyle};color:${turnWorkflowHUDStageStatusColor(status)}" title="${escapeTurnWorkflowHUDHTML(detail)}">`
             + (status === "succeeded" || status === "running" ? "" : `<span style="display:block;font-size:9px">${escapeTurnWorkflowHUDHTML(badge)}</span>`) + `<span style="white-space:nowrap">${time}</span></td>`;
         }).join("");
-        const selection = role.selection_source ? t("turn_hud.preprocessing.selection." + role.selection_source) : "";
-        const selectionLabel = role.selection_source === "ai" ? "AI" : role.selection_source === "go_default" ? "Go" : "—";
+        const selection = ["jev", "jev_review"].includes(role.selection_source) ? "최종 기억 선택 · Jev 우선순위" : role.selection_source ? t("turn_hud.preprocessing.selection." + role.selection_source) : "";
+        const selectionLabel = ["jev", "jev_review"].includes(role.selection_source) ? "Jev" : role.selection_source === "ai" ? "AI" : role.selection_source === "go_default" ? "Go" : "—";
         return `<tr><th scope="row" title="${escapeTurnWorkflowHUDHTML(label + " · " + t("turn_hud.preprocessing.total") + " " + duration(role.duration_ms))}" style="${cellStyle};text-align:left;font-weight:400;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeTurnWorkflowHUDHTML(label)}</th>`
           + cells + `<td style="${cellStyle};color:#BBC3CF" title="${escapeTurnWorkflowHUDHTML(selection)}">${selectionLabel}</td></tr>`;
       }).join("") + `</tbody></table>`;
@@ -14824,6 +14827,21 @@
       });
       html += `</div>`;
       const assembly = backendTiming.memory_assembly;
+      if (assembly && assembly.jev) {
+        const jev = assembly.jev;
+        const review = jev.review;
+        html += '<details style="margin-top:8px"><summary>Jev · ' + (jev.mode === 'jev_review' ? '검증' : '주력') + ' · ' + escapeTurnWorkflowHUDHTML(String(jev.calls || 0)) + '회 · 입력 ' + escapeTurnWorkflowHUDHTML(String(jev.input_tokens || 0)) + ' tokens</summary>';
+        if (review) {
+          html += '<div style="padding:6px">' + escapeTurnWorkflowHUDHTML('검증 ' + duration(review.duration_ms) + ' · ' + ((review.items || []).some(item => item.application === 'ranked') ? '검증 순위를 Go 선별에 적용했습니다. 아래에 최종 전달 여부를 표시합니다.' : '순위 응답 없음 · 기존 선별을 유지했습니다.')) + '</div>';
+          const labels = {supported:'근거 일치', inference:'가능한 추론', contradicted:'근거와 충돌', unknown:'판단 자료 부족', current:'현재 적용', historical:'과거 기록', mixed:'과거·현재 구분 필요', public:'공유 지식', owner_scoped:'인물 개인 지식·믿음', narrator_only:'서술자·모형 정보'};
+          for (const item of (review.items || [])) {
+            const findings = ['support','time','knowledge'].map(key => { const answer = (item.answers || {})[key]; return answer ? labels[answer.choice] || answer.choice : '검토 미완료'; });
+            html += '<div style="padding:4px 6px;overflow-wrap:anywhere">' + escapeTurnWorkflowHUDHTML((item.ref || item.id) + ' · ' + findings.join(' / ') + ' · ' + (item.delivery_status === 'delivered' ? '조립 입력에 포함' : item.delivery_status === 'not_delivered' ? '이번 입력 미선택 · ' + (item.delivery_reason || '') : item.application === 'ranked' ? '선별 순위 반영' : '기존 선택 유지')) + '</div>';
+          }
+          for (const call of (review.calls || [])) if (call.error) html += '<div>' + escapeTurnWorkflowHUDHTML(call.error) + '</div>';
+        }
+        html += '</details>';
+      }
       if (assembly && assembly.stages_ms) {
         html += `<details style="margin-top:6px"><summary style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE};cursor:pointer">${escapeTurnWorkflowHUDHTML(t("turn_hud.timing.memoryAssemblyDetails"))}</summary>`;
         html += `<div style="${TURN_WORKFLOW_HUD_STAGE_META_STYLE};padding:5px">${escapeTurnWorkflowHUDHTML(t("turn_hud.timing.memoryAssemblyNote"))}</div>`;
@@ -24315,7 +24333,7 @@
 		});
       }
       appliedPlanLanes.forEach(function(lane) {
-		if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes) && String(lane.key || "") === "long_term_memory") return;
+		if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes) && ["long_term_memory", "body_tracking"].includes(String(lane.key || ""))) return;
         const title = lane.key === "preprocessing_notes" ? t('dash.preview.payloadBudget.lane.preprocessing_notes') : String(lane.title || lane.key || "Auxiliary Context");
         parts.push(renderItBlock(title, String(lane.text || ""), false));
       });
@@ -46878,53 +46896,68 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0B0D11}
 .mo-model-grid .mo-field label{font-size:11px;color:#8B909A}
 .mo-model-grid .mo-field input{background:#181C24;border:1px solid rgba(255,255,255,.07);color:#F4F5F7;padding:6px 9px;border-radius:12px;font-size:12px;width:100%}
 .mo-model-grid .mo-field input:focus{border-color:#8FA7FF;outline:none}
-#mo-memory-preprocessing-root{display:flex;flex-direction:column;gap:16px;max-width:1180px;width:100%;margin:22px auto 0;font-size:13px;line-height:1.6;min-width:0;color:var(--mo-text);color-scheme:dark}
-#mo-memory-preprocessing-root .mo-ma-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}
-#mo-memory-preprocessing-root h3{font-size:22px;line-height:1.35;font-weight:650;letter-spacing:-.025em}
-#mo-memory-preprocessing-root h4{font-size:13px;font-weight:600}
-#mo-memory-preprocessing-root .mo-ma-copy{color:var(--mo-muted);font-size:12px;line-height:1.65;margin-top:6px}
-#mo-memory-preprocessing-root .mo-ma-eyebrow{font-size:10px;letter-spacing:.08em;color:var(--mo-blue-soft);margin-bottom:6px}
-#mo-memory-preprocessing-root .mo-ma-check{display:flex;align-items:center;gap:9px;cursor:pointer;font-size:12px;width:fit-content;max-width:100%}
-#mo-memory-preprocessing-root input[type=checkbox]{width:16px;height:16px;flex:0 0 16px;accent-color:var(--mo-blue)}
-#mo-memory-preprocessing-root .mo-ma-enable{padding:10px 14px;border:1px solid var(--mo-line);border-radius:10px;background:var(--mo-float);white-space:nowrap;margin-top:4px}
-#mo-memory-preprocessing-root .mo-ma-flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--mo-bg-soft);border:1px solid var(--mo-line);border-radius:12px;color:var(--mo-muted);font-size:11px}
-#mo-memory-preprocessing-root .mo-ma-flow b{font-weight:500;color:var(--mo-text)}
-#mo-memory-preprocessing-root .mo-ma-role{min-width:0;border:1px solid var(--mo-line);border-radius:14px;background:var(--mo-card);overflow:hidden}
-#mo-memory-preprocessing-root .mo-ma-role>summary{display:flex;align-items:center;gap:12px;cursor:pointer;list-style:none;padding:16px 20px}
-#mo-memory-preprocessing-root summary::-webkit-details-marker{display:none}
-#mo-memory-preprocessing-root .mo-ma-role>summary:after{content:"⌄";font-size:18px;color:var(--mo-muted);margin-left:4px}
-#mo-memory-preprocessing-root .mo-ma-role[open]>summary:after{transform:rotate(180deg)}
-#mo-memory-preprocessing-root .mo-ma-role[open]>summary{border-bottom:1px solid var(--mo-line)}
-#mo-memory-preprocessing-root .mo-ma-number{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#181E2B;color:var(--mo-blue-soft);font-size:11px;font-weight:600}
-#mo-memory-preprocessing-root .mo-ma-role-title{font-size:13px;font-weight:600;min-width:0;overflow-wrap:anywhere}
-#mo-memory-preprocessing-root .mo-ma-connection{margin-left:auto;font-size:11px;color:var(--mo-muted);text-align:right;overflow-wrap:anywhere;max-width:42%}
-#mo-memory-preprocessing-root .mo-ma-role-body{display:flex;flex-direction:column;gap:20px;padding:20px}
-#mo-memory-preprocessing-root .mo-ma-role-toolbar{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
-#mo-memory-preprocessing-root .mo-ma-editor{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:28px;align-items:start}
-#mo-memory-preprocessing-root .mo-ma-editor>section{min-width:0}
-#mo-memory-preprocessing-root fieldset{border:0;min-width:0;margin-top:12px;display:grid;gap:12px}
-#mo-memory-preprocessing-root .mo-ma-inherited{display:flex;flex-direction:column;gap:6px;padding:16px;margin-top:16px;border:1px solid var(--mo-line);border-radius:10px;background:var(--mo-bg-soft);overflow-wrap:anywhere}
-#mo-memory-preprocessing-root .mo-ma-inherited span{font-size:11px;color:var(--mo-muted)}
-#mo-memory-preprocessing-root .mo-ma-inherited strong{font-size:13px;font-weight:500}
-#mo-memory-preprocessing-root .mo-row{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:6px;min-width:0;padding:0}
-#mo-memory-preprocessing-root .mo-row>label{font-size:11px;color:var(--mo-muted);width:auto;min-width:0;margin:0;line-height:1.5}
-#mo-memory-preprocessing-root .mo-row input,#mo-memory-preprocessing-root .mo-row textarea,#mo-memory-preprocessing-root .mo-row select{display:block;width:100%;min-width:0;max-width:100%;background:var(--mo-float);border:1px solid var(--mo-line);border-radius:9px;color:var(--mo-text);font:inherit;font-size:12px;padding:10px 12px}
-#mo-memory-preprocessing-root .mo-ma-generation{display:grid;gap:12px;margin-top:18px;padding-top:16px;border-top:1px solid var(--mo-line)}
-#mo-memory-preprocessing-root .mo-row textarea{min-height:270px;resize:vertical;line-height:1.8}
-#mo-memory-preprocessing-root fieldset:disabled{opacity:.6}
-#mo-memory-preprocessing-root .mo-ma-prompt-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
-#mo-memory-preprocessing-root .mo-ma-prompt-head .mo-btn{min-height:30px;padding:5px 10px;font-size:11px}
-#mo-memory-preprocessing-root .mo-ma-advanced{border-top:1px solid var(--mo-line);padding-top:14px}
-#mo-memory-preprocessing-root .mo-ma-advanced>summary,#mo-memory-preprocessing-root .mo-ma-help>summary{cursor:pointer;font-size:12px;color:var(--mo-muted);list-style-position:inside}
-#mo-memory-preprocessing-root .mo-ma-advanced-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;padding-top:14px}
-#mo-memory-preprocessing-root .mo-ma-help{padding:16px 20px;border:1px solid var(--mo-line);border-radius:12px;background:var(--mo-bg-soft);min-width:0}
-#mo-memory-preprocessing-root .mo-ma-help .mo-row{max-width:340px;margin-top:14px}
-#mo-memory-preprocessing-root .mo-ma-help .mo-ma-shared-editor{max-width:none}
-#mo-memory-preprocessing-root pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:12px;line-height:1.8;color:var(--mo-muted);margin-top:14px;max-height:380px;overflow:auto}
-#mo-memory-preprocessing-root .mo-ma-savebar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:14px 18px;background:var(--mo-bg-soft);border:1px solid var(--mo-line);border-radius:12px}
-#mo-memory-preprocessing-root #mo-ma-status{font-size:12px;color:var(--mo-blue-soft);overflow-wrap:anywhere}
-#mo-memory-preprocessing-root [hidden]{display:none}
-@media(max-width:760px){#mo-memory-preprocessing-root .mo-ma-heading{flex-direction:column;gap:12px}#mo-memory-preprocessing-root .mo-ma-editor{grid-template-columns:1fr;gap:24px}#mo-memory-preprocessing-root .mo-ma-advanced-grid{grid-template-columns:repeat(2,minmax(0,1fr))}#mo-memory-preprocessing-root .mo-ma-role>summary{padding:14px;gap:9px}#mo-memory-preprocessing-root .mo-ma-role-body{padding:16px}#mo-memory-preprocessing-root .mo-ma-connection{max-width:30%;font-size:10px}#mo-memory-preprocessing-root h3{font-size:20px}#mo-memory-preprocessing-root .mo-row textarea{min-height:240px}}
+#mo-body-tracking-root{max-width:1100px;margin:22px auto;display:flex;flex-direction:column;gap:16px;color:var(--mo-text);font-size:13px;line-height:1.6}
+#mo-body-tracking-root h3{font-size:22px}#mo-body-tracking-root h4{margin-top:14px}
+#mo-body-tracking-root .mo-body-character{border:1px solid var(--mo-line);border-radius:12px;background:var(--mo-card)}
+#mo-body-tracking-root summary{padding:14px 18px;cursor:pointer}#mo-body-tracking-root .mo-body-card{padding:0 18px 18px}
+#mo-body-tracking-root .mo-body-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px 20px;margin:16px 0}
+#mo-body-tracking-root .mo-row{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;align-items:stretch;gap:6px;padding:0;min-width:0;min-height:0}
+#mo-body-tracking-root .mo-row label{display:block;flex:none;width:auto;min-width:0;margin:0;color:var(--mo-muted);overflow-wrap:anywhere}
+#mo-body-tracking-root .mo-row input,#mo-body-tracking-root .mo-row select{display:block;flex:none;width:100%;max-width:100%;height:42px;box-sizing:border-box;min-width:0;background:var(--mo-float);color:var(--mo-text);border:1px solid var(--mo-line);border-radius:8px;padding:9px 11px;font:inherit;font-size:13px;line-height:1.4}
+#mo-body-tracking-root .mo-body-toggles{display:flex;gap:18px;flex-wrap:wrap;margin:12px 0}#mo-body-tracking-root .mo-body-check{display:flex;gap:8px;align-items:center;cursor:pointer}
+#mo-body-tracking-root input[type=checkbox]{width:16px;height:16px;accent-color:var(--mo-blue)}#mo-body-tracking-root .mo-body-advanced{border-top:1px solid var(--mo-line);margin-top:14px}
+#mo-body-tracking-root .mo-body-estimate{display:grid;gap:8px;margin-top:10px}#mo-body-tracking-root .mo-body-estimate>div{display:flex;justify-content:space-between;gap:18px}#mo-body-tracking-root dd{margin:0;text-align:right}
+#mo-body-tracking-root .mo-body-estimate dt,#mo-body-tracking-root .mo-body-estimate dd{min-width:0;overflow-wrap:anywhere}#mo-body-tracking-root .mo-body-estimate dd{flex:1}#mo-body-tracking-root .mo-body-evidence{margin:8px 0;padding:10px 14px;border-left:3px solid var(--mo-line);white-space:pre-wrap;overflow-wrap:anywhere}
+#mo-body-tracking-root .mo-body-save{display:flex;align-items:center;justify-content:space-between;gap:18px;flex-wrap:wrap;padding:16px;background:var(--mo-bg-soft);border-radius:10px}
+#mo-body-tracking-root [hidden]{display:none}@media(max-width:640px){#mo-body-tracking-root .mo-body-grid{grid-template-columns:1fr}#mo-body-tracking-root .mo-body-estimate>div{flex-direction:column;gap:2px}#mo-body-tracking-root dd{text-align:left}}
+.mo-memory-feature{display:flex;flex-direction:column;gap:16px;max-width:1180px;width:100%;margin:22px auto 0;font-size:13px;line-height:1.6;min-width:0;color:var(--mo-text);color-scheme:dark}
+.mo-memory-feature .mo-ma-heading{display:flex;align-items:flex-start;justify-content:space-between;gap:24px}
+.mo-memory-feature h3{font-size:22px;line-height:1.35;font-weight:650;letter-spacing:-.025em}
+.mo-memory-feature h4{font-size:13px;font-weight:600}
+.mo-memory-feature .mo-ma-copy{color:var(--mo-muted);font-size:12px;line-height:1.65;margin-top:6px}
+.mo-memory-feature .mo-ma-eyebrow{font-size:10px;letter-spacing:.08em;color:var(--mo-blue-soft);margin-bottom:6px}
+.mo-memory-feature .mo-ma-check{display:flex;align-items:center;gap:9px;cursor:pointer;font-size:12px;width:fit-content;max-width:100%}
+.mo-memory-feature input[type=checkbox]{width:16px;height:16px;flex:0 0 16px;accent-color:var(--mo-blue)}
+.mo-memory-feature .mo-ma-enable{padding:10px 14px;border:1px solid var(--mo-line);border-radius:10px;background:var(--mo-float);white-space:nowrap;margin-top:4px}
+.mo-memory-feature .mo-ma-flow{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px 16px;background:var(--mo-bg-soft);border:1px solid var(--mo-line);border-radius:12px;color:var(--mo-muted);font-size:11px}
+.mo-memory-feature .mo-ma-flow b{font-weight:500;color:var(--mo-text)}
+.mo-memory-feature .mo-ma-role{min-width:0;border:1px solid var(--mo-line);border-radius:14px;background:var(--mo-card);overflow:hidden}
+.mo-memory-feature .mo-ma-role>summary{display:flex;align-items:center;gap:12px;cursor:pointer;list-style:none;padding:16px 20px}
+.mo-memory-feature summary::-webkit-details-marker{display:none}
+.mo-memory-feature .mo-ma-role>summary:after{content:"⌄";font-size:18px;color:var(--mo-muted);margin-left:4px}
+.mo-memory-feature .mo-ma-role[open]>summary:after{transform:rotate(180deg)}
+.mo-memory-feature .mo-ma-role[open]>summary{border-bottom:1px solid var(--mo-line)}
+.mo-memory-feature .mo-ma-number{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#181E2B;color:var(--mo-blue-soft);font-size:11px;font-weight:600}
+.mo-memory-feature .mo-ma-role-title{font-size:13px;font-weight:600;min-width:0;overflow-wrap:anywhere}
+.mo-memory-feature .mo-ma-connection{margin-left:auto;font-size:11px;color:var(--mo-muted);text-align:right;overflow-wrap:anywhere;max-width:42%}
+.mo-memory-feature .mo-ma-role-body{display:flex;flex-direction:column;gap:20px;padding:20px}
+.mo-memory-feature .mo-ma-role-toolbar{display:flex;gap:20px;align-items:center;flex-wrap:wrap}
+.mo-memory-feature .mo-ma-editor{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.2fr);gap:28px;align-items:start}
+.mo-memory-feature .mo-ma-editor>section{min-width:0}
+.mo-memory-feature fieldset{border:0;min-width:0;margin-top:12px;display:grid;gap:12px}
+.mo-memory-feature .mo-ma-inherited{display:flex;flex-direction:column;gap:6px;padding:16px;margin-top:16px;border:1px solid var(--mo-line);border-radius:10px;background:var(--mo-bg-soft);overflow-wrap:anywhere}
+.mo-memory-feature .mo-ma-inherited span{font-size:11px;color:var(--mo-muted)}
+.mo-memory-feature .mo-ma-inherited strong{font-size:13px;font-weight:500}
+.mo-memory-feature .mo-row{display:grid;grid-template-columns:minmax(0,1fr);align-content:start;gap:6px;min-width:0;padding:0}
+.mo-memory-feature .mo-row>label{font-size:11px;color:var(--mo-muted);width:auto;min-width:0;margin:0;line-height:1.5}
+.mo-memory-feature .mo-row input,.mo-memory-feature .mo-row textarea,.mo-memory-feature .mo-row select{display:block;width:100%;min-width:0;max-width:100%;background:var(--mo-float);border:1px solid var(--mo-line);border-radius:9px;color:var(--mo-text);font:inherit;font-size:12px;padding:10px 12px}
+.mo-memory-feature .mo-ma-generation{display:grid;gap:12px;margin-top:18px;padding-top:16px;border-top:1px solid var(--mo-line)}
+.mo-memory-feature .mo-row textarea{min-height:270px;resize:vertical;line-height:1.8}
+#mo-jev-root .mo-jev-criteria{display:grid;gap:12px}#mo-jev-root .mo-jev-criteria textarea{min-height:90px}
+.mo-memory-feature fieldset:disabled{opacity:.6}
+.mo-memory-feature .mo-ma-prompt-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}
+.mo-memory-feature .mo-ma-prompt-head .mo-btn{min-height:30px;padding:5px 10px;font-size:11px}
+.mo-memory-feature .mo-ma-advanced{border-top:1px solid var(--mo-line);padding-top:14px}
+.mo-memory-feature .mo-ma-advanced>summary,.mo-memory-feature .mo-ma-help>summary{cursor:pointer;font-size:12px;color:var(--mo-muted);list-style-position:inside}
+.mo-memory-feature .mo-ma-advanced-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;padding-top:14px}
+.mo-memory-feature .mo-ma-help{padding:16px 20px;border:1px solid var(--mo-line);border-radius:12px;background:var(--mo-bg-soft);min-width:0}
+.mo-memory-feature .mo-ma-help .mo-row{max-width:340px;margin-top:14px}
+.mo-memory-feature .mo-ma-help .mo-ma-shared-editor{max-width:none}
+.mo-memory-feature pre{white-space:pre-wrap;overflow-wrap:anywhere;font:inherit;font-size:12px;line-height:1.8;color:var(--mo-muted);margin-top:14px;max-height:380px;overflow:auto}
+.mo-memory-feature .mo-ma-savebar{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:14px 18px;background:var(--mo-bg-soft);border:1px solid var(--mo-line);border-radius:12px}
+.mo-memory-feature #mo-ma-status{font-size:12px;color:var(--mo-blue-soft);overflow-wrap:anywhere}
+.mo-memory-feature [hidden]{display:none}
+@media(max-width:760px){.mo-memory-feature .mo-ma-heading{flex-direction:column;gap:12px}.mo-memory-feature .mo-ma-editor{grid-template-columns:1fr;gap:24px}.mo-memory-feature .mo-ma-advanced-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.mo-memory-feature .mo-ma-role>summary{padding:14px;gap:9px}.mo-memory-feature .mo-ma-role-body{padding:16px}.mo-memory-feature .mo-ma-connection{max-width:30%;font-size:10px}.mo-memory-feature h3{font-size:20px}.mo-memory-feature .mo-row textarea{min-height:240px}}
 .mo-dash{display:flex;flex-direction:column;gap:10px}
 .mo-dash-row{display:flex;align-items:center;gap:10px;min-height:30px;font-size:12px}
 .mo-dot{width:8px;height:8px;border-radius:50%;flex-shrink:0}
@@ -51677,6 +51710,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         + '<p class="mo-ma-copy">다섯 담당에 사용할 모델·API와 역할 프롬프트를 각각 지정하세요.<br>담당별로 서로 다른 AI를 사용할 수 있으며, 공통 지침도 직접 편집할 수 있습니다.</p></div>'
         + '<label class="mo-ma-check mo-ma-enable"><input id="mo-ma-enabled" type="checkbox"' + (config.enabled ? ' checked' : '') + '> 전처리 사용</label></div>'
         + '<div class="mo-ma-flow"><span>현재 입력·최근 대화</span><span aria-hidden="true">→</span><b>담당별 기억 검토</b><span aria-hidden="true">→</span><span>출판사 서사 가이드</span></div>'
+        + '<p class="mo-ma-copy">Jev는 추가 기능 → Jev에서 별도로 켜고 설정합니다. 전처리를 꺼도 Jev를 사용할 수 있습니다.</p>'
         + view.role_order.map((role, index) => {
           const c = config.roles[role];
           return '<details class="mo-ma-role"' + (index === 0 ? ' open' : '') + '><summary><span class="mo-ma-number">' + String(index + 1).padStart(2, '0') + '</span>'
@@ -51795,6 +51829,339 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         }
       });
     } catch (err) { root.textContent = '전처리 설정을 불러오지 못했습니다. 설정 → 일반의 Backend URL과 백엔드 실행 상태를 확인하세요.'; warnLog('preprocessing settings unavailable:', err && err.message || err); }
+  }
+
+  // Independent host settings page; Go still derives the effective mode.
+  async function loadJevPanel() {
+    const root = document.getElementById('mo-jev-root');
+    if (!root) return;
+    try {
+      const view = await bridgeFetch('/config/memory-preprocessing');
+      if (document.getElementById('mo-jev-root') !== root) return;
+      const config = view.settings, jev = config.jev || {};
+      const prompts = view.jev_prompts || [];
+      const field = (key, label, type = 'text') => '<div class="mo-row"><label for="mo-jev-' + key + '">' + escapeAttr(label) + '</label><input id="mo-jev-' + key + '" type="' + type + '" autocomplete="off" value="' + escapeAttr(key === 'api_key' ? '' : jev[key] || '') + '"></div>';
+      const promptField = (id, label, value) => '<div class="mo-row"><label for="' + escapeAttr(id) + '">' + escapeAttr(label) + '</label><textarea id="' + escapeAttr(id) + '" spellcheck="false">' + escapeAttr(value) + '</textarea></div>';
+      root.innerHTML = '<div class="mo-ma-heading"><div><div class="mo-ma-eyebrow">기억 준비 · 독립 선택 기능</div><h3>Jev</h3>'
+        + '<p class="mo-ma-copy">전처리를 꺼도 Jev만 사용할 수 있습니다.<br>전처리와 함께 켜면 전처리 결과를 검증합니다.</p></div>'
+        + '<label class="mo-ma-check mo-ma-enable"><input id="mo-jev-enabled" type="checkbox"' + (jev.enabled ? ' checked' : '') + '> Jev 사용</label></div>'
+        + '<section class="mo-ma-help"><h4>동작 방식</h4><p class="mo-ma-copy">저장된 전처리 설정: <strong>' + (config.enabled ? 'ON' : 'OFF') + '</strong></p>'
+        + '<p id="mo-jev-mode" aria-live="polite"></p><div class="mo-ma-editor" style="margin-top:16px">'
+        + ['01','11'].map(key => { const mode = (view.mode_views || {})[key] || {}; return '<section><h4>' + escapeAttr(mode.label || '') + '</h4><p class="mo-ma-copy">' + escapeAttr(key === '01' ? '전처리 OFF · Jev ON' : '전처리 ON · Jev ON') + '</p><p class="mo-ma-copy">' + escapeAttr(mode.description || '') + '</p></section>'; }).join('')
+        + '</div><button type="button" class="mo-btn" id="mo-jev-open-preprocessing" style="margin-top:16px">전처리 설정으로 이동</button></section>'
+        + '<section class="mo-ma-help"><h4>Jev 연결 설정</h4><div class="mo-ma-editor"><section>'
+        + field('endpoint', 'Endpoint · 전체 호출 URL') + field('model', 'Model') + '</section><section>' + field('api_key', 'API Key', 'password')
+        + '<p class="mo-ma-copy">' + (jev.api_key_set ? '저장된 키가 있습니다. 빈칸은 기존 키를 유지합니다.' : '키는 Go 서버에 저장됩니다.') + '</p>'
+        + '<label class="mo-ma-check"><input id="mo-jev-clear-key" type="checkbox"> 저장된 키 삭제</label></section></div>'
+        + '<div class="mo-inline-actions"><button type="button" class="mo-btn" id="mo-jev-test">연결 테스트</button><span id="mo-jev-test-result" role="status" aria-live="polite"></span></div>'
+        + '<p class="mo-ma-copy">연결 테스트는 짧은 가상 자료를 전송하며 API 사용량이 발생합니다. 입력한 설정을 저장하거나 기능을 켜지는 않습니다.</p></section>'
+        + '<section class="mo-ma-help"><h4>질문 프롬프트</h4><p class="mo-ma-copy">질문과 판단 기준을 수정할 수 있습니다. 각 질문의 용도와 선택지 의미를 유지하며 조정하세요. 빈칸은 기본값을 사용합니다. 복원 후에도 아래 저장 버튼을 눌러야 적용됩니다.</p>'
+        + '<p class="mo-ma-copy">{item}은 검토할 기억, {role_focus}는 해당 분야의 관심사항으로 자동 치환됩니다. 검증 모드는 관련성 순위를 실제 선별에 반영하고 근거·시점·인지 범위 해석을 함께 전달합니다. 원본 기억과 신체 상태 계산은 Go가 관리합니다.</p></section>'
+        + prompts.map(({effective: p}, i) => '<details class="mo-ma-role mo-jev-prompt" id="mo-jev-prompt-' + escapeAttr(p.key) + '"><summary><span class="mo-ma-number">' + String(i + 1).padStart(2, '0') + '</span><span class="mo-ma-role-title">' + escapeAttr(p.label) + '</span><span class="mo-ma-connection">' + escapeAttr(p.mode) + '</span></summary><div class="mo-ma-role-body">'
+          + '<div class="mo-ma-prompt-head"><h4>' + escapeAttr(p.label) + '</h4><button type="button" class="mo-btn mo-btn-ghost" id="mo-jev-' + escapeAttr(p.key) + '-restore">기본값 복원</button></div><div class="mo-ma-editor"><section>'
+          + promptField('mo-jev-' + p.key + '-instructions', '질문 지침', p.instructions) + '</section><section class="mo-jev-criteria"><h4>' + (p.type === 'score' ? '점수별 판단 기준 · 0 낮음 → 3 높음' : '선택지별 판단 기준') + '</h4>'
+          + p.criteria.map(c => promptField('mo-jev-' + p.key + '-criterion-' + c.key, c.key, c.text)).join('') + '</section></div></div></details>').join('')
+        + '<div class="mo-ma-savebar"><div><strong>Jev 설정</strong><p id="mo-jev-status" class="mo-ma-copy" role="status" aria-live="polite">전처리 설정과 별도로 저장합니다.</p></div><button type="button" class="mo-btn mo-btn-primary" id="mo-jev-save">Jev 설정 저장</button></div>';
+      const draft = (includePrompts = false) => {
+        const value = {enabled: root.querySelector('#mo-jev-enabled').checked, endpoint: root.querySelector('#mo-jev-endpoint').value.trim(), model: root.querySelector('#mo-jev-model').value.trim()};
+        const key = root.querySelector('#mo-jev-api_key').value.trim();
+        if (root.querySelector('#mo-jev-clear-key').checked) value.api_key = '';
+        else if (key) value.api_key = key;
+        if (includePrompts && prompts.length) value.prompts = Object.fromEntries(prompts.map(({effective: p}) => [p.key, {
+          instructions: root.querySelector('#mo-jev-' + p.key + '-instructions').value,
+          criteria: Object.fromEntries(p.criteria.map(c => [c.key, root.querySelector('#mo-jev-' + p.key + '-criterion-' + c.key).value]))
+        }]));
+        return value;
+      };
+      prompts.forEach(({defaults: p}) => root.querySelector('#mo-jev-' + p.key + '-restore').addEventListener('click', () => {
+        root.querySelector('#mo-jev-' + p.key + '-instructions').value = p.instructions;
+        p.criteria.forEach(c => { root.querySelector('#mo-jev-' + p.key + '-criterion-' + c.key).value = c.text; });
+        root.querySelector('#mo-jev-status').textContent = '이 질문을 기본값으로 복원했습니다. 저장하면 적용됩니다.';
+      }));
+      const showMode = () => {
+        const mode = (view.mode_views || {})[(config.enabled ? '1' : '0') + (root.querySelector('#mo-jev-enabled').checked ? '1' : '0')];
+        root.querySelector('#mo-jev-mode').textContent = mode ? '현재 선택: ' + mode.label + ' · ' + mode.description : 'Jev 설정을 지원하는 Go 서버로 업데이트해 주세요.';
+      };
+      root.querySelector('#mo-jev-enabled').addEventListener('change', showMode);
+      showMode();
+      root.querySelector('#mo-jev-open-preprocessing').addEventListener('click', () => { _settingsActiveTab = 'memory-preprocessing'; renderSettingsPanel({ recompose: true }).catch(() => {}); });
+      root.querySelector('#mo-jev-test').addEventListener('click', async () => {
+        const button = root.querySelector('#mo-jev-test'), status = root.querySelector('#mo-jev-test-result');
+        button.disabled = true; status.textContent = '연결 확인 중…';
+        try {
+          const result = await bridgeFetch('/config/memory-preprocessing/jev-test', {method:'POST', body:draft()});
+          status.textContent = result && result.ok ? '연결 성공 · ' + result.model + ' · ' + (result.duration_ms / 1000).toFixed(2) + '초 · 입력 ' + ((result.usage || {}).input_tokens || 0) + ' tokens' : '연결 실패 · ' + (result && result.error || '백엔드 연결을 확인해 주세요.');
+        } catch (_) { status.textContent = '연결 실패 · 백엔드와 Jev 연결 설정을 확인해 주세요.'; }
+        finally { button.disabled = false; }
+      });
+      root.querySelector('#mo-jev-save').addEventListener('click', async () => {
+        const button = root.querySelector('#mo-jev-save'); button.disabled = true;
+        try {
+          const saved = await bridgeFetch('/config/memory-preprocessing', {method:'PUT', body:{jev:draft(true)}});
+          if (!saved) throw new Error('백엔드에 설정을 저장하지 못했습니다.');
+          await loadJevPanel();
+          const status = document.getElementById('mo-jev-status');
+          if (status) status.textContent = 'Jev 설정을 저장했습니다. 다음 요청부터 적용됩니다.';
+        } catch (err) { root.querySelector('#mo-jev-status').textContent = '저장 실패: ' + String(err && err.message || err); button.disabled = false; }
+      });
+    } catch (err) { root.textContent = 'Jev 설정을 불러오지 못했습니다. 설정 → 일반의 Backend URL과 백엔드 실행 상태를 확인하세요.'; warnLog('Jev settings unavailable:', err && err.message || err); }
+  }
+
+
+  // Host UI only. Go owns model defaults, story-time calculation and persistence.
+  async function loadBodyTrackingPanel(sessionId) {
+    const root = document.getElementById('mo-body-tracking-root');
+    if (!root) return;
+    try {
+      const sid = String(sessionId || _timelineState.selectedSessionId || _timelineState.sessionId || await getCurrentChatSessionId() || '').trim();
+      if (!sid || sid === SESSION_FALLBACK) { root.textContent = '설정할 대화를 먼저 열어 주세요.'; return; }
+      root.bodyTrackingSessionID = sid;
+      const view = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid));
+      if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
+      renderBodyTrackingPanel(root, view);
+    } catch (err) { root.textContent = '주기 설정을 불러오지 못했습니다. 백엔드 연결 상태를 확인하세요.'; warnLog('body tracking settings unavailable:', err && err.message || err); }
+  }
+
+  function renderBodyTrackingPanel(root, view) {
+    const config = view.settings;
+    const sid = view.chat_session_id;
+    root.bodyTrackingSessionID = sid;
+    const saved = new Map(config.characters.map(c => [c.entity_id, c]));
+    const entries = config.characters;
+    const managed = view.data_management || { characters: [], backups: [] };
+    const field = (i, key, label, value, type = 'text') => '<div class="mo-row"><label for="mo-body-' + i + '-' + key + '">' + escapeAttr(label)
+      + '</label><input id="mo-body-' + i + '-' + key + '" type="' + type + '" value="' + escapeAttr(value == null ? '' : value) + '"' + (type === 'number' ? ' step="any"' : '') + '></div>';
+    const check = (i, key, label, value) => '<label class="mo-body-check"><input id="mo-body-' + i + '-' + key + '" type="checkbox"' + (value ? ' checked' : '') + '>' + escapeAttr(label) + '</label>';
+    const coordinate = value => {
+      if (!value || typeof value !== 'object') return '미상';
+      if (value.range) return coordinate(value.range.start) + ' ~ ' + coordinate(value.range.end);
+      if (value.datetime) return String(value.datetime);
+      if (value.date) return String(value.date);
+      if (value.absolute) return coordinate(value.absolute);
+      if (value.calendar) return String(value.calendar.label || value.calendar.id || '사용자 달력') + ' · ' + String(value.calendar.day_index == null ? '미상' : value.calendar.day_index);
+      return '미상';
+    };
+    const range = value => value && value.range ? coordinate(value.range.start) + ' ~ ' + coordinate(value.range.end) : '미상';
+    const peopleText = people => (people || []).map(p => p.character_name || p.entity_id || '미상').join(', ') || '미상';
+    const paternityHTML = entry => {
+      const item = (view.body_states || []).find(item => item.entity_id === entry.entity_id);
+      const p = item && item.state && item.state.paternity;
+      if (!p) return '<p class="mo-note">연결할 임신 기록이 없습니다.</p>';
+      const status = ({ confirmed: '이야기에서 확인된 친부', modeled_link: '모형상 연결된 상대 · 친부 확인 전', candidates: '친부 후보 · 확정되지 않음', unknown: '친부 미상' })[p.status] || '친부 미상';
+      return '<dl class="mo-body-estimate"><div><dt>' + escapeAttr(status) + '</dt><dd>' + escapeAttr(peopleText(p.candidates)) + '</dd></div>'
+        + (p.basis_events || []).map(e => '<div><dt>근거가 된 관계 날짜</dt><dd>' + escapeAttr(coordinate(e.occurred_at)) + '</dd></div>').join('') + '</dl>'
+        + (p.unidentified_partner ? '<p class="mo-note">상대가 확인되지 않은 관련 관계 기록도 있습니다.</p>' : '')
+        + '<p class="mo-note">모형 연결과 후보는 확인된 친부를 뜻하지 않습니다. 이 정보만으로 캐릭터가 친부를 알고 있다고 처리하지 않습니다.</p>';
+    };
+    const factKinds = [['period_start', '월경 시작'], ['pregnancy_confirmed', '임신 확인'], ['pregnancy_ended', '임신 종료'], ['recovery_started', '회복 시작'], ['recovery_ended', '회복 종료']];
+    const factListHTML = entry => {
+      const state = (view.body_states || []).find(item => item.entity_id === entry.entity_id);
+      const facts = state && state.state && state.state.observed_facts || {};
+      const lines = factKinds.filter(([key]) => facts[key]).map(([key, label]) => '<li>' + escapeAttr(label + ' · ' + coordinate(facts[key].occurred_at)) + '</li>').join('');
+      return lines ? '<ul>' + lines + '</ul>' : '<p class="mo-note">등록된 사실이 없습니다.</p>';
+    };
+    const factHTML = (entry, i) => {
+      return '<details class="mo-body-advanced"><summary>확인된 신체 사실 · 직접 수정</summary><div id="mo-body-' + i + '-facts">' + factListHTML(entry) + '</div>'
+        + '<p class="mo-note">선택한 사건을 확인된 사실로 기록합니다. 주기 추정이나 캐릭터의 지식·공개 의향은 바꾸지 않습니다. 날짜를 모르면 비워 두세요.</p>'
+        + '<div class="mo-body-grid"><div class="mo-row"><label for="mo-body-' + i + '-fact-kind">기록할 사건</label><select id="mo-body-' + i + '-fact-kind">'
+        + factKinds.map(([key, label]) => '<option value="' + key + '">' + label + '</option>').join('') + '</select></div>'
+        + field(i, 'fact-date', '사건 날짜 · 미상이면 빈칸', '', 'date') + field(i, 'fact-note', '확인 근거 또는 작가 메모', '')
+        + '<div class="mo-row"><label for="mo-body-' + i + '-paternity-status">임신 확인 기록의 친부 정보</label><select id="mo-body-' + i + '-paternity-status"><option value="">기존 정보 유지</option><option value="confirmed">이야기에서 확인됨</option><option value="candidates">후보 · 미확정</option><option value="unknown">미상으로 정정</option></select></div>'
+        + field(i, 'paternity-names', '친부 또는 후보 이름 · 여러 명이면 쉼표로 구분', '') + '</div><p class="mo-note">친부 입력은 ‘임신 확인’ 사실을 저장할 때 적용됩니다. 기존 모형만으로 친부를 확정하지 마세요.</p>'
+        + '<button type="button" class="mo-btn" id="mo-body-' + i + '-fact-save"' + (saved.has(entry.entity_id) ? '' : ' disabled') + '>확인된 사실 기록</button> '
+        + '<button type="button" class="mo-btn" id="mo-body-' + i + '-fact-undo" hidden>방금 기록 되돌리기</button><p class="mo-note" id="mo-body-' + i + '-fact-status" role="status">'
+        + (saved.has(entry.entity_id) ? '' : '캐릭터 선택을 먼저 저장하세요.') + '</p></details>';
+    };
+    const estimateHTML = entry => {
+      const item = view.cycle_estimates.find(item => item.entity_id === entry.entity_id);
+      if (!item) return '<p class="mo-note">저장하면 현재 이야기 날짜를 기준으로 추정합니다.</p>';
+      const e = item.estimate;
+      if (e.status !== 'estimated') return '<p class="mo-note">추정 미상 · 기준 날짜와 주기 설정, 확정된 이야기 날짜를 확인하세요.</p>';
+      return '<dl class="mo-body-estimate"><div><dt>주기 일수 추정</dt><dd>' + escapeAttr(e.cycle_day.min + ' ~ ' + e.cycle_day.max) + '일째</dd></div>'
+        + '<div><dt>다음 월경 추정</dt><dd>' + escapeAttr(range(e.next_period_estimate)) + '</dd></div>'
+        + '<div><dt>배란 시기 추정</dt><dd>' + escapeAttr(range(e.ovulation_estimate)) + '</dd></div>'
+        + '<div><dt>가임 시기 추정</dt><dd>' + escapeAttr(range(e.fertile_window_estimate)) + '</dd></div></dl>';
+    };
+    const exposureHTML = entry => {
+      const item = (view.exposure_readings || []).find(item => item.entity_id === entry.entity_id);
+      const r = item && item.reading;
+      if (!r) return '<p class="mo-note">관계 인식 정보를 표시할 수 없습니다. JS 플러그인과 Go 서버를 같은 시험 버전으로 맞춰 주세요.</p>';
+      if (!r.recorded) return '<p class="mo-note">현재 상태에 반영된 관계 기록이 없습니다. 평론가의 기억 저장이 끝난 뒤 확인해 주세요.</p>';
+      const row = (label, value) => '<div><dt>' + escapeAttr(label) + '</dt><dd>' + escapeAttr(value) + '</dd></div>';
+      const classification = ({ potentially_conceiving: '임신 가능성이 있는 관계로 인식', not_potentially_conceiving: '임신 가능성이 없는 관계로 인식', unknown: '임신 가능 여부 미상' })[(r.exposure || {}).classification] || '임신 가능 여부 미상';
+      const status = ({ evaluated: '계산 완료', unknown: '계산 미상', disabled: '기록 당시 자동 임신 꺼짐', not_applicable: '이번 관계는 새 임신 계산 대상 아님', not_evaluated: '저장된 계산 결과 없음' })[r.status] || '계산 상태 미상';
+      const reason = ({ explicit_exposure_or_world_setting: '관계 분류·상대 적합성 또는 인물의 임신 가능 설정에 따라 계산 대상이 아닙니다.', contraception_context_not_modeled: '피임이 기록되어 있으나, 현재 모형은 피임 효과를 계산하지 않습니다.', exposure_context_not_modeled: '관계의 임신 가능 분류 또는 명시된 불확실성을 현재 모형으로 계산할 수 없습니다.', exact_event_date_or_reference_unresolved: '관계 날짜나 주기 기준 날짜를 같은 달력의 확정된 날짜로 계산할 수 없습니다.', simulation_seed_unavailable: '저장된 모형 초기값이 없습니다.', stored_model_timeline_unresolved: '저장된 모형의 시간 기준을 해석할 수 없습니다.', model_parameters_unresolved: '저장된 주기 모형 설정으로 계산할 수 없습니다.', model_calendar_precision_unresolved: '모형 날짜의 정밀도로 다음 주기를 계산할 수 없습니다.', observed_pregnancy_ongoing: '이 관계 당시 이미 확인된 임신이 진행 중이었습니다.', modeled_pregnancy_ongoing: '이 관계 당시 이미 모형상 임신이 진행 중이었습니다.', planned_or_hypothetical_observation: '계획·가정으로 기록된 관계입니다.' })[r.reason] || r.reason || '';
+      const relation = r.current_relation || {};
+      const days = relation.elapsed_days;
+      const elapsed = relation.relation === 'past' && days ? (days.min === days.max ? days.min : days.min + ' ~ ' + days.max) + '일 경과'
+        : ({ same_day: '같은 날', same_instant: '같은 시점', future: '현재 이야기 날짜보다 이후', overlapping_range: '현재 날짜와 범위가 겹침', unknown: '날짜 부족 또는 달력 차이로 미상' })[relation.relation] || '미상';
+      const probabilities = (r.probabilities || []).map(p => row('모형 임신 확률 · 배란 ' + coordinate(p.ovulation_time), typeof p.probability === 'number' ? new Intl.NumberFormat('ko-KR', { style: 'percent', maximumSignificantDigits: 3 }).format(p.probability) : '미상')).join('');
+      const outcome = ({ no_modeled_implantation_from_this_day: '이 관계일의 모형상 임신 미성립', latent_model_implantation: '이 관계일에서 모형 임신 경과가 선택됨 · 현재 단계는 아래 참고' })[r.outcome];
+      return (!config.automatic_pregnancy_enabled ? '<p class="mo-note">현재 자동 임신이 꺼져 있습니다. 아래는 저장 당시의 기록입니다.</p>' : '')
+        + '<dl class="mo-body-estimate">' + row('관계 인식', classification) + row('관계 상대', peopleText(r.partners)) + row('확률 판정 기준일 · 관계 발생일', coordinate(r.occurrence_time)) + row('현재 이야기 날짜 기준', elapsed)
+        + row('판정 상태', status) + (probabilities || row('모형 임신 확률', '미상 · 계산된 수치 없음')) + (outcome ? row('저장된 판정 결과', outcome) : '') + '</dl>'
+        + (reason ? '<p class="mo-note">' + escapeAttr(reason) + '</p>' : '')
+        + '<p class="mo-note">평론가가 관계를 기록하면 이야기 속 관계 발생일을 기준으로 판정합니다. 뒤늦게 기록한 날이나 오늘 날짜가 기준일이 되지는 않습니다. 확률은 관계일과 모형의 배란일 간격으로 정한 당시의 창작 모형 값입니다. 관계 후 매일 낮추거나 다시 추첨하지 않으며, 여러 주기 값은 각각의 값으로 합산하지 않습니다. 실제 임신 확률이나 확인된 임신을 뜻하지 않습니다.</p>'
+        + (r.evidence_excerpt ? '<details class="mo-body-advanced"><summary>인식 근거' + (r.source_turn != null ? ' · ' + escapeAttr(r.source_turn) + '턴' : '') + '</summary><blockquote class="mo-body-evidence">' + escapeAttr(r.evidence_excerpt) + '</blockquote></details>' : '');
+    };
+    const modelHTML = entry => {
+      if (!config.automatic_pregnancy_enabled) return '<p class="mo-note">자동 임신이 꺼져 있어 현재 임신 모형을 표시하지 않습니다. 저장된 관계 판정은 위에서 확인하세요.</p>';
+      const item = (view.model_readings || []).find(item => item.entity_id === entry.entity_id);
+      if (!item) return '<p class="mo-note">표시할 현재 임신 모형이 없습니다. 관계 인식과 저장된 확률 판정은 위에서 확인하세요.</p>';
+      const reading = item.reading;
+      if (reading.stage === 'unknown' && !reading.ovulation_time) return '<p class="mo-note">진행 중인 임신 모형이 없습니다. 관계 인식과 계산 여부는 위의 판정 상태를 확인하세요.</p>';
+      const stage = ({ future_modeled_potential: '앞으로 성립할 수 있는 모델 결과', modeled_pre_implantation: '착상 전 모델 상태', modeled_implanted_pregnancy: '착상 이후의 모델상 임신', modeled_birth_completed: '모형상 출산 완료 · 이야기에서 출산 확인은 안 됨', unknown: '시점 또는 모델 결과 미상' })[reading.stage] || '모델 결과 미상';
+      return '<p class="mo-note">창작 시뮬레이션 · ' + escapeAttr(stage) + '</p><dl class="mo-body-estimate">'
+        + '<div><dt>모델의 배란 시점</dt><dd>' + escapeAttr(coordinate(reading.ovulation_time)) + '</dd></div>'
+        + '<div><dt>모델의 착상 시점</dt><dd>' + escapeAttr(coordinate(reading.implantation_time)) + '</dd></div>'
+        + '<div><dt>모형의 출산 시점</dt><dd>' + escapeAttr(coordinate(reading.modeled_birth_time)) + '</dd></div></dl>'
+        + '<p class="mo-note">확인된 사실이 우선합니다. 이 결과만으로 증상이나 캐릭터의 인지·욕망·공개 의향을 정하지 않습니다.</p>';
+    };
+    root.innerHTML = '<h3>주기·임신 설정</h3><p class="mo-note">여성으로 기록된 캐릭터에게 자동 적용하는 창작용 신체 모델입니다. 나이·인간의 폐경 기준은 적용하지 않습니다.</p>'
+      + renderPersonaCapsuleSessionSelect('mo-body-session', '대화', sid, sid, '대화를 선택하세요')
+      + '<div class="mo-body-toggles">' + check('global', 'cycle', '주기 추적 사용', config.cycle_tracking_enabled)
+      + check('global', 'pregnancy', '자동 임신 사용', config.automatic_pregnancy_enabled) + '</div>'
+      + '<p class="mo-note">두 기능은 따로 저장됩니다. 임신 모델 결과는 확인된 사실과 별도로 표시합니다.</p>'
+      + '<p class="mo-note">마지막으로 확정된 이야기 날짜: <strong>' + escapeAttr(coordinate(view.last_confirmed_story_clock)) + '</strong></p>'
+      + (entries.length ? '<h4>자동 적용 대상</h4>' : '<p class="mo-note">아직 여성으로 기록된 캐릭터가 없습니다. 기능을 켜 두면 대화에서 확인된 여성 인물이 자동으로 추가됩니다.</p>')
+      + entries.map((c, i) => {
+        const ref = c.cycle.reference_time || {};
+        const calendar = ref.calendar || {};
+        return '<details class="mo-body-character"><summary>' + escapeAttr(c.character_name || c.entity_id) + '</summary><div class="mo-body-card">'
+          + '<div id="mo-body-' + i + '-fields"><p class="mo-note">기준일이 없으면 인물별 초기 주기를 무작위로 정해 저장합니다. 실제 월경 기록과는 다르며, 종족·세계 설정에 맞게 조정할 수 있습니다.</p>'
+          + '<div class="mo-body-grid">' + field(i, 'species', '종족', c.species) + field(i, 'world-rule', '세계의 신체 규칙', c.world_rule) + '</div>'
+          + '<div class="mo-body-toggles">' + check(i, 'cycle-enabled', '주기 계산 대상', c.cycle_enabled) + check(i, 'can-conceive', '임신 가능한 설정', c.can_conceive) + '</div>'
+          + '<div class="mo-body-grid"><div class="mo-row"><label for="mo-body-' + i + '-reference-kind">기준의 출처</label><select id="mo-body-' + i + '-reference-kind">'
+          + [['model_initialization', '자동 초기 주기 · 모형'], ['observed', '이야기에서 확인됨'], ['author_setting', '작가 설정'], ['estimated', '추정']].map(([key, label]) => '<option value="' + key + '"' + (key === c.cycle.reference_kind ? ' selected' : '') + '>' + label + '</option>').join('') + '</select></div>'
+          + '<div class="mo-row"><label for="mo-body-' + i + '-calendar-type">기준 날짜 형식</label><select id="mo-body-' + i + '-calendar-type"><option value="date"' + (!ref.calendar ? ' selected' : '') + '>날짜</option><option value="custom"' + (ref.calendar ? ' selected' : '') + '>세계 고유 달력</option></select></div>'
+          + field(i, 'reference-date', '월경 시작 기준 날짜 · 빈칸이면 자동 초기화', ref.date || (ref.absolute && ref.absolute.date) || '', 'date')
+          + field(i, 'calendar-id', '고유 달력 ID', calendar.id) + field(i, 'calendar-label', '달력 이름', calendar.label) + field(i, 'calendar-day', '기준 날짜의 달력 일차', calendar.day_index, 'number')
+          + field(i, 'period-days', '월경 기간 (일)', c.cycle.period_days, 'number') + field(i, 'cycle-days', '평균 주기 (일)', c.cycle.cycle_days, 'number')
+          + field(i, 'variation-days', '주기 변동 폭 (±일)', c.cycle.variation_days, 'number') + '</div>'
+          + '<details class="mo-body-advanced"><summary>모델 세부 설정</summary><div class="mo-body-grid">'
+          + field(i, 'gestation-days', '모형 임신 기간 (일) · 종족·세계 설정에 맞게 조정', c.gestation_days, 'number')
+          + field(i, 'luteal-min', '황체기 최소 (일)', c.cycle.luteal_min_days, 'number') + field(i, 'luteal-max', '황체기 최대 (일)', c.cycle.luteal_max_days, 'number')
+          + field(i, 'cycle-viability', '주기 가능성 모델 값 (%)', c.cycle_viability * 100, 'number') + field(i, 'conditional-peak', '조건부 최고 모델 값 (%)', c.conditional_peak * 100, 'number')
+          + '</div><p class="mo-note">백분율은 창작 모델 설정값입니다. 실제 임신 확률이나 확정 사실을 뜻하지 않습니다.</p></details>'
+          + '<h4>저장된 설정의 주기 추정</h4><div id="mo-body-' + i + '-estimate">' + estimateHTML(c) + '</div>'
+          + '<h4>최근 관계 인식·확률</h4><div id="mo-body-' + i + '-exposure">' + exposureHTML(c) + '</div>'
+          + '<h4>임신 모델 결과</h4><div id="mo-body-' + i + '-model">' + modelHTML(c) + '</div><h4>임신의 상대·친부</h4><div id="mo-body-' + i + '-paternity">' + paternityHTML(c) + '</div>' + factHTML(c, i) + '</div></div></details>';
+      }).join('') + '<p class="mo-note">주기 추적 또는 자동 임신을 켜면 기존 기억 예산과 별도로 신체 상태에 총 3,000 chars를 추가합니다. 둘 다 켜도 3,000 chars이며, 필요한 인물의 현재 상태만 이 안에 전달합니다.</p><div class="mo-body-save"><p id="mo-body-status" role="status" aria-live="polite">전체 토글을 켜고 저장하면 여성 인물에 자동 적용됩니다. 초기 주기는 인물마다 다르며, 작중 날짜가 미상이면 날짜 확인 후 초기화합니다.</p>'
+      + '<button type="button" class="mo-btn mo-btn-primary" id="mo-body-save">이 대화의 설정 저장</button></div>'
+      + '<details class="mo-body-advanced"><summary>신체 데이터 삭제·복원</summary><p class="mo-note">주기·임신·회복·판정 이력을 사용 대상에서 제거하고 백업합니다. 관련 일반 기억도 아래에서 확인하여 함께 정리할 수 있습니다. 대화 원문은 유지합니다. 복원 전에는 해당 인물에게 신체 기능이 자동 적용되지 않습니다.</p>'
+      + '<select id="mo-body-delete-character">' + managed.characters.filter(c => !c.deleted).map(c => '<option value="' + escapeAttr(c.entity_id) + '">' + escapeAttr(c.character_name || c.entity_id) + '</option>').join('') + '</select> '
+      + '<button type="button" class="mo-btn" id="mo-body-delete-preview">삭제할 데이터 확인</button><div id="mo-body-delete-list"></div>'
+      + '<button type="button" class="mo-btn" id="mo-body-delete-apply" hidden>백업 후 신체 데이터와 선택한 기억 삭제</button><p id="mo-body-data-status" role="status"></p>'
+      + '<h4>삭제 전 백업</h4><p class="mo-note">복원하면 삭제 직전 데이터가 돌아옵니다. 임신 경과는 현재 작중 날짜로 계산하며, 백업 이후 같은 기억에 한 수정은 덮어씁니다.</p>'
+      + managed.backups.map((b, i) => '<div class="mo-row"><span>' + escapeAttr((b.character_name || b.character_id) + ' · ' + b.created_at + ' · 기억 ' + b.memory_count + '건') + '</span><button type="button" class="mo-btn" id="mo-body-restore-' + i + '">이 백업 복원</button></div>').join('') + '</details>';
+    let deletePreview = null;
+    const dataStatus = root.querySelector('#mo-body-data-status');
+    root.querySelector('#mo-body-delete-character').addEventListener('change', () => {
+      deletePreview = null;
+      root.querySelector('#mo-body-delete-list').innerHTML = '';
+      root.querySelector('#mo-body-delete-apply').hidden = true;
+    });
+    root.querySelector('#mo-body-delete-preview').addEventListener('click', async () => {
+      const select = root.querySelector('#mo-body-delete-character');
+      const button = root.querySelector('#mo-body-delete-preview');
+      const characterID = select.value;
+      if (!characterID) { dataStatus.textContent = '삭제할 인물이 없습니다.'; return; }
+      select.disabled = true; button.disabled = true;
+      try {
+        deletePreview = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid) + '/state', { method: 'PUT', body: { action: 'delete', character_id: characterID, dry_run: true } });
+        deletePreview.characterID = characterID;
+        if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
+        const person = managed.characters.find(c => c.entity_id === characterID);
+        root.querySelector('#mo-body-delete-list').innerHTML = '<h4>' + escapeAttr(person && person.character_name || characterID) + ' · 삭제 예정</h4><p class="mo-note">선택한 기억은 본문 전체를 정리하고 복원용으로 보관합니다. 인물 정보와 상태 기록은 관련 항목만 정리합니다. 다른 사건이 섞인 기억은 내용을 확인하세요.</p>' + (deletePreview.memory_changes || []).map((m, i) => '<details><summary><label><input type="checkbox" id="mo-body-delete-memory-' + i + '" checked> 관련 기억 ' + (i + 1) + '</label></summary><pre>' + escapeAttr(Object.entries(m.before || {}).filter(([key, value]) => value != null && !key.includes('embedding')).map(([, value]) => value).join('\n')) + '</pre></details>').join('');
+        root.querySelector('#mo-body-delete-apply').hidden = false;
+        dataStatus.textContent = '신체 데이터와 관련 기억의 삭제 범위를 확인했습니다.';
+      } catch (err) { dataStatus.textContent = '확인 실패: ' + String(err && err.message || err); }
+      finally { select.disabled = false; button.disabled = false; }
+    });
+    root.querySelector('#mo-body-delete-apply').addEventListener('click', async () => {
+      if (!deletePreview) return;
+      const button = root.querySelector('#mo-body-delete-apply');
+      button.disabled = true;
+      const targets = (deletePreview.memory_changes || []).filter((m, i) => root.querySelector('#mo-body-delete-memory-' + i).checked).map(m => m.table + ':' + m.id);
+      try {
+        const result = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid) + '/state', { method: 'PUT', body: { action: 'delete', character_id: deletePreview.characterID, operation_id: deletePreview.operation_id, memory_targets: targets } });
+        if (result.status === 'partial_error') { dataStatus.textContent = '데이터는 삭제·백업되었습니다. 검색 색인 정리를 완료하지 못했습니다. 같은 버튼으로 다시 시도할 수 있습니다. ' + (result.projection_errors || []).join('; '); button.disabled = false; return; }
+        await loadBodyTrackingPanel(sid);
+      } catch (err) { dataStatus.textContent = '삭제 실패: ' + String(err && err.message || err); button.disabled = false; }
+    });
+    managed.backups.forEach((backup, i) => {
+      let operationID = '';
+      root.querySelector('#mo-body-restore-' + i).addEventListener('click', async event => {
+        event.target.disabled = true;
+        if (!operationID) operationID = personaCapsuleCandidateID();
+        try {
+          const result = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid) + '/state', { method: 'PUT', body: { action: 'restore', event_id: backup.event_id, operation_id: operationID } });
+          if (result.status === 'partial_error') { dataStatus.textContent = '데이터는 복원되었습니다. 검색 색인 복원을 완료하지 못했습니다. 같은 버튼으로 다시 시도할 수 있습니다. ' + (result.projection_errors || []).join('; '); event.target.disabled = false; return; }
+          await loadBodyTrackingPanel(sid);
+        } catch (err) { dataStatus.textContent = '복원 실패: ' + String(err && err.message || err); event.target.disabled = false; }
+      });
+    });
+    root.querySelector('#mo-body-session').addEventListener('change', event => loadBodyTrackingPanel(event.target.value));
+    entries.forEach((entry, i) => {
+      const find = key => root.querySelector('#mo-body-' + i + '-' + key);
+      let operationId = '', appliedEventId = '', undoOperationId = '';
+      ['fact-kind', 'fact-date', 'fact-note', 'paternity-status', 'paternity-names'].forEach(key => find(key).addEventListener('change', () => { operationId = ''; }));
+      const apply = async undo => {
+        const button = find(undo ? 'fact-undo' : 'fact-save');
+        button.disabled = true;
+        if (undo && !undoOperationId) undoOperationId = personaCapsuleCandidateID();
+        if (!undo && !operationId) operationId = personaCapsuleCandidateID();
+        const body = undo ? { action: 'undo', event_id: appliedEventId, operation_id: undoOperationId }
+          : { action: 'apply', operation_id: operationId, character_id: entry.entity_id, event: { kind: find('fact-kind').value, occurred_at: find('fact-date').value ? { date: find('fact-date').value } : {}, evidence_excerpt: find('fact-note').value } };
+        if (!undo && body.event.kind === 'pregnancy_confirmed' && find('paternity-status').value) {
+          body.event.paternity = { status: find('paternity-status').value, candidates: find('paternity-status').value === 'unknown' ? [] : find('paternity-names').value.split(',').map(name => ({ character_name: name.trim() })).filter(p => p.character_name) };
+        }
+        try {
+          const result = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid) + '/state', { method: 'PUT', body });
+          if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
+          appliedEventId = undo ? '' : result.event_id;
+          operationId = ''; undoOperationId = '';
+          find('fact-undo').hidden = !appliedEventId;
+          find('fact-status').textContent = undo ? '방금 기록을 되돌렸습니다.' : '확인된 사실을 기록했습니다.';
+          try {
+            const fresh = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid));
+            if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
+            view.body_states = fresh.body_states; view.cycle_estimates = fresh.cycle_estimates; view.model_readings = fresh.model_readings;
+            find('facts').innerHTML = factListHTML(entry); find('estimate').innerHTML = estimateHTML(entry); find('model').innerHTML = modelHTML(entry); find('paternity').innerHTML = paternityHTML(entry);
+          } catch { find('fact-status').textContent += ' 최신 화면을 불러오지 못했습니다. 다시 열면 확인할 수 있습니다.'; }
+        } catch (err) { find('fact-status').textContent = '기록 실패: ' + String(err && err.message || err); }
+        button.disabled = false;
+      };
+      find('fact-save').addEventListener('click', () => apply(false));
+      find('fact-undo').addEventListener('click', () => apply(true));
+    });
+    root.querySelector('#mo-body-save').addEventListener('click', async () => {
+      const button = root.querySelector('#mo-body-save');
+      button.disabled = true;
+      const next = { cycle_tracking_enabled: root.querySelector('#mo-body-global-cycle').checked, automatic_pregnancy_enabled: root.querySelector('#mo-body-global-pregnancy').checked, characters: [] };
+      entries.forEach((entry, i) => {
+        const read = key => root.querySelector('#mo-body-' + i + '-' + key).value;
+        const checked = key => root.querySelector('#mo-body-' + i + '-' + key).checked;
+        const originalRef = entry.cycle.reference_time || {};
+        const originalCalendar = originalRef.calendar || {};
+        const referenceUnchanged = read('calendar-type') === (originalRef.calendar ? 'custom' : 'date')
+          && read('reference-date') === String(originalRef.date || (originalRef.absolute && originalRef.absolute.date) || '')
+          && read('calendar-id') === String(originalCalendar.id || '') && read('calendar-label') === String(originalCalendar.label || '')
+          && read('calendar-day') === String(originalCalendar.day_index == null ? '' : originalCalendar.day_index);
+        const ref = referenceUnchanged ? originalRef : read('calendar-type') === 'custom'
+          ? { calendar: { id: read('calendar-id'), label: read('calendar-label'), ...(read('calendar-day').trim() === '' ? {} : { day_index: Number(read('calendar-day')) }) } }
+          : (read('reference-date') ? { date: read('reference-date') } : {});
+        next.characters.push({ ...entry, species: read('species'), world_rule: read('world-rule'), cycle_enabled: checked('cycle-enabled'), can_conceive: checked('can-conceive'),
+          cycle: { reference_time: ref, reference_kind: read('reference-kind'), period_days: Number(read('period-days')), cycle_days: Number(read('cycle-days')), variation_days: Number(read('variation-days')), luteal_min_days: Number(read('luteal-min')), luteal_max_days: Number(read('luteal-max')) },
+          cycle_viability: Number(read('cycle-viability')) / 100, conditional_peak: Number(read('conditional-peak')) / 100, gestation_days: Number(read('gestation-days')) });
+      });
+      try {
+        const result = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid), { method: 'PUT', body: next });
+        if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
+        renderBodyTrackingPanel(root, result);
+        root.querySelector('#mo-body-status').textContent = '이 대화의 설정을 저장했습니다.';
+      } catch (err) { root.querySelector('#mo-body-status').textContent = '저장 실패: ' + String(err && err.message || err); button.disabled = false; }
+    });
   }
 
   async function savePromptEditorPrompt(promptName) {
@@ -51965,7 +52332,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         ? { status: "ok", detail: String(lastGuideSupervisor.guideMode) + (lastGuideSupervisor.guideModeBasis ? " / " + String(lastGuideSupervisor.guideModeBasis) : "") }
         : { status: "unknown", detail: t("dash.status.value.notYet") };
       const settingsFamilyActive = ["settings", "review", "prompt", "dashboard", "debug"].includes(_settingsActiveTab);
-      const extensionsFamilyActive = ["reference", "persona", "lorebook", "memory-preprocessing"].includes(_settingsActiveTab);
+      const extensionsFamilyActive = ["reference", "persona", "lorebook", "memory-preprocessing", "jev", "body-tracking"].includes(_settingsActiveTab);
       if (_settingsActiveTab === "persona") {
         await personaCapsuleResolveSessionDefaults();
       }
@@ -51990,6 +52357,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           ["persona", t('persona.tab')],
           ["lorebook", t('settings.tab.lorebook')],
           ["memory-preprocessing", "전처리 다중 에이전트"],
+          ["jev", "Jev"],
+          ["body-tracking", "주기·임신"],
         ];
         return '<div class="mo-subtabs mo-settings-subtabs mo-extension-subtabs" role="tablist">' + tabs.map(([id, label]) =>
           '<button type="button" role="tab" aria-selected="' + (activeTab === id ? 'true' : 'false') + '" tabindex="' + (activeTab === id ? '0' : '-1') + '" class="mo-subtab-btn' + (activeTab === id ? ' is-active' : '') + '" data-tab-jump="' + id + '">' + escapeAttr(label) + '</button>'
@@ -52062,7 +52431,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     ${extensionsSubtabsHtml(_settingsActiveTab)}
     <div class="mo-tab-panel is-active" role="tabpanel" aria-hidden="false" data-tab-panel="${_settingsActiveTab}">
       ${_settingsActiveTab === "memory-preprocessing"
-        ? '<div id="mo-memory-preprocessing-root">전처리 설정을 불러오는 중입니다…</div>'
+        ? '<div id="mo-memory-preprocessing-root" class="mo-memory-feature">전처리 설정을 불러오는 중입니다…</div>'
+        : _settingsActiveTab === "jev"
+        ? '<div id="mo-jev-root" class="mo-memory-feature">Jev 설정을 불러오는 중입니다…</div>'
+        : _settingsActiveTab === "body-tracking"
+        ? '<div id="mo-body-tracking-root">주기 설정을 불러오는 중입니다…</div>'
         : _settingsActiveTab === "persona"
         ? '<div id="mo-persona-capsule-root">' + renderPersonaCapsuleSection() + '</div>'
         : (_settingsActiveTab === "lorebook"
@@ -52831,6 +53204,12 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       if (activePrimaryTab === "extensions" && _settingsActiveTab === "memory-preprocessing") {
         loadMemoryPreprocessingPanel().catch(() => {});
       }
+      if (activePrimaryTab === "extensions" && _settingsActiveTab === "jev") {
+        loadJevPanel().catch(() => {});
+      }
+      if (activePrimaryTab === "extensions" && _settingsActiveTab === "body-tracking") {
+        loadBodyTrackingPanel().catch(() => {});
+      }
 
       // iframe을 fullscreen으로 보이게 한다
       if (!recompose && R && typeof R.showContainer === "function") {
@@ -53064,7 +53443,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         const body = document.querySelector("#mo-settings-overlay .mo-workspace") || document.querySelector(".mo-workspace");
         const viewportScrollState = captureSettingsViewportScrollState();
         const settingsRoutes = ["settings", "review", "prompt", "dashboard", "debug"];
-        const extensionRoutes = ["reference", "persona", "lorebook", "memory-preprocessing"];
+        const extensionRoutes = ["reference", "persona", "lorebook", "memory-preprocessing", "jev", "body-tracking"];
         const prevPrimaryTab = settingsRoutes.includes(prevTab) ? "settings" : (extensionRoutes.includes(prevTab) ? "reference" : prevTab);
         const nextPrimaryTab = settingsRoutes.includes(tab) ? "settings" : (extensionRoutes.includes(tab) ? "reference" : tab);
         if (body && prevTab && prevTab !== tab) {

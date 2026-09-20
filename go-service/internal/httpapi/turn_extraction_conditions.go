@@ -64,6 +64,8 @@ func validateReversibleStateProposal(value any) error {
 		"state_slot": true, "value": true, "evidence_excerpt": true, "scene_scope": true,
 		"authority": true, "assertion_kind": true, "polarity": true, "validity": true,
 		"visibility": true, "sensitivity": true,
+		"source_fields": true, "occurrence_time": true, "observed_at": true,
+		"temporal_context": true, "relative_expression": true, "relative": true,
 	}
 	for key := range raw {
 		if !allowed[key] {
@@ -242,6 +244,14 @@ func normalizeReversibleStateProposals(value any) []map[string]any {
 		if validity := mapFromAny(raw["validity"]); len(validity) > 0 {
 			normalized["validity"] = storyClockJSONMap(validity)
 		}
+		if fields := stringsFromAny(raw["source_fields"]); len(fields) > 0 {
+			normalized["source_fields"] = fields
+		}
+		for _, key := range []string{"occurrence_time", "observed_at", "temporal_context", "relative_expression", "relative"} {
+			if value, exists := raw[key]; exists {
+				normalized[key] = value
+			}
+		}
 		out = append(out, normalized)
 	}
 	return out
@@ -328,6 +338,9 @@ func reversibleProjectionFromCurrent(current store.StatusCurrentValue, domain, s
 }
 
 func reversibleObservationContext(ctx context.Context, st store.Store, sid string) map[string]any {
+	if captured, ok := ctx.Value(sourceStoryClockObservationContextKey{}).(map[string]any); ok {
+		return storyClockJSONMap(captured)
+	}
 	out := map[string]any{"kind": "source_observation", "story_time": "unknown"}
 	valueStore, ok := st.(store.StatusCurrentValueStore)
 	if !ok {
@@ -573,6 +586,10 @@ func (s *Server) saveReversibleStatesFromExtraction(
 	}
 	observationContext := reversibleObservationContext(ctx, s.Store, sid)
 	for index, proposal := range proposals {
+		proposalObservation := observationContext
+		if explicit := mapFromAny(proposal["observed_at"]); len(explicit) > 0 {
+			proposalObservation = explicit
+		}
 		domain := extractionStringFromAny(proposal["domain"])
 		statusKey := reversibleStateDomains[domain]
 		excerpt := sanitizeEvidenceExcerptForTurn(extractionStringFromAny(proposal["evidence_excerpt"]), content)
@@ -647,6 +664,11 @@ func (s *Server) saveReversibleStatesFromExtraction(
 		resolutionStatus := identityResolution
 		slots := mapFromAny(projection["slots"])
 		_, priorSlotExists := slots[slot]
+		if len(stringsFromAny(proposal["source_fields"])) == 0 {
+			if priorFields := stringsFromAny(mapFromAny(slots[slot])["source_fields"]); len(priorFields) > 0 {
+				proposal["source_fields"] = priorFields
+			}
+		}
 		if !identityCurrentEligible {
 			currentAllowed = false
 		} else if !claimCurrentEligible {
@@ -680,7 +702,7 @@ func (s *Server) saveReversibleStatesFromExtraction(
 				slots[slot] = map[string]any{
 					"state_slot":  slot,
 					"value":       valueCopy,
-					"validity":    reversibleStateValidity(validity, observationContext),
+					"validity":    reversibleStateValidity(validity, proposalObservation),
 					"visibility":  proposal["visibility"],
 					"sensitivity": proposal["sensitivity"],
 					"source": map[string]any{
@@ -688,9 +710,18 @@ func (s *Server) saveReversibleStatesFromExtraction(
 						"source_unit_id":              sourceUnitID,
 						"source_turn":                 turnIndex,
 						"direct_evidence_ids":         evidenceIDs,
+						"evidence_excerpt":            excerpt,
 						"source_entity_occurrence_id": subject.StableEntityID,
 						"subject_owner_id":            ownerID,
 					},
+				}
+				if fields := stringsFromAny(proposal["source_fields"]); len(fields) > 0 {
+					mapFromAny(slots[slot])["source_fields"] = fields
+				}
+				for _, key := range []string{"occurrence_time", "observed_at", "temporal_context", "relative_expression", "relative"} {
+					if value, exists := proposal[key]; exists {
+						mapFromAny(slots[slot])[key] = value
+					}
 				}
 			} else {
 				delete(slots, slot)
@@ -715,7 +746,7 @@ func (s *Server) saveReversibleStatesFromExtraction(
 			"evidence_excerpt":     excerpt,
 			"current_projection":   currentAllowed,
 			"history_observation":  proposal,
-			"observed_at":          observationContext,
+			"observed_at":          proposalObservation,
 		}
 		if resolutionStatus != "" {
 			evidencePayload["resolution_status"] = resolutionStatus
@@ -749,7 +780,7 @@ func (s *Server) saveReversibleStatesFromExtraction(
 			NewValueJSON:      newProjectionJSON,
 			EvidenceJSON:      mustCompactJSON(evidencePayload),
 			SourceTurn:        turnIndex,
-			StoryClockJSON:    reversibleObservationStoryClockJSON(observationContext),
+			StoryClockJSON:    reversibleObservationStoryClockJSON(proposalObservation),
 			EventState:        map[bool]string{true: "recorded", false: "history_only"}[currentAllowed],
 			CreatedAt:         now,
 		}
@@ -856,6 +887,39 @@ func restoreReversibleStateCurrentAfterRollback(ctx context.Context, st store.St
 	return restored, nil
 }
 
+func reversibleSubjectSlotCounts(values []store.StatusCurrentValue) map[string]int {
+	counts := map[string]int{}
+	for _, current := range values {
+		projection := parseJSONMap(current.ValueJSON)
+		if extractionStringFromAny(projection["version"]) != reversibleStateContractVersion {
+			continue
+		}
+		domain := extractionStringFromAny(projection["domain"])
+		subject := extractionStringFromAny(projection["subject_label"])
+		for slotName := range mapFromAny(projection["slots"]) {
+			key := strings.Join([]string{domain, normalizePrepareTurnEntityNeedle(subject), slotName}, "\x1f")
+			counts[key]++
+		}
+	}
+	return counts
+}
+
+func reversiblePublicDeliveryExclusion(slot map[string]any, currentStoryClock map[string]any) string {
+	if reversibleSlotOutsideComparableValidity(mapFromAny(slot["validity"]), currentStoryClock) {
+		return "outside_validity"
+	}
+	if extractionStringFromAny(slot["visibility"]) != "public" {
+		return "non_public"
+	}
+	if extractionStringFromAny(slot["sensitivity"]) == "reproductive" {
+		return "reproductive"
+	}
+	if extractionStringFromAny(slot["sensitivity"]) != "ordinary" {
+		return "sensitive"
+	}
+	return ""
+}
+
 func buildReversibleStatePacket(
 	values []store.StatusCurrentValue,
 	currentStoryClock map[string]any,
@@ -893,20 +957,7 @@ func buildReversibleStatePacket(
 		}
 		return values[i].OwnerID < values[j].OwnerID
 	})
-	subjectSlotCounts := map[string]int{}
-	for _, current := range values {
-		projection := map[string]any{}
-		if json.Unmarshal([]byte(current.ValueJSON), &projection) != nil ||
-			extractionStringFromAny(projection["version"]) != reversibleStateContractVersion {
-			continue
-		}
-		domain := extractionStringFromAny(projection["domain"])
-		subject := extractionStringFromAny(projection["subject_label"])
-		for slotName := range mapFromAny(projection["slots"]) {
-			key := strings.Join([]string{domain, normalizePrepareTurnEntityNeedle(subject), slotName}, "\x1f")
-			subjectSlotCounts[key]++
-		}
-	}
+	subjectSlotCounts := reversibleSubjectSlotCounts(values)
 	for _, current := range values {
 		projection := map[string]any{}
 		if json.Unmarshal([]byte(current.ValueJSON), &projection) != nil ||
@@ -937,25 +988,11 @@ func buildReversibleStatePacket(
 			if text == "" {
 				continue
 			}
-			if reversibleSlotOutsideComparableValidity(mapFromAny(slot["validity"]), currentStoryClock) {
-				excluded["outside_validity"]++
-				continue
-			}
-			visibility := extractionStringFromAny(slot["visibility"])
-			sensitivity := extractionStringFromAny(slot["sensitivity"])
-			if visibility != "public" {
-				excluded["non_public"]++
-				if domain == "emotion" {
+			if exclusion := reversiblePublicDeliveryExclusion(slot, currentStoryClock); exclusion != "" {
+				excluded[exclusion]++
+				if exclusion == "non_public" && domain == "emotion" {
 					excluded["private_emotion"]++
 				}
-				continue
-			}
-			if sensitivity == "reproductive" {
-				excluded["reproductive"]++
-				continue
-			}
-			if sensitivity != "ordinary" {
-				excluded["sensitive"]++
 				continue
 			}
 			item := map[string]any{

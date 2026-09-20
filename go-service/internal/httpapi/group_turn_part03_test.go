@@ -846,7 +846,8 @@ func TestCompleteTurnCriticLedgerWiringBehindFeatureFlag(t *testing.T) {
 		t.Fatalf("enabled ledger trace mismatch: %+v", enabledLedgerTrace)
 	}
 	language, _ := enabledLedgerTrace["language"].(map[string]any)
-	if language["assistant_final_language"] != "auto" {
+	// The accepted reply above is English, despite the Korean preset override.
+	if language["assistant_final_language"] != "en" {
 		t.Fatalf("enabled ledger language mismatch: %+v", language)
 	}
 }

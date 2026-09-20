@@ -383,7 +383,7 @@ func mariaListStorylines(ctx context.Context, q mariaQueryer, chatSessionID stri
 func mariaListCharacterStates(ctx context.Context, q mariaQueryer, chatSessionID string) ([]CharacterState, error) {
 	rows, err := q.QueryContext(ctx, `
 		SELECT id, chat_session_id, character_name, appearance_json, personality_json, status_json,
-			   relationships_json, speech_style_json, turn_index, created_at, updated_at
+			   relationships_json, speech_style_json, field_provenance_json, turn_index, created_at, updated_at
 		FROM character_states
 		WHERE chat_session_id = ?
 		ORDER BY turn_index DESC, id DESC
@@ -397,10 +397,10 @@ func mariaListCharacterStates(ctx context.Context, q mariaQueryer, chatSessionID
 	seen := map[string]bool{}
 	for rows.Next() {
 		var item CharacterState
-		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON sql.NullString
+		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON, fieldProvenanceJSON sql.NullString
 		var turnIndex sql.NullInt64
 		if err := rows.Scan(&item.ID, &item.ChatSessionID, &item.CharacterName,
-			&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON,
+			&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON, &fieldProvenanceJSON,
 			&turnIndex, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -409,6 +409,7 @@ func mariaListCharacterStates(ctx context.Context, q mariaQueryer, chatSessionID
 		item.StatusJSON = stringFromNull(statusJSON)
 		item.RelationshipsJSON = stringFromNull(relationshipsJSON)
 		item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
+		item.FieldProvenanceJSON = stringFromNull(fieldProvenanceJSON)
 		item.TurnIndex = intFromNull(turnIndex)
 		key := strings.ToLower(strings.TrimSpace(item.CharacterName))
 		if key == "" {
@@ -432,7 +433,7 @@ func mariaListCharacterStateHistory(ctx context.Context, q mariaQueryer, chatSes
 	}
 	rows, err := q.QueryContext(ctx, `
 		SELECT id, chat_session_id, character_name, appearance_json, personality_json, status_json,
-			   relationships_json, speech_style_json, turn_index, created_at, updated_at
+			   relationships_json, speech_style_json, field_provenance_json, turn_index, created_at, updated_at
 		FROM character_states
 		WHERE chat_session_id = ? AND character_name = ?
 		ORDER BY turn_index DESC, id DESC
@@ -446,10 +447,10 @@ func mariaListCharacterStateHistory(ctx context.Context, q mariaQueryer, chatSes
 	var out []CharacterState
 	for rows.Next() {
 		var item CharacterState
-		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON sql.NullString
+		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON, fieldProvenanceJSON sql.NullString
 		var turnIndex sql.NullInt64
 		if err := rows.Scan(&item.ID, &item.ChatSessionID, &item.CharacterName,
-			&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON,
+			&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON, &fieldProvenanceJSON,
 			&turnIndex, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
@@ -458,6 +459,7 @@ func mariaListCharacterStateHistory(ctx context.Context, q mariaQueryer, chatSes
 		item.StatusJSON = stringFromNull(statusJSON)
 		item.RelationshipsJSON = stringFromNull(relationshipsJSON)
 		item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
+		item.FieldProvenanceJSON = stringFromNull(fieldProvenanceJSON)
 		item.TurnIndex = intFromNull(turnIndex)
 		out = append(out, item)
 	}

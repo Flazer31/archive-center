@@ -33,6 +33,10 @@ type narrativeStateClaim struct {
 	EvidenceExcerpt  string
 	SourceKind       string
 	SourceIndex      int
+	PendingThread    *store.PendingThread
+	LifecycleDetails map[string]any
+	SourceFields     []string
+	TemporalContext  map[string]any
 }
 
 func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateClaim {
@@ -56,6 +60,14 @@ func normalizeNarrativeStateClaims(extraction map[string]any) []narrativeStateCl
 			EvidenceExcerpt:  strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence"))),
 			SourceKind:       sourceKind,
 			SourceIndex:      index,
+			LifecycleDetails: item,
+			SourceFields:     stringsFromAny(item["source_fields"]),
+			TemporalContext:  map[string]any{},
+		}
+		for _, key := range []string{"observed_at", "occurrence_time", "validity", "scene_scope", "temporal_context", "relative_expression", "relative"} {
+			if value, exists := item[key]; exists {
+				claim.TemporalContext[key] = value
+			}
 		}
 		if claim.SubjectType == "" {
 			claim.SubjectType = "entity"
@@ -186,7 +198,7 @@ func normalizeNarrativeClaimScope(raw string) string {
 func normalizeNarrativeTransition(raw string) string {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "set", "reaffirm", "change", "reversal", "recovery", "correction", "reveal", "resolve", "uncertain", "clear",
-		"defer", "abandon", "complete", "supersede", "reopen", "resume":
+		"defer", "abandon", "complete", "supersede", "reopen", "resume", "create", "progress", "partial", "cancel", "modify", "pause", "missed", "refused", "impossible":
 		return strings.ToLower(strings.TrimSpace(raw))
 	default:
 		return ""
@@ -249,7 +261,7 @@ func narrativeStateOwnerLabel(claim narrativeStateClaim) string {
 }
 
 func narrativeStateValuePayload(claim narrativeStateClaim, previousValue string, turnIndex int) map[string]any {
-	return map[string]any{
+	payload := map[string]any{
 		"contract_version":  narrativeStateContractVersion,
 		"subject":           claim.Subject,
 		"subject_type":      claim.SubjectType,
@@ -263,6 +275,19 @@ func narrativeStateValuePayload(claim narrativeStateClaim, previousValue string,
 		"previous_value":    strings.TrimSpace(previousValue),
 		"source_turn":       turnIndex,
 	}
+	if claim.PendingThread != nil {
+		payload["pending_thread"] = claim.PendingThread
+	}
+	if len(claim.LifecycleDetails) > 0 && narrativeClaimIsLifecycle(claim) {
+		payload["lifecycle_details"] = claim.LifecycleDetails
+	}
+	if len(claim.SourceFields) > 0 {
+		payload["source_fields"] = claim.SourceFields
+	}
+	for key, value := range claim.TemporalContext {
+		payload[key] = value
+	}
+	return payload
 }
 
 func narrativeStateEvidencePayload(claim narrativeStateClaim, evidenceIDs []int64, turnIndex int, sourceRevision string) map[string]any {
@@ -279,6 +304,194 @@ func narrativeStateEvidencePayload(claim narrativeStateClaim, evidenceIDs []int6
 		payload["source_revision"] = sourceRevision
 	}
 	return payload
+}
+
+func narrativeClaimIsLifecycle(claim narrativeStateClaim) bool {
+	return claim.ClaimScope == "objective" && (claim.LifecycleKey != "" ||
+		(claim.SubjectType == "entity" && claim.StateSlot == "goal_status"))
+}
+
+func narrativeLifecycleProjectionStatus(transition string) string {
+	switch transition {
+	case "defer", "pause":
+		return "paused"
+	case "abandon", "cancel", "complete", "supersede", "resolve", "clear":
+		return "resolved"
+	default:
+		return "open"
+	}
+}
+
+func narrativePendingSnapshot(payload map[string]any) *store.PendingThread {
+	raw := mapFromAny(payload["pending_thread"])
+	if len(raw) == 0 {
+		return nil
+	}
+	var thread store.PendingThread
+	if json.Unmarshal([]byte(mustCompactJSON(raw)), &thread) != nil || thread.ThreadKey == "" {
+		return nil
+	}
+	return &thread
+}
+
+func narrativePendingClaim(thread store.PendingThread, sourceKind string, index int) narrativeStateClaim {
+	metadata := parseJSONMap(thread.HookMetadataJSON)
+	subject := strings.TrimSpace(extractionFirstNonEmpty(thread.Title, stringFromMap(metadata, "title"), thread.Description))
+	transition := normalizeNarrativeTransition(stringFromMap(metadata, "transition"))
+	if transition == "" {
+		transition = "set"
+	}
+	return narrativeStateClaim{
+		Subject: subject, SubjectType: "entity", StateSlot: "goal_status",
+		LifecycleKey: normalizeNarrativeLifecycleKey(stringFromMap(metadata, "lifecycle_key")),
+		Value:        extractionFirstNonEmpty(stringFromMap(metadata, "value"), thread.Description, subject),
+		ClaimScope:   "objective", Transition: transition, Confidence: thread.Confidence,
+		EvidenceExcerpt: extractionFirstNonEmpty(stringFromMap(metadata, "evidence_excerpt"), stringFromMap(metadata, "evidence")),
+		SourceKind:      sourceKind, SourceIndex: index, PendingThread: &thread, LifecycleDetails: metadata,
+	}
+}
+
+func narrativePendingThreadForExtraction(sid string, turnIndex int, raw map[string]any, now time.Time) store.PendingThread {
+	title := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(raw, "title"), stringFromMap(raw, "description"), stringFromMap(raw, "thread_type")))
+	key := stableKey("thread", title)
+	if lifecycleKey := narrativeLifecycleStorageKey(stringFromMap(raw, "lifecycle_key")); lifecycleKey != "" {
+		key = lifecycleKey
+	}
+	return store.PendingThread{
+		ChatSessionID: sid, ThreadKey: key, Title: title,
+		Description: extractionFirstNonEmpty(stringFromMap(raw, "details"), title), Status: "open",
+		CreatedTurn: turnIndex, SourceTurn: turnIndex, Priority: intFromAny(raw["priority"], 0),
+		HookType: stringFromMap(raw, "thread_type"), ThreadType: stringFromMap(raw, "thread_type"),
+		HookMetadataJSON: mustCompactJSON(raw), DetailsJSON: mustCompactJSON(raw),
+		Owner: sanitizeParticipantActorName(stringFromMap(raw, "owner")), Target: sanitizeParticipantActorName(stringFromMap(raw, "target")),
+		LastSeenTurn: turnIndex, Confidence: clampFloat(extractionFloatFromAny(raw["confidence"], 0), 0, 1), CreatedAt: now, UpdatedAt: now,
+	}
+}
+
+// Legacy pending/resolution inputs already carry a Critic decision. Normalize
+// them into the same state owner without requiring a redundant state_claim.
+func narrativeLifecycleClaims(claims []narrativeStateClaim, extraction map[string]any, currents []store.StatusCurrentValue, threads []store.PendingThread, sid string, turnIndex int, now time.Time) []narrativeStateClaim {
+	byOwner := map[string]int{}
+	for i := range claims {
+		byOwner[narrativeStateOwnerID(claims[i])] = i
+	}
+	threadByKey := map[string]store.PendingThread{}
+	for _, thread := range threads {
+		if _, exists := threadByKey[thread.ThreadKey]; !exists {
+			threadByKey[thread.ThreadKey] = thread
+		}
+	}
+	for _, current := range currents {
+		if snapshot := narrativePendingSnapshot(parseJSONMap(current.ValueJSON)); snapshot != nil {
+			if _, found := threadByKey[snapshot.ThreadKey]; !found {
+				threadByKey[snapshot.ThreadKey] = *snapshot
+			}
+		}
+	}
+	for i, raw := range sliceFromAny(extraction["pending_threads"]) {
+		thread := narrativePendingThreadForExtraction(sid, turnIndex, mapFromAny(raw), now)
+		if thread.Title == "" {
+			continue
+		}
+		if previous, ok := threadByKey[thread.ThreadKey]; ok {
+			thread.ID, thread.CreatedTurn, thread.CreatedAt = previous.ID, previous.CreatedTurn, previous.CreatedAt
+		}
+		threadByKey[thread.ThreadKey] = thread
+		claim := narrativePendingClaim(thread, "pending_threads", i)
+		ownerID := narrativeStateOwnerID(claim)
+		if index, exists := byOwner[ownerID]; exists {
+			claims[index].PendingThread = &thread
+			// Preserve the independently accepted legacy pending input. A valid
+			// explicit transition is processed first; the existing current-state
+			// rules make its accompanying pending mention a reaffirmation.
+			claims = append(claims, claim)
+		} else {
+			byOwner[ownerID] = len(claims)
+			claims = append(claims, claim)
+		}
+	}
+	resolved := []any{}
+	resolved = append(resolved, sliceFromAny(extraction["resolved_threads"])...)
+	deltas := mapFromAny(extraction["state_deltas"])
+	resolved = append(resolved, sliceFromAny(deltas["resolved_threads"])...)
+	resolved = append(resolved, sliceFromAny(mapFromAny(deltas["unresolved_threads"])["resolved"])...)
+	for i, raw := range resolved {
+		item := mapFromAny(raw)
+		key := normalizeNarrativeLifecycleKey(stringFromMap(item, "lifecycle_key"))
+		subject := extractionFirstNonEmpty(stringFromMap(item, "subject"), stringFromMap(item, "title"), stringFromMap(item, "description"))
+		if len(item) == 0 {
+			subject = extractionStringFromAny(raw)
+		}
+		matches := []store.PendingThread{}
+		for _, thread := range threadByKey {
+			metadata := parseJSONMap(thread.HookMetadataJSON)
+			threadLifecycle := normalizeNarrativeLifecycleKey(stringFromMap(metadata, "lifecycle_key"))
+			matched := key != "" && key == threadLifecycle
+			if key == "" && threadLifecycle == "" {
+				for _, value := range []string{thread.Title, thread.Description, stringFromMap(metadata, "subject"), stringFromMap(metadata, "title")} {
+					if subject != "" && normalizeArtifactDedupeText(subject) == normalizeArtifactDedupeText(value) {
+						matched = true
+					}
+				}
+			}
+			if matched {
+				matches = append(matches, thread)
+			}
+		}
+		if len(matches) == 0 && (key != "" || subject != "") {
+			if subject == "" {
+				for _, current := range currents {
+					payload := parseJSONMap(current.ValueJSON)
+					if normalizeNarrativeLifecycleKey(stringFromMap(payload, "lifecycle_key")) == key {
+						subject = stringFromMap(payload, "subject")
+						break
+					}
+				}
+			}
+			metadata := map[string]any{"title": subject, "lifecycle_key": key}
+			unknownOrigin := narrativePendingThreadForExtraction(sid, turnIndex, metadata, now)
+			unknownOrigin.CreatedTurn = 0
+			matches = append(matches, unknownOrigin)
+		}
+		for _, thread := range matches {
+			claim := narrativePendingClaim(thread, "resolved_threads", i)
+			claim.Transition = "resolve"
+			claim.Value = extractionFirstNonEmpty(stringFromMap(item, "value"), stringFromMap(item, "resolution_note"), "resolved")
+			claim.EvidenceExcerpt = extractionFirstNonEmpty(stringFromMap(item, "evidence_excerpt"), stringFromMap(item, "evidence"))
+			claim.LifecycleDetails = item
+			if thread.CreatedTurn == 0 && thread.ID == 0 {
+				claim.PendingThread = nil
+			}
+			ownerID := narrativeStateOwnerID(claim)
+			if index, exists := byOwner[ownerID]; exists {
+				if narrativeLifecycleProjectionStatus(claims[index].Transition) != "open" {
+					claims[index].PendingThread = claim.PendingThread
+					claims = append(claims, claim)
+					continue
+				}
+				claims[index] = claim
+			} else {
+				byOwner[ownerID] = len(claims)
+				claims = append(claims, claim)
+			}
+		}
+	}
+	for i := range claims {
+		if !narrativeClaimIsLifecycle(claims[i]) || claims[i].PendingThread != nil {
+			continue
+		}
+		key := narrativeLifecycleStorageKey(claims[i].LifecycleKey)
+		if key == "" {
+			key = stableKey("thread", claims[i].Subject)
+		}
+		if thread, ok := threadByKey[key]; ok {
+			claims[i].PendingThread = &thread
+		}
+	}
+	sort.SliceStable(claims, func(i, j int) bool {
+		return claims[i].SourceKind != "pending_threads" && claims[j].SourceKind == "pending_threads"
+	})
+	return claims
 }
 
 func (s *Server) ensureNarrativeStateDefinition(ctx context.Context, sid string, now time.Time, result *artifactSaveResult) (store.StatusSchemaDefinition, bool) {
@@ -331,12 +544,15 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 	}
 	claims := normalizeNarrativeStateClaims(extraction)
 	events := sliceFromAny(extraction["narrative_events"])
-	if len(claims) == 0 && len(events) == 0 {
+	resolvedKeys, resolvedSubjects := narrativeResolvedThreadIdentities(extraction)
+	if len(claims) == 0 && len(events) == 0 && len(sliceFromAny(extraction["pending_threads"])) == 0 && len(resolvedKeys) == 0 && len(resolvedSubjects) == 0 {
 		return
 	}
 	sourceRevision := ""
+	sourceContract := ""
 	if sourceContext, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok {
 		sourceRevision = strings.TrimSpace(sourceContext.Revision)
+		sourceContract = sourceContext.ContractVersion
 	}
 	currentStore, currentOK := s.Store.(store.StatusCurrentValueStore)
 	lifecycle, lifecycleOK := s.Store.(store.StatusLifecycleStore)
@@ -348,7 +564,7 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 	if !ok {
 		return
 	}
-	currentValues, err := currentStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, 1000)
+	currentValues, err := currentStore.ListStatusCurrentValues(ctx, sid, "entity", "", narrativeStateStatusKey, -1)
 	if err != nil {
 		result.addSkipReason("narrative_state", "current_state_read_failed", err.Error())
 		return
@@ -357,38 +573,60 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 	for _, item := range currentValues {
 		currentByOwner[item.OwnerID] = item
 	}
+	threads, threadErr := s.Store.ListPendingThreads(ctx, sid, "all")
+	if threadErr != nil {
+		result.addSkipReason("narrative_state", "pending_projection_read_failed", threadErr.Error())
+	}
+	claims = narrativeLifecycleClaims(claims, extraction, currentValues, threads, sid, turnIndex, now)
 	existingEvents, _ := lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, 1000)
+	observationContext := reversibleObservationContext(ctx, s.Store, sid)
+	acceptedTransitions := map[string]bool{}
 	for _, claim := range claims {
+		ownerID := narrativeStateOwnerID(claim)
+		if (claim.SourceKind == "pending_threads" || claim.SourceKind == "resolved_threads") && acceptedTransitions[ownerID] {
+			// A legacy item accompanying an accepted transition describes that
+			// same projection; it is not another write decision or failure route.
+			continue
+		}
+		legacyLifecycleInput := claim.SourceKind == "pending_threads" || claim.SourceKind == "resolved_threads"
 		claim.EvidenceExcerpt = sanitizeEvidenceExcerptForTurn(claim.EvidenceExcerpt, content)
-		if claim.EvidenceExcerpt == "" {
+		if claim.EvidenceExcerpt == "" && !legacyLifecycleInput {
 			result.addSkipReason("narrative_state", "evidence_excerpt_not_grounded", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot})
 			continue
 		}
-		goalLifecycle := claim.ClaimScope == "objective" && (claim.LifecycleKey != "" ||
-			(claim.SubjectType == "entity" && claim.StateSlot == "goal_status"))
-		if goalLifecycle && claim.Confidence < narrativeStateMinimumConfidence {
+		goalLifecycle := narrativeClaimIsLifecycle(claim)
+		if goalLifecycle && claim.Confidence < narrativeStateMinimumConfidence && !legacyLifecycleInput {
 			result.addSkipReason("narrative_state", "low_confidence_current_state_change", map[string]any{
 				"subject": claim.Subject, "state_slot": claim.StateSlot, "confidence": claim.Confidence,
 			})
 			continue
 		}
-		ownerID := narrativeStateOwnerID(claim)
 		previous := currentByOwner[ownerID]
 		previousPayload := map[string]any{}
 		_ = json.Unmarshal([]byte(strings.TrimSpace(previous.ValueJSON)), &previousPayload)
+		previousEventJSON := previous.ValueJSON
+		if claim.PendingThread != nil && narrativePendingSnapshot(previousPayload) == nil {
+			for _, thread := range threads {
+				if thread.ThreadKey == claim.PendingThread.ThreadKey {
+					priorPayload := parseJSONMap(previous.ValueJSON)
+					priorPayload["pending_thread"] = thread
+					previousEventJSON = mustCompactJSON(priorPayload)
+					break
+				}
+			}
+		}
 		previousValue := strings.TrimSpace(extractionStringFromAny(previousPayload["value"]))
-		if previous.SourceTurn > turnIndex && turnIndex > 0 {
-			result.addSkipReason("narrative_state", "older_turn_cannot_replace_current_state", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "current_turn": previous.SourceTurn, "incoming_turn": turnIndex})
+		if store.StatusCurrentObservationTurn(previous) > turnIndex && turnIndex > 0 {
+			result.addSkipReason("narrative_state", "older_turn_cannot_replace_current_state", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "current_turn": store.StatusCurrentObservationTurn(previous), "incoming_turn": turnIndex})
 			continue
 		}
 		previousTransition := normalizeNarrativeTransition(extractionStringFromAny(previousPayload["transition"]))
-		incomingClosing := false
-		switch claim.Transition {
-		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
-			incomingClosing = true
-		}
+		incomingClosing := narrativeLifecycleProjectionStatus(claim.Transition) != "open"
 		sameValue := previousValue != "" && normalizeArtifactDedupeText(previousValue) == normalizeArtifactDedupeText(claim.Value)
-		if sameValue && (!goalLifecycle || !incomingClosing || previousTransition == claim.Transition) {
+		progressEvidenceChanged := goalLifecycle && (claim.Transition == "progress" || claim.Transition == "partial" || claim.Transition == "modify" || claim.Transition == "missed" || claim.Transition == "refused" || claim.Transition == "impossible") &&
+			(mustCompactJSON(previousPayload["lifecycle_details"]) != mustCompactJSON(claim.LifecycleDetails) ||
+				stringFromMap(parseJSONMap(previous.EvidenceJSON), "evidence_excerpt") != claim.EvidenceExcerpt)
+		if sameValue && (!goalLifecycle || (previousTransition == claim.Transition && !progressEvidenceChanged) || claim.Transition == "set" || claim.Transition == "reaffirm" || claim.Transition == "uncertain") {
 			result.addSkipReason("narrative_state", "exact_current_value_reaffirmed", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "value": claim.Value})
 			continue
 		}
@@ -396,7 +634,7 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			confirmedReplacement := false
 			switch claim.Transition {
 			case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear",
-				"defer", "abandon", "complete", "supersede", "reopen", "resume":
+				"defer", "abandon", "complete", "supersede", "reopen", "resume", "progress", "partial", "cancel", "modify", "pause", "missed", "refused", "impossible":
 				confirmedReplacement = true
 			}
 			if !confirmedReplacement {
@@ -405,11 +643,7 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 				})
 				continue
 			}
-			previousClosed := false
-			switch previousTransition {
-			case "defer", "abandon", "complete", "supersede", "resolve", "clear":
-				previousClosed = true
-			}
+			previousClosed := narrativeLifecycleProjectionStatus(previousTransition) != "open"
 			explicitReactivation := claim.Transition == "reopen" ||
 				claim.Transition == "resume" ||
 				claim.Transition == "correction" ||
@@ -422,11 +656,43 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 				continue
 			}
 		}
+		acceptedTransitions[ownerID] = true
+		if len(claim.SourceFields) == 0 {
+			claim.SourceFields = stringsFromAny(previousPayload["source_fields"])
+		}
+		if claim.PendingThread == nil {
+			claim.PendingThread = narrativePendingSnapshot(previousPayload)
+		}
+		if claim.PendingThread != nil {
+			thread := *claim.PendingThread
+			if predecessor := narrativePendingSnapshot(previousPayload); predecessor != nil {
+				thread.CreatedTurn, thread.CreatedAt = predecessor.CreatedTurn, predecessor.CreatedAt
+			}
+			thread.Status = narrativeLifecycleProjectionStatus(claim.Transition)
+			thread.SourceTurn, thread.LastSeenTurn, thread.UpdatedAt = turnIndex, turnIndex, now
+			thread.ResolvedTurn = 0
+			if thread.Status == "resolved" {
+				thread.ResolvedTurn = turnIndex
+				thread.ResolutionNote = claim.Value
+			}
+			metadata := parseJSONMap(thread.HookMetadataJSON)
+			metadata["status"], metadata["transition"], metadata["value"] = thread.Status, claim.Transition, claim.Value
+			metadata["source_turn"] = turnIndex
+			if len(claim.LifecycleDetails) > 0 {
+				metadata["lifecycle_details"] = claim.LifecycleDetails
+			}
+			thread.HookMetadataJSON = mustCompactJSON(metadata)
+			claim.PendingThread = &thread
+		}
 		evidenceIDs := narrativeStateMatchingEvidenceIDs(evidence, turnIndex, claim.EvidenceExcerpt)
 		valuePayload := narrativeStateValuePayload(claim, previousValue, turnIndex)
+		if _, explicit := valuePayload["observed_at"]; !explicit {
+			valuePayload["observed_at"] = observationContext
+		}
 		evidencePayload := narrativeStateEvidencePayload(claim, evidenceIDs, turnIndex, sourceRevision)
+		evidencePayload["source_unit_id"] = fmt.Sprintf("narrative:%s:%s:%d:%d", ownerID, claim.SourceKind, claim.SourceIndex, turnIndex)
 		result.Attempted++
-		saved, err := currentStore.SaveStatusCurrentValue(ctx, store.StatusCurrentValue{
+		currentValue := store.StatusCurrentValue{
 			ChatSessionID: sid,
 			RegistryID:    definition.ID,
 			StatusKey:     narrativeStateStatusKey,
@@ -440,40 +706,64 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			WriteState:    "current",
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
-		if err != nil {
-			result.Errors++
-			result.ErrorDetails = append(result.ErrorDetails, "SaveStatusCurrentValue(narrative_state): "+err.Error())
-			continue
 		}
-		result.NarrativeCurrentStates++
 		eventKind := "set"
 		if previousValue != "" {
 			eventKind = "change"
 		}
-		result.Attempted++
-		_, err = lifecycle.SaveStatusChangeEvent(ctx, store.StatusChangeEvent{
+		event := store.StatusChangeEvent{
 			ChatSessionID:     sid,
 			RegistryID:        definition.ID,
-			StatusValueID:     saved.ID,
 			StatusKey:         narrativeStateStatusKey,
 			OwnerScope:        narrativeStateOwnerScope(claim),
 			OwnerID:           ownerID,
 			EventKind:         eventKind,
-			PreviousValueJSON: previous.ValueJSON,
-			NewValueJSON:      saved.ValueJSON,
-			EvidenceJSON:      saved.EvidenceJSON,
+			PreviousValueJSON: previousEventJSON,
+			NewValueJSON:      currentValue.ValueJSON,
+			EvidenceJSON:      currentValue.EvidenceJSON,
 			SourceTurn:        turnIndex,
+			StoryClockJSON:    reversibleObservationStoryClockJSON(mapFromAny(valuePayload["observed_at"])),
 			EventState:        "recorded",
 			CreatedAt:         now,
-		})
-		if err != nil {
-			result.Errors++
-			result.ErrorDetails = append(result.ErrorDetails, "SaveStatusChangeEvent(narrative_state): "+err.Error())
-		} else {
-			result.NarrativeStateEvents++
 		}
-		currentByOwner[ownerID] = saved
+		atomicStore, atomicOK := s.Store.(store.ReversibleStatusTransitionStore)
+		if atomicOK && sourceRevision != "" && sourceContract == completeTurnSourceAcceptanceContract {
+			saved, err := atomicStore.ApplyReversibleStatusTransition(ctx, store.ReversibleStatusTransition{
+				SourceContract: sourceContract, SourceRevision: sourceRevision,
+				SourceUnitID: extractionStringFromAny(evidencePayload["source_unit_id"]), CurrentValue: &currentValue, Event: event,
+			})
+			if err != nil {
+				result.Errors++
+				result.ErrorDetails = append(result.ErrorDetails, "ApplyReversibleStatusTransition(narrative_state): "+err.Error())
+				continue
+			}
+			if !saved.Replayed {
+				result.NarrativeCurrentStates++
+				result.NarrativeStateEvents++
+				if claim.PendingThread != nil {
+					result.PendingThreads++
+				}
+			}
+			currentByOwner[ownerID] = saved.CurrentValue
+		} else {
+			// Existing unversioned/import callers retain their established write path.
+			saved, err := currentStore.SaveStatusCurrentValue(ctx, currentValue)
+			if err != nil {
+				result.Errors++
+				result.ErrorDetails = append(result.ErrorDetails, "SaveStatusCurrentValue(narrative_state): "+err.Error())
+				continue
+			}
+			result.NarrativeCurrentStates++
+			result.Attempted++
+			event.StatusValueID = saved.ID
+			if _, err := lifecycle.SaveStatusChangeEvent(ctx, event); err != nil {
+				result.Errors++
+				result.ErrorDetails = append(result.ErrorDetails, "SaveStatusChangeEvent(narrative_state): "+err.Error())
+			} else {
+				result.NarrativeStateEvents++
+			}
+			currentByOwner[ownerID] = saved
+		}
 	}
 	for index, raw := range events {
 		item := mapFromAny(raw)
@@ -484,6 +774,12 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 		}
 		ownerID := fmt.Sprintf("event:%d:%d", turnIndex, index)
 		payload := map[string]any{"contract_version": narrativeStateContractVersion, "summary": summary, "event_type": stringFromMap(item, "event_type"), "participants": item["participants"], "source_turn": turnIndex}
+		payload["observed_at"] = observationContext
+		for _, key := range []string{"observed_at", "occurrence_time", "temporal_context", "relative_expression", "relative"} {
+			if value, exists := item[key]; exists {
+				payload[key] = value
+			}
+		}
 		evidencePayload := map[string]any{"contract_version": narrativeStateContractVersion, "source": "critic.narrative_events", "source_index": index, "source_turn": turnIndex, "evidence_excerpt": evidenceExcerpt, "direct_evidence_ids": narrativeStateMatchingEvidenceIDs(evidence, turnIndex, evidenceExcerpt)}
 		if sourceRevision != "" {
 			evidencePayload["source_revision"] = sourceRevision
@@ -500,7 +796,7 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			continue
 		}
 		result.Attempted++
-		_, err := lifecycle.SaveStatusChangeEvent(ctx, store.StatusChangeEvent{ChatSessionID: sid, RegistryID: definition.ID, StatusKey: narrativeStateStatusKey, OwnerScope: "session", OwnerID: ownerID, EventKind: "event_observed", NewValueJSON: mustCompactJSON(payload), EvidenceJSON: mustCompactJSON(evidencePayload), SourceTurn: turnIndex, EventState: "recorded", CreatedAt: now})
+		_, err := lifecycle.SaveStatusChangeEvent(ctx, store.StatusChangeEvent{ChatSessionID: sid, RegistryID: definition.ID, StatusKey: narrativeStateStatusKey, OwnerScope: "session", OwnerID: ownerID, EventKind: "event_observed", NewValueJSON: mustCompactJSON(payload), EvidenceJSON: mustCompactJSON(evidencePayload), SourceTurn: turnIndex, StoryClockJSON: reversibleObservationStoryClockJSON(mapFromAny(payload["observed_at"])), EventState: "recorded", CreatedAt: now})
 		if err == nil {
 			result.NarrativeStateEvents++
 		} else {
@@ -536,25 +832,56 @@ func narrativeStateMatchingEvidenceIDs(evidence []store.DirectEvidence, turnInde
 func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.Store, sid string, maxSourceTurn int) (int, error) {
 	currentStore, currentOK := st.(store.StatusCurrentValueStore)
 	lifecycle, lifecycleOK := st.(store.StatusLifecycleStore)
-	if !currentOK || !lifecycleOK || maxSourceTurn <= 0 {
+	if !currentOK || !lifecycleOK || maxSourceTurn < 0 {
 		return 0, nil
 	}
-	events, err := lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, 1000)
+	var events []store.StatusChangeEvent
+	var err error
+	if reversible, ok := st.(store.ReversibleStatusTransitionStore); ok {
+		events, err = reversible.ListLatestReversibleCurrentProjectionEvents(ctx, sid, []string{narrativeStateStatusKey})
+		if err == nil {
+			legacyEvents, legacyErr := lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, -1)
+			if legacyErr != nil {
+				return 0, legacyErr
+			}
+			for _, event := range legacyEvents {
+				if stringFromMap(parseJSONMap(event.EvidenceJSON), "source_revision") == "" {
+					events = append(events, event)
+				}
+			}
+		}
+	} else {
+		events, err = lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, -1)
+	}
 	if err != nil {
 		return 0, err
 	}
 	latest := map[string]store.StatusChangeEvent{}
+	seenEvents := map[int64]bool{}
 	for _, event := range events {
-		if event.StatusKey != narrativeStateStatusKey || event.EventKind == "event_observed" || strings.TrimSpace(event.NewValueJSON) == "" || event.SourceTurn <= 0 || event.SourceTurn > maxSourceTurn {
+		if event.ID > 0 && seenEvents[event.ID] {
+			continue
+		}
+		seenEvents[event.ID] = event.ID > 0
+		evidence := parseJSONMap(event.EvidenceJSON)
+		unknownRepairSource := event.SourceTurn == 0 && stringFromMap(evidence, "source_contract") == store.StateRepairContract
+		if event.StatusKey != narrativeStateStatusKey || event.EventKind == "event_observed" || strings.TrimSpace(event.NewValueJSON) == "" || (event.SourceTurn <= 0 && !unknownRepairSource) || event.SourceTurn > maxSourceTurn {
 			continue
 		}
 		current, exists := latest[event.OwnerID]
-		if !exists || event.SourceTurn > current.SourceTurn || (event.SourceTurn == current.SourceTurn && event.ID > current.ID) {
+		observedTurn, previousObservedTurn := store.StatusChangeEventObservationTurn(event), store.StatusChangeEventObservationTurn(current)
+		if !exists || observedTurn > previousObservedTurn || (observedTurn == previousObservedTurn && event.ID > current.ID) {
 			latest[event.OwnerID] = event
 		}
 	}
 	restored := 0
 	for _, event := range latest {
+		evidence := parseJSONMap(event.EvidenceJSON)
+		if stringFromMap(evidence, "projection_action") == "remove" {
+			// The latest repair records absence. Its pending snapshot is an
+			// exact undo value, not a narrative current value to resurrect.
+			continue
+		}
 		payload := map[string]any{}
 		if json.Unmarshal([]byte(event.NewValueJSON), &payload) != nil {
 			continue
@@ -581,6 +908,27 @@ func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.St
 		})
 		if err != nil {
 			return restored, err
+		}
+		if stringFromMap(evidence, "source_revision") == "" && payload["repair_pending_snapshot"] != true {
+			if snapshot := narrativePendingSnapshot(payload); snapshot != nil {
+				if saver, ok := st.(pendingThreadSaver); ok {
+					threads, err := st.ListPendingThreads(ctx, sid, "all")
+					if err != nil {
+						return restored, err
+					}
+					snapshot.ID = 0
+					for _, thread := range threads {
+						if thread.ThreadKey == snapshot.ThreadKey {
+							snapshot.ID = thread.ID
+							break
+						}
+					}
+					snapshot.UpdatedAt = time.Now().UTC()
+					if err := saver.SavePendingThread(ctx, snapshot); err != nil {
+						return restored, err
+					}
+				}
+			}
 		}
 		restored++
 	}
@@ -609,12 +957,14 @@ func narrativeCurrentStateViews(values []store.StatusCurrentValue) []narrativeCu
 			continue
 		}
 		view := narrativeCurrentStateView{Value: value, Payload: payload, Subject: strings.TrimSpace(extractionStringFromAny(payload["subject"])), Slot: strings.TrimSpace(extractionStringFromAny(payload["state_slot"])), Current: strings.TrimSpace(extractionStringFromAny(payload["value"])), Previous: strings.TrimSpace(extractionStringFromAny(payload["previous_value"])), Scope: normalizeNarrativeClaimScope(extractionStringFromAny(payload["claim_scope"])), Perspective: strings.TrimSpace(extractionStringFromAny(payload["perspective_owner"]))}
-		if view.Subject == "" || view.Slot == "" || view.Current == "" {
+		if (view.Subject == "" && normalizeNarrativeLifecycleKey(stringFromMap(payload, "lifecycle_key")) == "") || view.Slot == "" || view.Current == "" {
 			continue
 		}
 		out = append(out, view)
 	}
-	sort.SliceStable(out, func(i, j int) bool { return out[i].Value.SourceTurn > out[j].Value.SourceTurn })
+	sort.SliceStable(out, func(i, j int) bool {
+		return store.StatusCurrentObservationTurn(out[i].Value) > store.StatusCurrentObservationTurn(out[j].Value)
+	})
 	return out
 }
 
@@ -680,7 +1030,7 @@ func narrativeCorrectionTransitionNeedsCarry(payload map[string]any) bool {
 	switch normalizeNarrativeTransition(extractionStringFromAny(payload["transition"])) {
 	case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear":
 		return true
-	case "defer", "abandon", "complete", "supersede", "reopen", "resume":
+	case "defer", "abandon", "complete", "supersede", "reopen", "resume", "progress", "partial", "cancel", "modify", "pause", "missed", "refused", "impossible":
 		return normalizeNarrativeLifecycleKey(extractionStringFromAny(payload["lifecycle_key"])) != "" ||
 			(normalizeNarrativeSubjectType(extractionStringFromAny(payload["subject_type"])) == "entity" &&
 				normalizeNarrativeStateSlot(extractionStringFromAny(payload["state_slot"])) == "goal_status" &&
@@ -771,23 +1121,29 @@ func buildNarrativeContinuityCorrection(values []store.StatusCurrentValue, rawUs
 
 func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentValue, sourceTurn int, text string) bool {
 	text = strings.TrimSpace(text)
-	if sourceTurn <= 0 || text == "" {
+	if text == "" {
 		return false
 	}
 	for _, view := range narrativeCurrentStateViews(values) {
-		if view.Scope != "objective" ||
-			view.Value.SourceTurn <= sourceTurn {
+		if view.Scope != "objective" {
 			continue
 		}
 		transition := normalizeNarrativeTransition(extractionStringFromAny(view.Payload["transition"]))
 		switch transition {
-		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
+		case "defer", "abandon", "complete", "supersede", "resolve", "clear", "cancel", "pause":
 		default:
 			continue
 		}
 		subjectType := normalizeNarrativeSubjectType(extractionStringFromAny(view.Payload["subject_type"]))
 		lifecycleKey := normalizeNarrativeLifecycleKey(extractionStringFromAny(view.Payload["lifecycle_key"]))
-		if extractionFloatFromAny(view.Payload["confidence"], 0) < narrativeStateMinimumConfidence ||
+		evidencePayload := parseJSONMap(view.Value.EvidenceJSON)
+		explicitRepair := stringFromMap(evidencePayload, "source_contract") == store.StateRepairContract
+		if sourceTurn <= 0 && !explicitRepair {
+			continue
+		}
+		legacyLifecycle := stringFromMap(evidencePayload, "source") == "critic.resolved_threads" || stringFromMap(evidencePayload, "source") == "critic.pending_threads"
+		confirmedProjection := legacyLifecycle || explicitRepair
+		if (!confirmedProjection && extractionFloatFromAny(view.Payload["confidence"], 0) < narrativeStateMinimumConfidence) ||
 			(lifecycleKey == "" && (subjectType != "entity" || view.Slot != "goal_status")) {
 			continue
 		}
@@ -803,9 +1159,7 @@ func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentVal
 			view.Value.OwnerID != narrativeStateOwnerID(claim) {
 			continue
 		}
-		evidencePayload := map[string]any{}
-		if json.Unmarshal([]byte(strings.TrimSpace(view.Value.EvidenceJSON)), &evidencePayload) != nil ||
-			strings.TrimSpace(extractionStringFromAny(evidencePayload["evidence_excerpt"])) == "" ||
+		if (!confirmedProjection && strings.TrimSpace(extractionStringFromAny(evidencePayload["evidence_excerpt"])) == "") ||
 			intFromAny(evidencePayload["source_turn"], 0) != view.Value.SourceTurn {
 			continue
 		}
@@ -814,7 +1168,7 @@ func narrativeCurrentStateSupersedesOpenArtifact(values []store.StatusCurrentVal
 		if claim.LifecycleKey != "" && artifactLifecycleKey == claim.LifecycleKey {
 			return true
 		}
-		if normalizeNarrativeStateSlot(extractionStringFromAny(artifact["state_slot"])) == "goal_status" &&
+		if store.StatusCurrentObservationTurn(view.Value) > sourceTurn && normalizeNarrativeStateSlot(extractionStringFromAny(artifact["state_slot"])) == "goal_status" &&
 			normalizeArtifactDedupeText(extractionStringFromAny(artifact["subject"])) == normalizeArtifactDedupeText(view.Subject) {
 			return true
 		}

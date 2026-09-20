@@ -1389,6 +1389,7 @@ func TestMariaDBLogicalReplacementInvalidatesDescendantsAndQueuesVectorDeletes(t
 	mock.ExpectExec("INSERT INTO status_current_values").
 		WithArgs(source.ChatSessionID).
 		WillReturnResult(sqlmock.NewResult(0, 0))
+	expectNarrativePendingSnapshots46(mock, source.ChatSessionID)
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO chat_logs")).
 		WithArgs(source.ChatSessionID, source.TurnIndex, source.UserContent, now).
 		WillReturnResult(sqlmock.NewResult(1, 1))

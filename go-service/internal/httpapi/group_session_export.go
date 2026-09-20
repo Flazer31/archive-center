@@ -237,7 +237,7 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 		CreatedAt:     time.Now().UTC(),
 	})
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	response := map[string]any{
 		"status":          "ok",
 		"chat_session_id": sid,
 		"export_version":  "1.1",
@@ -296,7 +296,16 @@ func (s *Server) handleSessionExport(w http.ResponseWriter, r *http.Request) {
 		"guidance_snapshot":       guidanceSnapshot,
 		"embedding_provenance":    embeddingProvenance,
 		"lineage_summary":         lineageSummary,
-	})
+	}
+	if settings, found, err := s.storedBodyTrackingConfig(sid); err != nil {
+		response["warnings"] = []string{"body_tracking_settings_export_failed: " + err.Error()}
+	} else if found {
+		response["body_tracking_settings"] = map[string]any{
+			"contract_version": "body_tracking_settings.v1",
+			"config":           settings,
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func writeSessionExportError(w http.ResponseWriter, err error) {

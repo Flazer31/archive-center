@@ -113,6 +113,7 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 	for _, key := range prepareTurnMemoryDeliveryOrder {
 		allowedClasses[key] = true
 	}
+	allowedClasses["body_tracking"] = true
 	nextOrdinal := map[string]int{}
 	priorityRefs := map[string]map[string][]string{}
 	for _, raw := range outputFidelityLineageSlice(memoryDeliveryPlan["priority_items"]) {
@@ -120,7 +121,7 @@ func supervisorDeliveredContextItems(memoryDeliveryPlan, memoryDeliveryLineage, 
 		if extractionStringFromAny(item["selection_status"]) != "selected" {
 			continue
 		}
-		lane := strings.TrimSpace(extractionStringFromAny(item["lane"]))
+		lane := extractionFirstNonEmpty(stringFromMap(item, "delivery_lane"), strings.TrimSpace(extractionStringFromAny(item["lane"])))
 		text := strings.TrimSpace(extractionStringFromAny(item["complete_text"]))
 		if rendered := strings.TrimSpace(extractionStringFromAny(item["rendered_text"])); rendered != "" {
 			text = prepareTurnPriorityCleanLine(rendered)

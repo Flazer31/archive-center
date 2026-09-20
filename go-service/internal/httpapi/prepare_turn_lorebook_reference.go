@@ -71,6 +71,7 @@ type prepareTurnLorebookReferenceResult struct {
 	SelectionSource              string           `json:"selection_source,omitempty"`
 	candidates                   []prepareTurnLorebookCandidate
 	preprocessingRefs            *[]string
+	preprocessingRanked          bool
 	deliveryText                 string
 	delivered                    []prepareTurnLorebookDeliveredItem
 }
@@ -133,6 +134,9 @@ func finalizePrepareTurnLorebookReference(
 	selectedRanks := map[string]int{}
 	if aiSelection {
 		result.SelectionSource = "ai"
+		if result.preprocessingRanked {
+			result.SelectionSource = "jev"
+		}
 		for rank, ref := range *result.preprocessingRefs {
 			if _, exists := selectedRanks[ref]; !exists {
 				selectedRanks[ref] = rank
@@ -320,7 +324,7 @@ func finalizePrepareTurnLorebookReference(
 		} else {
 			additional++
 		}
-		if used+additional > budgetChars && !aiSelection {
+		if used+additional > budgetChars && (!aiSelection || result.preprocessingRanked) {
 			budgetDeferred++
 			result.DeferredCount++
 			for _, candidateIndex := range group.CandidateIndexes {

@@ -587,21 +587,32 @@ func (s *Server) canonicalCharacterReadProjection(ctx context.Context, sid strin
 		}
 		// The list is newest-first. Fill only surfaces absent from the newest
 		// row so a profile or voice stored under an older alias is not lost.
-		if strings.TrimSpace(current.AppearanceJSON) == "" && strings.TrimSpace(state.AppearanceJSON) != "" {
-			current.AppearanceJSON = state.AppearanceJSON
+		fillSurface := func(target *string, value, category string) {
+			if strings.TrimSpace(*target) != "" || strings.TrimSpace(value) == "" {
+				return
+			}
+			*target = value
+			fields := store.DecodeCharacterFieldProvenance(current.FieldProvenanceJSON)
+			for path := range fields {
+				if path == category || strings.HasPrefix(path, category+"/") {
+					delete(fields, path)
+				}
+			}
+			for path, provenance := range store.DecodeCharacterFieldProvenance(state.FieldProvenanceJSON) {
+				if path == category || strings.HasPrefix(path, category+"/") {
+					fields[path] = provenance
+				}
+			}
+			current.FieldProvenanceJSON = ""
+			if len(fields) > 0 {
+				current.FieldProvenanceJSON = mustCompactJSON(map[string]any{"contract_version": store.CharacterFieldProvenanceContract, "fields": fields})
+			}
 		}
-		if strings.TrimSpace(current.PersonalityJSON) == "" && strings.TrimSpace(state.PersonalityJSON) != "" {
-			current.PersonalityJSON = state.PersonalityJSON
-		}
-		if strings.TrimSpace(current.StatusJSON) == "" && strings.TrimSpace(state.StatusJSON) != "" {
-			current.StatusJSON = state.StatusJSON
-		}
-		if strings.TrimSpace(current.RelationshipsJSON) == "" && strings.TrimSpace(state.RelationshipsJSON) != "" {
-			current.RelationshipsJSON = state.RelationshipsJSON
-		}
-		if strings.TrimSpace(current.SpeechStyleJSON) == "" && strings.TrimSpace(state.SpeechStyleJSON) != "" {
-			current.SpeechStyleJSON = state.SpeechStyleJSON
-		}
+		fillSurface(&current.AppearanceJSON, state.AppearanceJSON, "/appearance")
+		fillSurface(&current.PersonalityJSON, state.PersonalityJSON, "/personality")
+		fillSurface(&current.StatusJSON, state.StatusJSON, "/status")
+		fillSurface(&current.RelationshipsJSON, state.RelationshipsJSON, "/relationships")
+		fillSurface(&current.SpeechStyleJSON, state.SpeechStyleJSON, "/speech_style")
 		if current.CreatedAt.IsZero() || (!state.CreatedAt.IsZero() && state.CreatedAt.Before(current.CreatedAt)) {
 			current.CreatedAt = state.CreatedAt
 		}
@@ -954,6 +965,7 @@ func characterResponseItem(item store.CharacterState, snapshot map[string]any, l
 		"status_json":               nullableJSONString(item.StatusJSON),
 		"relationships_json":        nullableJSONString(item.RelationshipsJSON),
 		"speech_style_json":         nullableJSONString(item.SpeechStyleJSON),
+		"field_provenance_json":     nullableJSONString(item.FieldProvenanceJSON),
 		"turn_index":                item.TurnIndex,
 		"last_observed_turn":        snapshot["last_observed_turn"],
 		"freshness_turn_gap":        snapshot["freshness_turn_gap"],
@@ -2067,14 +2079,15 @@ func (s *Server) handleCharacterDelete(w http.ResponseWriter, r *http.Request) {
 		DetailsJSON: mustCompactJSON(map[string]any{
 			"character_name": cname,
 			"previous": map[string]any{
-				"turn_index":         current.TurnIndex,
-				"appearance_json":    current.AppearanceJSON,
-				"personality_json":   current.PersonalityJSON,
-				"status_json":        current.StatusJSON,
-				"relationships_json": current.RelationshipsJSON,
-				"speech_style_json":  current.SpeechStyleJSON,
-				"created_at":         current.CreatedAt,
-				"updated_at":         current.UpdatedAt,
+				"turn_index":            current.TurnIndex,
+				"appearance_json":       current.AppearanceJSON,
+				"personality_json":      current.PersonalityJSON,
+				"status_json":           current.StatusJSON,
+				"relationships_json":    current.RelationshipsJSON,
+				"speech_style_json":     current.SpeechStyleJSON,
+				"field_provenance_json": current.FieldProvenanceJSON,
+				"created_at":            current.CreatedAt,
+				"updated_at":            current.UpdatedAt,
 			},
 			"character_events_deleted": len(events),
 			"changed_at":               changedAt,

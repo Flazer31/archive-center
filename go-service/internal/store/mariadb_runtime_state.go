@@ -65,7 +65,9 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 	}
 
 	next := *c
+	var previous *CharacterState
 	if current, err := m.GetCharacterState(ctx, c.ChatSessionID, c.CharacterName); err == nil && current != nil {
+		previous = current
 		next.AppearanceJSON = firstNonEmptyString(next.AppearanceJSON, current.AppearanceJSON)
 		next.PersonalityJSON = firstNonEmptyString(next.PersonalityJSON, current.PersonalityJSON)
 		next.StatusJSON = firstNonEmptyString(next.StatusJSON, current.StatusJSON)
@@ -74,6 +76,7 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	next.FieldProvenanceJSON = MergeCharacterStateFieldProvenance(previous, next)
 	updatedAt := c.UpdatedAt.UTC()
 	if updatedAt.IsZero() {
 		if c.CreatedAt.IsZero() {
@@ -87,17 +90,78 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 		createdAt = updatedAt
 	}
 
-	_, err := m.db.ExecContext(ctx, `
+	next.CreatedAt, next.UpdatedAt = createdAt, updatedAt
+	err := insertCharacterStateSnapshot(ctx, m.db, next)
+	if err == nil {
+		c.FieldProvenanceJSON = next.FieldProvenanceJSON
+	}
+	return err
+}
+
+func insertCharacterStateSnapshot(ctx context.Context, exec memoryDerivationSQLExecutor, next CharacterState) error {
+	_, err := exec.ExecContext(ctx, `
 		INSERT INTO character_states (
 			chat_session_id, character_name, appearance_json, personality_json,
-			status_json, relationships_json, speech_style_json, turn_index,
+			status_json, relationships_json, speech_style_json, field_provenance_json, turn_index,
 			created_at, updated_at
 		)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`, next.ChatSessionID, next.CharacterName, nullableJSONText(next.AppearanceJSON), nullableJSONText(next.PersonalityJSON),
 		nullableJSONText(next.StatusJSON), nullableJSONText(next.RelationshipsJSON), nullableJSONText(next.SpeechStyleJSON),
-		next.TurnIndex, createdAt, updatedAt)
+		nullableJSONText(next.FieldProvenanceJSON), next.TurnIndex, nonZeroTime(next.CreatedAt), nonZeroTime(next.UpdatedAt))
 	return err
+}
+
+// ApplyCharacterProvenanceRepair appends the requested metadata snapshot and its
+// existing character-event audit atomically. The operator API supplies before
+// and after; undo passes an explicitly prepared snapshot through this same owner.
+func (m *mariadbStore) ApplyCharacterProvenanceRepair(ctx context.Context, before, after CharacterState, operationID string) (CharacterEvent, error) {
+	if err := m.ensureDB(); err != nil {
+		return CharacterEvent{}, err
+	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
+	tx, err := m.db.BeginTx(ctx, nil)
+	if err != nil {
+		return CharacterEvent{}, err
+	}
+	defer tx.Rollback()
+	var event CharacterEvent
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, chat_session_id, character_name, turn_index, event_type, details_json, created_at
+		FROM character_events
+		WHERE chat_session_id = ? AND character_name = ? AND event_type = 'field_provenance_repair'
+		  AND JSON_UNQUOTE(JSON_EXTRACT(details_json, '$.operation_id')) = ?
+		ORDER BY id DESC LIMIT 1
+	`, after.ChatSessionID, after.CharacterName, operationID).Scan(&event.ID, &event.ChatSessionID, &event.CharacterName, &event.TurnIndex, &event.EventType, &event.DetailsJSON, &event.CreatedAt)
+	if err == nil {
+		if err := tx.Commit(); err != nil {
+			return CharacterEvent{}, err
+		}
+		return event, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return CharacterEvent{}, err
+	}
+	now := time.Now().UTC()
+	after.CreatedAt, after.UpdatedAt = now, now
+	if err := insertCharacterStateSnapshot(ctx, tx, after); err != nil {
+		return CharacterEvent{}, err
+	}
+	details, err := json.Marshal(map[string]any{"operation_id": operationID, "before": before, "after": after})
+	if err != nil {
+		return CharacterEvent{}, err
+	}
+	event = CharacterEvent{ChatSessionID: after.ChatSessionID, CharacterName: after.CharacterName, TurnIndex: after.TurnIndex, EventType: "field_provenance_repair", DetailsJSON: string(details), CreatedAt: now}
+	result, err := tx.ExecContext(ctx, `INSERT INTO character_events (chat_session_id, character_name, turn_index, event_type, details_json, created_at) VALUES (?, ?, ?, ?, ?, ?)`, event.ChatSessionID, event.CharacterName, event.TurnIndex, event.EventType, event.DetailsJSON, now)
+	if err != nil {
+		return CharacterEvent{}, err
+	}
+	event.ID, _ = result.LastInsertId()
+	if err := tx.Commit(); err != nil {
+		return CharacterEvent{}, err
+	}
+	return event, nil
 }
 
 func (m *mariadbStore) ListCharacterStates(ctx context.Context, chatSessionID string) ([]CharacterState, error) {
@@ -114,7 +178,7 @@ func (m *mariadbStore) ListCharacterStatesCurrentBefore(ctx context.Context, cha
 	rows, err := m.db.QueryContext(ctx, `
 		SELECT state.id, state.chat_session_id, state.character_name, state.appearance_json,
 			   state.personality_json, state.status_json, state.relationships_json,
-			   state.speech_style_json, state.turn_index, state.created_at, state.updated_at
+			   state.speech_style_json, state.field_provenance_json, state.turn_index, state.created_at, state.updated_at
 		FROM character_states state
 		WHERE state.chat_session_id = ?
 		  AND (? <= 0 OR COALESCE(state.turn_index, 0) < ?)
@@ -137,11 +201,11 @@ func (m *mariadbStore) ListCharacterStatesCurrentBefore(ctx context.Context, cha
 	var out []CharacterState
 	for rows.Next() {
 		var item CharacterState
-		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON sql.NullString
+		var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON, fieldProvenanceJSON sql.NullString
 		var turnIndex sql.NullInt64
 		if err := rows.Scan(
 			&item.ID, &item.ChatSessionID, &item.CharacterName, &appearanceJSON,
-			&personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON,
+			&personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON, &fieldProvenanceJSON,
 			&turnIndex, &item.CreatedAt, &item.UpdatedAt,
 		); err != nil {
 			return nil, err
@@ -151,6 +215,7 @@ func (m *mariadbStore) ListCharacterStatesCurrentBefore(ctx context.Context, cha
 		item.StatusJSON = stringFromNull(statusJSON)
 		item.RelationshipsJSON = stringFromNull(relationshipsJSON)
 		item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
+		item.FieldProvenanceJSON = stringFromNull(fieldProvenanceJSON)
 		item.TurnIndex = intFromNull(turnIndex)
 		out = append(out, item)
 	}
@@ -169,17 +234,17 @@ func (m *mariadbStore) GetCharacterState(ctx context.Context, chatSessionID, cha
 		return nil, err
 	}
 	var item CharacterState
-	var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON sql.NullString
+	var appearanceJSON, personalityJSON, statusJSON, relationshipsJSON, speechStyleJSON, fieldProvenanceJSON sql.NullString
 	var turnIndex sql.NullInt64
 	err := m.db.QueryRowContext(ctx, `
 		SELECT id, chat_session_id, character_name, appearance_json, personality_json, status_json,
-			   relationships_json, speech_style_json, turn_index, created_at, updated_at
+			   relationships_json, speech_style_json, field_provenance_json, turn_index, created_at, updated_at
 		FROM character_states
 		WHERE chat_session_id = ? AND character_name = ?
 		ORDER BY turn_index DESC, id DESC
 		LIMIT 1
 	`, chatSessionID, characterName).Scan(&item.ID, &item.ChatSessionID, &item.CharacterName,
-		&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON,
+		&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON, &fieldProvenanceJSON,
 		&turnIndex, &item.CreatedAt, &item.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
@@ -192,6 +257,7 @@ func (m *mariadbStore) GetCharacterState(ctx context.Context, chatSessionID, cha
 	item.StatusJSON = stringFromNull(statusJSON)
 	item.RelationshipsJSON = stringFromNull(relationshipsJSON)
 	item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
+	item.FieldProvenanceJSON = stringFromNull(fieldProvenanceJSON)
 	item.TurnIndex = intFromNull(turnIndex)
 	return &item, nil
 }
@@ -199,6 +265,9 @@ func (m *mariadbStore) GetCharacterState(ctx context.Context, chatSessionID, cha
 func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) error {
 	if err := m.ensureDB(); err != nil {
 		return err
+	}
+	if p.ID > 0 {
+		return updatePendingThreadByID(ctx, m.db, p)
 	}
 	now := nonZeroTime(p.UpdatedAt)
 	result, err := m.db.ExecContext(ctx, `
@@ -251,6 +320,71 @@ func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) 
 		p.CreatedTurn, p.ResolvedTurn, p.SourceTurn, p.Priority, nullableString(p.HookType),
 		nullableString(firstNonEmptyString(p.HookMetadataJSON, p.DetailsJSON)), p.Pinned, p.Suppressed,
 		p.UserCorrected, nonZeroTime(p.CreatedAt), now)
+	return err
+}
+
+type pendingThreadExecutor interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}
+
+// An identified lifecycle update may reopen a resolved occurrence. The row's
+// creation and manual trust fields belong to that occurrence and stay intact.
+func updatePendingThreadByID(ctx context.Context, exec pendingThreadExecutor, p *PendingThread) error {
+	_, err := exec.ExecContext(ctx, `
+		UPDATE pending_threads
+		SET description = COALESCE(?, description),
+			status = COALESCE(?, status),
+			resolved_turn = NULLIF(?, 0),
+			source_turn = NULLIF(?, 0),
+			priority = NULLIF(?, 0),
+			hook_type = COALESCE(?, hook_type),
+			hook_metadata_json = COALESCE(?, hook_metadata_json),
+			updated_at = ?
+		WHERE id = ?
+	`, nullableString(p.Description), nullableString(firstNonEmptyString(p.Status, "open")),
+		p.ResolvedTurn, p.SourceTurn, p.Priority, nullableString(p.HookType),
+		nullableString(firstNonEmptyString(p.HookMetadataJSON, p.DetailsJSON)), nonZeroTime(p.UpdatedAt), p.ID)
+	return err
+}
+
+// projectNarrativePendingThreadTx consumes the pending projection recorded with
+// the accepted narrative transition. Its thread key identifies the occurrence;
+// a deleted row ID is not a new occurrence and may be allocated again.
+func projectNarrativePendingThreadTx(ctx context.Context, tx *sql.Tx, chatSessionID, valueJSON string) error {
+	var value struct {
+		PendingThread *PendingThread `json:"pending_thread"`
+	}
+	if json.Unmarshal([]byte(valueJSON), &value) != nil || value.PendingThread == nil {
+		return nil
+	}
+	p := value.PendingThread
+	p.ChatSessionID = chatSessionID
+	if strings.TrimSpace(p.ThreadKey) == "" {
+		return nil
+	}
+	var existingID int64
+	err := tx.QueryRowContext(ctx, `
+		SELECT id FROM pending_threads
+		WHERE chat_session_id = ? AND thread_key = ?
+		ORDER BY id DESC LIMIT 1
+	`, chatSessionID, p.ThreadKey).Scan(&existingID)
+	if err == nil {
+		p.ID = existingID
+		return updatePendingThreadByID(ctx, tx, p)
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO pending_threads (
+			chat_session_id, thread_key, description, status, created_turn,
+			resolved_turn, source_turn, priority, hook_type, hook_metadata_json,
+			pinned, suppressed, user_corrected, created_at, updated_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, chatSessionID, p.ThreadKey, nullableString(p.Description), firstNonEmptyString(p.Status, "open"),
+		p.CreatedTurn, p.ResolvedTurn, p.SourceTurn, p.Priority, nullableString(p.HookType),
+		nullableString(firstNonEmptyString(p.HookMetadataJSON, p.DetailsJSON)), p.Pinned, p.Suppressed,
+		p.UserCorrected, nonZeroTime(p.CreatedAt), nonZeroTime(p.UpdatedAt))
 	return err
 }
 

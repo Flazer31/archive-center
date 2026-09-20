@@ -60,6 +60,8 @@ func TestApplyPendingUpdatesManagedTemplatesAndPreservesDatabaseRuntimeAndSecret
 	mustWrite(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
 	mustWrite(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
 	mustWrite(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	const bodySettings = `{"contract_version":"body_tracking_settings.v1","sessions":{"story":{"cycle_tracking_enabled":true,"simulation_seed":"test-seed-preserve"}}}`
+	mustWrite(t, filepath.Join(root, "data/body-tracking.json"), bodySettings)
 	mustWrite(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
 	mustWrite(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
 
@@ -72,6 +74,7 @@ func TestApplyPendingUpdatesManagedTemplatesAndPreservesDatabaseRuntimeAndSecret
 	assertFile(t, filepath.Join(root, ".env.full.local"), "SECRET=keep")
 	assertFile(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
 	assertFile(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	assertFile(t, filepath.Join(root, "data/body-tracking.json"), bodySettings)
 	assertFile(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
 	assertFile(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
 
@@ -80,6 +83,7 @@ func TestApplyPendingUpdatesManagedTemplatesAndPreservesDatabaseRuntimeAndSecret
 	}
 	assertFile(t, filepath.Join(root, "data/mariadb-data/sentinel.txt"), "mariadb=keep")
 	assertFile(t, filepath.Join(root, "data/chromadb-data/sentinel.txt"), "chromadb=keep")
+	assertFile(t, filepath.Join(root, "data/body-tracking.json"), bodySettings)
 	assertFile(t, filepath.Join(root, ".runtime/sentinel.txt"), "runtime=keep")
 	assertFile(t, filepath.Join(root, "secrets/provider.txt"), "provider=keep")
 }

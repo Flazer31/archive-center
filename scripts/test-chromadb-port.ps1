@@ -115,7 +115,7 @@ try {
     Assert ($resolvedMaria -eq 3311 -and $env:AC_MARIADB_PORT -eq '3311') 'MariaDB process port differs'
     Assert ($env:AC_MARIADB_DSN -ceq 'fixture:pass@tcp(fake)/word@tcp(127.0.0.1:3311)/fixture_db?parseTime=true&charset=utf8mb4') 'Local DSN port or credentials changed incorrectly'
     Assert ($env:AC_BIND_ADDR -eq '0.0.0.0:28111') 'Backend ignored saved port'
-    foreach ($bindHost in @('127.0.0.1', '100.96.60.55', '[::]', '[::1]')) {
+    foreach ($bindHost in @('127.0.0.1', '100.64.0.10', '[::]', '[::1]')) {
         $env:AC_BIND_ADDR = "${bindHost}:28080"
         Set-ArchiveBackendEndpoint $dataRoot
         Assert ($env:AC_BIND_ADDR -eq "${bindHost}:28111") 'Saved backend port changed bind host'

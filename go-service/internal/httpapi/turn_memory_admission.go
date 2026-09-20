@@ -343,20 +343,21 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		completeTurnCriticPipelineVersion, memoryAdmissionIndexVersion,
 	)
 	admission := &store.MemoryAdmission{
-		ContractVersion:   store.MemoryAdmissionContract,
-		ChatSessionID:     sid,
-		SourceRevision:    source.Revision,
-		TurnIndex:         turnIndex,
-		DerivationVersion: store.MemoryAdmissionContract,
-		ExtractorVersion:  completeTurnCriticPipelineVersion,
-		IndexVersion:      memoryAdmissionIndexVersion,
-		ResultHash:        resultHash,
-		ResultJSON:        resultJSON,
-		Memory:            memory,
-		Evidence:          desiredEvidence,
-		PreciseUnits:      preciseUnits,
-		Vectors:           vectors,
-		CreatedAt:         now,
+		ContractVersion:                store.MemoryAdmissionContract,
+		ChatSessionID:                  sid,
+		SourceRevision:                 source.Revision,
+		TurnIndex:                      turnIndex,
+		DerivationVersion:              store.MemoryAdmissionContract,
+		ExtractorVersion:               completeTurnCriticPipelineVersion,
+		IndexVersion:                   memoryAdmissionIndexVersion,
+		ResultHash:                     resultHash,
+		ResultJSON:                     resultJSON,
+		Memory:                         memory,
+		MemoryPublicProjectionExcluded: !publicProjection.Eligible,
+		Evidence:                       desiredEvidence,
+		PreciseUnits:                   preciseUnits,
+		Vectors:                        vectors,
+		CreatedAt:                      now,
 	}
 	result.Attempted++
 	commitStartedAt := time.Now()
@@ -376,7 +377,25 @@ func (s *Server) commitAcceptedMemoryAdmission(
 				"result_hash":     committed.CommittedResultHash,
 			})
 		}
-		return true, evidenceSnapshot, preciseUnits
+		// An idempotent SQL commit does not rewrite provisional builder IDs.
+		// Reuse the persisted evidence for this already accepted source instead.
+		persisted, readErr := s.Store.ListEvidence(ctx, sid)
+		if readErr != nil {
+			result.Warnings = append(result.Warnings, "memory_admission_evidence_reload_failed")
+			persisted = existingEvidence
+		}
+		for _, unit := range preciseUnits {
+			if unit == nil {
+				continue
+			}
+			ids := storyClockMatchingEvidenceIDs(persisted, sid, turnIndex, unit.EvidenceExcerpt)
+			unit.RootEvidenceID = 0
+			if len(ids) > 0 {
+				unit.RootEvidenceID = ids[0]
+			}
+			unit.DirectEvidenceIDsJSON = mustCompactJSON(ids)
+		}
+		return true, persisted, preciseUnits
 	}
 	if committed.MemoryInserted || committed.MemoryUpdated {
 		result.Memories++
@@ -390,7 +409,9 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	if len(preciseUnits) > 0 {
 		result.Attempted += len(preciseUnits)
 	}
-	return true, evidenceSnapshot, preciseUnits
+	// SQL assigned global evidence IDs through desiredEvidence pointers. The
+	// pre-commit snapshot above is only for constructing admission candidates.
+	return true, replaceCurrentCriticEvidence(existingEvidence, sid, turnIndex, desiredEvidence), preciseUnits
 }
 
 func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any) bool {
@@ -433,6 +454,7 @@ func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[str
 		"character_identity_accuracy",
 		"subjective_entity_memories",
 		"user_interaction_profile",
+		"body_events",
 	} {
 		for _, raw := range sliceFromAny(extraction[key]) {
 			memoryAdmissionAddPerspectiveEvidenceScope(protected, mapFromAny(raw))

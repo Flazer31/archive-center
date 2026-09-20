@@ -521,6 +521,10 @@ func prepareTurnCharacterMemorySourceEligible(
 		return "", "", false
 	}
 	visibility := strings.ToLower(strings.TrimSpace(extractionStringFromAny(ref["visibility"])))
+	return prepareTurnCharacterMemoryVisibility(visibility, ownerID, perspective)
+}
+
+func prepareTurnCharacterMemoryVisibility(visibility, ownerID string, perspective map[string]any) (string, string, bool) {
 	switch visibility {
 	case "public":
 		return visibility, "", true

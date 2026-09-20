@@ -127,6 +127,7 @@ func TestPendingPromiseCompletionAndLaterMentionContract(t *testing.T) {
 	result := artifactSaveResult{}
 	cost := canonicalStateWriteCostMeasurement{}
 	save := func(turn int, extraction map[string]any) {
+		srv.saveNarrativeStateFromExtraction(ctx, "promise-session", turn, extraction, "", nil, time.Unix(int64(turn), 0), &result)
 		srv.saveCharacterAndStateArtifacts(ctx, "promise-session", turn, extraction, "", completeTurnEmbeddingConfig{}, time.Unix(int64(turn), 0), &result, nil, &cost)
 	}
 	save(46, map[string]any{"pending_threads": []any{map[string]any{"title": "Five casks of ale", "lifecycle_key": key, "description": "Ainz promised Minwoo an ale outing."}}})
@@ -172,11 +173,13 @@ func TestResolvedLifecycleClosesStoredPendingThread(t *testing.T) {
 	srv := &Server{Store: st}
 	result := artifactSaveResult{}
 	cost := canonicalStateWriteCostMeasurement{}
+	extraction := map[string]any{"state_deltas": map[string]any{"resolved_threads": []any{map[string]any{
+		"lifecycle_key": lifecycleKey, "resolution_note": "The debt was settled.",
+	}}}}
+	srv.saveNarrativeStateFromExtraction(context.Background(), "sess-thread-close", 12, extraction, "", nil, time.Unix(120, 0), &result)
 	srv.saveCharacterAndStateArtifacts(
 		context.Background(), "sess-thread-close", 12,
-		map[string]any{"state_deltas": map[string]any{"resolved_threads": []any{map[string]any{
-			"lifecycle_key": lifecycleKey, "resolution_note": "The debt was settled.",
-		}}}}, "", completeTurnEmbeddingConfig{}, time.Unix(120, 0), &result, nil, &cost,
+		extraction, "", completeTurnEmbeddingConfig{}, time.Unix(120, 0), &result, nil, &cost,
 	)
 	if len(st.savedPendingThreads) != 1 {
 		t.Fatalf("resolved_threads did not update the stored pending row: %#v", st.savedPendingThreads)

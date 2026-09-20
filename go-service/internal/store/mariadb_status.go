@@ -277,7 +277,9 @@ func (m *mariadbStore) ListStatusCurrentValues(ctx context.Context, chatSessionI
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	// -1 requests the complete projection while retaining the existing legacy
+	// and accepted-source eligibility; other callers keep their bounded default.
+	if limit <= 0 && limit != -1 {
 		limit = 100
 	}
 	if limit > 1000 {
@@ -382,7 +384,7 @@ func (m *mariadbStore) ListStatusChangeEvents(ctx context.Context, chatSessionID
 	if err := m.ensureDB(); err != nil {
 		return nil, err
 	}
-	if limit <= 0 {
+	if limit <= 0 && limit != -1 {
 		limit = 100
 	}
 	if limit > 1000 {
@@ -408,8 +410,11 @@ func (m *mariadbStore) ListStatusChangeEvents(ctx context.Context, chatSessionID
 		query += ` AND status_key = ?`
 		args = append(args, strings.TrimSpace(statusKey))
 	}
-	query += ` ORDER BY created_at DESC, id DESC LIMIT ?`
-	args = append(args, limit)
+	query += ` ORDER BY created_at DESC, id DESC`
+	if limit > 0 {
+		query += ` LIMIT ?`
+		args = append(args, limit)
+	}
 	rows, err := m.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
@@ -470,19 +475,48 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 	sourceRevision := strings.TrimSpace(transition.SourceRevision)
 	sourceUnitID := strings.TrimSpace(transition.SourceUnitID)
 	event := transition.Event
+	isRepair := strings.TrimSpace(transition.SourceContract) == StateRepairContract
+	if isRepair {
+		event.EvidenceJSON = repairStatusEvidence(event.EvidenceJSON, sourceRevision, sourceUnitID, transition.DeleteCurrent)
+		if transition.CurrentValue != nil {
+			current := *transition.CurrentValue
+			current.EvidenceJSON = repairStatusEvidence(current.EvidenceJSON, sourceRevision, sourceUnitID, false)
+			if transition.PendingSnapshot != nil {
+				current.ValueJSON = repairPendingSnapshotValue(current.ValueJSON, transition.PendingSnapshot)
+				event.NewValueJSON = current.ValueJSON
+			}
+			transition.CurrentValue = &current
+		}
+		if transition.DeleteCurrent {
+			value := map[string]any{}
+			_ = json.Unmarshal([]byte(event.NewValueJSON), &value)
+			if value == nil {
+				value = map[string]any{}
+			}
+			if transition.PendingSnapshot != nil {
+				value["pending_thread"] = transition.PendingSnapshot
+				value["repair_pending_snapshot"] = true
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				return result, err
+			}
+			event.NewValueJSON = string(encoded)
+		}
+	}
 	defer func() {
 		returnErr = reversibleStatusTransitionLockDiagnostic(returnErr, sourceRevision, sourceUnitID, event)
 	}()
 	if err := m.ensureDB(); err != nil {
 		return result, err
 	}
-	if strings.TrimSpace(transition.SourceContract) != acceptedSourceObservationContract ||
-		sourceRevision == "" || sourceUnitID == "" ||
+	if (!isRepair && strings.TrimSpace(transition.SourceContract) != acceptedSourceObservationContract) ||
+		(!isRepair && sourceRevision == "") || sourceUnitID == "" ||
 		strings.TrimSpace(event.ChatSessionID) == "" ||
 		strings.TrimSpace(event.StatusKey) == "" ||
 		strings.TrimSpace(event.OwnerScope) == "" ||
 		strings.TrimSpace(event.OwnerID) == "" ||
-		event.SourceTurn <= 0 {
+		(!isRepair && event.SourceTurn <= 0) || (isRepair && event.SourceTurn < 0) {
 		return result, ErrSourceRevisionStale
 	}
 	eventEvidence := map[string]any{}
@@ -516,20 +550,29 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 			_ = tx.Rollback()
 		}
 	}()
-	var lifecycle string
-	if err := tx.QueryRowContext(ctx, `
+	if sourceRevision != "" {
+		var lifecycle string
+		if err := tx.QueryRowContext(ctx, `
 		SELECT lifecycle_state
 		FROM memory_source_revisions
 		WHERE chat_session_id = ? AND source_revision = ?
 		FOR UPDATE
-	`, event.ChatSessionID, sourceRevision).Scan(&lifecycle); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+		`, event.ChatSessionID, sourceRevision).Scan(&lifecycle); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return result, ErrSourceRevisionStale
+			}
+			return result, err
+		}
+		if strings.TrimSpace(lifecycle) != "active" {
 			return result, ErrSourceRevisionStale
 		}
-		return result, err
-	}
-	if strings.TrimSpace(lifecycle) != "active" {
-		return result, ErrSourceRevisionStale
+	} else if isRepair {
+		// Imported history has no accepted-source row to lock. Reuse its existing
+		// registry row to serialize operation replay without fabricating a source.
+		var registryID int64
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM status_schema_registry WHERE id = ? FOR UPDATE`, event.RegistryID).Scan(&registryID); err != nil {
+			return result, err
+		}
 	}
 
 	existing, err := scanStatusChangeEvent(tx.QueryRowContext(ctx, `
@@ -538,7 +581,7 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 		       story_clock_json, event_state, created_at
 		FROM status_change_events
 		WHERE chat_session_id = ?
-		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')) = ?
+		  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')), '') = ?
 		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_unit_id')) = ?
 		ORDER BY id DESC
 		LIMIT 1
@@ -546,7 +589,7 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 	if err == nil {
 		result.Event = existing
 		result.Replayed = true
-		if transition.CurrentValue != nil {
+		if transition.CurrentValue != nil && !transition.DeleteCurrent {
 			currentRows, readErr := m.listStatusCurrentValuesWithExecutor(ctx, tx, event.ChatSessionID, event.OwnerScope, event.OwnerID, event.StatusKey)
 			if readErr != nil {
 				return ReversibleStatusTransitionResult{}, readErr
@@ -564,21 +607,54 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 	if !errors.Is(err, ErrNotFound) {
 		return result, err
 	}
-	if transition.CurrentValue != nil {
-		current := *transition.CurrentValue
+	if transition.CurrentValue != nil || (isRepair && transition.DeleteCurrent) {
 		var existingTurn sql.NullInt64
 		err := tx.QueryRowContext(ctx, `
-			SELECT source_turn
-			FROM status_current_values
+			SELECT `+statusObservationTurnSQL("current_value")+`
+			FROM status_current_values current_value
 			WHERE chat_session_id = ? AND owner_scope = ? AND owner_id = ? AND status_key = ?
 			FOR UPDATE
-		`, current.ChatSessionID, current.OwnerScope, current.OwnerID, current.StatusKey).Scan(&existingTurn)
+		`, event.ChatSessionID, event.OwnerScope, event.OwnerID, event.StatusKey).Scan(&existingTurn)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
 			return result, err
 		}
-		if existingTurn.Valid && int(existingTurn.Int64) > current.SourceTurn {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Explicit removal is still a projection observation. It keeps the
+			// same ordering as a materialized value when a delayed source arrives.
+			err = tx.QueryRowContext(ctx, `
+				SELECT `+statusObservationTurnSQL("event")+`
+				FROM status_change_events event
+				LEFT JOIN memory_source_revisions source_revision
+				  ON source_revision.chat_session_id = event.chat_session_id
+				 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.source_revision'))
+				WHERE event.chat_session_id = ? AND event.owner_scope = ? AND event.owner_id = ? AND event.status_key = ?
+				  AND `+statusProjectionSourceSQL("event", "source_revision")+`
+				  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.current_projection')) = 'true'
+				  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.projection_action')) = 'remove'
+				ORDER BY `+statusObservationTurnSQL("event")+` DESC, event.id DESC
+				LIMIT 1 FOR UPDATE
+			`, event.ChatSessionID, event.OwnerScope, event.OwnerID, event.StatusKey).Scan(&existingTurn)
+			if err != nil && !errors.Is(err, sql.ErrNoRows) {
+				return result, err
+			}
+		}
+		if existingTurn.Valid && int(existingTurn.Int64) > StatusChangeEventObservationTurn(event) {
 			return result, ErrStatusProjectionStale
 		}
+	}
+	if isRepair && len(transition.ArtifactChanges) > 0 {
+		changes, err := applyStateRepairArtifactsTx(ctx, tx, event.ChatSessionID, sourceUnitID, transition.ArtifactChanges, nonZeroTime(event.CreatedAt))
+		if err != nil {
+			return result, err
+		}
+		event.EvidenceJSON = stateRepairArtifactsEvidence(event.EvidenceJSON, changes)
+	}
+	if isRepair && transition.DeleteCurrent {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM status_current_values WHERE chat_session_id = ? AND owner_scope = ? AND owner_id = ? AND status_key = ?`, event.ChatSessionID, event.OwnerScope, event.OwnerID, event.StatusKey); err != nil {
+			return result, err
+		}
+	} else if transition.CurrentValue != nil {
+		current := *transition.CurrentValue
 		now := nonZeroTime(current.CreatedAt)
 		state := firstNonEmptyString(current.WriteState, "current")
 		res, err := tx.ExecContext(ctx, `
@@ -636,14 +712,78 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 	event.CreatedAt = eventNow
 	event.EventState = eventState
 	result.Event = event
-	if err := insertStatusTransitionDependenciesTx(ctx, tx, event, sourceRevision, sourceUnitID, priorEventID); err != nil {
-		return ReversibleStatusTransitionResult{}, err
+	if sourceRevision != "" {
+		if err := insertStatusTransitionDependenciesTx(ctx, tx, event, sourceRevision, sourceUnitID, priorEventID); err != nil {
+			return ReversibleStatusTransitionResult{}, err
+		}
+	}
+	if isRepair && transition.PendingSnapshot != nil {
+		if err := restoreRepairPendingSnapshotTx(ctx, tx, event.ChatSessionID, transition.PendingSnapshot); err != nil {
+			return ReversibleStatusTransitionResult{}, err
+		}
+	} else if transition.CurrentValue != nil && !transition.DeleteCurrent && event.StatusKey == "narrative_state" {
+		if err := projectNarrativePendingThreadTx(ctx, tx, event.ChatSessionID, result.CurrentValue.ValueJSON); err != nil {
+			return ReversibleStatusTransitionResult{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return ReversibleStatusTransitionResult{}, err
 	}
 	committed = true
 	return result, nil
+}
+
+func repairStatusEvidence(raw, sourceRevision, sourceUnitID string, remove bool) string {
+	evidence := map[string]any{}
+	_ = json.Unmarshal([]byte(raw), &evidence)
+	if evidence == nil {
+		evidence = map[string]any{}
+	}
+	evidence["source_contract"] = StateRepairContract
+	evidence["source_revision"] = sourceRevision
+	evidence["source_unit_id"] = sourceUnitID
+	evidence["current_projection"] = true
+	if remove {
+		evidence["projection_action"] = "remove"
+	}
+	encoded, _ := json.Marshal(evidence)
+	return string(encoded)
+}
+
+func repairPendingSnapshotValue(raw string, snapshot *PendingThread) string {
+	value := map[string]any{}
+	_ = json.Unmarshal([]byte(raw), &value)
+	if value == nil {
+		value = map[string]any{}
+	}
+	value["pending_thread"] = snapshot
+	value["repair_pending_snapshot"] = true
+	encoded, _ := json.Marshal(value)
+	return string(encoded)
+}
+
+func restoreRepairPendingSnapshotTx(ctx context.Context, tx *sql.Tx, sid string, snapshot *PendingThread) error {
+	value, err := json.Marshal(map[string]any{"pending_thread": snapshot})
+	if err != nil {
+		return err
+	}
+	if err := projectNarrativePendingThreadTx(ctx, tx, sid, string(value)); err != nil {
+		return err
+	}
+	// Normal lifecycle projection preserves manual flags and origin metadata.
+	// Explicit undo instead reinstates the exact observed before snapshot.
+	_, err = tx.ExecContext(ctx, `
+		UPDATE pending_threads
+		SET description = ?, status = ?, created_turn = ?, resolved_turn = NULLIF(?, 0),
+		    source_turn = NULLIF(?, 0), priority = NULLIF(?, 0), hook_type = ?, hook_metadata_json = ?,
+		    pinned = ?, suppressed = ?, user_corrected = ?, created_at = ?, updated_at = ?
+		WHERE chat_session_id = ? AND thread_key = ?
+	`, nullableString(snapshot.Description), firstNonEmptyString(snapshot.Status, "open"), snapshot.CreatedTurn,
+		snapshot.ResolvedTurn, snapshot.SourceTurn, snapshot.Priority, nullableString(snapshot.HookType),
+		nullableString(firstNonEmptyString(snapshot.HookMetadataJSON, snapshot.DetailsJSON)),
+		snapshot.Pinned, snapshot.Suppressed, snapshot.UserCorrected, nonZeroTime(snapshot.CreatedAt),
+		nonZeroTime(snapshot.UpdatedAt), sid, snapshot.ThreadKey)
+	return err
 }
 
 func reversibleStatusTransitionLockDiagnostic(err error, sourceRevision, sourceUnitID string, event StatusChangeEvent) error {
@@ -686,16 +826,17 @@ func (m *mariadbStore) latestActiveStatusEventIDTx(ctx context.Context, tx *sql.
 	err := tx.QueryRowContext(ctx, `
 		SELECT prior.id
 		FROM status_change_events prior
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = prior.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(prior.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE prior.chat_session_id = ?
+		  AND `+statusProjectionSourceSQL("prior", "source_revision")+`
 		  AND prior.status_key = ?
 		  AND prior.owner_scope = ?
 		  AND prior.owner_id = ?
 		  AND JSON_UNQUOTE(JSON_EXTRACT(prior.evidence_json, '$.current_projection')) = 'true'
-		ORDER BY prior.source_turn DESC, prior.id DESC
+		ORDER BY `+statusObservationTurnSQL("prior")+` DESC, prior.id DESC
 		LIMIT 1
 		FOR UPDATE
 	`, event.ChatSessionID, event.StatusKey, event.OwnerScope, event.OwnerID).Scan(&id)
@@ -783,26 +924,29 @@ func restoreActiveStatusCurrentValuesTx(ctx context.Context, tx *sql.Tx, chatSes
 		       event.source_turn, 'current', event.created_at, CURRENT_TIMESTAMP(3)
 		FROM status_change_events event
 		JOIN status_schema_registry registry ON registry.id = event.registry_id
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = event.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE event.chat_session_id = ?
+		  AND `+statusProjectionSourceSQL("event", "source_revision")+`
 		  AND event.new_value_json IS NOT NULL
 		  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.current_projection')) = 'true'
+		  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.projection_action')), '') <> 'remove'
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM status_change_events newer
-			JOIN memory_source_revisions newer_source
+			LEFT JOIN memory_source_revisions newer_source
 			  ON newer_source.chat_session_id = newer.chat_session_id
 			 AND newer_source.source_revision = JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.source_revision'))
 			 AND newer_source.lifecycle_state = 'active'
 			WHERE newer.chat_session_id = event.chat_session_id
+			  AND `+statusProjectionSourceSQL("newer", "newer_source")+`
 			  AND newer.status_key = event.status_key
 			  AND newer.owner_scope = event.owner_scope
 			  AND newer.owner_id = event.owner_id
 			  AND JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.current_projection')) = 'true'
-			  AND (newer.source_turn > event.source_turn OR (newer.source_turn = event.source_turn AND newer.id > event.id))
+			  AND (`+statusObservationTurnSQL("newer")+` > `+statusObservationTurnSQL("event")+` OR (`+statusObservationTurnSQL("newer")+` = `+statusObservationTurnSQL("event")+` AND newer.id > event.id))
 		  )
 		ON DUPLICATE KEY UPDATE
 			owner_label = VALUES(owner_label), value_kind = VALUES(value_kind),
@@ -810,7 +954,105 @@ func restoreActiveStatusCurrentValuesTx(ctx context.Context, tx *sql.Tx, chatSes
 			source_turn = VALUES(source_turn), write_state = 'current',
 			updated_at = CURRENT_TIMESTAMP(3)
 	`, chatSessionID)
-	return err
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		DELETE current_value FROM status_current_values current_value
+		WHERE current_value.chat_session_id = ? AND EXISTS (
+			SELECT 1 FROM status_change_events event
+			LEFT JOIN memory_source_revisions source_revision
+			  ON source_revision.chat_session_id = event.chat_session_id
+			 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.source_revision'))
+			WHERE event.chat_session_id = current_value.chat_session_id
+			  AND event.status_key = current_value.status_key AND event.owner_scope = current_value.owner_scope AND event.owner_id = current_value.owner_id
+			  AND `+statusProjectionSourceSQL("event", "source_revision")+`
+			  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.current_projection')) = 'true'
+			  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.projection_action')) = 'remove'
+			  AND NOT EXISTS (
+				SELECT 1 FROM status_change_events newer
+				LEFT JOIN memory_source_revisions newer_source
+				  ON newer_source.chat_session_id = newer.chat_session_id
+				 AND newer_source.source_revision = JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.source_revision'))
+				WHERE newer.chat_session_id = event.chat_session_id AND newer.status_key = event.status_key
+				  AND newer.owner_scope = event.owner_scope AND newer.owner_id = event.owner_id
+				  AND `+statusProjectionSourceSQL("newer", "newer_source")+`
+				  AND JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.current_projection')) = 'true'
+				  AND (`+statusObservationTurnSQL("newer")+` > `+statusObservationTurnSQL("event")+` OR (`+statusObservationTurnSQL("newer")+` = `+statusObservationTurnSQL("event")+` AND newer.id > event.id))
+			  )
+		)
+	`, chatSessionID); err != nil {
+		return err
+	}
+	rows, err := tx.QueryContext(ctx, `
+		SELECT current_value.value_json
+		FROM status_current_values current_value
+		LEFT JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = current_value.chat_session_id
+		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(current_value.evidence_json, '$.source_revision'))
+		 AND source_revision.lifecycle_state = 'active'
+		WHERE current_value.chat_session_id = ?
+		  AND `+statusProjectionSourceSQL("current_value", "source_revision")+`
+		  AND current_value.status_key = 'narrative_state'
+		  AND current_value.write_state = 'current'
+		  AND JSON_EXTRACT(current_value.value_json, '$.pending_thread') IS NOT NULL
+		UNION ALL
+		SELECT event.new_value_json FROM status_change_events event
+		LEFT JOIN memory_source_revisions source_revision
+		  ON source_revision.chat_session_id = event.chat_session_id
+		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.source_revision'))
+		WHERE event.chat_session_id = ? AND event.status_key = 'narrative_state'
+		  AND `+statusProjectionSourceSQL("event", "source_revision")+`
+		  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.current_projection')) = 'true'
+		  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.projection_action')) = 'remove'
+		  AND JSON_EXTRACT(event.new_value_json, '$.pending_thread') IS NOT NULL
+		  AND NOT EXISTS (
+			SELECT 1 FROM status_change_events newer
+			LEFT JOIN memory_source_revisions newer_source
+			  ON newer_source.chat_session_id = newer.chat_session_id
+			 AND newer_source.source_revision = JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.source_revision'))
+			WHERE newer.chat_session_id = event.chat_session_id AND newer.status_key = event.status_key
+			  AND newer.owner_scope = event.owner_scope AND newer.owner_id = event.owner_id
+			  AND `+statusProjectionSourceSQL("newer", "newer_source")+`
+			  AND JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.current_projection')) = 'true'
+			  AND (`+statusObservationTurnSQL("newer")+` > `+statusObservationTurnSQL("event")+` OR (`+statusObservationTurnSQL("newer")+` = `+statusObservationTurnSQL("event")+` AND newer.id > event.id))
+		  )
+	`, chatSessionID, chatSessionID)
+	if err != nil {
+		return err
+	}
+	var snapshots []string
+	for rows.Next() {
+		var snapshot string
+		if err := rows.Scan(&snapshot); err != nil {
+			rows.Close()
+			return err
+		}
+		snapshots = append(snapshots, snapshot)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, snapshot := range snapshots {
+		var value struct {
+			Exact   bool           `json:"repair_pending_snapshot"`
+			Pending *PendingThread `json:"pending_thread"`
+		}
+		if json.Unmarshal([]byte(snapshot), &value) == nil && value.Exact && value.Pending != nil {
+			if err := restoreRepairPendingSnapshotTx(ctx, tx, chatSessionID, value.Pending); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := projectNarrativePendingThreadTx(ctx, tx, chatSessionID, snapshot); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type statusCurrentValueQueryer interface {
@@ -823,11 +1065,12 @@ func (m *mariadbStore) listStatusCurrentValuesWithExecutor(ctx context.Context, 
 		       current_value.owner_label, current_value.value_kind, current_value.value_json, current_value.evidence_json, current_value.source_turn,
 		       current_value.write_state, current_value.created_at, current_value.updated_at
 		FROM status_current_values current_value
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = current_value.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(current_value.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE current_value.chat_session_id = ? AND current_value.owner_scope = ? AND current_value.owner_id = ? AND current_value.status_key = ?
+		  AND `+statusProjectionSourceSQL("current_value", "source_revision")+`
 		  AND current_value.write_state = 'current'
 		ORDER BY current_value.updated_at DESC, current_value.id DESC
 	`, chatSessionID, ownerScope, ownerID, statusKey)
@@ -866,7 +1109,7 @@ func (m *mariadbStore) GetReversibleStatusEventBySourceUnit(ctx context.Context,
 		       story_clock_json, event_state, created_at
 		FROM status_change_events
 		WHERE chat_session_id = ?
-		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')) = ?
+		  AND COALESCE(JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_revision')), '') = ?
 		  AND JSON_UNQUOTE(JSON_EXTRACT(evidence_json, '$.source_unit_id')) = ?
 		ORDER BY id DESC
 		LIMIT 1
@@ -887,11 +1130,12 @@ func (m *mariadbStore) ListReversibleStatusCurrentValues(ctx context.Context, ch
 		       current_value.owner_label, current_value.value_kind, current_value.value_json, current_value.evidence_json, current_value.source_turn,
 		       current_value.write_state, current_value.created_at, current_value.updated_at
 		FROM status_current_values current_value
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = current_value.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(current_value.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE current_value.chat_session_id = ?
+		  AND ` + statusProjectionSourceSQL("current_value", "source_revision") + `
 		  AND current_value.write_state = 'current'
 		  AND current_value.owner_scope = ?
 		  AND current_value.status_key IN (` + placeholders + `)
@@ -942,26 +1186,28 @@ func (m *mariadbStore) ListLatestReversibleCurrentProjectionEvents(ctx context.C
 		       e.event_kind, e.previous_value_json, e.new_value_json, e.evidence_json, e.source_turn,
 		       e.story_clock_json, e.event_state, e.created_at
 		FROM status_change_events e
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = e.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(e.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE e.chat_session_id = ?
+		  AND ` + statusProjectionSourceSQL("e", "source_revision") + `
 		  AND e.status_key IN (` + placeholders + `)
 		  AND JSON_UNQUOTE(JSON_EXTRACT(e.evidence_json, '$.current_projection')) = 'true'
 		  AND NOT EXISTS (
 			SELECT 1
 			FROM status_change_events newer
-			JOIN memory_source_revisions newer_source
+			LEFT JOIN memory_source_revisions newer_source
 			  ON newer_source.chat_session_id = newer.chat_session_id
 			 AND newer_source.source_revision = JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.source_revision'))
 			 AND newer_source.lifecycle_state = 'active'
 			WHERE newer.chat_session_id = e.chat_session_id
+			  AND ` + statusProjectionSourceSQL("newer", "newer_source") + `
 			  AND newer.status_key = e.status_key
 			  AND newer.owner_scope = e.owner_scope
 			  AND newer.owner_id = e.owner_id
 			  AND JSON_UNQUOTE(JSON_EXTRACT(newer.evidence_json, '$.current_projection')) = 'true'
-			  AND (newer.source_turn > e.source_turn OR (newer.source_turn = e.source_turn AND newer.id > e.id))
+			  AND (` + statusObservationTurnSQL("newer") + ` > ` + statusObservationTurnSQL("e") + ` OR (` + statusObservationTurnSQL("newer") + ` = ` + statusObservationTurnSQL("e") + ` AND newer.id > e.id))
 		  )
 		ORDER BY e.status_key ASC, e.owner_scope ASC, e.owner_id ASC
 	`
@@ -1028,14 +1274,15 @@ func (m *mariadbStore) GetLatestCurrentProjectionStatusChangeEvent(ctx context.C
 		       event.event_kind, event.previous_value_json, event.new_value_json, event.evidence_json, event.source_turn,
 		       event.story_clock_json, event.event_state, event.created_at
 		FROM status_change_events event
-		JOIN memory_source_revisions source_revision
+		LEFT JOIN memory_source_revisions source_revision
 		  ON source_revision.chat_session_id = event.chat_session_id
 		 AND source_revision.source_revision = JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.source_revision'))
 		 AND source_revision.lifecycle_state = 'active'
 		WHERE event.chat_session_id = ?
+		  AND `+statusProjectionSourceSQL("event", "source_revision")+`
 		  AND event.status_key = ?
 		  AND JSON_UNQUOTE(JSON_EXTRACT(event.evidence_json, '$.current_projection')) = 'true'
-		ORDER BY event.source_turn DESC, event.id DESC
+		ORDER BY `+statusObservationTurnSQL("event")+` DESC, event.id DESC
 		LIMIT 1
 	`, chatSessionID, statusKey)
 	return scanStatusChangeEvent(row)

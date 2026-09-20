@@ -15,6 +15,10 @@ import (
 )
 
 type adminSessionNormalizeRequest struct {
+	StateRepairs               []adminStateRepairEntry        `json:"state_repairs,omitempty"`
+	CharacterProvenanceRepairs []string                       `json:"character_provenance_repairs,omitempty"`
+	CharacterProvenanceUndo    []adminCharacterProvenanceUndo `json:"character_provenance_undo,omitempty"`
+
 	ChatSessionID  string                          `json:"chat_session_id"`
 	MaxItems       int                             `json:"max_items"`
 	BatchSize      int                             `json:"batch_size"`
@@ -63,6 +67,9 @@ func (s *Server) handleAdminSessionNormalize(w http.ResponseWriter, r *http.Requ
 }
 
 func (s *Server) runAdminSessionNormalize(ctx context.Context, sid string, req adminSessionNormalizeRequest, progress adminJobProgressFunc) (map[string]any, error) {
+	if req.StateRepairs != nil || req.CharacterProvenanceRepairs != nil || req.CharacterProvenanceUndo != nil {
+		return s.runAdminStateRepair(ctx, sid, req, progress)
+	}
 	if progress != nil {
 		progress(map[string]any{
 			"status":           "running",
@@ -821,6 +828,16 @@ func adminSessionNormalizeResumeExisting(req adminSessionNormalizeRequest) bool 
 }
 
 func adminSessionNormalizeJobRequest(sid string, req adminSessionNormalizeRequest, entries []dto.ChatLogRepairEntryRequest) map[string]any {
+	if req.StateRepairs != nil || req.CharacterProvenanceRepairs != nil || req.CharacterProvenanceUndo != nil {
+		return map[string]any{
+			"chat_session_id": sid, "contract_version": store.StateRepairContract,
+			"dry_run": req.DryRun, "background": true, "content_redacted": true,
+			"state_repair_count":                len(req.StateRepairs),
+			"character_provenance_repair_count": len(req.CharacterProvenanceRepairs),
+			"character_provenance_undo_count":   len(req.CharacterProvenanceUndo),
+			"skip_rescan":                       true, "skip_reindex": true,
+		}
+	}
 	return map[string]any{
 		"chat_session_id":       sid,
 		"max_items":             req.MaxItems,

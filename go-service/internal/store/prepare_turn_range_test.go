@@ -84,7 +84,7 @@ func TestMariaPrepareTurnRangeQueriesBoundHistoryAndKeepExplicitOldRows(t *testi
 
 	characterRows := sqlmock.NewRows([]string{
 		"id", "chat_session_id", "character_name", "appearance_json", "personality_json",
-		"status_json", "relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
+		"status_json", "relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 	})
 	mock.ExpectQuery(`(?s)FROM character_states state.*COALESCE\(state.turn_index, 0\) < \?.*NOT EXISTS.*character_states newer.*COALESCE\(newer.turn_index, 0\) < \?`).
 		WithArgs("range-session", 451, 451, 451, 451).

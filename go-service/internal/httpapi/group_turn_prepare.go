@@ -487,6 +487,10 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	languageContext := completeTurnLanguageContextFromClientMeta(req.ClientMeta)
 	perspectiveContext := prepareTurnPerspectiveContextFromRequest(req)
 	perspectiveContext = resolvePrepareTurnPerspectiveIdentity(r.Context(), s.Store, sid, perspectiveContext)
+	bodyConfig, bodyTrackingConfigErr := s.effectiveBodyTrackingConfig(r.Context(), sid)
+	if bodyTrackingConfigErr != nil {
+		bodyConfig = bodyTrackingConfig{} // Optional settings failure never blocks ordinary preparation.
+	}
 	historyScope := resolvePrepareTurnHistoryScope(r.Context(), s.Store, sid, currentTurnFence)
 	priorityPreciseUnits := map[string][]store.PreciseMemoryUnit{}
 	priorityPreciseCandidateLimits := map[string]int{}
@@ -547,6 +551,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	entityMemoryReadPolicy := "semantic_scope_then_all_matching_rows"
 	var narrativeCurrentValues []store.StatusCurrentValue
 	var storyClockCurrentValues []store.StatusCurrentValue
+	var bodyTrackingCurrentValues []store.StatusCurrentValue
 	var reversibleCurrentValues []store.StatusCurrentValue
 	var characterPerspectiveUnits []store.PreciseMemoryUnit
 	var activeInteractionUnits []store.PreciseMemoryUnit
@@ -821,7 +826,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if valueStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
-			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, 0); err == nil {
+			if values, err := valueStore.ListStatusCurrentValues(ctx, sid, "", "", narrativeStateStatusKey, -1); err == nil {
 				narrativeCurrentValues = values
 				readsOK++
 			} else if !errors.Is(err, store.ErrNotEnabled) {
@@ -837,8 +842,18 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if reversibleStore, ok := s.Store.(store.ReversibleStatusTransitionStore); ok {
-			if values, err := reversibleStore.ListReversibleStatusCurrentValues(ctx, sid, reversibleStateOwnerScope, reversibleStatusKeys()); err == nil {
-				reversibleCurrentValues = values
+			keys := reversibleStatusKeys()
+			if bodyConfig.CycleTrackingEnabled || bodyConfig.AutomaticPregnancyEnabled {
+				keys = append(keys, bodyTrackingStatusKey)
+			}
+			if values, err := reversibleStore.ListReversibleStatusCurrentValues(ctx, sid, reversibleStateOwnerScope, keys); err == nil {
+				for _, value := range values {
+					if value.StatusKey == bodyTrackingStatusKey {
+						bodyTrackingCurrentValues = append(bodyTrackingCurrentValues, value)
+					} else {
+						reversibleCurrentValues = append(reversibleCurrentValues, value)
+					}
+				}
 				if len(values) > 0 {
 					readsOK++
 				}
@@ -875,6 +890,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	activeInteractionUnits = prepareTurnHistoryBeforeCurrent(activeInteractionUnits, currentTurnFence, func(item store.PreciseMemoryUnit) int { return item.SourceTurnEnd })
 	narrativeCurrentValues = prepareTurnHistoryBeforeCurrent(narrativeCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
 	storyClockCurrentValues = prepareTurnHistoryBeforeCurrent(storyClockCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
+	bodyTrackingCurrentValues = prepareTurnHistoryBeforeCurrent(bodyTrackingCurrentValues, currentTurnFence, store.StatusCurrentObservationTurn)
 	reversibleCurrentValues = prepareTurnHistoryBeforeCurrent(reversibleCurrentValues, currentTurnFence, func(item store.StatusCurrentValue) int { return item.SourceTurn })
 	materializedAfterCurrentTurnFence := len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(charEvents) + len(pendingThreads) + len(activeStates) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories) + len(characterPerspectiveUnits) + len(activeInteractionUnits) + len(narrativeCurrentValues) + len(storyClockCurrentValues) + len(reversibleCurrentValues)
 	materializationTrace["current_turn_fence_applied"] = currentTurnFence > 0
@@ -1032,6 +1048,8 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			characterSeeds, _ := characterPerspectivePacket["_character_perspective_fact_seeds"].([]prepareTurnPriorityFactSeed)
 			assemblyPerspectiveContext := &prepareTurnAssemblyPerspective{
 				Public: perspectiveContext, NarrativeValues: narrativeCurrentValues, ActiveStates: activeStates,
+				ReversibleValues: reversibleCurrentValues, StoryClock: currentStoryClock19,
+				BodyTracking:  &prepareTurnBodyTrackingContext{SessionID: sid, Config: bodyConfig, Values: bodyTrackingCurrentValues},
 				CharacterText: characterPerspectiveCandidateText, CharacterSeeds: characterSeeds,
 				CharacterCount:        intFromAny(characterPerspectivePacket["candidate_count"], 0),
 				InteractionPublicText: activeInteractionPublicCandidateText, InteractionGuardedText: activeInteractionGuardedCandidateText,
@@ -1077,7 +1095,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			multiConfig, multiConfigErr := s.loadMultiAgentSettings()
 			if multiConfigErr != nil {
 				injectionAssembly.MemoryDeliveryPlan["preprocessing_config_error"] = multiConfigErr.Error()
-			} else if multiConfig.Enabled {
+			} else if multiConfig.Enabled || multiConfig.Jev.Enabled {
 				facts, summaries := multiAgentCandidatePool(&injectionAssembly)
 				laneCaps, _ := prepareTurnPriorityDeliveryCaps(memoryInjectionBudget, stringPtrValue(req.Settings.MemoryDeliveryBudgetMode, "auto"), req.Settings.MemoryDeliveryBudgets)
 				// Retrieval overlaps; candidate assembly retains its existing shared-input
@@ -1127,6 +1145,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					"perspective": injectionAssembly.PerspectiveContext, "protected_memory_guidance": injectionAssembly.ProtectedMemoryText,
 					"lorebook_candidates": prepareTurnLorebookPreprocessingCandidates(lorebookReference), "lorebook_budget_chars": lorebookReferenceMaxChars,
 					"recent_conversation_reading": multiAgentRecentReading(priorityMemoryRequest, chatLogs, assemblyInput.Common.GeneralMemories),
+					"go_baseline_plan":            injectionAssembly.MemoryDeliveryPlan,
 				})
 				if len(selection.Searches) > 0 {
 					timing.addMilliseconds("preprocessing_search", selection.SearchDurationMS)
@@ -1134,6 +1153,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 				assemblyTiming.addElapsed("preprocessing_wall", preprocessingStarted)
 				assemblyStageStarted = time.Now()
 				lorebookReference.preprocessingRefs = selection.LorebookRefs
+				lorebookReference.preprocessingRanked = selection.usesJev("world_state")
 				selection.CandidateSources = map[string]any{
 					"pending_threads_materialized": len(pendingThreads), "pending_threads_read_failed": pendingThreadReadErr != nil,
 					"storylines_materialized": len(storylines), "storylines_selected_for_assembly": len(selectedStorylines),
@@ -1268,6 +1288,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	memoryAssemblyTiming = assemblyTiming.snapshot()
 	if injectionAssembly.Preprocessing != nil {
 		memoryAssemblyTiming["preprocessing_stages_ms"] = injectionAssembly.Preprocessing.TimingMS
+		memoryAssemblyTiming["jev"] = jevTimingView(injectionAssembly.Preprocessing)
 		injectionAssembly.Preprocessing.AssemblyTiming = memoryAssemblyTiming
 	}
 	referenceRecallStartedAt := time.Now()
@@ -1314,6 +1335,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	referenceBudgetPolicy.Truncated = primaryCanonBase.Truncated || (referenceInjectionEnabled && referenceInjectedCount < len(referenceRecall.InjectionItems))
 	referenceText := strings.Join(nonEmptyStrings([]string{primaryCanonBase.Text, referenceInjectionText}), "\n\n")
 	memoryAndStateText := strings.Join(nonEmptyStrings([]string{memoryDeliveryText, reversibleStateText}), "\n\n")
+	bodyMemoryBudget := mapFromAny(injectionAssembly.MemoryDeliveryPlan["body_tracking_budget"])
+	bodyMemoryText := stringFromMap(bodyMemoryBudget, "final_text")
+	mainMemoryAndStateText := strings.Join(nonEmptyStrings([]string{strings.TrimSpace(strings.TrimSuffix(memoryDeliveryText, bodyMemoryText)), reversibleStateText}), "\n\n")
 	injectionTruncated := injectionAssembly.Truncated
 
 	var inputContextText string
@@ -1646,7 +1670,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 	payloadApplicationPlan := buildPrepareTurnPayloadApplicationPlan(
 		rawUserInput,
 		referenceText,
-		memoryAndStateText,
+		mainMemoryAndStateText,
 		inputContextText,
 		injectionEnabled,
 		inputContextEnabled,
@@ -1657,6 +1681,9 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		supervisorCallStatus,
 		preprocessingNotes,
 	)
+	if cap := intFromAny(bodyMemoryBudget["cap_chars"], 0); cap > 0 {
+		attachPrepareTurnAdditionalPayloadLane(payloadApplicationPlan, "body_tracking", "Body State Context", bodyMemoryText, cap, injectionEnabled, nil)
+	}
 	if lorebookReference.Mode == prepareTurnLorebookModeReferenceAssist {
 		attachPrepareTurnLorebookReferenceLane(
 			payloadApplicationPlan,
@@ -1680,12 +1707,14 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		payloadApplicationPlan,
 		map[string]int{
 			"long_term_memory":   maxInjectionChars,
+			"body_tracking":      intFromAny(bodyMemoryBudget["cap_chars"], 0),
 			"original_work":      referenceBudgetBasisChars,
 			"lorebook_reference": lorebookReferenceMaxChars,
 			"output_guidance":    narrativeSupportMaxChars,
 		},
 		map[string]prepareTurnPayloadBudgetLaneStats{
 			"long_term_memory": prepareTurnMemoryPayloadBudgetStats(injectionAssembly.MemoryDeliveryPlan, reversibleStateText),
+			"body_tracking":    {CandidateCount: intFromAny(bodyMemoryBudget["candidate_count"], 0), CandidateChars: intFromAny(bodyMemoryBudget["candidate_chars"], 0), SelectedCount: intFromAny(bodyMemoryBudget["selected_count"], 0), SelectedChars: len([]rune(bodyMemoryText)), FinalCount: intFromAny(bodyMemoryBudget["selected_count"], 0), EffectiveCap: prepareTurnPayloadBudgetEnabledCap(injectionEnabled, intFromAny(bodyMemoryBudget["cap_chars"], 0)), ExclusionReason: map[string]int{"body_tracking_char_budget_reached": intFromAny(prepareTurnPayloadBudgetReasonCounts(injectionAssembly.MemoryDeliveryPlan["exclusion_reasons"])["body_tracking_char_budget_reached"], 0)}},
 			"original_work": prepareTurnOriginalWorkPayloadBudgetStats(
 				referenceCandidateRecall,
 				referenceRecall,
@@ -1882,7 +1911,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			},
 			"payload_application_plan":        payloadApplicationPlan,
 			"memory_recall_plan":              injectionPack["memory_recall_plan"],
-			"memory_delivery_plan":            injectionPack["memory_delivery_plan"],
+			"memory_delivery_plan":            compactPrepareTurnMemoryQueryText(mapFromAny(injectionPack["memory_delivery_plan"])),
 			"memory_delivery_lineage":         boundedMemoryDeliveryLineage,
 			"source_to_payload_lineage":       sourceToPayloadLineage,
 			"memory_injection_baseline":       memoryInjectionBaseline,

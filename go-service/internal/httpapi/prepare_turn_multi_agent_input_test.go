@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/dto"
@@ -1054,5 +1055,111 @@ func Test43MultiAgentDispatchDiagnosticDistinguishesLocalBuildAndRemoteError(t *
 	remote := server.callMultiAgent(context.Background(), "world_state", cfg, 1, map[string]any{})
 	if remote.Error == "" || !remote.Dispatched || requests != 1 {
 		t.Fatalf("remote provider failure was misclassified by its message: %+v requests=%d", remote, requests)
+	}
+}
+
+// This exercises real typed projection, reading construction, bounded packing,
+// reference resolution and final rendering. The external AI choice is not tested.
+func Test46DistinctContextsSurviveRepeatedDetails(t *testing.T) {
+	raw := `[{"rule":"Only guild members may enter the northern archive chamber","scope":"archive north","scope_name":"north","category":"access","exception":"Never enter while the warning lamp remains red","evidence_excerpt":"Mira said to keep the northern chamber closed under the red lamp."},{"rule":"Only guild members may enter the southern archive chamber","scope":"archive south","scope_name":"south","category":"access","exception":"Never enter while the warning bell remains active","evidence_excerpt":"Mira said to keep the southern chamber closed under the active bell."}]`
+	out := context45Assembly(t, raw, 18000, "auto")
+	facts, summaries := multiAgentCandidatePool(&out)
+	grouped := map[string][]prepareTurnPriorityMemoryCandidate{}
+	order := []string{}
+	for _, c := range facts {
+		if c.Minimum == nil {
+			t.Fatal("fixture lacks production minimum context")
+		}
+		key := c.Minimum.Group
+		if len(grouped[key]) == 0 {
+			order = append(order, key)
+		}
+		grouped[key] = append(grouped[key], c)
+	}
+	if len(order) != 2 {
+		t.Fatalf("expected two independent observed source contexts, got %d", len(order))
+	}
+	ordered := []prepareTurnPriorityMemoryCandidate{}
+	capChars := 0
+	for _, key := range order {
+		maxChars := 0
+		for _, c := range grouped[key] {
+			n := utf8.RuneCountInString(c.Minimum.Text)
+			if n > maxChars {
+				maxChars = n
+			}
+			ordered = append(ordered, c)
+		}
+		capChars += maxChars
+	}
+	before := mustCompactJSON(ordered)
+	cfg := defaultMultiAgentSettings()
+	cfg.CandidateChars = capChars
+	packet := multiAgentInput("world_state", ordered, summaries, dto.PrepareTurnRequest{}, cfg, 18000, 5, nil)
+	if before != mustCompactJSON(ordered) {
+		t.Fatal("packing mutated its source order or scores")
+	}
+	texts := []string{}
+	selected := []string{}
+	for _, entry := range packet["candidates"].([]map[string]any) {
+		texts = append(texts, extractionStringFromAny(entry["text"]))
+		selected = append(selected, extractionStringFromAny(entry["ref"]))
+	}
+	joined := strings.Join(texts, "\n")
+	for _, value := range []string{"northern archive chamber", "southern archive chamber", "Never enter while the warning lamp remains red", "Never enter while the warning bell remains active"} {
+		if !strings.Contains(joined, value) {
+			t.Fatalf("repeated details hid another complete context: %s", value)
+		}
+	}
+	if intFromAny(packet["input_candidate_chars"], 0) > capChars {
+		t.Fatal("candidate cap exceeded")
+	}
+	choice := multiAgentRecommendation{SelectedIDs: selected}
+	resolveMultiAgentReferences(&choice, packet)
+	known := map[string]bool{}
+	for _, c := range ordered {
+		known[c.CanonicalFactID] = true
+	}
+	for _, id := range choice.SelectedIDs {
+		if !known[id] {
+			t.Fatal("wire reference did not resolve to an original source")
+		}
+	}
+	out.Preprocessing = &multiAgentSelection{Candidates: ordered, Summaries: summaries, Roles: []multiAgentRoleResult{{Role: "world_state", Source: "ai", Selection: choice}}}
+	plan := finalizePrepareTurnPriorityMemoryDeliveryPlan(&out, 18000, 5, "auto", nil, prepareTurnMemorySelectionContext{})
+	final := extractionStringFromAny(plan["final_text"])
+	for _, value := range []string{"northern archive chamber", "southern archive chamber", "Never enter while the warning lamp remains red", "Never enter while the warning bell remains active"} {
+		if !strings.Contains(final, value) {
+			t.Fatalf("selected context lost its rule or exception during delivery: %s", value)
+		}
+	}
+	assert45Budget(t, plan, 18000)
+}
+
+func Test46FirstReadingPreservesSemanticMatchAndSupplement(t *testing.T) {
+	target := prepareTurnPriorityMemoryCandidate{CanonicalFactID: "semantic-source", Lane: "world_state", SourceRef: "memories:disclosure", SourceTable: "memories", CompleteText: "The traveler removed the mask and revealed her identity before Rowan.", Relevance: .95, Importance: .7, Recency: .5, SemanticUnitID: "precise-disclosure", Visibility: "general"}
+	lexical := prepareTurnPriorityMemoryCandidate{CanonicalFactID: "lexical-source", Lane: "world_state", SourceRef: "world_rules:merchant", SourceTable: "world_rules", CompleteText: "Rowan reviews the identity of the merchant on today's public notice.", Relevance: .3, Importance: .5, Recency: .5, Visibility: "general"}
+	facts := []prepareTurnPriorityMemoryCandidate{target, lexical}
+	for i := range facts {
+		c := &facts[i]
+		c.FinalScore = prepareTurnPriorityScore(c.Relevance, c.Importance, c.Recency, c.ContinuityBonus, c.StructuredBias)
+	}
+	before := mustCompactJSON(facts)
+	input := "Rowan reviews the identity of the merchant on today's public notice."
+	cfg := defaultMultiAgentSettings()
+	cfg.CandidateChars = maxInt(utf8.RuneCountInString(target.CompleteText), utf8.RuneCountInString(lexical.CompleteText))
+	packet := multiAgentInput("world_state", facts, nil, dto.PrepareTurnRequest{RawUserInput: &input}, cfg, 18000, 5, nil)
+	if got := packet["candidates"].([]map[string]any); len(got) != 1 || got[0]["id"] != target.CanonicalFactID {
+		t.Fatal("lexical wording displaced a stronger supplied semantic match")
+	}
+	if before != mustCompactJSON(facts) {
+		t.Fatal("reading order mutated canonical source scores")
+	}
+	// A supplementary search has its own evidence order; current input wording
+	// must not silently rescore that already ordered set.
+	supplementary := []prepareTurnPriorityMemoryCandidate{lexical, target}
+	packet = multiAgentInput("world_state", supplementary, nil, dto.PrepareTurnRequest{RawUserInput: &input}, cfg, 18000, 5, nil, map[string]any{"search_evidence_ranks": map[string]float64{lexical.CanonicalFactID: 1}})
+	if got := packet["candidates"].([]map[string]any); len(got) != 1 || got[0]["id"] != lexical.CanonicalFactID {
+		t.Fatal("first-input ordering changed supplemental search order")
 	}
 }

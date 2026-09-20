@@ -47,6 +47,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		"character_identity_accuracy",
 		"subjective_entity_memories",
 		"user_interaction_profile",
+		"body_events",
 	} {
 		if len(sliceFromAny(extraction[key])) > 0 {
 			rawSummaryUnsafe = true
@@ -124,6 +125,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		"belief_updates":    true, "protected_secrets": true,
 		"character_identity_accuracy": true, "subjective_entity_memories": true,
 		"user_interaction_profile": true,
+		"body_events":              true,
 	}
 	for _, key := range interactionKeys {
 		skip[key] = true
@@ -141,7 +143,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		}
 		projected[key] = clean
 		switch key {
-		case "importance_score", "emotional_intensity", "narrative_significance", "language_context", "memory_write_contract", "archive_hint":
+		case "importance_score", "emotional_intensity", "narrative_significance", "language_context", "memory_write_contract", "archive_hint", "temporal_context":
 		default:
 			objectiveMaterialCount++
 		}

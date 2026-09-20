@@ -386,6 +386,14 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		return
 	}
 	responseWarnings := append([]string{}, warnings...)
+	// Settings are optional service data. A successful canonical copy remains
+	// successful if this separate local file cannot be copied; disclose the
+	// incomplete settings step without resetting a resumed target's edits.
+	if resumeContext == nil {
+		if _, copyErr := s.copyBodyTrackingConfig(sourceID, targetID, result.EntityIDMap); copyErr != nil {
+			responseWarnings = append(responseWarnings, "body_tracking_settings_copy_failed: "+copyErr.Error())
+		}
+	}
 	if result.Status == "copied" {
 		responseWarnings = append(
 			responseWarnings,

@@ -726,7 +726,7 @@ func (f *fixtureStore) loadSessionActiveScope(row map[string]any) {
 }
 
 func (f *fixtureStore) loadCharacterState(row map[string]any) {
-	f.characterStates = append(f.characterStates, CharacterState{ID: int64Field(row, "id"), ChatSessionID: stringField(row, "chat_session_id"), CharacterName: stringField(row, "character_name"), AppearanceJSON: stringField(row, "appearance_json"), PersonalityJSON: stringField(row, "personality_json"), StatusJSON: stringField(row, "status_json"), RelationshipsJSON: stringField(row, "relationships_json"), SpeechStyleJSON: stringField(row, "speech_style_json"), TurnIndex: intField(row, "turn_index"), CreatedAt: timeField(row, "created_at"), UpdatedAt: timeField(row, "updated_at")})
+	f.characterStates = append(f.characterStates, CharacterState{ID: int64Field(row, "id"), ChatSessionID: stringField(row, "chat_session_id"), CharacterName: stringField(row, "character_name"), AppearanceJSON: stringField(row, "appearance_json"), PersonalityJSON: stringField(row, "personality_json"), StatusJSON: stringField(row, "status_json"), RelationshipsJSON: stringField(row, "relationships_json"), SpeechStyleJSON: stringField(row, "speech_style_json"), FieldProvenanceJSON: stringField(row, "field_provenance_json"), TurnIndex: intField(row, "turn_index"), CreatedAt: timeField(row, "created_at"), UpdatedAt: timeField(row, "updated_at")})
 }
 
 func (f *fixtureStore) loadPendingThread(row map[string]any) {

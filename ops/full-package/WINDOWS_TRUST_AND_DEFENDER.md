@@ -36,18 +36,6 @@ Use these submission choices when they match the situation:
 - Additional information: include the file path, SHA256, package version, and
   local service ports listed above.
 
-## Release-Build Trust Checklist
-
-- Prefer signed Archive Center-owned binaries and PowerShell scripts.
-- Keep `PACKAGE_FILE_MANIFEST.json` and `SHA256SUMS.txt` in the package.
-- Keep the 2.3 release line as one standard package; use runtime profiles for
-  lighter behavior instead of shipping a separate Lite package.
-- Avoid hidden shell launch chains when a child process can be started directly.
-- Avoid automatic Defender exclusions. Users may add their own local exception,
-  but the package must not do that for them.
-- Remove `.runtime`, database files, logs, caches, test outputs, and local
-  development artifacts before zipping.
-
 ## Why A Clean File Can Still Be Blocked
 
 Small-batch unsigned software can be blocked before it has reputation. Bundled

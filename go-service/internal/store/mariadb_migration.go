@@ -230,6 +230,7 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 		ChromaReindexRequired: execution.VectorExpectedCount > 0,
 		ReadyForLive:          false,
 		TargetStarterReplaced: execution.TargetStarterReplaced,
+		EntityIDMap:           execution.EntityIDMap,
 	}, nil
 }
 
@@ -239,6 +240,7 @@ type sessionMigrationManifestExecution struct {
 	RowMapCount           int
 	VectorExpectedCount   int
 	TargetStarterReplaced bool
+	EntityIDMap           map[string]string
 }
 
 type sessionMigrationCell struct {
@@ -647,8 +649,14 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 			return nil, fmt.Errorf("session migration deferred FK %s.%s has no row map for %s.%s=%q",
 				item.Table, item.Column, item.Reference.ReferenceTable, item.Reference.ReferenceColumn, item.SourceValue)
 		}
+		setClause := sessionMigrationQuoteIdentifier(item.Column) + " = ?"
+		if item.Table == "memory_source_revisions" && item.Column == "superseded_by_revision" {
+			// Binding the copied successor is part of the copy, not a new source
+			// observation. Preserve the inserted timestamp against ON UPDATE.
+			setClause += ", updated_at = updated_at"
+		}
 		query := "UPDATE " + sessionMigrationQuoteIdentifier(item.Table) +
-			" SET " + sessionMigrationQuoteIdentifier(item.Column) + " = ? WHERE " +
+			" SET " + setClause + " WHERE " +
 			sessionMigrationQuoteIdentifier(item.PrimaryKey) + " = ?"
 		updateResult, err := tx.ExecContext(ctx, query, targetValue, item.TargetKey)
 		if err != nil {
@@ -708,6 +716,7 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 		RowMapCount:           rowMapCount,
 		VectorExpectedCount:   len(expectedIDs),
 		TargetStarterReplaced: targetStarter,
+		EntityIDMap:           keyMaps.forward["entity_identities.stable_entity_id"],
 	}, nil
 }
 
@@ -1004,6 +1013,28 @@ func sessionMigrationReadManifestRowsMode(
 		}
 		query += " WHERE t" + strconv.Itoa(aliasIndex) + "." + sessionMigrationQuoteIdentifier(currentEntry.SessionColumn) + " = ?"
 	}
+	if entry.Table == "memory_derivation_dependencies" {
+		// Replacement retains source/status history but deletes its old direct
+		// evidence rows. An explicitly invalidated relation to that absent parent
+		// has no operational target to copy. Keep active or unknown relations
+		// strict, and use this same selection for copy and parity readback.
+		query += ` AND NOT (
+			t0.lifecycle_state = 'invalidated'
+			AND t0.child_artifact_type = 'status_change_event'
+			AND t0.parent_artifact_type = 'direct_evidence'
+			AND EXISTS (
+				SELECT 1 FROM memory_source_revisions source_revision
+				WHERE BINARY source_revision.chat_session_id = BINARY t0.chat_session_id
+				  AND BINARY source_revision.source_revision = BINARY t0.source_revision
+				  AND source_revision.lifecycle_state IN ('superseded', 'invalidated', 'deleted')
+			)
+			AND NOT EXISTS (
+				SELECT 1 FROM direct_evidence_records parent_evidence
+				WHERE BINARY parent_evidence.chat_session_id = BINARY t0.chat_session_id
+				  AND BINARY CAST(parent_evidence.id AS CHAR) = BINARY t0.parent_artifact_id
+			)
+		)`
+	}
 	orderColumns := make([]string, len(plan.PrimaryKey))
 	for index, column := range plan.PrimaryKey {
 		orderColumns[index] = "t0." + sessionMigrationQuoteIdentifier(column)
@@ -1266,7 +1297,7 @@ func sessionMigrationInsertManifestRow(
 	deferred := []sessionMigrationDeferredFK{}
 	for _, fk := range plan.ForeignKeys {
 		sourceValue := source.Values[fk.Column]
-		if !sourceValue.Valid || strings.TrimSpace(sourceValue.Text) == "" {
+		if sessionMigrationForeignKeyAbsent(plan.Table, fk, sourceValue) {
 			continue
 		}
 		if fk.Deferred {
@@ -1765,7 +1796,7 @@ func sessionMigrationCanonicalRowsHash(
 					}
 				}
 			} else if !target {
-				textValue = sessionMigrationCanonicalSemanticSourceValue(plan, column, textValue)
+				textValue = sessionMigrationCanonicalSemanticSourceValue(plan, column, textValue, row)
 			} else if target {
 				if normalized, ok := keyMaps.source(entry.Table, column, textValue); ok {
 					textValue = normalized
@@ -1822,11 +1853,20 @@ func sessionMigrationPlanDatabaseGenerated(plan SessionMigrationExecutionPlan, c
 	return false
 }
 
+func sessionMigrationForeignKeyAbsent(table string, fk SessionMigrationForeignKeyPlan, value sessionMigrationCell) bool {
+	if !value.Valid || strings.TrimSpace(value.Text) == "" {
+		return true
+	}
+	// Direct-evidence persistence uses zero as the absence of supersession.
+	// Keep that stored sentinel, without treating it as an evidence row ID.
+	return table == "direct_evidence_records" && fk.Column == "superseded_by_id" && strings.TrimSpace(value.Text) == "0"
+}
+
 func sessionMigrationFKValueCount(rows []sessionMigrationRow, plan SessionMigrationExecutionPlan) int {
 	count := 0
 	for _, row := range rows {
 		for _, fk := range plan.ForeignKeys {
-			if value := row.Values[fk.Column]; value.Valid && strings.TrimSpace(value.Text) != "" {
+			if value := row.Values[fk.Column]; !sessionMigrationForeignKeyAbsent(plan.Table, fk, value) {
 				count++
 			}
 		}
@@ -1879,7 +1919,7 @@ func sessionMigrationVerifiedFKValueCount(
 		}
 		for _, fk := range plan.ForeignKeys {
 			sourceValue := sourceRow.Values[fk.Column]
-			if !sourceValue.Valid || strings.TrimSpace(sourceValue.Text) == "" {
+			if sessionMigrationForeignKeyAbsent(plan.Table, fk, sourceValue) {
 				continue
 			}
 			targetValue := targetRow.Values[fk.Column]
@@ -1910,6 +1950,21 @@ func sessionMigrationRemapSemanticReferences(
 			continue
 		}
 		switch semantic.Kind {
+		case SessionMigrationSemanticSourceRevisionJSON:
+			mapped := sessionMigrationRemapSourceRevisionJSON(sourceValue.Text, semantic.References["default"], maps, false)
+			if source.Values["status_key"].Text == "body_tracking" {
+				mapped, _ = sessionMigrationRemapBodyTrackingJSON(mapped, maps, false, true)
+			}
+			target.Values[semantic.Column] = sessionMigrationCell{Valid: true, Text: mapped}
+		case SessionMigrationSemanticBodyTrackingEntity:
+			if source.Values["status_key"].Text == "body_tracking" {
+				target.Values[semantic.Column] = sessionMigrationCell{Valid: true, Text: sessionMigrationRemapBodyTrackingEntity(sourceValue.Text, maps, false)}
+			}
+		case SessionMigrationSemanticBodyTrackingJSON:
+			if source.Values["status_key"].Text == "body_tracking" {
+				mapped, _ := sessionMigrationRemapBodyTrackingJSON(sourceValue.Text, maps, false, false)
+				target.Values[semantic.Column] = sessionMigrationCell{Valid: true, Text: mapped}
+			}
 		case SessionMigrationSemanticJSONIDArray:
 			mapped, err := sessionMigrationRemapJSONIDArray(sourceValue.Text, semantic.References["default"], maps, false)
 			if err != nil {
@@ -1959,6 +2014,23 @@ func sessionMigrationNormalizeSemanticReference(
 			continue
 		}
 		switch semantic.Kind {
+		case SessionMigrationSemanticSourceRevisionJSON:
+			normalized := sessionMigrationRemapSourceRevisionJSON(targetValue, semantic.References["default"], maps, true)
+			if row.Values["status_key"].Text == "body_tracking" {
+				normalized, _ = sessionMigrationRemapBodyTrackingJSON(normalized, maps, true, true)
+			}
+			return normalized, true
+		case SessionMigrationSemanticBodyTrackingEntity:
+			if row.Values["status_key"].Text == "body_tracking" {
+				return sessionMigrationRemapBodyTrackingEntity(targetValue, maps, true), true
+			}
+			return targetValue, true
+		case SessionMigrationSemanticBodyTrackingJSON:
+			if row.Values["status_key"].Text != "body_tracking" {
+				maps = nil
+			}
+			normalized, _ := sessionMigrationRemapBodyTrackingJSON(targetValue, maps, true, false)
+			return normalized, true
 		case SessionMigrationSemanticJSONIDArray:
 			normalized, err := sessionMigrationRemapJSONIDArray(targetValue, semantic.References["default"], maps, true)
 			return normalized, err == nil
@@ -1982,8 +2054,19 @@ func sessionMigrationNormalizeSemanticReference(
 	return "", false
 }
 
-func sessionMigrationCanonicalSemanticSourceValue(plan SessionMigrationExecutionPlan, column, value string) string {
+func sessionMigrationCanonicalSemanticSourceValue(plan SessionMigrationExecutionPlan, column, value string, rows ...sessionMigrationRow) string {
 	for _, semantic := range plan.SemanticReferences {
+		if semantic.Column == column && semantic.Kind == SessionMigrationSemanticBodyTrackingJSON {
+			canonical, _ := sessionMigrationRemapBodyTrackingJSON(value, nil, false, false)
+			return canonical
+		}
+		if semantic.Column == column && semantic.Kind == SessionMigrationSemanticSourceRevisionJSON {
+			canonical := sessionMigrationRemapSourceRevisionJSON(value, semantic.References["default"], nil, false)
+			if len(rows) > 0 && rows[0].Values["status_key"].Text == "body_tracking" {
+				canonical, _ = sessionMigrationRemapBodyTrackingJSON(canonical, nil, false, true)
+			}
+			return canonical
+		}
 		if semantic.Column != column || semantic.Kind != SessionMigrationSemanticJSONIDArray {
 			continue
 		}
@@ -1997,6 +2080,159 @@ func sessionMigrationCanonicalSemanticSourceValue(plan SessionMigrationExecution
 		}
 	}
 	return value
+}
+
+// Only the operational top-level status source binding is remapped. Nested
+// source_fields and character field provenance remain historical origin data.
+// Missing/unmapped references keep their existing meaning and do not introduce
+// an additional migration rejection path.
+func sessionMigrationRemapSourceRevisionJSON(raw string, reference SessionMigrationArtifactReference, maps *sessionMigrationKeyMaps, inverse bool) string {
+	var value map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return raw
+	}
+	var revision string
+	if json.Unmarshal(value["source_revision"], &revision) == nil && revision != "" && maps != nil {
+		var mapped string
+		var found bool
+		if inverse {
+			mapped, found = maps.source(reference.Table, reference.Column, revision)
+		} else {
+			mapped, found = maps.target(reference.Table, reference.Column, revision)
+		}
+		if found {
+			value["source_revision"], _ = json.Marshal(mapped)
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return raw
+	}
+	return string(encoded)
+}
+
+func sessionMigrationRemapBodyTrackingEntity(id string, maps *sessionMigrationKeyMaps, inverse bool) string {
+	if maps == nil {
+		return id
+	}
+	var mapped string
+	var found bool
+	if inverse {
+		mapped, found = maps.source("entity_identities", "stable_entity_id", id)
+	} else {
+		mapped, found = maps.target("entity_identities", "stable_entity_id", id)
+	}
+	if found {
+		return mapped
+	}
+	return id
+}
+
+// Only the body-tracking contract's operational character references change.
+// Origin IDs, semantic event keys, sampled results and nested source provenance
+// are historical values and are deliberately left intact.
+func sessionMigrationRemapBodyTrackingJSON(raw string, maps *sessionMigrationKeyMaps, inverse, evidence bool) (string, int) {
+	var value map[string]any
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	decoder.UseNumber()
+	if decoder.Decode(&value) != nil || value == nil {
+		return raw, 0
+	}
+	count := 0
+	remap := func(object map[string]any, field string) {
+		if id, ok := object[field].(string); ok && id != "" {
+			object[field] = sessionMigrationRemapBodyTrackingEntity(id, maps, inverse)
+			count++
+		}
+	}
+	remap(value, "subject_entity_id")
+	remapPeople := func(object map[string]any) {
+		for _, field := range []string{"partners", "candidates"} {
+			if people, ok := object[field].([]any); ok {
+				for _, raw := range people {
+					if person, ok := raw.(map[string]any); ok {
+						remap(person, "entity_id")
+					}
+				}
+			}
+		}
+	}
+	remapParentage := func(object map[string]any) {
+		remapPeople(object)
+		if p, ok := object["paternity"].(map[string]any); ok {
+			remapPeople(p)
+		}
+	}
+	if model, ok := value["modeled_pregnancy"].(map[string]any); ok && !evidence {
+		remapParentage(model)
+	}
+	modelKey := "latest_model_result"
+	if evidence {
+		modelKey = "model_result"
+	}
+	if trial, ok := value[modelKey].(map[string]any); ok {
+		if selected, ok := trial["selected_pregnancy"].(map[string]any); ok {
+			remapParentage(selected)
+		}
+	}
+	if facts, ok := value["observed_facts"].(map[string]any); ok && !evidence {
+		for _, rawFact := range facts {
+			if fact, ok := rawFact.(map[string]any); ok {
+				remap(fact, "character_id")
+				remapParentage(fact)
+			}
+		}
+	}
+	keys := []string{"pregnancy", "recovery"}
+	if evidence {
+		keys = []string{"history_observation"}
+	}
+	for _, key := range keys {
+		if fact, ok := value[key].(map[string]any); ok {
+			remap(fact, "character_id")
+			remapParentage(fact)
+		}
+	}
+	if evidence {
+		if changes, ok := value["repair_artifacts"].([]any); ok {
+			for _, rawChange := range changes {
+				change, ok := rawChange.(map[string]any)
+				if !ok {
+					continue
+				}
+				table, _ := change["table"].(string)
+				if _, err := bodyRepairSpec(table); err != nil {
+					continue
+				}
+				id, ok := change["id"].(json.Number)
+				if !ok {
+					continue
+				}
+				count++
+				if maps != nil {
+					mapped, found := maps.target(table, "id", id.String())
+					if inverse {
+						mapped, found = maps.source(table, "id", id.String())
+					}
+					if found {
+						change["id"] = json.Number(mapped)
+					}
+				}
+			}
+		}
+		if before, ok := value["repair_before"].(map[string]any); ok {
+			if snapshot, ok := before["value_json"].(string); ok {
+				mapped, nestedCount := sessionMigrationRemapBodyTrackingJSON(snapshot, maps, inverse, false)
+				before["value_json"] = mapped
+				count += nestedCount
+			}
+		}
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return raw, 0
+	}
+	return string(encoded), count
 }
 
 func sessionMigrationRemapJSONIDArray(
@@ -2043,6 +2279,28 @@ func sessionMigrationSemanticReferenceValueCount(row sessionMigrationRow, semant
 	if !value.Valid || strings.TrimSpace(value.Text) == "" {
 		return 0
 	}
+	if semantic.Kind == SessionMigrationSemanticSourceRevisionJSON {
+		var evidence map[string]json.RawMessage
+		var revision string
+		bodyCount := 0
+		if row.Values["status_key"].Text == "body_tracking" {
+			_, bodyCount = sessionMigrationRemapBodyTrackingJSON(value.Text, nil, false, true)
+		}
+		if json.Unmarshal([]byte(value.Text), &evidence) != nil || json.Unmarshal(evidence["source_revision"], &revision) != nil || revision == "" {
+			return bodyCount
+		}
+		return 1 + bodyCount
+	}
+	if semantic.Kind == SessionMigrationSemanticBodyTrackingEntity || semantic.Kind == SessionMigrationSemanticBodyTrackingJSON {
+		if row.Values["status_key"].Text != "body_tracking" {
+			return 0
+		}
+		if semantic.Kind == SessionMigrationSemanticBodyTrackingEntity {
+			return 1
+		}
+		_, count := sessionMigrationRemapBodyTrackingJSON(value.Text, nil, false, false)
+		return count
+	}
 	if semantic.Kind != SessionMigrationSemanticJSONIDArray {
 		return 1
 	}
@@ -2068,7 +2326,7 @@ func sessionMigrationVerifiedSemanticReferenceCount(
 	}
 	plan := SessionMigrationExecutionPlan{SemanticReferences: []SessionMigrationSemanticReferencePlan{semantic}}
 	normalized, ok := sessionMigrationNormalizeSemanticReference(plan, targetRow, semantic.Column, targetValue.Text, maps)
-	sourceCanonical := sessionMigrationCanonicalSemanticSourceValue(plan, semantic.Column, sourceValue.Text)
+	sourceCanonical := sessionMigrationCanonicalSemanticSourceValue(plan, semantic.Column, sourceValue.Text, sourceRow)
 	if !ok || normalized != sourceCanonical {
 		return 0
 	}

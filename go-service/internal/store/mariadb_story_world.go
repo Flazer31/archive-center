@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"sort"
 	"strings"
@@ -19,30 +20,38 @@ func (m *mariadbStore) SaveStoryline(ctx context.Context, s *Storyline) error {
 		return err
 	}
 	updatedAt := nonZeroTime(s.UpdatedAt)
+	identityPredicate, identityValue := "name = ?", s.Name
+	var tensions struct {
+		LifecycleKey string `json:"lifecycle_key"`
+	}
+	if json.Unmarshal([]byte(s.OngoingTensionsJSON), &tensions) == nil && strings.TrimSpace(tensions.LifecycleKey) != "" {
+		identityPredicate = "JSON_UNQUOTE(JSON_EXTRACT(ongoing_tensions_json, '$.lifecycle_key')) = ?"
+		identityValue = strings.TrimSpace(tensions.LifecycleKey)
+	}
 	res, err := m.db.ExecContext(ctx, `
 		UPDATE storylines
-		SET status = ?, entities_json = ?, current_context = ?,
+		SET name = ?, status = ?, entities_json = ?, current_context = ?,
 			key_points_json = ?, ongoing_tensions_json = ?, confidence = ?,
 			evidence_count = ?, last_evidence_turn = ?,
 			first_turn = CASE WHEN first_turn IS NULL OR first_turn = 0 THEN ? ELSE first_turn END,
 			last_turn = ?, pinned = ?, suppressed = ?, user_corrected = ?,
 			updated_at = ?
-		WHERE chat_session_id = ? AND name = ?
-	`, firstNonEmptyString(s.Status, "active"), nullableString(s.EntitiesJSON),
+		WHERE chat_session_id = ? AND `+identityPredicate,
+		s.Name, firstNonEmptyString(s.Status, "active"), nullableString(s.EntitiesJSON),
 		nullableString(s.CurrentContext), nullableString(s.KeyPointsJSON), nullableString(s.OngoingTensionsJSON),
 		s.Confidence, s.EvidenceCount, s.LastEvidenceTurn, s.FirstTurn, s.LastTurn,
-		s.Pinned, s.Suppressed, s.UserCorrected, updatedAt, s.ChatSessionID, s.Name)
+		s.Pinned, s.Suppressed, s.UserCorrected, updatedAt, s.ChatSessionID, identityValue)
 	if err != nil {
 		return err
 	}
 	if rows, rowErr := res.RowsAffected(); rowErr == nil && rows > 0 {
 		return nil
 	}
-	exists, err := m.storylineExists(ctx, s.ChatSessionID, s.Name)
-	if err != nil {
+	var count int
+	if err := m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM storylines WHERE chat_session_id = ? AND "+identityPredicate, s.ChatSessionID, identityValue).Scan(&count); err != nil {
 		return err
 	}
-	if exists {
+	if count > 0 {
 		return nil
 	}
 	_, err = m.db.ExecContext(ctx, `
@@ -130,14 +139,6 @@ func (m *mariadbStore) DeleteStoryline(ctx context.Context, storylineID int64) e
 		return ErrNotFound
 	}
 	return nil
-}
-
-func (m *mariadbStore) storylineExists(ctx context.Context, chatSessionID, name string) (bool, error) {
-	var count int
-	if err := m.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM storylines WHERE chat_session_id = ? AND name = ?", chatSessionID, name).Scan(&count); err != nil {
-		return false, err
-	}
-	return count > 0, nil
 }
 
 func (m *mariadbStore) storylineIDExists(ctx context.Context, storylineID int64) (bool, error) {

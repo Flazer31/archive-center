@@ -18,6 +18,9 @@ import (
 // transient effective transport configuration, including credentials, and is
 // never exported, logged, or reused as any persistent/request identity.
 func (s *Server) callMultiAgentRound(ctx context.Context, settings multiAgentSettings, round int, roles []multiAgentRoleResult, inputs []map[string]any, sessionID string) []multiAgentCall {
+	if settings.Jev.Enabled && !settings.Enabled {
+		return s.callJevRound(ctx, settings, round, roles, inputs)
+	}
 	groupingStarted := time.Now()
 	out := make([]multiAgentCall, len(roles))
 	groups := [][]int{}

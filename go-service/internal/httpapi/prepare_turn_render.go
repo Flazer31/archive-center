@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	archivebridge "github.com/risulongmemory/archive-center-go/internal/archive"
@@ -19,6 +20,55 @@ type prepareTurnGuidanceItem struct {
 }
 
 const prepareTurnAuxiliaryMessageHeader = "[Archive Center — Auxiliary Context]"
+
+// This is a response-only projection after retrieval, selection and rendering.
+// Keep each hit's diagnostics, but send shared query text once rather than once
+// per fact. Clone only the changed maps so the internal and legacy plans retain
+// their original observations for downstream consumers.
+func compactPrepareTurnMemoryQueryText(plan map[string]any) map[string]any {
+	texts := map[string]any{}
+	refs := map[string]string{}
+	items := prepareTurnMemoryLineageSlice(plan["priority_items"])
+	projected := make([]any, len(items))
+	for i, raw := range items {
+		projected[i] = raw
+		item := mapFromAny(raw)
+		lineage := mapFromAny(item["score_lineage"])
+		queries := prepareTurnMemoryLineageSlice(lineage["recall_queries"])
+		observations := make([]any, len(queries))
+		changed := false
+		for j, rawQuery := range queries {
+			observations[j] = rawQuery
+			observation := mapFromAny(rawQuery)
+			query, ok := observation["query"].(string)
+			if !ok {
+				continue
+			}
+			ref, exists := refs[query]
+			if !exists {
+				ref = fmt.Sprintf("q%d", len(refs)+1)
+				refs[query], texts[ref] = ref, query
+			}
+			compactObservation := maps.Clone(observation)
+			delete(compactObservation, "query")
+			compactObservation["query_ref"] = ref
+			observations[j] = compactObservation
+			changed = true
+		}
+		if changed {
+			compactItem, compactLineage := maps.Clone(item), maps.Clone(lineage)
+			compactLineage["recall_queries"] = observations
+			compactItem["score_lineage"] = compactLineage
+			projected[i] = compactItem
+		}
+	}
+	if len(texts) == 0 {
+		return plan
+	}
+	compact := maps.Clone(plan)
+	compact["priority_items"], compact["recall_query_texts"] = projected, texts
+	return compact
+}
 
 type prepareTurnPayloadBudgetLaneStats struct {
 	CandidateCount  int
@@ -172,12 +222,16 @@ func buildPrepareTurnPayloadApplicationPlan(rawUserInput, referenceText, memoryT
 }
 
 func attachPrepareTurnLorebookReferenceLane(plan map[string]any, text string, budget int, enabled bool, sourceRefs []string) {
+	attachPrepareTurnAdditionalPayloadLane(plan, "lorebook_reference", "Lorebook Reference Context", text, budget, enabled, sourceRefs)
+}
+
+func attachPrepareTurnAdditionalPayloadLane(plan map[string]any, key, title, text string, budget int, enabled bool, sourceRefs []string) {
 	if plan == nil {
 		return
 	}
 	lorebookLane := prepareTurnPayloadLane(
-		"lorebook_reference",
-		"Lorebook Reference Context",
+		key,
+		title,
 		text,
 		budget,
 		enabled && strings.TrimSpace(text) != "",
@@ -258,6 +312,20 @@ func prepareTurnMemoryPayloadBudgetStats(plan map[string]any, reversibleStateTex
 		FinalCount:      intFromAny(plan["final_delivery_count"], 0),
 		EffectiveCap:    intFromAny(plan["delivery_cap_chars"], 0),
 		ExclusionReason: prepareTurnPayloadBudgetReasonCounts(plan["exclusion_reasons"]),
+	}
+	if body := mapFromAny(plan["body_tracking_budget"]); intFromAny(body["cap_chars"], 0) > 0 {
+		bodyChars := intFromAny(body["used_chars"], 0)
+		separator := 0
+		if bodyChars > 0 && stats.SelectedChars > bodyChars {
+			separator = 2
+		}
+		stats.CandidateCount -= intFromAny(body["candidate_count"], 0)
+		stats.CandidateChars = maxInt(0, stats.CandidateChars-intFromAny(body["candidate_chars"], 0)-separator)
+		stats.SelectedCount -= intFromAny(body["selected_count"], 0)
+		stats.SelectedChars = maxInt(0, stats.SelectedChars-bodyChars-separator)
+		stats.FinalCount -= intFromAny(body["selected_count"], 0)
+		stats.EffectiveCap = intFromAny(plan["main_memory_cap_chars"], 0)
+		delete(stats.ExclusionReason, "body_tracking_char_budget_reached")
 	}
 	if supplementalChars := len([]rune(strings.TrimSpace(reversibleStateText))); supplementalChars > 0 {
 		separatorChars := 0
@@ -734,6 +802,7 @@ type prepareTurnInjectionAssembly struct {
 	ProtectedMemoryText       string
 	MemoryDeliveryLineage     map[string]any
 	MemoryDeliveryPlan        map[string]any
+	BodyTrackingBudgetChars   int
 	PrioritySourceMetadata    []prepareTurnPrioritySourceMetadata
 	PriorityFactSeeds         []prepareTurnPriorityFactSeed
 	PriorityEntityAliases     map[string]any

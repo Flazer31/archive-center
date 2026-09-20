@@ -166,20 +166,23 @@ type PreciseMemoryWriteAvailability interface {
 // legacy Memory row remains a compatibility read projection, but it is written
 // in the same transaction as its exact Direct Evidence and precise units.
 type MemoryAdmission struct {
-	ContractVersion   string
-	ChatSessionID     string
-	SourceRevision    string
-	TurnIndex         int
-	DerivationVersion string
-	ExtractorVersion  string
-	IndexVersion      string
-	ResultHash        string
-	ResultJSON        string
-	Memory            *Memory
-	Evidence          []*DirectEvidence
-	PreciseUnits      []*PreciseMemoryUnit
-	Vectors           []MemoryAdmissionVector
-	CreatedAt         time.Time
+	// Explicit canonical public projection decision; absent vectors alone may
+	// mean an unconfigured backend and must never imply this exclusion.
+	MemoryPublicProjectionExcluded bool
+	ContractVersion                string
+	ChatSessionID                  string
+	SourceRevision                 string
+	TurnIndex                      int
+	DerivationVersion              string
+	ExtractorVersion               string
+	IndexVersion                   string
+	ResultHash                     string
+	ResultJSON                     string
+	Memory                         *Memory
+	Evidence                       []*DirectEvidence
+	PreciseUnits                   []*PreciseMemoryUnit
+	Vectors                        []MemoryAdmissionVector
+	CreatedAt                      time.Time
 }
 
 type MemoryAdmissionVector struct {

@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
 // Immutable, request-owned reading material. Facts, their IDs and stored rows
@@ -307,6 +309,307 @@ func prepareTurnMemoryReadingText(c prepareTurnPriorityMemoryCandidate) string {
 	return c.CompleteText
 }
 
+// A manual restoration has its own recorded revision but retains the restored
+// state's original observation and proof, including an explicitly unknown turn.
+func prepareTurnCurrentStateReadingOrigin(current store.StatusCurrentValue) (store.StatusCurrentValue, map[string]any) {
+	evidence := parseJSONMap(current.EvidenceJSON)
+	if turn, restored := evidence["restored_source_turn"]; restored {
+		current.SourceTurn = intFromAny(turn, 0)
+		original := map[string]any{}
+		for key, value := range mapFromAny(evidence["restored_evidence"]) {
+			original[key] = value
+		}
+		original["repair_source_revision"] = evidence["source_revision"]
+		original["repair_recorded_turn"] = evidence["repair_recorded_turn"]
+		evidence = original
+	}
+	return current, evidence
+}
+
+// A recalled historical promise keeps its own identity and source time. Its
+// current lifecycle is source-linked reading material, independent of whether
+// the completion Memory also won an ordinary vector recall slot.
+func prepareTurnLifecycleReadings(values []store.StatusCurrentValue, clocks ...map[string]any) map[string][]prepareTurnMemoryPart {
+	out := map[string][]prepareTurnMemoryPart{}
+	var clock map[string]any
+	if len(clocks) > 0 {
+		clock = clocks[0]
+	}
+	for _, view := range narrativeCurrentStateViews(values) {
+		// Preserve the existing narrative current-state public projection boundary.
+		switch view.Scope {
+		case "belief", "rumor", "secret":
+			continue
+		}
+		key := normalizeNarrativeLifecycleKey(stringFromMap(view.Payload, "lifecycle_key"))
+		if key == "" {
+			continue
+		}
+		prefix := fmt.Sprintf("@lifecycle/%s/%s/%s", key, view.Value.OwnerScope, view.Value.OwnerID)
+		origin, evidence := prepareTurnCurrentStateReadingOrigin(view.Value)
+		observation := "source turn unknown"
+		if origin.SourceTurn > 0 {
+			observation = fmt.Sprintf("source turn %d", origin.SourceTurn)
+		}
+		label := fmt.Sprintf("current progression [lifecycle %s; %s; status_current_values:%d]", key, observation, view.Value.ID)
+		text := view.Current
+		if view.Subject != "" {
+			text = view.Subject + ": " + text
+		}
+		if transition := stringFromMap(view.Payload, "transition"); transition != "" {
+			text += " (" + transition + ")"
+		}
+		parts := []prepareTurnMemoryPart{{Key: prefix, Label: label, Value: text}}
+		if details := mapFromAny(view.Payload["lifecycle_details"]); len(details) > 0 {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/details", Label: "progression details", Value: prepareTurnPriorityScalarText(details)})
+			scheduleSource := make(map[string]any, len(details)+1)
+			for key, value := range details {
+				scheduleSource[key] = value
+			}
+			scheduleSource["lifecycle_transition"] = stringFromMap(view.Payload, "transition")
+			if schedule := buildCommitmentScheduleReading(scheduleSource, clock); len(schedule) > 0 {
+				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/schedule", Label: "schedule reading (read only)", Value: mustCompactJSON(schedule)})
+			}
+		}
+		if excerpt := stringFromMap(evidence, "evidence_excerpt"); excerpt != "" {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/evidence", Label: "current progression evidence", Value: excerpt})
+		}
+		refs := []string{}
+		if source := stringFromMap(evidence, "source"); source != "" {
+			refs = append(refs, source)
+		}
+		if revision := stringFromMap(evidence, "source_revision"); revision != "" {
+			refs = append(refs, "source revision "+revision)
+		}
+		if ids := sliceFromAny(evidence["direct_evidence_ids"]); len(ids) > 0 {
+			refs = append(refs, "direct evidence "+mustCompactJSON(ids))
+		}
+		if len(refs) > 0 {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/source", Label: "progression source", Value: strings.Join(refs, "; ")})
+		}
+		for _, name := range []string{"repair_source_revision", "repair_recorded_turn"} {
+			if raw := evidence[name]; raw != nil {
+				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/" + name, Label: "restoration audit " + name, Value: prepareTurnPriorityScalarText(raw)})
+			}
+		}
+		out[key] = append(out[key], parts...)
+	}
+	return out
+}
+
+func prepareTurnAttachLifecycleContext(out *prepareTurnInjectionAssembly, values []store.StatusCurrentValue, clocks ...map[string]any) {
+	readings := prepareTurnLifecycleReadings(values, clocks...)
+	for i := range out.PriorityFactSeeds {
+		fact := &out.PriorityFactSeeds[i].Fact
+		parts := readings[normalizeNarrativeLifecycleKey(fact.LifecycleKey)]
+		if len(parts) == 0 {
+			continue
+		}
+		reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+		if fact.Reading != nil {
+			reading = *fact.Reading
+			reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+		}
+		reading.fingerprint = [32]byte{}
+		reading.Parts = append(reading.Parts, parts...)
+		fact.Reading = &reading
+	}
+}
+
+func prepareTurnSourceTemporalContext(base, item map[string]any) map[string]any {
+	var out map[string]any
+	for _, source := range []map[string]any{base, mapFromAny(item["temporal_context"]), item} {
+		for _, key := range []string{"observed_at", "occurrence_time", "relative_expression", "relative"} {
+			if value, exists := source[key]; exists {
+				if out == nil {
+					out = map[string]any{}
+				}
+				out[key] = value
+			}
+		}
+	}
+	return out
+}
+
+// Interpret only source-linked metadata already admitted to this request. The
+// helper neither reads additional records nor rewrites the historical text.
+func prepareTurnAttachTemporalContext(out *prepareTurnInjectionAssembly, clock map[string]any) {
+	for i := range out.PriorityFactSeeds {
+		fact := &out.PriorityFactSeeds[i].Fact
+		if len(fact.TemporalContext) == 0 {
+			continue
+		}
+		reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+		if fact.Reading != nil {
+			reading = *fact.Reading
+			reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+		}
+		reading.fingerprint = [32]byte{}
+		value := mustCompactJSON(buildStoryTimeReading(fact.TemporalContext, clock))
+		part := prepareTurnMemoryPart{Key: fmt.Sprintf("@temporal/%x", sha256.Sum256([]byte(value))), Label: "source-relative time (last confirmed clock; read only)", Value: value}
+		reading.Parts = append(reading.Parts, part)
+		fact.Reading = &reading
+	}
+}
+
+func prepareTurnAttachLastConfirmedClock(out *prepareTurnInjectionAssembly, clock map[string]any) {
+	projection := storyClockPromptProjection(clock)
+	hasTime := false
+	for _, key := range []string{"absolute", "partial", "relative", "range", "sequence", "calendar"} {
+		if len(mapFromAny(projection[key])) > 0 {
+			hasTime = true
+			break
+		}
+	}
+	if !hasTime {
+		return
+	}
+	line := "- Last confirmed stored story clock (last accepted narration): " + mustCompactJSON(projection)
+	out.ContinuityCorrectionText = strings.TrimSpace(out.ContinuityCorrectionText + "\n" + line)
+}
+
+func prepareTurnCharacterFieldPath(path string) string {
+	if path == "/state" || strings.HasPrefix(path, "/state/") {
+		return "/status" + strings.TrimPrefix(path, "/state")
+	}
+	return path
+}
+
+// Explicit Critic source_fields connect an older field observation to current
+// evidence. No relationship between two prose strings is inferred here.
+func prepareTurnCharacterFieldCurrentReadings(narrative, reversible []store.StatusCurrentValue, storyClock map[string]any) map[string][]prepareTurnMemoryPart {
+	out := map[string][]prepareTurnMemoryPart{}
+	appendReading := func(subject string, fields []string, value, transition string, current store.StatusCurrentValue, evidence map[string]any) {
+		for _, field := range fields {
+			field = prepareTurnCharacterFieldPath(field)
+			key := normalizePrepareTurnEntityNeedle(subject) + "\x1f" + field
+			prefix := fmt.Sprintf("@field_current/%s/%d", field, current.ID)
+			observation := "source turn unknown"
+			if current.SourceTurn > 0 {
+				observation = fmt.Sprintf("source turn %d", current.SourceTurn)
+			}
+			parts := []prepareTurnMemoryPart{{Key: prefix, Label: fmt.Sprintf("linked current state [%s; status_current_values:%d]", observation, current.ID), Value: value}}
+			if transition != "" {
+				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/transition", Label: "current transition", Value: transition})
+			}
+			if excerpt := stringFromMap(evidence, "evidence_excerpt"); excerpt != "" {
+				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/evidence", Label: "current state evidence", Value: excerpt})
+			}
+			for _, name := range []string{"source_revision", "direct_evidence_ids", "observed_at", "occurrence_time", "effective_time", "validity", "repair_source_revision", "repair_recorded_turn"} {
+				if raw, exists := evidence[name]; exists && raw != nil {
+					parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/" + name, Label: "current " + name, Value: prepareTurnPriorityScalarText(raw)})
+				}
+			}
+			out[key] = append(out[key], parts...)
+		}
+	}
+	for _, view := range narrativeCurrentStateViews(narrative) {
+		switch view.Scope {
+		case "belief", "rumor", "secret":
+			continue
+		}
+		origin, evidence := prepareTurnCurrentStateReadingOrigin(view.Value)
+		for _, key := range []string{"observed_at", "occurrence_time", "effective_time", "validity"} {
+			if value, exists := view.Payload[key]; exists {
+				evidence[key] = value
+			}
+		}
+		appendReading(view.Subject, stringsFromAny(view.Payload["source_fields"]), view.Current, stringFromMap(view.Payload, "transition"), origin, evidence)
+	}
+	subjectSlotCounts := reversibleSubjectSlotCounts(reversible)
+	for _, current := range reversible {
+		projection := parseJSONMap(current.ValueJSON)
+		if stringFromMap(projection, "version") != reversibleStateContractVersion {
+			continue
+		}
+		subject := stringFromMap(projection, "subject_label")
+		current, evidence := prepareTurnCurrentStateReadingOrigin(current)
+		appendSlot := func(slot map[string]any, transition string, source map[string]any) {
+			// Reuse the existing public reversible-state delivery boundary.
+			if reversiblePublicDeliveryExclusion(slot, storyClock) != "" {
+				return
+			}
+			text := stringFromMap(mapFromAny(slot["value"]), "text")
+			if transition == "clear" || transition == "recover" {
+				text = "The referenced former condition is no longer current (" + transition + ")."
+			}
+			observation := current
+			observation.SourceTurn = intFromAny(source["source_turn"], 0)
+			appendReading(subject, stringsFromAny(slot["source_fields"]), text, transition, observation, source)
+		}
+		slots := mapFromAny(projection["slots"])
+		keys := make([]string, 0, len(slots))
+		for key := range slots {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			subjectSlotKey := strings.Join([]string{stringFromMap(projection, "domain"), normalizePrepareTurnEntityNeedle(subject), key}, "\x1f")
+			if subjectSlotCounts[subjectSlotKey] > 1 {
+				continue
+			}
+			slot := mapFromAny(slots[key])
+			source := mapFromAny(slot["source"])
+			appendSlot(slot, "", source)
+		}
+		history := mapFromAny(evidence["history_observation"])
+		transition := stringFromMap(history, "transition")
+		if transition == "clear" || transition == "recover" {
+			appendSlot(history, transition, evidence)
+		}
+	}
+	return out
+}
+
+func prepareTurnAttachCharacterFieldContext(out *prepareTurnInjectionAssembly, start int, state store.CharacterState, current map[string][]prepareTurnMemoryPart) {
+	fields := store.DecodeCharacterFieldProvenance(state.FieldProvenanceJSON)
+	for i := start; i < len(out.PriorityFactSeeds); i++ {
+		seed := &out.PriorityFactSeeds[i]
+		path := prepareTurnCharacterFieldPath(seed.Fact.SourceFieldPath)
+		if path == "" {
+			path = prepareTurnCharacterFieldPath(seed.Fact.SourcePath)
+		}
+		provenance := store.CharacterFieldProvenanceForPath(fields, path)
+		seed.Fact.TemporalContext = prepareTurnSourceTemporalContext(nil, provenance)
+		seed.FieldObservationTurn = intFromAny(provenance["source_turn"], 0)
+		seed.ProjectionSource += ":field_provenance"
+		reading := prepareTurnMemoryContext{Path: seed.Fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: seed.Fact.SourcePath, Value: seed.Fact.Text, FactTexts: []string{seed.Fact.Text}}}}
+		if seed.Fact.Reading != nil {
+			reading = *seed.Fact.Reading
+			reading.Parts = append([]prepareTurnMemoryPart(nil), seed.Fact.Reading.Parts...)
+		}
+		reading.fingerprint = [32]byte{}
+		observation := "unknown"
+		if seed.FieldObservationTurn > 0 {
+			observation = fmt.Sprintf("source turn %d", seed.FieldObservationTurn)
+		}
+		reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: "@field_observation/" + path, Label: "field observation " + path, Value: observation}, prepareTurnMemoryPart{Key: "@field_snapshot/" + path, Label: "containing snapshot", Value: fmt.Sprintf("turn %d (does not date this field)", state.TurnIndex)})
+		for _, name := range []string{"source_session_id", "source_revision", "recorded_turn", "evidence_excerpt", "evidence_refs", "direct_evidence_ids", "occurrence_time", "learned_time"} {
+			if value, exists := provenance[name]; exists && value != nil {
+				reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: "@field/" + path + "/" + name, Label: name, Value: prepareTurnPriorityScalarText(value)})
+			}
+		}
+		effective := "unknown"
+		if value, exists := provenance["effective_time"]; exists && value != nil {
+			effective = prepareTurnPriorityScalarText(value)
+		}
+		reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: "@field/" + path + "/effective", Label: "effective time", Value: effective})
+		for linkedPath := path; linkedPath != ""; {
+			if parts := current[normalizePrepareTurnEntityNeedle(state.CharacterName)+"\x1f"+linkedPath]; len(parts) > 0 {
+				reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: "@field/" + path + "/historical", Label: "field use", Value: "Historical observation; use the linked current state and evidence for present continuity."})
+				reading.Parts = append(reading.Parts, parts...)
+				break
+			}
+			at := strings.LastIndex(linkedPath, "/")
+			if at <= 0 {
+				break
+			}
+			linkedPath = linkedPath[:at]
+		}
+		seed.Fact.Reading = &reading
+	}
+}
+
 // Keep retrieval fragments and IDs, but read a typed relation (including an
 // abbreviation such as "No. 42") or a full-summary projection as one assertion.
 func prepareTurnAttachWholeSourceContext(facts []prepareTurnPriorityMemoryFact, path, text string) []prepareTurnPriorityMemoryFact {
@@ -398,7 +701,9 @@ func prepareTurnMemoryModelCandidate(c prepareTurnPriorityMemoryCandidate, refs 
 
 func prepareTurnMemorySourceHeading(c prepareTurnPriorityMemoryCandidate) string {
 	parts := []string{}
-	if c.SourceTable == "character_states" && c.SourceTurn > 0 {
+	if c.SourceTable == "character_states" && strings.HasSuffix(c.ProjectionSource, ":field_provenance") && c.SourceTurn > 0 {
+		parts = append(parts, fmt.Sprintf("field observation turn %d", c.SourceTurn))
+	} else if c.SourceTable == "character_states" && c.SourceTurn > 0 {
 		parts = append(parts, fmt.Sprintf("state snapshot turn %d; fields may be older", c.SourceTurn))
 	} else if c.SourceTurn > 0 {
 		parts = append(parts, fmt.Sprintf("source turn %d", c.SourceTurn))

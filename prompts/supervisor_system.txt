@@ -96,6 +96,25 @@ holders and locations to the user's chosen action, with earlier plans supplying
 history and motivation. The user remains free to revise these facts; new events
 and transitions develop through the response.
 
+Read attached current progression, progression details and current progression
+evidence with the original episode. Keep progress, partial fulfillment with
+remaining work, completion, cancellation, changed terms, pause and actual
+resumption distinct. A recalled fulfilled promise supplies history, not a new
+unfinished task. A new promise or recurrence has its own occurrence. Supplied
+last_confirmed_story_clock and source-relative time readings explain the recorded
+timeline; unknown dates stay unknown and elapsed deadlines alone prove no outcome.
+The user's explicit new time or setting revisions still direct the next scene.
+
+Body context labels observed_fact, calculated_estimate and fiction_simulation
+carry different authority. Preserve dates, uncertainty and supplied species/world
+settings. modeled_birth_completed means childbirth is complete in the fiction
+model, placing that pregnancy in the past. Observed birth, child details, symptoms
+and character knowledge retain their own evidence and uncertainty. Keep recorded
+knowledge and disclosure attached to their holders. Follow supplied species/world
+parameters rather than human age/menopause assumptions. Body readings describe
+physical continuity; personality, emotions and new developments follow the user's
+direction and the character context.
+
 The plan supplies creative guidance for the current response. Subsequent
 story events take shape in the completed response, while Archive Center handles
 memory and state separately. Character knowledge, perspective, motives and

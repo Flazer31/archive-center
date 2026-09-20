@@ -29,6 +29,7 @@ var prepareTurnMemoryDeliveryTitles = map[string]string{
 	"subjective_relationship": "Subjective Memories and Relationships",
 	"world_state":             "Item, Location, and World States",
 	"unresolved_goal":         "Unresolved Goals",
+	"body_tracking":           "Body State Context",
 }
 
 func prepareTurnResolveMemoryBudgets(selection prepareTurnMemorySelectionContext) (string, map[string]int) {

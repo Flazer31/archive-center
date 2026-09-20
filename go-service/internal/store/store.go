@@ -369,6 +369,7 @@ type SessionMigrationCompleteResult struct {
 	ChromaReindexRequired bool
 	ReadyForLive          bool
 	TargetStarterReplaced bool
+	EntityIDMap           map[string]string
 }
 
 // SessionMigrationResumeContext identifies an existing migration before the
@@ -599,6 +600,12 @@ type Store interface {
 // prompt assembly or the default Explorer list.
 type CharacterStateHistoryStore interface {
 	ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error)
+}
+
+// CharacterProvenanceRepairStore uses existing snapshot and character-event
+// storage for an operator's atomic metadata correction or undo.
+type CharacterProvenanceRepairStore interface {
+	ApplyCharacterProvenanceRepair(ctx context.Context, before, after CharacterState, operationID string) (CharacterEvent, error)
 }
 
 // PrepareTurnRangeStore is an optional bounded-read extension used by the
@@ -1239,17 +1246,36 @@ type StatusChangeEventSourceLookupStore interface {
 // transaction. SourceUnitID distinguishes independent subject/domain/slot
 // mutations emitted by the same accepted source revision.
 type ReversibleStatusTransition struct {
-	SourceContract string
-	SourceRevision string
-	SourceUnitID   string
-	CurrentValue   *StatusCurrentValue
-	Event          StatusChangeEvent
+	SourceContract  string
+	SourceRevision  string
+	SourceUnitID    string
+	CurrentValue    *StatusCurrentValue
+	DeleteCurrent   bool
+	PendingSnapshot *PendingThread
+	ArtifactChanges []StateRepairArtifactChange
+	Event           StatusChangeEvent
 }
 
 type ReversibleStatusTransitionResult struct {
 	CurrentValue StatusCurrentValue
 	Event        StatusChangeEvent
 	Replayed     bool
+}
+
+// Explicit repair can clear and restore related derived memory fields in the
+// same current/history transaction. Raw chat/source rows are never targets.
+type StateRepairArtifactChange struct {
+	Table            string             `json:"table"`
+	ID               int64              `json:"id"`
+	Before           map[string]*string `json:"before"`
+	After            map[string]*string `json:"after"`
+	VectorIDs        []string           `json:"vector_ids,omitempty"`
+	VectorBeforeJSON string             `json:"vector_before_json,omitempty"`
+	VectorAfterJSON  string             `json:"vector_after_json,omitempty"`
+}
+
+type StateRepairArtifactReader interface {
+	ListBodyRepairArtifacts(context.Context, string, string, string) ([]StateRepairArtifactChange, error)
 }
 
 // ReversibleStatusTransitionStore is the atomic owner for reversible state
@@ -1383,17 +1409,18 @@ type Trust struct {
 
 // CharacterState is a character snapshot.
 type CharacterState struct {
-	ID                int64     `json:"id"`
-	ChatSessionID     string    `json:"chat_session_id"`
-	CharacterName     string    `json:"character_name"`
-	AppearanceJSON    string    `json:"appearance_json"`
-	PersonalityJSON   string    `json:"personality_json"`
-	StatusJSON        string    `json:"status_json"`
-	RelationshipsJSON string    `json:"relationships_json"`
-	SpeechStyleJSON   string    `json:"speech_style_json"`
-	TurnIndex         int       `json:"turn_index"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                  int64     `json:"id"`
+	ChatSessionID       string    `json:"chat_session_id"`
+	CharacterName       string    `json:"character_name"`
+	AppearanceJSON      string    `json:"appearance_json"`
+	PersonalityJSON     string    `json:"personality_json"`
+	StatusJSON          string    `json:"status_json"`
+	RelationshipsJSON   string    `json:"relationships_json"`
+	SpeechStyleJSON     string    `json:"speech_style_json"`
+	FieldProvenanceJSON string    `json:"field_provenance_json,omitempty"`
+	TurnIndex           int       `json:"turn_index"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
 }
 
 // PendingThread is a continuity hook.

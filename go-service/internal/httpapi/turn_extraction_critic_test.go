@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -82,6 +83,242 @@ func TestCriticPromptUsesExplicitNameMappingsWithoutChangingOutputLanguage(t *te
 	}
 	if strings.Contains(prompt, "Use only English for the task") {
 		t.Fatal("name-mapping guidance must not override the runtime output-language contract")
+	}
+}
+
+type criticCharacterNameStore struct {
+	*identityAliasLinkRecordingStore
+	catalogReads int
+	catalogError error
+}
+
+func (f *criticCharacterNameStore) ListActiveEntityIdentities(ctx context.Context, sid string) ([]store.EntityIdentity, error) {
+	f.catalogReads++
+	if f.catalogError != nil {
+		return nil, f.catalogError
+	}
+	return f.identityAliasLinkRecordingStore.ListActiveEntityIdentities(ctx, sid)
+}
+
+func newCriticCharacterNameStore(sid string) *criticCharacterNameStore {
+	f := &criticCharacterNameStore{identityAliasLinkRecordingStore: newIdentityAliasLinkRecordingStore()}
+	for index, name := range []string{"박하린", "김하린", "민서", "정하린"} {
+		turn := 1
+		if name == "정하린" {
+			turn = 30
+		}
+		id := fmt.Sprintf("name-%d", index)
+		f.identities = append(f.identities, &store.EntityIdentity{
+			StableEntityID: id, ChatSessionID: sid, EntityKind: "character", IdentityNamespace: "story_character",
+			CanonicalLabel: name, SourceTurn: turn, FirstSeenTurn: turn, LifecycleState: "active", ReviewState: "source_observed",
+		})
+		f.surfaces = append(f.surfaces, &store.EntityIdentitySurface{
+			StableEntityID: id, ChatSessionID: sid, SurfaceText: name, NormalizedSurface: comparableEntityKey(name),
+			SurfaceKind: "display_name", SourceTurn: turn, Scope: store.EntityIdentitySurfaceScopeCurrent, ReviewState: "source_observed",
+		})
+		if name != "민서" {
+			f.surfaces = append(f.surfaces, &store.EntityIdentitySurface{
+				StableEntityID: id, ChatSessionID: sid, SurfaceText: "하린", NormalizedSurface: "하린",
+				SurfaceKind: "alias_0", SourceTurn: turn, Scope: store.EntityIdentitySurfaceScopeCurrent, ReviewState: "source_observed",
+			})
+		}
+	}
+	return f
+}
+
+func criticNameLedgerFromPrompt(t *testing.T, prompt string) map[string]any {
+	t.Helper()
+	start := strings.Index(prompt, "<Critic_Archive_Ledger_JSON>\n")
+	end := strings.Index(prompt, "\n</Critic_Archive_Ledger_JSON>")
+	if start < 0 || end < start {
+		t.Fatal("missing production ledger")
+	}
+	var ledger map[string]any
+	if err := json.Unmarshal([]byte(prompt[start+len("<Critic_Archive_Ledger_JSON>\n"):end]), &ledger); err != nil {
+		t.Fatal(err)
+	}
+	return ledger
+}
+
+func TestCriticCharacterNamesReachProviderAndReplay(t *testing.T) {
+	for _, canonicalLogs := range []bool{true, false} {
+		t.Run(fmt.Sprint(canonicalLogs), func(t *testing.T) {
+			sid := "name-input"
+			fake := newCriticCharacterNameStore(sid)
+			cfg := config.Default()
+			cfg.CriticLedgerEnabled = false
+			cfg.PromptDir = filepath.Join("..", "..", "..", "prompts")
+			srv := NewServer(cfg)
+			srv.Store = fake
+			oldClient := proxyHTTPClient
+			defer func() { proxyHTTPClient = oldClient }()
+			prompts := []string{}
+			response := criticWireJSONForTest(map[string]any{
+				"turn_summary": "박하린은 장부를 정리했다.", "importance_score": 5,
+				"entities":         map[string]any{"characters": []any{map[string]any{"name": "박하린"}}},
+				"character_deltas": []any{map[string]any{"name": "박하린", "status": map[string]any{"action": "장부 정리"}}},
+			})
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "example.invalid" {
+					t.Fatalf("unexpected provider: %s", r.URL.Host)
+				}
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				prompt := stringFromMap(mapFromAny(sliceFromAny(request["messages"])[1]), "content")
+				prompts = append(prompts, prompt)
+				names := sliceFromAny(criticNameLedgerFromPrompt(t, prompt)["character_names"])
+				if len(names) != 2 || stringFromMap(mapFromAny(names[0]), "name") != "김하린" || stringFromMap(mapFromAny(names[1]), "name") != "박하린" {
+					t.Fatalf("registered shared alias lost a candidate, future/unrelated name leaked, or names not delivered: %#v", names)
+				}
+				for _, raw := range names {
+					if aliases := stringsFromAny(mapFromAny(raw)["aliases"]); len(aliases) != 1 || aliases[0] != "하린" {
+						t.Fatalf("aliases=%v", aliases)
+					}
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(
+					`{"model":"critic-test","choices":[{"message":{"content":%s}}]}`, strconv.Quote(response))))}, nil
+			})}
+			model := completeTurnLLMConfig{Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key", Model: "critic-test", TimeoutMs: 30000, RetryBudget: newLLMRetryBudget(0)}
+			user, assistant := "하린의 일을 이어간다.", "사서 하린은 장부를 정리했다."
+			extraction, _, err := srv.runCompleteTurnCriticWithInputPolicy(context.Background(), sid, 3, user, assistant, nil, nil, model,
+				canonicalLogs, completeTurnCriticInputPolicy{AuxiliaryMaxChars: 2000}, completeTurnCriticInputReplay{SourceRevision: "names-original"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			saved := fake.savedCriticInputSnapshots["names-original"]
+			if saved.JSON == "" {
+				t.Fatal("input snapshot not saved")
+			}
+			if fake.catalogReads != 1 {
+				t.Fatalf("catalog reads=%d", fake.catalogReads)
+			}
+			// Reprocessing must not see later identity changes or depend on DB availability.
+			fake.catalogError = errors.New("catalog changed after snapshot")
+			_, _, err = srv.runCompleteTurnCriticWithInputPolicy(context.Background(), sid, 3, user, assistant, nil, nil, model,
+				canonicalLogs, completeTurnCriticInputPolicy{AuxiliaryMaxChars: 1},
+				completeTurnCriticInputReplay{SourceRevision: "names-original", Required: true, SnapshotJSON: saved.JSON, SnapshotHash: saved.Hash})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if fake.catalogReads != 1 || len(prompts) != 2 || prompts[0] != prompts[1] {
+				t.Fatal("replay reread identities or changed the provider input")
+			}
+			result := srv.saveCriticExtractionArtifacts(context.Background(), sid, 3, extraction, assistant, completeTurnEmbeddingConfig{}, time.Unix(300, 0))
+			if result.Errors != 0 || len(fake.savedCharacterStates) != 1 || fake.savedCharacterStates[0].CharacterName != "박하린" || len(fake.savedMemories) != 1 {
+				t.Fatalf("production storage projection lost the provider's canonical name: %#v", result)
+			}
+		})
+	}
+}
+
+func TestCriticCharacterNameBudgetKeepsSharedAliasSetWhole(t *testing.T) {
+	names := []any{map[string]any{"name": "박하린", "aliases": []string{"하린"}}, map[string]any{"name": "김하린", "aliases": []string{"하린"}}}
+	ledger := map[string]any{"character_names": names}
+	previous := []map[string]any{{"role": "assistant", "source": "previous_canonical_turn", "content": strings.Repeat("지난 대화 ", 100)}}
+	_, full, trace := applyCompleteTurnCriticAuxiliaryBudget(previous, nil, ledger, nil, "하린", completeTurnCriticInputPolicy{AuxiliaryMaxChars: 10000})
+	if len(sliceFromAny(full["character_names"])) != len(names) {
+		t.Fatal("name-only ledger disappeared")
+	}
+	size := intFromAny(trace["auxiliary_selected_chars"], 0)
+	if size <= 0 {
+		t.Fatal("name input was not charged to auxiliary budget")
+	}
+	for _, budget := range []int{0, size - 1, size} {
+		selected, out, obs := applyCompleteTurnCriticAuxiliaryBudget(previous, nil, ledger, nil, "하린", completeTurnCriticInputPolicy{AuxiliaryMaxChars: budget})
+		if len(selected) != 1 || selected[0]["content"] != previous[0]["content"] {
+			t.Fatal("current/previous narrative was altered")
+		}
+		count := len(sliceFromAny(out["character_names"]))
+		if budget < size && count != 0 || budget == size && count != len(names) {
+			t.Fatalf("budget=%d names=%d size=%d", budget, count, size)
+		}
+		if intFromAny(obs["auxiliary_selected_chars"], 0) > budget {
+			t.Fatal("name support exceeded budget")
+		}
+	}
+	if len(sliceFromAny(ledger["character_names"])) != len(names) {
+		t.Fatal("budget projection mutated source catalog")
+	}
+}
+
+func TestCriticCharacterNameCatalogIsSupportOnly(t *testing.T) {
+	for _, scenario := range []string{"missing_alias", "unrelated", "unavailable", "future_alias", "future_link", "same_full_name"} {
+		t.Run(scenario, func(t *testing.T) {
+			sid := "name-support"
+			fake := newCriticCharacterNameStore(sid)
+			query := "하린은 자리에 앉았다."
+			wanted := 2
+			switch scenario {
+			case "missing_alias":
+				fake.surfaces = nil // A short overlap retrieves candidates; it must not invent aliases.
+			case "unrelated":
+				query = "용암이 분출했다."
+				wanted = 0
+			case "unavailable":
+				fake.catalogError = errors.New("catalog unavailable")
+				wanted = 0
+			case "future_alias":
+				fake.surfaces = append(fake.surfaces, &store.EntityIdentitySurface{ChatSessionID: sid, StableEntityID: "name-2", SurfaceText: "하린", SourceTurn: 30})
+			case "future_link":
+				fake.links = append(fake.links, &store.EntityIdentityLink{ChatSessionID: sid, SourceEntityID: "name-0", TargetEntityID: "name-1",
+					LinkKind: store.EntityIdentityLinkKindCanonicalEquivalence, LinkState: store.EntityIdentityLinkStateReviewed, EvidenceJSON: `{"source_turn":30}`})
+			case "same_full_name":
+				other := *fake.identities[0]
+				other.StableEntityID = "different-person"
+				fake.identities = append(fake.identities, &other)
+				wanted = 3
+			}
+			cfg := config.Default()
+			cfg.CriticLedgerEnabled = false
+			cfg.PromptDir = filepath.Join("..", "..", "..", "prompts")
+			srv := NewServer(cfg)
+			srv.Store = fake
+			oldClient := proxyHTTPClient
+			defer func() { proxyHTTPClient = oldClient }()
+			calls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if r.URL.Host != "example.invalid" {
+					t.Fatal("unexpected request")
+				}
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				prompt := stringFromMap(mapFromAny(sliceFromAny(request["messages"])[1]), "content")
+				names := sliceFromAny(criticNameLedgerFromPrompt(t, prompt)["character_names"])
+				if len(names) != wanted {
+					t.Fatalf("%s delivered names=%#v", scenario, names)
+				}
+				if scenario == "same_full_name" {
+					ids := map[string]bool{}
+					for _, raw := range names {
+						ids[stringFromMap(mapFromAny(raw), "entity_id")] = true
+					}
+					if len(ids) != wanted || ids[""] {
+						t.Fatal("same full names collapsed distinct stored identities")
+					}
+				}
+				if scenario == "missing_alias" {
+					for _, raw := range names {
+						if len(stringsFromAny(mapFromAny(raw)["aliases"])) != 0 {
+							t.Fatal("short overlap invented an alias")
+						}
+					}
+				}
+				response := criticWireJSONForTest(map[string]any{"turn_summary": query, "importance_score": 3})
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(
+					`{"model":"critic-test","choices":[{"message":{"content":%s}}]}`, strconv.Quote(response))))}, nil
+			})}
+			_, _, err := srv.runCompleteTurnCriticWithInputPolicy(context.Background(), sid, 3, "계속한다.", query, nil, nil,
+				completeTurnLLMConfig{Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "test-key", Model: "critic-test", TimeoutMs: 30000, RetryBudget: newLLMRetryBudget(0)},
+				true, completeTurnCriticInputPolicy{AuxiliaryMaxChars: 2000}, completeTurnCriticInputReplay{})
+			if err != nil || calls != 1 {
+				t.Fatalf("name support blocked or repeated normal Critic: err=%v calls=%d", err, calls)
+			}
+		})
 	}
 }
 
@@ -531,6 +768,109 @@ func TestCompleteTurnCriticLanguageUsesOnlyAssistantOutputObservation(t *testing
 			}
 			if got := extractionStringFromAny(languageContext["output_language_source"]); got != tc.wantSource {
 				t.Fatalf("output language source=%q, want %q: %#v", got, tc.wantSource, languageContext)
+			}
+		})
+	}
+}
+
+func TestCriticLanguageReadsFinalProseInsteadOfStaleMetadata(t *testing.T) {
+	for _, tc := range []struct{ name, text, want string }{
+		{"japanese", "右腕を冷やしながら、彼女は静かに窓の外を見ていた。", "ja"},
+		{"tagged_japanese", "<Narration><Emotion.Calm><Speech.Natural>彼女は静かに窓の外を見ていた。</Speech.Natural></Emotion.Calm></Narration>", "ja"},
+		{"japanese_with_name", "Miraは窓を開けた。そよ風が部屋に入り、彼女は静かに微笑んだ。", "ja"},
+		{"korean", "그녀는 조용히 창문을 열고 방 안으로 들어오는 바람을 느꼈다.", "ko"},
+		{"english", "She opened the window and quietly watched the people outside.", "en"},
+		{"empty", "", "auto"},
+		{"punctuation", "……！", "auto"},
+		{"mixed", "그녀는 조용히 창문을 열었다. 彼女は静かに窓を開けて外を見た。", "auto"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := completeTurnCriticLanguageContextFromAssistantOutput(map[string]any{"assistant_output_language": "ko", "session_output_language": "ko", "summary_language": "ko", "ui_language": "ko"}, tc.text)
+			if got := stringFromMap(ctx, "summary_language"); got != tc.want {
+				t.Fatalf("got %q, want %q from final prose", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCriticFinalTextLanguageReachesPromptAndStoredArtifacts(t *testing.T) {
+	const user = "ミラ는 リオ를 걱정하지만 퉁명스럽게 말한다."
+	const assistant = "ミラはリオを信頼している。右腕の打撲を冷やしながら、心配を隠して顔をそむけた。『無理するな』と短くぶっきらぼうに言った。"
+	const behavior = "心配を隠して顔をそむける"
+	const voice = "心配していても短くぶっきらぼうに話す"
+	for _, tc := range []struct {
+		name     string
+		language map[string]any
+	}{
+		{name: "no_host_language"},
+		{name: "stale_korean_host_language", language: map[string]any{"assistant_output_language": "ko", "summary_language": "ko", "session_output_language": "ko", "ui_language": "ko"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &turnRecordingStore{}
+			cfg := config.Default()
+			cfg.CriticLedgerEnabled = false
+			srv := NewServer(cfg)
+			srv.Store = fake
+			wire := criticWireJSONForTest(map[string]any{
+				"turn_summary": "ミラはリオへの心配を不器用な言葉で示した。", "importance_score": 6,
+				"evidence_excerpts": []any{user, assistant},
+				"character_deltas": []any{map[string]any{
+					"name": "ミラ", "status": map[string]any{"behavior": behavior, "condition": "右腕の打撲を冷やしている"},
+				}},
+				"voice_observations":  []any{map[string]any{"character": "ミラ", "principle_key": voice, "evidence_excerpt": assistant}},
+				"relationship_memory": map[string]any{"summary": "ミラはリオを信頼している。"},
+			})
+			calls := 0
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+					t.Fatal(err)
+				}
+				messages := sliceFromAny(request["messages"])
+				prompt := stringFromMap(mapFromAny(messages[1]), "content")
+				for _, required := range []string{`"summary_language":"ja"`, "<Memory_Generation_Language>", "character_deltas", "behavior", "relationship", "speech", user, assistant} {
+					if !strings.Contains(prompt, required) {
+						t.Errorf("production provider prompt missing %q", required)
+					}
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(fmt.Sprintf(`{"choices":[{"message":{"content":%s}}]}`, strconv.Quote(wire))))}, nil
+			})}
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			extraction, _, err := srv.runCompleteTurnCriticWithInputPolicy(context.Background(), "language-fixture", 1, user, assistant, nil, nil,
+				completeTurnLLMConfig{Provider: "openai", Endpoint: "https://example.invalid/v1", APIKey: "fixture-only", Model: "language-fixture", TimeoutMs: 1000},
+				true, completeTurnCriticInputPolicy{}, completeTurnCriticInputReplay{}, tc.language)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("provider calls=%d, want one", calls)
+			}
+			if got := stringFromMap(mapFromAny(extraction["language_context"]), "summary_language"); got != "ja" {
+				t.Fatalf("actual Japanese output stored as language %q", got)
+			}
+			result := srv.saveCriticExtractionArtifacts(context.Background(), "language-fixture", 1, extraction, user+"\n"+assistant, completeTurnEmbeddingConfig{}, time.Now())
+			if result.Errors != 0 || len(fake.savedMemories) != 1 || len(fake.savedCharacterStates) != 1 {
+				t.Fatalf("artifact save: %+v", result)
+			}
+			stored := parseJSONMap(fake.savedMemories[0].SummaryJSON)
+			if stringFromMap(mapFromAny(stored["memory_write_contract"]), "summary_language") != "ja" {
+				t.Fatal("stored memory lost final-output language")
+			}
+			if stringFromMap(mapFromAny(stored["relationship_memory"]), "summary") != "ミラはリオを信頼している。" {
+				t.Fatal("relationship prose changed during storage")
+			}
+			state := fake.savedCharacterStates[0]
+			if stringFromMap(parseJSONMap(state.StatusJSON), "behavior") != behavior {
+				t.Fatalf("stored state changed: %+v", state)
+			}
+			voices := sliceFromAny(stored["voice_observations"])
+			if len(voices) != 1 || stringFromMap(mapFromAny(voices[0]), "principle_key") != voice {
+				t.Fatalf("stored voice observation changed: %#v", voices)
+			}
+			if !strings.Contains(fake.savedMemories[0].Evidence, user) {
+				t.Fatal("exact Korean user evidence must remain untranslated")
 			}
 		})
 	}
@@ -1490,9 +1830,9 @@ func TestCriticPromptRequiresEvidenceEligibleSubjectiveCoverageAndAllowsValidZer
 		`"subjective_entity_memories":[{"owner_entity_name":"","memory_text":"","evidence_excerpt":"","importance_10":8,"emotional_weight":0.7}]`,
 		`"belief_updates":[{"perspective_owner":"","belief":"","evidence_excerpt":"","importance_10":6,"emotional_weight":0.4}]`,
 		"missing scores default per item",
-		`"state_claims":[{"subject":"","state_slot":"","lifecycle_key":"","value":"","transition":"set|complete|resolve","evidence_excerpt":""}]`,
+		`"state_claims":[{"subject":"","state_slot":"","lifecycle_key":"","value":"","transition":"progress","evidence_excerpt":""}]`,
 		"reuse an unresolved Ledger `source_ref.lifecycle_key`",
-		"emit `state_claims.transition=complete|resolve` plus the same key in `state_deltas.resolved_threads`",
+		"On fulfillment emit a `state_claims` item with transition `complete`",
 		"extract useful source-grounded in-story facts and relationships broadly",
 		"A fact is not omitted merely because another typed lane also records it",
 		"evidence_excerpts are durable citations, not transcript samples",
@@ -1521,8 +1861,10 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 	if source == "fallback_builtin" {
 		t.Fatal("source critic_system.txt was not loaded")
 	}
-	if chars := len([]rune(systemPrompt)); chars >= 16_000 {
-		t.Fatalf("system critic prompt exceeded the stage-9 compact contract: chars=%d", chars)
+	// Keep room for typed examples and ordinary-name continuity guidance without
+	// deleting existing memory surfaces to meet the former text-only limit.
+	if chars := len([]rune(systemPrompt)); chars >= 22_000 {
+		t.Fatalf("system critic prompt exceeded the compact contract including typed examples: chars=%d", chars)
 	}
 	if strings.Contains(systemPrompt, "Deterministic_Preview_Pass_JSON") {
 		t.Fatal("system critic prompt still instructs the removed duplicate preview payload")
@@ -1583,9 +1925,6 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 
 func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
 	systemPrompt, _ := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
-	if !strings.Contains(systemPrompt, `"character_deltas":[{"name":"","status":{"key":"value"}}]`) {
-		t.Fatal("system critic prompt is missing the explicit character delta object shape")
-	}
 	systemJSONSection := strings.Index(systemPrompt, "[Wire Output Contract]")
 	if systemJSONSection < 0 {
 		t.Fatal("system critic prompt is missing the JSON surface section")
@@ -1598,19 +1937,28 @@ func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("system critic prompt JSON example violates the critic schema: %v", err)
 	}
-	delta := map[string]any{"name": ""}
+	deltas := sliceFromAny(example["character_deltas"])
+	if len(deltas) != 1 {
+		t.Fatalf("prompt must demonstrate a named appearance delta: %#v", deltas)
+	}
+	delta := mapFromAny(deltas[0])
+	if _, ok := delta["name"]; !ok || stringFromMap(mapFromAny(delta["appearance"]), "gender") != "female" {
+		t.Fatalf("prompt example lost character name/gender: %#v", delta)
+	}
 	delta["name"] = "Mina"
-	delta["status"] = map[string]any{"emotion": "relieved"}
 
-	fake := &turnRecordingStore{}
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+	fake := &automaticBodyProjectionStore{newIdentityAliasLinkRecordingStore()}
 	srv := NewServer(config.Default())
 	srv.Store = fake
+	sid := "critic-character-name-contract"
+	bodySettingsRequest46(t, srv, sid, http.MethodPut, `{"cycle_tracking_enabled":true}`)
 	result := srv.saveCriticExtractionArtifacts(
 		context.Background(),
-		"critic-character-name-contract",
+		sid,
 		1,
 		normalizeCriticExtraction(map[string]any{"character_deltas": []any{delta}}),
-		"Mina looked relieved.",
+		"Mina opened the door. She waved.",
 		completeTurnEmbeddingConfig{},
 		time.Unix(100, 0),
 	)
@@ -1620,10 +1968,197 @@ func TestCriticCharacterDeltaNameContractPersistsState(t *testing.T) {
 	if fake.savedCharacterStates[0].CharacterName != "Mina" {
 		t.Fatalf("saved character name = %q, want Mina", fake.savedCharacterStates[0].CharacterName)
 	}
+	appearance := parseJSONMap(fake.savedCharacterStates[0].AppearanceJSON)
+	if appearance["gender"] != mapFromAny(delta["appearance"])["gender"] {
+		t.Fatalf("prompt gender was lost during persistence: %#v", appearance)
+	}
+	cfg, err := srv.loadBodyTrackingConfig(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved := srv.resolveBodyTrackingConfig(context.Background(), sid, cfg)
+	if len(resolved.Characters) != 1 || resolved.Characters[0].CharacterName != delta["name"] {
+		t.Fatalf("gender-only delta did not reach automatic body targets: %#v", resolved.Characters)
+	}
 	for _, reason := range result.SkipReasons {
 		if stringFromMap(reason, "surface") == "character_deltas" && stringFromMap(reason, "reason") == "missing_name" {
 			t.Fatalf("named character delta was discarded as missing_name: %#v", result.SkipReasons)
 		}
+	}
+}
+
+func TestCriticPromptStoryClockExamplesPersistAndResolve(t *testing.T) {
+	prompt, _ := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	proposals := map[string]map[string]any{}
+	for _, line := range strings.Split(prompt, "\n") {
+		if !strings.HasPrefix(strings.TrimSpace(line), `{"story_clock":`) {
+			continue
+		}
+		var example map[string]any
+		if err := json.Unmarshal([]byte(line), &example); err != nil {
+			t.Fatalf("prompt clock example is not JSON: %v", err)
+		}
+		canonical, _, err := validateCriticExtractionSchema(example)
+		if err != nil {
+			t.Fatalf("prompt clock example violates extraction schema: %v", err)
+		}
+		proposal := mapFromAny(normalizeCriticExtraction(canonical)["story_clock"])
+		if len(proposal) == 0 {
+			t.Fatalf("prompt clock example was discarded during normalization: %s", line)
+		}
+		kind := stringFromMap(proposal, "observation_kind")
+		proposals[kind] = proposal
+		t.Run(kind, func(t *testing.T) {
+			fake := &turnRecordingStore{}
+			saveStoryClockForTest(t, fake, 1, "prompt-"+kind, proposal, stringFromMap(proposal, "evidence_excerpt"))
+			if len(fake.savedStatusCurrent) != 1 || len(fake.savedStatusEvents) != 1 {
+				t.Fatalf("prompt clock did not persist: current=%#v events=%#v", fake.savedStatusCurrent, fake.savedStatusEvents)
+			}
+			current := decodeStoryClockValue(t, fake.savedStatusCurrent[0])
+			if current["observation_kind"] != kind {
+				t.Fatalf("clock kind changed: %#v", current)
+			}
+			if kind == "relative" && (current["precision"] != "unknown" || current["absolute"] != nil) {
+				t.Fatalf("unanchored relative date was invented: %#v", current)
+			}
+			if kind == "partial" && (current["precision"] != "partial" || current["absolute"] != nil) {
+				t.Fatalf("partial example acquired an exact date: %#v", current)
+			}
+		})
+	}
+	for _, kind := range []string{"absolute", "partial", "relative"} {
+		if len(proposals[kind]) == 0 {
+			t.Fatalf("prompt has no executable %s clock example", kind)
+		}
+	}
+	abs, relative := proposals["absolute"], proposals["relative"]
+	fake := &turnRecordingStore{}
+	saveStoryClockForTest(t, fake, 1, "prompt-anchor", abs, stringFromMap(abs, "evidence_excerpt"))
+	saveStoryClockForTest(t, fake, 2, "prompt-elapsed", relative, stringFromMap(relative, "evidence_excerpt"))
+	if len(fake.savedStatusCurrent) != 2 {
+		t.Fatalf("relative prompt example did not advance clock: %#v", fake.savedStatusCurrent)
+	}
+	anchorDate, err := time.Parse("2006-01-02", stringFromMap(mapFromAny(abs["absolute"]), "date"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rel := mapFromAny(relative["relative"])
+	if rel["unit"] != "day" {
+		t.Fatalf("elapsed example no longer expresses days: %#v", rel)
+	}
+	wantDate := anchorDate.AddDate(0, 0, intFromAny(rel["offset"], 0)).Format("2006-01-02")
+	current := decodeStoryClockValue(t, fake.savedStatusCurrent[1])
+	if stringFromMap(mapFromAny(current["absolute"]), "date") != wantDate {
+		t.Fatalf("relative prompt date = %#v, want %s", current, wantDate)
+	}
+	for _, scope := range []string{"flashback", "planned", "hypothetical"} {
+		proposal := storyClockJSONMap(abs)
+		proposal["scene_scope"] = scope
+		if resolved, _ := storyClockResolvedCurrent(proposal, fake.savedStatusCurrent[1]); resolved != nil {
+			t.Fatalf("%s example changed current date: %#v", scope, resolved)
+		}
+	}
+	// The submitted community example used both of these incompatible values.
+	badPrecision := storyClockJSONMap(relative)
+	badPrecision["precision"] = "partial"
+	if normalizeStoryClockProposal(badPrecision) != nil {
+		t.Fatal("negative control: partial precision unexpectedly normalized for an exact offset")
+	}
+	badAnchor := storyClockJSONMap(relative)
+	mapFromAny(badAnchor["relative"])["anchor"] = "previous_scene"
+	if resolved, _ := storyClockResolvedCurrent(badAnchor, fake.savedStatusCurrent[0]); resolved["precision"] != "unknown" {
+		t.Fatalf("negative control: unsupported anchor unexpectedly resolved: %#v", resolved)
+	}
+}
+
+func TestCriticLifecycleExamplesPersistPartialCompletionAndRecall(t *testing.T) {
+	prompt, _ := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	examples := map[string]map[string]any{}
+	var pending map[string]any
+	for _, line := range strings.Split(prompt, "\n") {
+		isPending := strings.HasPrefix(strings.TrimSpace(line), `{"pending_threads":`)
+		if !isPending && !strings.HasPrefix(strings.TrimSpace(line), `{"state_claims":`) {
+			continue
+		}
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(line), &raw); err != nil {
+			t.Fatal(err)
+		}
+		canonical, _, err := validateCriticExtractionSchema(raw)
+		if err != nil {
+			t.Fatalf("lifecycle prompt example violates schema: %v", err)
+		}
+		extraction := normalizeCriticExtraction(canonical)
+		if isPending {
+			pending = extraction
+			continue
+		}
+		claims := normalizeNarrativeStateClaims(extraction)
+		if len(claims) != 1 {
+			t.Fatalf("lifecycle prompt example lost its claim: %#v", extraction)
+		}
+		examples[claims[0].Transition] = extraction
+	}
+	for _, phase := range []string{"partial", "complete"} {
+		if examples[phase] == nil {
+			t.Fatalf("prompt lacks an executable %s example", phase)
+		}
+	}
+	partial := normalizeNarrativeStateClaims(examples["partial"])[0]
+	completed := normalizeNarrativeStateClaims(examples["complete"])[0]
+	if partial.LifecycleKey == "" || completed.LifecycleKey != partial.LifecycleKey {
+		t.Fatal("progress and completion examples do not identify the same occurrence")
+	}
+	st := &turnRecordingStore{}
+	if pending == nil {
+		t.Fatal("prompt lacks an executable pending-thread example")
+	}
+	save46LifecycleFixture(t, st, 1, pending, partial.Subject+" was promised.")
+	if len(st.returnPendingThreads) != 1 || st.returnPendingThreads[0].Title != partial.Subject {
+		t.Fatalf("prompt pending-thread shape did not persist: %#v", st.returnPendingThreads)
+	}
+	for i, phase := range []string{"partial", "complete"} {
+		claim := normalizeNarrativeStateClaims(examples[phase])[0]
+		save46LifecycleFixture(t, st, i+2, examples[phase], "The crew reports progress. "+claim.EvidenceExcerpt+" The foreman records it.")
+		if len(st.returnStatusCurrent) != 1 {
+			t.Fatalf("%s failed to retain one current occurrence: %#v", phase, st.returnStatusCurrent)
+		}
+		current := parseJSONMap(st.returnStatusCurrent[0].ValueJSON)
+		if current["transition"] != phase || current["value"] != claim.Value {
+			t.Fatalf("%s example lost its meaning: %#v", phase, current)
+		}
+		if phase == "partial" {
+			if st.returnPendingThreads[0].Status != "open" || stringFromMap(mapFromAny(current["lifecycle_details"]), "remaining_obligations") != stringFromMap(partial.LifecycleDetails, "remaining_obligations") {
+				t.Fatalf("partial example closed the duty or lost remaining work: %#v", current)
+			}
+		} else if st.returnPendingThreads[0].Status != "resolved" {
+			t.Fatal("completion example left the pending projection open")
+		}
+		// Read the old promise with current state; no completion memory is supplied.
+		memory := store.Memory{ID: 1, ChatSessionID: "lifecycle-46", TurnIndex: 1, Importance: .8,
+			SummaryJSON: mustCompactJSON(map[string]any{"narrative_events": []any{map[string]any{
+				"actor": "Bridge crew", "event": partial.Subject + " was promised.", "lifecycle_key": partial.LifecycleKey, "visibility": "public",
+			}}})}
+		input := prepareTurnAssemblyInput{Memories: []store.Memory{memory}, TopK: 1, MaxChars: 18000, UserInput: partial.Subject, Profile: "default", BudgetMode: "auto",
+			VectorTrace: map[string]any{"memory_search_result": "not_found", "search_result": "not_found"},
+			Perspective: testPrepareTurnAssemblyPerspective(priorityMemoryTestContext(1))}
+		input.Perspective.Selection.Query, input.Perspective.Selection.CurrentTurn = partial.Subject, i+3
+		input.Perspective.NarrativeValues = st.returnStatusCurrent
+		out := buildPrepareTurnInjectionAssemblyWithBudget(input)
+		facts, summaries := multiAgentCandidatePool(&out)
+		modelInput := multiAgentModelInput(multiAgentInput("event_recent", facts, summaries, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), input.MaxChars, 1, nil), 1)
+		for _, text := range []string{modelInput, extractionStringFromAny(out.MemoryDeliveryPlan["final_text"])} {
+			for _, want := range []string{claim.Value, "(" + phase + ")", claim.EvidenceExcerpt} {
+				if !strings.Contains(text, want) {
+					t.Fatalf("%s current reading lost %q before preprocessing/final delivery: %s", phase, want, text)
+				}
+			}
+		}
+	}
+	eventsBefore := len(st.savedStatusEvents)
+	save46LifecycleFixture(t, st, 4, pending, "The crew recalls the old repair promise.")
+	if len(st.savedStatusEvents) != eventsBefore || st.returnPendingThreads[0].Status != "resolved" {
+		t.Fatal("recalling the prompt's completed occurrence reopened it")
 	}
 }
 
@@ -2189,6 +2724,48 @@ func TestCriticProtectedCollectionDoesNotUseContentSimilarityAsSaveGate(t *testi
 	if intFromAny(reasons["protected_secret_claim_unbound"], 0) != 0 ||
 		intFromAny(reasons["protected_subjective_claim_unbound"], 0) != 0 {
 		t.Fatalf("content-similarity save gate returned: %#v", trace)
+	}
+}
+
+func TestPerspectiveObjectiveQuarantineKeepsLifecycleWithSharedEvidence(t *testing.T) {
+	for _, phase := range []string{"partial", "complete"} {
+		t.Run(phase, func(t *testing.T) {
+			excerpt := "The deck was repaired; Rowan privately feared disappointing Mira."
+			value := "Deck repaired; railing remains"
+			if phase == "complete" {
+				excerpt = "All repairs were finished; Rowan privately feared disappointing Mira."
+				value = "All repairs finished"
+			}
+			extraction := map[string]any{
+				"subjective_entity_memories": []any{map[string]any{
+					"owner_entity_name": "Rowan", "memory_text": "Rowan privately feared disappointing Mira.",
+					"evidence_excerpt": excerpt, "owner_visibility": "owner_private",
+				}},
+				"state_claims": []any{map[string]any{
+					"subject": "Bridge repair", "state_slot": "goal_status", "lifecycle_key": "bridge-repair-1",
+					"value": value, "transition": phase, "evidence_excerpt": excerpt,
+				}},
+				"narrative_events": []any{map[string]any{"event": value, "evidence_excerpt": excerpt}},
+				"kg_triples": []any{
+					map[string]any{"subject": "Bridge repair", "predicate": "progress", "object": value, "evidence_excerpt": excerpt},
+					map[string]any{"subject": "Rowan", "predicate": "privately_feared", "object": "disappointing Mira", "evidence_excerpt": excerpt},
+				},
+			}
+			filtered, trace := quarantineCriticProtectedCandidates(extraction, "", excerpt)
+			if len(sliceFromAny(filtered["state_claims"])) != 1 || len(sliceFromAny(filtered["narrative_events"])) != 1 {
+				t.Fatalf("shared evidence erased objective %s: %#v trace=%#v", phase, filtered, trace)
+			}
+			triples := sliceFromAny(filtered["kg_triples"])
+			if len(triples) != 1 || stringFromMap(mapFromAny(triples[0]), "subject") != "Bridge repair" {
+				t.Fatalf("expected public progress retained and private fear excluded: %#v", triples)
+			}
+			st := &turnRecordingStore{}
+			save46LifecycleFixture(t, st, 1, map[string]any{"pending_threads": []any{map[string]any{"title": "Bridge repair", "lifecycle_key": "bridge-repair-1"}}}, "Bridge repair was promised.")
+			save46LifecycleFixture(t, st, 2, filtered, "At the bridge, the crew met. "+excerpt+" They returned home.")
+			if got := stringFromMap(parseJSONMap(st.returnStatusCurrent[0].ValueJSON), "transition"); got != phase {
+				t.Fatalf("objective lifecycle did not persist: got=%s want=%s", got, phase)
+			}
+		})
 	}
 }
 

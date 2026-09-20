@@ -1,7 +1,7 @@
 param(
     [string]$OutputRoot,
     [string[]]$TargetFilter = @(),
-    [string]$PackageVersion = "4.5.0",
+    [string]$PackageVersion = "4.6.0",
     [switch]$Zip,
     [switch]$ForceRefresh
 )
@@ -60,7 +60,7 @@ function Normalize-POSIXPackageLineEndings([string]$Root) {
 }
 
 function Set-CopiedPackageVersionText([string]$Root, [string]$PackageVersion) {
-    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.5.0" } else { $PackageVersion.Trim() }
+    $version = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.6.0" } else { $PackageVersion.Trim() }
     $suffix = "archivecenter" + (($version -replace '\s+', '').ToLowerInvariant())
     $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
     foreach ($pattern in @("*.md", "*.txt", "*.sh", "*.command")) {
@@ -390,7 +390,7 @@ $targets = @(
     }
 )
 
-$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.5.0" } else { $PackageVersion.Trim() }
+$packageVersionLabel = if ([string]::IsNullOrWhiteSpace($PackageVersion)) { "4.6.0" } else { $PackageVersion.Trim() }
 foreach ($target in $targets) {
     $target.PackageName = ([string]$target.PackageName).Replace("Archive Center 2.1", "Archive Center $packageVersionLabel")
 }
@@ -447,10 +447,14 @@ foreach ($target in $targets) {
     Copy-File (Join-Path $repoRoot ".env.example") (Join-Path $targetRoot ".env.source.example")
     Copy-File (Join-Path $repoRoot "ops\full-package\.env.full.example") (Join-Path $targetRoot ".env.full.example")
     Set-RuntimeDefaultsInEnvExample (Join-Path $targetRoot ".env.full.example") $target.RuntimeProfileDefault $target.VectorModeDefault $packageVersionLabel
-    Copy-DirectoryContents (Join-Path $repoRoot "migrations") (Join-Path $targetRoot "migrations")
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot "migrations") -File -Filter "*.sql" | ForEach-Object {
+        Copy-File $_.FullName (Join-Path $targetRoot ("migrations/" + $_.Name))
+    }
     Copy-File (Join-Path $repoRoot "prompts\critic_system.txt") (Join-Path $targetRoot "prompts\critic_system.txt")
     Copy-File (Join-Path $repoRoot "prompts\supervisor_system.txt") (Join-Path $targetRoot "prompts\supervisor_system.txt")
-    Copy-DirectoryContents (Join-Path $repoRoot "ops\full-package-posix") (Join-Path $targetRoot "scripts")
+    Get-ChildItem -LiteralPath (Join-Path $repoRoot "ops\full-package-posix") -File |
+        Where-Object { $_.Extension -in @(".sh", ".py") } |
+        ForEach-Object { Copy-File $_.FullName (Join-Path $targetRoot ("scripts/" + $_.Name)) }
     Copy-File (Join-Path $repoRoot "ops\full-package-posix\07_export_diagnostics.sh") (Join-Path $targetRoot "07_export_diagnostics.sh")
     Get-ChildItem -LiteralPath (Join-Path $targetRoot "scripts") -File -ErrorAction SilentlyContinue |
         Where-Object { $_.Name -like "README_POSIX_*PACKAGE.md" -or $_.Name -like "00_README_FIRST_POSIX*.md" } |
@@ -460,7 +464,6 @@ foreach ($target in $targets) {
     Copy-File (Join-Path $repoRoot "ops\platform-proof.sh") (Join-Path $targetRoot "ops\platform-proof.sh")
     Copy-File (Join-Path $repoRoot ("ops\" + $target.InstallScript)) (Join-Path $targetRoot ("ops\" + $target.InstallScript))
 
-    New-Item -ItemType Directory -Force -Path (Join-Path $targetRoot "docs") | Out-Null
     Copy-File (Join-Path $repoRoot "ops\full-package-posix\README_POSIX_FULL_PACKAGE.md") (Join-Path $targetRoot "README_POSIX_FULL_PACKAGE.md")
     Copy-File (Join-Path $repoRoot $readFirstSource) (Join-Path $targetRoot "00_README_FIRST_POSIX.md")
 

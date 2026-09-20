@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -97,6 +98,10 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	}
 	pendingCharacterStates := map[string]pendingCharacterStateProjection{}
 	pendingCharacterOrder := []string{}
+	characterObservation := map[string]any{}
+	if len(sliceFromAny(extraction["character_deltas"])) > 0 {
+		characterObservation = reversibleObservationContext(ctx, s.Store, sid)
+	}
 	for characterDeltaIndex, item := range sliceFromAny(extraction["character_deltas"]) {
 		charDelta := mapFromAny(item)
 		rawName := strings.TrimSpace(stringFromMap(charDelta, "name"))
@@ -144,19 +149,21 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		if _, exists := pendingCharacterStates[characterKey]; !exists {
 			pendingCharacterOrder = append(pendingCharacterOrder, characterKey)
 		}
+		nextState := store.CharacterState{
+			ChatSessionID:     sid,
+			CharacterName:     name,
+			AppearanceJSON:    appearanceJSON,
+			PersonalityJSON:   personalityJSON,
+			StatusJSON:        statusJSON,
+			RelationshipsJSON: relationshipsJSON,
+			SpeechStyleJSON:   speechStyleJSON,
+			TurnIndex:         turnIndex,
+			CreatedAt:         now,
+			UpdatedAt:         now,
+		}
+		nextState.FieldProvenanceJSON = characterDeltaFieldProvenance(ctx, currentState, nextState, currentDelta, completedTurnText, characterObservation)
 		pendingCharacterStates[characterKey] = pendingCharacterStateProjection{
-			state: store.CharacterState{
-				ChatSessionID:     sid,
-				CharacterName:     name,
-				AppearanceJSON:    appearanceJSON,
-				PersonalityJSON:   personalityJSON,
-				StatusJSON:        statusJSON,
-				RelationshipsJSON: relationshipsJSON,
-				SpeechStyleJSON:   speechStyleJSON,
-				TurnIndex:         turnIndex,
-				CreatedAt:         now,
-				UpdatedAt:         now,
-			},
+			state:       nextState,
 			sourceIndex: characterDeltaIndex,
 		}
 		for _, ev := range sliceFromAny(currentDelta["events"]) {
@@ -283,113 +290,102 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 		}
 	}
 
-	for _, item := range sliceFromAny(extraction["pending_threads"]) {
+	currentLifecycles := map[string]store.StatusCurrentValue{}
+	sourceContext, _ := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext)
+	_, reversibleStore := s.Store.(store.ReversibleStatusTransitionStore)
+	atomicLifecycleOwner := reversibleStore && sourceContext.ContractVersion == completeTurnSourceAcceptanceContract && sourceContext.Revision != ""
+	storedPendingByKey := map[string]store.PendingThread{}
+	if pending, err := s.Store.ListPendingThreads(ctx, sid, "all"); err == nil {
+		for _, thread := range pending {
+			if _, found := storedPendingByKey[thread.ThreadKey]; !found {
+				storedPendingByKey[thread.ThreadKey] = thread
+			}
+		}
+	}
+	pendingItems := append([]any(nil), sliceFromAny(extraction["pending_threads"])...)
+	if atomicLifecycleOwner {
+		// Accepted-source pending writes belong to the atomic transition owner.
+		// These dependent representations consume its current snapshots only.
+		pendingItems = nil
+	}
+	if currentStore, ok := s.Store.(store.StatusCurrentValueStore); ok {
+		values, err := currentStore.ListStatusCurrentValues(ctx, sid, "entity", "", narrativeStateStatusKey, -1)
+		if err != nil {
+			result.addSkipReason("pending_threads", "current_lifecycle_read_failed", err.Error())
+		}
+		seenKeys := map[string]bool{}
+		for _, item := range pendingItems {
+			thread := narrativePendingThreadForExtraction(sid, turnIndex, mapFromAny(item), now)
+			seenKeys[thread.ThreadKey] = true
+		}
+		for _, value := range values {
+			payload := parseJSONMap(value.ValueJSON)
+			if normalizeNarrativeClaimScope(stringFromMap(payload, "claim_scope")) == "objective" {
+				key := narrativeLifecycleStorageKey(stringFromMap(payload, "lifecycle_key"))
+				if key == "" && stringFromMap(payload, "subject_type") == "entity" && stringFromMap(payload, "state_slot") == "goal_status" {
+					key = stableKey("thread", stringFromMap(payload, "subject"))
+				}
+				if key != "" {
+					currentLifecycles[key] = value
+				}
+			}
+			if snapshot := narrativePendingSnapshot(payload); snapshot != nil {
+				currentLifecycles[snapshot.ThreadKey] = value
+				if value.SourceTurn == turnIndex && !seenKeys[snapshot.ThreadKey] {
+					metadata := parseJSONMap(snapshot.HookMetadataJSON)
+					metadata["title"] = extractionFirstNonEmpty(snapshot.Title, snapshot.Description)
+					pendingItems = append(pendingItems, metadata)
+					seenKeys[snapshot.ThreadKey] = true
+				}
+			}
+		}
+	}
+	for _, item := range pendingItems {
 		thread := mapFromAny(item)
 		title := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(thread, "title"), stringFromMap(thread, "description"), stringFromMap(thread, "thread_type")))
 		if title == "" {
 			result.addSkipReason("pending_threads", "missing_title", thread)
 			continue
 		}
-		threadType := strings.TrimSpace(stringFromMap(thread, "thread_type"))
-		confidence := clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1)
 		lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(thread, "lifecycle_key"))
 		threadKey := stableKey("thread", title)
 		if lifecycleStorageKey := narrativeLifecycleStorageKey(lifecycleKey); lifecycleStorageKey != "" {
 			threadKey = lifecycleStorageKey
 			thread["lifecycle_key"] = lifecycleKey
 		}
-		if saver, ok := s.Store.(pendingThreadSaver); ok {
+		threadRecord := narrativePendingThreadForExtraction(sid, turnIndex, thread, now)
+		if current, exists := currentLifecycles[threadKey]; exists {
+			if lifecycleKey != "" && current.SourceTurn < turnIndex {
+				// This is an unchanged current projection. The mention remains in
+				// source memory; it does not materialize another current goal row.
+				continue
+			}
+			payload := parseJSONMap(current.ValueJSON)
+			if snapshot := narrativePendingSnapshot(payload); snapshot != nil {
+				threadRecord = *snapshot
+				thread = parseJSONMap(snapshot.HookMetadataJSON)
+				title = extractionFirstNonEmpty(snapshot.Title, snapshot.Description)
+			} else {
+				threadRecord.Status = narrativeLifecycleProjectionStatus(stringFromMap(payload, "transition"))
+				threadRecord.SourceTurn = current.SourceTurn
+				if threadRecord.Status == "resolved" {
+					threadRecord.ResolvedTurn = current.SourceTurn
+					threadRecord.ResolutionNote = stringFromMap(payload, "value")
+				}
+				thread["status"], thread["transition"], thread["value"] = threadRecord.Status, payload["transition"], payload["value"]
+				threadRecord.HookMetadataJSON = mustCompactJSON(thread)
+			}
+		}
+		if existing, ok := storedPendingByKey[threadKey]; ok {
+			threadRecord.ID, threadRecord.CreatedTurn, threadRecord.CreatedAt = existing.ID, existing.CreatedTurn, existing.CreatedAt
+		}
+		if saver, ok := s.Store.(pendingThreadSaver); ok && !atomicLifecycleOwner {
 			result.trySave("SavePendingThread", func() error {
-				return saver.SavePendingThread(ctx, &store.PendingThread{
-					ChatSessionID:    sid,
-					ThreadKey:        threadKey,
-					Description:      extractionFirstNonEmpty(stringFromMap(thread, "details"), title),
-					Status:           "open",
-					CreatedTurn:      turnIndex,
-					SourceTurn:       turnIndex,
-					Priority:         intFromAny(thread["priority"], 0),
-					HookType:         threadType,
-					HookMetadataJSON: mustCompactJSON(thread),
-					ThreadType:       threadType,
-					Title:            title,
-					Owner:            sanitizeParticipantActorName(stringFromMap(thread, "owner")),
-					Target:           sanitizeParticipantActorName(stringFromMap(thread, "target")),
-					LastSeenTurn:     turnIndex,
-					Confidence:       confidence,
-					DetailsJSON:      mustCompactJSON(thread),
-					CreatedAt:        now,
-					UpdatedAt:        now,
-				})
+				return saver.SavePendingThread(ctx, &threadRecord)
 			}, result, func() { result.PendingThreads++ })
 		}
-		threadState := map[string]any{
-			"thread_type": threadType,
-			"title":       title,
-			"status":      "open",
-			"confidence":  confidence,
-			"source_turn": turnIndex,
-		}
-		if lifecycleKey != "" {
-			threadState["lifecycle_key"] = lifecycleKey
-		}
-		subject := strings.TrimSpace(stringFromMap(thread, "subject"))
-		stateSlot := normalizeNarrativeStateSlot(stringFromMap(thread, "state_slot"))
-		if subject != "" &&
-			normalizeArtifactDedupeText(subject) == normalizeArtifactDedupeText(title) &&
-			stateSlot == "goal_status" {
-			threadState["subject"] = subject
-			threadState["state_slot"] = stateSlot
-		}
-		if saver, ok := s.Store.(activeStateSaver); ok {
-			result.trySave("SaveActiveState(unresolved_threads)", func() error {
-				return saver.SaveActiveState(ctx, &store.ActiveState{
-					ChatSessionID: sid,
-					StateType:     "unresolved_threads",
-					Content:       mustCompactJSON(threadState),
-					TurnIndex:     turnIndex,
-					CreatedAt:     now,
-				})
-			}, result, func() { result.ActiveStates++ })
-		}
-		// P358 HS-1a: canonical state layer for unresolved threads with provenance (P407)
-		if clSaver, ok2 := s.Store.(canonicalStateLayerSaver); ok2 && confidence >= 0.7 {
-			result.trySave("SaveCanonicalStateLayer", func() error {
-				return saveCanonicalStateLayerWithCost(ctx, clSaver, sid, &store.CanonicalStateLayer{
-					ChatSessionID:    sid,
-					LayerType:        "unresolved_threads",
-					Content:          mustCompactJSON(threadState),
-					SourceStateType:  "pending_threads",
-					TurnIndex:        turnIndex,
-					SourceTurn:       turnIndex,
-					SourceRecord:     0,
-					LastVerifiedTurn: turnIndex,
-					Confidence:       confidence,
-					CreatedAt:        now,
-				}, existingCanonicalLayers, cost)
-			}, result, func() { result.CanonicalStateLayers++ })
-		}
-		if saver, ok := s.Store.(storylineSaver); ok {
-			result.trySave("SaveStoryline", func() error {
-				return saver.SaveStoryline(ctx, &store.Storyline{
-					ChatSessionID:       sid,
-					Name:                title,
-					Status:              "active",
-					EntitiesJSON:        mustCompactJSON(extraction["entities"]),
-					CurrentContext:      extractionFirstNonEmpty(stringFromMap(thread, "details"), title),
-					KeyPointsJSON:       mustCompactJSON([]string{title}),
-					OngoingTensionsJSON: mustCompactJSON(thread),
-					Confidence:          clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1),
-					EvidenceCount:       len(stringsFromAny(extraction["evidence_excerpts"])),
-					LastEvidenceTurn:    turnIndex,
-					FirstTurn:           turnIndex,
-					LastTurn:            turnIndex,
-					CreatedAt:           now,
-					UpdatedAt:           now,
-				})
-			}, result, func() { result.Storylines++ })
-		}
+		s.projectNarrativePendingArtifacts(ctx, sid, turnIndex, threadRecord, extraction, now, result, existingCanonicalLayers, cost)
 	}
-	s.resolvePendingThreadsFromExtraction(ctx, sid, turnIndex, extraction, now, result)
 
 	if saver, ok := s.Store.(worldRuleSaver); ok {
 		worldRuleItems := worldRuleItemsForSave(extraction)
@@ -448,63 +444,88 @@ func (s *Server) saveCharacterAndStateArtifacts(ctx context.Context, sid string,
 	s.saveCriticIngestTrace(ctx, sid, turnIndex, now, result)
 }
 
-func (s *Server) resolvePendingThreadsFromExtraction(ctx context.Context, sid string, turnIndex int, extraction map[string]any, now time.Time, result *artifactSaveResult) {
-	if s == nil || s.Store == nil || result == nil {
-		return
+func (s *Server) projectNarrativePendingArtifacts(ctx context.Context, sid string, turnIndex int, threadRecord store.PendingThread, extraction map[string]any, now time.Time, result *artifactSaveResult, existingCanonicalLayers []store.CanonicalStateLayer, cost *canonicalStateWriteCostMeasurement) {
+	thread := parseJSONMap(threadRecord.HookMetadataJSON)
+	title := extractionFirstNonEmpty(threadRecord.Title, threadRecord.Description)
+	threadType := strings.TrimSpace(extractionFirstNonEmpty(threadRecord.ThreadType, threadRecord.HookType))
+	confidence := threadRecord.Confidence
+	lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(thread, "lifecycle_key"))
+	projectionTurn := threadRecord.SourceTurn
+	projectionRecordedTurn := intFromAny(thread["repair_recorded_turn"], projectionTurn)
+	threadState := map[string]any{
+		"thread_type": threadType,
+		"title":       title,
+		"status":      threadRecord.Status,
+		"confidence":  confidence,
+		"source_turn": projectionTurn,
 	}
-	lifecycleKeys, legacySubjects := narrativeResolvedThreadIdentities(extraction)
-	for _, claim := range normalizeNarrativeStateClaims(extraction) {
-		switch claim.Transition {
-		case "defer", "abandon", "complete", "supersede", "resolve", "clear":
-			if claim.LifecycleKey != "" {
-				lifecycleKeys[claim.LifecycleKey] = true
-			}
-			if subject := normalizeArtifactDedupeText(claim.Subject); subject != "" {
-				legacySubjects[subject] = true
-			}
+	threadState["transition"] = stringFromMap(thread, "transition")
+	threadState["value"] = stringFromMap(thread, "value")
+	if recorded, exists := thread["repair_recorded_turn"]; exists {
+		threadState["repair_recorded_turn"] = recorded
+	}
+	if lifecycleKey != "" {
+		threadState["lifecycle_key"] = lifecycleKey
+	}
+	subject := strings.TrimSpace(stringFromMap(thread, "subject"))
+	stateSlot := normalizeNarrativeStateSlot(stringFromMap(thread, "state_slot"))
+	if subject != "" &&
+		normalizeArtifactDedupeText(subject) == normalizeArtifactDedupeText(title) &&
+		stateSlot == "goal_status" {
+		threadState["subject"] = subject
+		threadState["state_slot"] = stateSlot
+	}
+	if saver, ok := s.Store.(activeStateSaver); ok {
+		result.trySave("SaveActiveState(unresolved_threads)", func() error {
+			return saver.SaveActiveState(ctx, &store.ActiveState{
+				ChatSessionID: sid,
+				StateType:     "unresolved_threads",
+				Content:       mustCompactJSON(threadState),
+				TurnIndex:     projectionRecordedTurn,
+				CreatedAt:     now,
+			})
+		}, result, func() { result.ActiveStates++ })
+	}
+	// P358 HS-1a: canonical state layer for unresolved threads with provenance (P407)
+	if clSaver, ok2 := s.Store.(canonicalStateLayerSaver); ok2 && confidence >= 0.7 {
+		result.trySave("SaveCanonicalStateLayer", func() error {
+			return saveCanonicalStateLayerWithCost(ctx, clSaver, sid, &store.CanonicalStateLayer{
+				ChatSessionID:    sid,
+				LayerType:        "unresolved_threads",
+				Content:          mustCompactJSON(threadState),
+				SourceStateType:  "pending_threads",
+				TurnIndex:        projectionRecordedTurn,
+				SourceTurn:       projectionTurn,
+				SourceRecord:     0,
+				LastVerifiedTurn: turnIndex,
+				Confidence:       confidence,
+				CreatedAt:        now,
+			}, existingCanonicalLayers, cost)
+		}, result, func() { result.CanonicalStateLayers++ })
+	}
+	if saver, ok := s.Store.(storylineSaver); ok {
+		storylineStatus := threadRecord.Status
+		if storylineStatus == "open" {
+			storylineStatus = "active"
 		}
-	}
-	if len(lifecycleKeys) == 0 && len(legacySubjects) == 0 {
-		return
-	}
-	saver, ok := s.Store.(pendingThreadSaver)
-	if !ok {
-		result.addSkipReason("resolved_threads", "pending_thread_store_unavailable", nil)
-		return
-	}
-	threads, err := s.Store.ListPendingThreads(ctx, sid, "")
-	if err != nil {
-		result.addSkipReason("resolved_threads", "pending_thread_read_failed", err.Error())
-		return
-	}
-	for index := range threads {
-		thread := threads[index]
-		metadata := mapFromAny(parseJSONMap(thread.HookMetadataJSON))
-		lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(metadata, "lifecycle_key"))
-		matched := lifecycleKey != "" && lifecycleKeys[lifecycleKey]
-		if !matched && lifecycleKey == "" {
-			for _, value := range []string{thread.Title, thread.Description, stringFromMap(metadata, "subject"), stringFromMap(metadata, "title")} {
-				if legacySubjects[normalizeArtifactDedupeText(value)] {
-					matched = true
-					break
-				}
-			}
-		}
-		if !matched {
-			continue
-		}
-		metadata["status"] = "resolved"
-		metadata["resolved_turn"] = turnIndex
-		thread.Status = "resolved"
-		thread.ResolvedTurn = turnIndex
-		thread.SourceTurn = turnIndex
-		thread.LastSeenTurn = turnIndex
-		thread.ResolutionNote = extractionFirstNonEmpty(stringFromMap(metadata, "resolution_note"), "resolved by critic lifecycle transition")
-		thread.HookMetadataJSON = mustCompactJSON(metadata)
-		thread.UpdatedAt = now
-		result.trySave("SavePendingThread(resolved)", func() error {
-			return saver.SavePendingThread(ctx, &thread)
-		}, result, func() { result.PendingThreads++ })
+		result.trySave("SaveStoryline", func() error {
+			return saver.SaveStoryline(ctx, &store.Storyline{
+				ChatSessionID:       sid,
+				Name:                title,
+				Status:              storylineStatus,
+				EntitiesJSON:        mustCompactJSON(extraction["entities"]),
+				CurrentContext:      extractionFirstNonEmpty(stringFromMap(thread, "details"), title),
+				KeyPointsJSON:       mustCompactJSON([]string{title}),
+				OngoingTensionsJSON: mustCompactJSON(thread),
+				Confidence:          clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1),
+				EvidenceCount:       len(stringsFromAny(extraction["evidence_excerpts"])),
+				LastEvidenceTurn:    projectionTurn,
+				FirstTurn:           threadRecord.CreatedTurn,
+				LastTurn:            projectionRecordedTurn,
+				CreatedAt:           now,
+				UpdatedAt:           now,
+			})
+		}, result, func() { result.Storylines++ })
 	}
 }
 
@@ -613,7 +634,36 @@ func sameCharacterStateProjection(left, right store.CharacterState) bool {
 		strings.TrimSpace(left.PersonalityJSON) == strings.TrimSpace(right.PersonalityJSON) &&
 		strings.TrimSpace(left.StatusJSON) == strings.TrimSpace(right.StatusJSON) &&
 		strings.TrimSpace(left.RelationshipsJSON) == strings.TrimSpace(right.RelationshipsJSON) &&
-		strings.TrimSpace(left.SpeechStyleJSON) == strings.TrimSpace(right.SpeechStyleJSON)
+		strings.TrimSpace(left.SpeechStyleJSON) == strings.TrimSpace(right.SpeechStyleJSON) &&
+		strings.TrimSpace(left.FieldProvenanceJSON) == strings.TrimSpace(right.FieldProvenanceJSON)
+}
+
+func characterDeltaFieldProvenance(ctx context.Context, previous *store.CharacterState, next store.CharacterState, delta map[string]any, content string, observedAt map[string]any) string {
+	next.FieldProvenanceJSON = mustCompactJSON(mapFromAny(delta["field_provenance"]))
+	fields := store.DecodeCharacterFieldProvenance(store.MergeCharacterStateFieldProvenance(previous, next))
+	priorValues := map[string]any{}
+	if previous != nil {
+		priorValues = store.CharacterStateFieldValues(*previous)
+	}
+	source, _ := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext)
+	for path, value := range store.CharacterStateFieldValues(next) {
+		if prior, exists := priorValues[path]; exists && reflect.DeepEqual(prior, value) {
+			continue
+		}
+		metadata := fields[path]
+		if source.Revision != "" {
+			metadata["source_revision"] = source.Revision
+		}
+		if _, explicit := metadata["observed_at"]; !explicit {
+			metadata["observed_at"] = observedAt
+		}
+		if _, explicit := metadata["evidence_excerpt"]; !explicit {
+			if excerpt := sanitizeEvidenceExcerptForTurn(stringFromMap(delta, "evidence_excerpt"), content); excerpt != "" {
+				metadata["evidence_excerpt"] = excerpt
+			}
+		}
+	}
+	return mustCompactJSON(map[string]any{"contract_version": store.CharacterFieldProvenanceContract, "fields": fields})
 }
 
 func mergeCharacterStateJSONField(existing string, incoming any) string {

@@ -17,6 +17,59 @@ import (
 
 type readyOutboxDocumentWithoutContext struct{}
 
+func TestMemoryAdmission46ExplicitPrivateProjectionAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		excluded, replay bool
+	}{{"explicit exclusion", true, false}, {"no explicit decision", false, false}, {"idempotent result keeps prior authority", true, true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			now := time.Date(2026, 9, 17, 12, 0, 0, 0, time.UTC)
+			admission := &MemoryAdmission{ContractVersion: MemoryAdmissionContract, ChatSessionID: "private-session", SourceRevision: "private-source", TurnIndex: 1,
+				DerivationVersion: MemoryAdmissionContract, ExtractorVersion: "critic.v1", IndexVersion: MemoryPublicProjectionIndex,
+				ResultJSON: `{"turn_summary":"A private observation."}`, MemoryPublicProjectionExcluded: tc.excluded,
+				Memory: &Memory{ChatSessionID: "private-session", TurnIndex: 1, SummaryJSON: `{}`, CreatedAt: now}, CreatedAt: now}
+			admission.ResultHash = memoryAdmissionExpectedResultHash(admission)
+			mock.ExpectBegin()
+			state, storedHash, storedResult := "pending", "", ""
+			if tc.replay {
+				state, storedHash, storedResult = "committed", "previous-public-result-hash", `{"turn_summary":"Original public result."}`
+			}
+			mock.ExpectQuery("SELECT lifecycle_state, derived_admission_state").WithArgs("private-session", "private-source", 1).
+				WillReturnRows(sqlmock.NewRows([]string{"lifecycle_state", "derived_admission_state", "derived_admission_version", "derived_extractor_version", "derived_index_version", "derived_result_hash", "derived_result_json"}).AddRow("active", state, admission.DerivationVersion, admission.ExtractorVersion, admission.IndexVersion, storedHash, storedResult))
+			if !tc.replay {
+				mock.ExpectQuery("SELECT id[\\s\\S]+FROM memories").WithArgs("private-session", 1).WillReturnRows(sqlmock.NewRows([]string{"id"}))
+				mock.ExpectExec("INSERT INTO memories").WillReturnResult(sqlmock.NewResult(42, 1))
+				if tc.excluded {
+					mock.ExpectExec("INSERT INTO memory_vector_outbox").WithArgs(MemoryVectorOutboxContract, sqlmock.AnyArg(), "delete", "private-session", "private-source", "memory:private-session:42", sqlmock.AnyArg(), true, "active", "pending", 0, nil, nil, nil, nil, now, now).WillReturnResult(sqlmock.NewResult(7, 1))
+				}
+				mock.ExpectQuery("SELECT id, evidence_text, tombstoned").WithArgs("private-session", 1, 1).WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+				mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").WithArgs("private-session", "private-source").WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
+				mock.ExpectExec("UPDATE memory_source_revisions").WillReturnResult(sqlmock.NewResult(0, 1))
+			}
+			mock.ExpectCommit()
+			result, err := (&mariadbStore{db: db}).CommitMemoryAdmission(context.Background(), admission)
+			if err != nil {
+				t.Fatal(err)
+			}
+			wanted := 0
+			if tc.excluded && !tc.replay {
+				wanted = 1
+			}
+			if result.VectorOperations != wanted || result.Idempotent != tc.replay {
+				t.Fatalf("authority result: %+v", result)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
 func (readyOutboxDocumentWithoutContext) Match(value driver.Value) bool {
 	var raw []byte
 	switch typed := value.(type) {

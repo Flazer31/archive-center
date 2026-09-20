@@ -436,10 +436,10 @@ func TestMariaDBStoreSaveCharacterStateAppendsMergedSnapshot(t *testing.T) {
 		WithArgs("sess-1", "Chloe").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
-			"relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
-		}).AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{"Hero":{"affection":40}}`, `{"tone":"soft"}`, 8, updated, updated))
+			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
+		}).AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{"Hero":{"affection":40}}`, `{"tone":"soft"}`, nil, 8, updated, updated))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO character_states")).
-		WithArgs("sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{"Hero":{"affection":70}}`, `{"tone":"dry"}`, 9, updated, updated).
+		WithArgs("sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{"Hero":{"affection":70}}`, `{"tone":"dry"}`, sqlmock.AnyArg(), 9, updated, updated).
 		WillReturnResult(sqlmock.NewResult(12, 1))
 
 	err = m.SaveCharacterState(context.Background(), &CharacterState{
@@ -473,10 +473,10 @@ func TestMariaDBStoreSaveCharacterStateInsertsWhenNoExistingRow(t *testing.T) {
 		WithArgs("sess-1", "Mina").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
-			"relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
+			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 		}))
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO character_states")).
-		WithArgs("sess-1", "Mina", nil, nil, `{"emotion":"new"}`, nil, nil, 1, created, created).
+		WithArgs("sess-1", "Mina", nil, nil, `{"emotion":"new"}`, nil, nil, sqlmock.AnyArg(), 1, created, created).
 		WillReturnResult(sqlmock.NewResult(7, 1))
 
 	err = m.SaveCharacterState(context.Background(), &CharacterState{
@@ -508,11 +508,11 @@ func TestMariaDBStoreListCharacterStatesReturnsLatestSnapshotPerCharacter(t *tes
 		WithArgs("sess-1").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
-			"relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
+			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 		}).
-			AddRow(12, "sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{}`, `{}`, 9, now, now).
-			AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{}`, `{}`, 8, now, now).
-			AddRow(10, "sess-1", "Mina", `{}`, `{}`, `{"emotion":"new"}`, `{}`, `{}`, 1, now, now))
+			AddRow(12, "sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{}`, `{}`, nil, 9, now, now).
+			AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{}`, `{}`, nil, 8, now, now).
+			AddRow(10, "sess-1", "Mina", `{}`, `{}`, `{"emotion":"new"}`, `{}`, `{}`, nil, 1, now, now))
 
 	items, err := m.ListCharacterStates(context.Background(), "sess-1")
 	if err != nil {
@@ -545,10 +545,10 @@ func TestMariaDBStoreListCharacterStateHistoryReturnsSnapshotsNewestFirst(t *tes
 		WithArgs("sess-1", "Chloe", 2, 0).
 		WillReturnRows(sqlmock.NewRows([]string{
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
-			"relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at",
+			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 		}).
-			AddRow(12, "sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{}`, `{}`, 9, now, now).
-			AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{}`, `{}`, 8, now, now))
+			AddRow(12, "sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{}`, `{}`, nil, 9, now, now).
+			AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{}`, `{}`, nil, 8, now, now))
 
 	items, err := m.ListCharacterStateHistory(context.Background(), "sess-1", "Chloe", 2, 0)
 	if err != nil {
@@ -1101,7 +1101,7 @@ func TestMariaDBStoreReadSessionStateSnapshotUsesSingleReadOnlyTransaction(t *te
 			AddRow(2, "sess-agg", "Rooftop", "active", "[]", "confession", `["hesitation"]`, `["answer"]`, 0.8, 3, 11, 1, 12, false, false, false, now, now))
 	mock.ExpectQuery("FROM character_states").
 		WithArgs("sess-agg").
-		WillReturnRows(sqlmock.NewRows([]string{"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json", "relationships_json", "speech_style_json", "turn_index", "created_at", "updated_at"}))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json", "relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at"}))
 	mock.ExpectQuery("FROM world_rules").
 		WithArgs("sess-agg").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "chat_session_id", "scope", "scope_name", "category", "key", "value_json", "genre", "source_turn", "pinned", "suppressed", "user_corrected", "created_at", "updated_at"}))
@@ -1193,6 +1193,59 @@ func TestMariaDBSavePendingThreadUpdatesExistingOpenHook(t *testing.T) {
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet expectations: %v", err)
+	}
+}
+
+func TestMariaDBSaveStorylineUsesOccurrenceIdentity46(t *testing.T) {
+	for _, keyed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("lifecycle_key_%t", keyed), func(t *testing.T) {
+			db, mock, err := sqlmock.New()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			s := Storyline{ChatSessionID: "session-1", Name: "Return a book", Status: "resolved", FirstTurn: 1, LastTurn: 2, UpdatedAt: reversibleStatusTestTime()}
+			predicate, identity := "name = ?", s.Name
+			var tensions any
+			if keyed {
+				s.OngoingTensionsJSON = `{"lifecycle_key":"book-occurrence-1"}`
+				tensions = s.OngoingTensionsJSON
+				predicate, identity = "JSON_UNQUOTE(JSON_EXTRACT(ongoing_tensions_json, '$.lifecycle_key')) = ?", "book-occurrence-1"
+			}
+			mock.ExpectExec("(?s)UPDATE storylines.*"+regexp.QuoteMeta("WHERE chat_session_id = ? AND "+predicate)+"$").
+				WithArgs(s.Name, s.Status, nil, nil, nil, tensions, float64(0), 0, 0, 1, 2, false, false, false, s.UpdatedAt, s.ChatSessionID, identity).
+				WillReturnResult(sqlmock.NewResult(0, 0))
+			mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM storylines WHERE chat_session_id = ? AND "+predicate)).WithArgs(s.ChatSessionID, identity).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
+			if err := (&mariadbStore{db: db}).SaveStoryline(context.Background(), &s); err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func TestMariaDBSavePendingThreadIdentifiedResumeAndReplay46(t *testing.T) {
+	for _, affected := range []int64{1, 0} {
+		t.Run(fmt.Sprintf("affected_%d", affected), func(t *testing.T) {
+			db, mock, err := sqlmock.New(sqlmock.QueryMatcherOption(requiredSQLMatcher(
+				[]string{"update pending_threads", "where id = ?"},
+				[]string{"status <>", "created_turn =", "pinned =", "suppressed =", "user_corrected ="},
+			)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			p := PendingThread{ID: 88, ChatSessionID: "session-1", ThreadKey: "promise-occurrence-1", Description: "Resume the promise", Status: "open", CreatedTurn: 2, SourceTurn: 6, HookType: "promise", HookMetadataJSON: `{"lifecycle_state":"active","resumed_from":"completed"}`, UpdatedAt: reversibleStatusTestTime()}
+			mock.ExpectExec("identified pending occurrence").WithArgs(p.Description, "open", 0, p.SourceTurn, 0, p.HookType, p.HookMetadataJSON, p.UpdatedAt, p.ID).WillReturnResult(sqlmock.NewResult(0, affected))
+			if err := (&mariadbStore{db: db}).SavePendingThread(context.Background(), &p); err != nil {
+				t.Fatal(err)
+			}
+			if err := mock.ExpectationsWereMet(); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

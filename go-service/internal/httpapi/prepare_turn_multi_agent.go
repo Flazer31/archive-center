@@ -38,6 +38,9 @@ For a single assignment, return one JSON object. This example illustrates field 
 {"selected_ids":["F1"],"selected_summary_ids":[],"reasons":{"F1":"The earlier handover may explain present access."},"recent_context_refs":["C1.1"],"search_requests":["Who held the key after the recorded handover in F1?"],"related_requests":[],"unresolved":[]}
 Use each selected ref once. event_recent can also select S refs through selected_summary_ids, with its own core priority and ordering. world_state assesses supplied lorebook_candidates independently through selected_lorebook_refs using L refs: [] means no entry is needed; omission means unassessed. Choose whole evidence within the supplied character budget, considering each group's core evidence first and then useful supporting details. Go preserves received recommendation order and original text. Empty memory selections use ordinary Go selection for that category.
 Read earlier plans alongside later progress in the supplied conversation. Explain an older entry through its historical role and any observed transition. Keep exact quantities, holders and locations with their own source and time. A source's appointment for tomorrow dates the appointment; recent completed narration supplies the scene's current time. Relative deadlines remain attached to their recorded time. Read state dimensions separately: delivery can be established while its hour is uncertain. A cumulative character_states snapshot's source_turn dates its update; each field's event time comes from supporting text. In reasons, attribute an inferred connection as a possibility. In unresolved, briefly identify what the supplied records leave open. Both can accompany useful evidence.
+Read source-linked current progression, progression details, current progression evidence and linked current state alongside the original memory. Explain useful history through its supplied current transition: progress, partial fulfillment, completion, cancellation, changed terms, pause or actual resumption. A coarse open/resolved label does not replace that distinction. Completion can be established by attached current evidence even when the completed episode is absent from recent conversation or separate search hits. Preserve completed history without presenting it as unfinished work; a recollection is not a restart. New promises and recurrence occurrences keep their own lifecycle keys.
+Use supplied last_confirmed_story_clock, current_relation and schedule readings to relate source dates to the present. Keep event, observation and due dates distinct. Unknown dates, ranges and fictional calendars retain their uncertainty; do not recalculate dates from PC time, turn count or a character's absence. Elapsed deadlines alone do not prove completion, cancellation or failure. Explicit new user time/setting revisions guide the next scene separately from stored history.
+Body readings distinguish observed_fact, calculated_estimate and fiction_simulation. Retain their dates, authority and uncertainty. modeled_birth_completed means the configured term has elapsed in the model: do not describe the old pregnancy as still ongoing, or invent an observed birth, child details, symptoms or character knowledge. Read supplied gender/species/world settings without imposing human age or menopause assumptions. The 3,000-character body allocation is managed by Go; selection notes do not recompute it.
 search_requests is an array of question strings: use one concrete missing-evidence question anchored to known people, objects, events, time cues or source refs, or [] when no search is needed. related_requests is an array of handoff objects, for example [{"role":"world_state","refs":["F1"],"reason":"What recorded operating condition of this delivered tool matters here?"}], or [] when no handoff is needed. The refs carry public evidence you already have; reason asks the recipient to examine its own category. Public facts without a perspective owner or viewer restriction can be shared; subjective-relationship evidence stays in its holder's context.
 In supplemental analysis, compare previous_result selections with the supplied sources, recent progress and additional evidence. Retain useful history; an established transition can coexist with an unknown detail. related_evidence carries from_role and request_reason as an editor's question, separately from original evidence. Assess it through your own candidates. Return complete ordered selections within the supplied character budget, while reusing explanations and writing only additions or changes as specified below. Your notes reach the writer and optional Publisher; recipient findings join final preparation in this second pass.
 Each role has one search query and at most one supplemental analysis. When search_requests is empty, the first cross-role reason can use that role's search slot. Put additional questions in unresolved. Return your complete final selection in the supplemental round, retaining still-needed first-round refs. A failed supplement retains the first recommendation; a successful empty final memory selection uses ordinary Go selection. Gaps and conflicting accounts remain attributed uncertainty alongside usable evidence.`
@@ -60,6 +63,7 @@ SELECTION
 - Follow cause, decision or action, and consequence. Select an older cause when it explains a recent consequence; use relevance alongside recency.
 - Preserve the source's distinction between an event, attempt, proposal, prediction, imagined scene, report and recollection. Describe a recorded plan through its status at that time and any later progress visible in recent conversation.
 - Keep story time distinct from the time an account was told. Read flashbacks, quotations and out-of-order accounts through their own chronology. An invitation for the following morning establishes a scheduled meeting; an observed arrival establishes progress. Cite each source_turn as supplied and describe relative dates from that source's viewpoint.
+- Read an episode's attached current progression and evidence even when only its older promise was recalled. Partial fulfillment leaves its recorded remaining work; completed history stays completed when recalled. Distinguish a new occurrence from the resumption of the original one.
 - Use turn_summaries and their S references for sequence and transitions. Use candidates and their F references for decisive details. The two groups have independent core priorities and selection orders, with useful details retained within the character budget.
 - When an old visit or preparation has since happened, prefer the completion or its current consequence. An earlier plan can still explain motivation when its historical role is made explicit in reasons.
 - Keep differing accounts attributed to their sources and preserve useful evidence with its uncertainty when dates or details are incomplete.
@@ -77,6 +81,7 @@ Identify which people and state dimensions matter to the current action or inter
 
 SELECTION
 - Read durable traits and established abilities separately from temporary injuries, disguises, fatigue, locations or restraints. Use relevant later changes to interpret an older temporary state.
+- Preserve supplied gender and species as established traits without requiring a physical change. Read per-field linked current state with its source and effective time; a recent snapshot update does not make an older condition current. Keep body observations separate from calculated estimates and fiction-model stages.
 - Follow acquisitions, losses, treatment, transformations, arrivals and departures. Preserve useful earlier evidence with its time when a current update is uncertain.
 - Keep ownership, quantity, custody, access and intended acquisition distinct. Match an item to its recorded owner and condition, and preserve exact recorded counts where they matter to the action.
 - Attribute a boast, reputation or reported capability to its source. Distinguish directly established abilities from beliefs about them. A written procedure records what a person planned or knew, while an observed attempt records practical experience. These dimensions can coexist and help explain the user's chosen action and available resources.
@@ -97,6 +102,7 @@ Identify the involved viewpoint holders and present interaction from the request
 SELECTION
 - Read every candidate together with its owner and disclosure scope. Distinguish firsthand experience, received information, suspicion, inference and confirmed knowledge. Preserve the speaker of gossip or an accusation.
 - Keep public availability, narrator access and a particular character's learned knowledge separate. Select evidence of how the acting character acquired relevant information when supplied.
+- Body model readings are narrator context with knowledge_not_inferred. A modeled pregnancy or completed term does not establish that its subject or anyone else knows it; preserve any separately supplied knowledge/disclosure evidence and the model's current dated stage.
 - Treat relationships as directional and contextual. Read trust, affection, hostility and obligation from the perspective that holds them, keeping the other person's response independently grounded.
 - Separate temporary emotion from durable attitude. Include meaningful changes such as an apology, disclosure or betrayal when their evidence helps explain the current interaction.
 - Carry relevant secrets as context for their authorized owner or viewers. Preserve the distinction between knowing something and choosing or being permitted to reveal it. Scope-safe uncertainty can express a missing private transition.
@@ -134,10 +140,10 @@ Identify what the user's present action can advance, fulfill, delay, abandon or 
 
 SELECTION
 - Distinguish an explicit promise or accepted obligation from a wish, suggestion, plan, threat, prediction or someone else's expectation. Preserve who committed, to whom and under which conditions.
-- Read open, in-progress, paused, resolved, cancelled and superseded states through the supplied sources and recent conversation. Distinguish partial progress from full completion.
+- Read creation, progress, partial fulfillment, completion, cancellation, changed terms, pause and actual resumption through the supplied transition and evidence. Preserve remaining_obligations for partial work. A pause or cancellation is not successful fulfillment; a completed occurrence and a new repeated promise remain separate.
 - Pair a proposed goal with relevant progress or closure. When recent conversation shows that a visit, acquisition or preparation has happened, select its outstanding consequence or next unfinished part. Explain the historical role of an earlier plan when it remains useful.
 - Preserve recorded requirements, remaining work, triggers and deadlines with their original time anchor. "Two weeks remain" belongs to the scene in which it was said; the latest supplied progress explains what has changed. An uncertain current date can coexist with that useful deadline. Keep possible consequences attributed as interpretation and remaining status questions in unresolved.
-- An absent closure record leaves status uncertain. A possibly-open thread can still be useful when its current relevance and uncertainty are clear.
+- Check attached current progression and its evidence before calling closure unknown; it can resolve an old open description without a separate completion search hit. If supplied evidence leaves status unknown, preserve that uncertainty. Recall alone does not reopen a completed or cancelled thread or resume a paused one.
 - Keep a recorded clue distinct from an anticipated payoff or a theory. Use current user intention as the direction of present action and let completion emerge through the roleplay response.
 
 MISSING EVIDENCE AND HANDOFF
@@ -166,6 +172,7 @@ type multiAgentRoleConfig struct {
 }
 
 type multiAgentSettings struct {
+	Jev            jevSettings                     `json:"jev"`
 	Enabled        bool                            `json:"enabled"`
 	CandidateChars int                             `json:"candidate_chars"`
 	SharedPrompt   string                          `json:"shared_prompt"`
@@ -173,7 +180,7 @@ type multiAgentSettings struct {
 }
 
 func defaultMultiAgentSettings() multiAgentSettings {
-	c := multiAgentSettings{CandidateChars: 32000, Roles: map[string]multiAgentRoleConfig{}}
+	c := multiAgentSettings{CandidateChars: 32000, Roles: map[string]multiAgentRoleConfig{}, Jev: defaultJevSettings()}
 	for _, role := range multiAgentRoles {
 		c.Roles[role] = multiAgentRoleConfig{Enabled: true, UsePublisher: false, Temperature: 0.2, MaxTokens: 2048, TimeoutMs: 120000}
 	}
@@ -242,9 +249,11 @@ func readMultiAgentSettings() (multiAgentSettings, error) {
 func (s *Server) handleMultiAgentSettings(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodPut {
 		var payload struct {
-			multiAgentSettings
-			SharedPrompt *string `json:"shared_prompt"`
-			Roles        map[string]struct {
+			Enabled        *bool              `json:"enabled"`
+			CandidateChars *int               `json:"candidate_chars"`
+			SharedPrompt   *string            `json:"shared_prompt"`
+			Jev            *jevSettingsUpdate `json:"jev"`
+			Roles          map[string]struct {
 				multiAgentRoleConfig
 				APIKey *string `json:"api_key"`
 			} `json:"roles"`
@@ -253,10 +262,18 @@ func (s *Server) handleMultiAgentSettings(w http.ResponseWriter, r *http.Request
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		next := payload.multiAgentSettings
+		next := multiAgentSettings{}
 		s.RuntimeConfigMu.Lock()
 		current, err := readMultiAgentSettings()
 		if err == nil {
+			next = current
+			if payload.Enabled != nil {
+				next.Enabled = *payload.Enabled
+			}
+			if payload.CandidateChars != nil {
+				next.CandidateChars = *payload.CandidateChars
+			}
+			next.Jev = applyJevSettingsUpdate(current.Jev, payload.Jev)
 			next.SharedPrompt = current.SharedPrompt
 			if payload.SharedPrompt != nil {
 				next.SharedPrompt = *payload.SharedPrompt
@@ -314,6 +331,8 @@ func (s *Server) handleMultiAgentSettings(w http.ResponseWriter, r *http.Request
 		http.Error(w, "preprocessing_settings_read_failed: "+err.Error(), 500)
 		return
 	}
+	c.Jev.APIKeySet = strings.TrimSpace(c.Jev.APIKey) != ""
+	c.Jev.APIKey = ""
 	defaults := map[string]string{}
 	connections := map[string]any{}
 	for _, role := range multiAgentRoles {
@@ -332,7 +351,7 @@ func (s *Server) handleMultiAgentSettings(w http.ResponseWriter, r *http.Request
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	_ = json.NewEncoder(w).Encode(map[string]any{"contract_version": multiAgentContract, "settings": c, "role_order": multiAgentRoles, "role_names": multiAgentRoleNames, "role_connections": connections, "default_prompts": defaults, "shared_prompt": sharedPrompt, "default_shared_prompt": multiAgentSharedPrompt, "persisted": true})
+	_ = json.NewEncoder(w).Encode(map[string]any{"contract_version": multiAgentContract, "settings": c, "effective_mode": c.effectiveMode(), "mode_views": jevModeViews(), "jev_prompts": c.Jev.promptViews(), "role_order": multiAgentRoles, "role_names": multiAgentRoleNames, "role_connections": connections, "default_prompts": defaults, "shared_prompt": sharedPrompt, "default_shared_prompt": multiAgentSharedPrompt, "persisted": true})
 }
 
 type multiAgentRelatedRequest struct {
@@ -355,6 +374,7 @@ type multiAgentRecommendation struct {
 }
 
 type multiAgentCall struct {
+	Jev                        *jevEvaluation           `json:"jev,omitempty"`
 	TimingMS                   map[string]float64       `json:"timing_ms,omitempty"`
 	SharedRequestID            string                   `json:"shared_request_id,omitempty"`
 	SharedRoles                []string                 `json:"shared_roles,omitempty"`
@@ -388,6 +408,7 @@ type multiAgentRoleResult struct {
 }
 
 type multiAgentSelection struct {
+	JevReview        *jevReviewResult   `json:"jev_review,omitempty"`
 	TimingMS         map[string]float64 `json:"timing_ms,omitempty"`
 	AssemblyTiming   map[string]any     `json:"assembly_timing,omitempty"`
 	lorebookCall     *multiAgentCall
@@ -1209,6 +1230,42 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 	// Selection stays in the first two groups. The other groups are reading
 	// evidence found by this role's own question, within the same input budget.
 	groups := [][]map[string]any{{}, {}, {}, {}}
+	// Reorder only this reading copy; source scores and final selection retain
+	// their existing owners. The first reading balances the current input with
+	// recalled context, without weakening a precise semantic match.
+	facts = append([]prepareTurnPriorityMemoryCandidate(nil), facts...)
+	if currentInput := strings.TrimSpace(stringPtrValue(req.RawUserInput, "")); currentInput != "" && searchEvidenceRanks == nil {
+		currentRelevance := prepareTurnPriorityRelevanceScorer(nil, currentInput)
+		readingScore := map[string]float64{}
+		for _, c := range facts {
+			current := currentRelevance(c.CompleteText)
+			if c.Minimum != nil {
+				current = math.Max(current, currentRelevance(c.Minimum.Meaning))
+			}
+			relevance := (current + c.Relevance) / 2
+			if c.SemanticUnitID != "" {
+				relevance = math.Max(relevance, c.Relevance)
+			}
+			readingScore[c.CanonicalFactID] = prepareTurnPriorityScore(relevance, c.Importance, c.Recency, c.ContinuityBonus, c.StructuredBias)
+		}
+		sort.SliceStable(facts, func(i, j int) bool {
+			return readingScore[facts[i].CanonicalFactID] > readingScore[facts[j].CanonicalFactID]
+		})
+	}
+	// Offer each complete source context before another detail of that same
+	// context. Supplemental evidence ranks and retained selections apply below.
+	contextDepth, depths := map[string]int{}, map[string]int{}
+	for _, c := range facts {
+		key := c.CanonicalFactID
+		if c.Minimum != nil {
+			key = c.Minimum.Group
+		}
+		depths[c.CanonicalFactID] = contextDepth[key]
+		contextDepth[key]++
+	}
+	sort.SliceStable(facts, func(i, j int) bool {
+		return depths[facts[i].CanonicalFactID] < depths[facts[j].CanonicalFactID]
+	})
 	for _, c := range facts {
 		group := 0
 		if c.Lane != role {
@@ -1228,7 +1285,11 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 			group = 3
 		}
 		// Summaries already come from the scoped public-memory projection.
-		groups[group] = append(groups[group], map[string]any{"ref": refs[c.SummaryID], "id": c.SummaryID, "source_ref": c.SourceRef, "text": c.CompleteText, "source_turn": c.SourceTurn})
+		text := c.CompleteText
+		if c.Minimum != nil {
+			text = c.Minimum.Text
+		}
+		groups[group] = append(groups[group], map[string]any{"ref": refs[c.SummaryID], "id": c.SummaryID, "source_ref": c.SourceRef, "text": text, "source_turn": c.SourceTurn})
 	}
 	for g := 2; g < len(groups); g++ {
 		sort.SliceStable(groups[g], func(i, j int) bool {
@@ -1350,7 +1411,7 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 	input["reference_format"].(map[string]any)["minimum_context"] = "Candidate text includes its minimum source context before selection. context_refs are facts read with it, not additional AI choices. minimum_chars includes its source heading; shared context is counted once when contiguous. Independent supplements remain separately selectable. Keep scope, direction, negation and conditions together; old recollections are not present-world facts."
 	// Describe existing provenance independently of editable task prompts. A
 	// character-state row is a merged snapshot, not a per-field event timestamp.
-	input["reference_format"].(map[string]any)["source_turn"] = "Conversation turn of the source record; story/event time is stated in its text when available. For source_table=character_states, this is the cumulative snapshot update turn: individual fields may originate earlier, with their dates unspecified unless present in the evidence. Zero means the source turn is unspecified."
+	input["reference_format"].(map[string]any)["source_turn"] = "Conversation turn of the source observation; story/event time is stated in its text when available. Character field readings identify their observation separately from the containing cumulative snapshot update. A snapshot update does not date each field. Linked current state and evidence qualify the retained historical value. Zero means the source observation turn is unknown."
 	input["reference_format"].(map[string]any)["recent_conversation"] = "Latest completed conversations, newest first, up to settings.recent_conversation_reference_count; each Text includes the observed user input and assistant response when available. current_input is supplied separately."
 	if role == "world_state" && lore != nil {
 		counts["lorebook_supplied"] = len(chosen[1])
@@ -1365,7 +1426,7 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 // Independent AI analyses and supplemental searches run concurrently. Indexed
 // search slots retain role order, with every result merged before round two.
 func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req dto.PrepareTurnRequest, facts []prepareTurnPriorityMemoryCandidate, summaries []prepareTurnPriorityTurnSummaryCandidate, capChars, maxItems int, laneCaps map[string]int, search func(string) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, map[string]any), scopedContext ...map[string]any) *multiAgentSelection {
-	if !cfg.Enabled {
+	if !cfg.Enabled && !cfg.Jev.Enabled {
 		return nil
 	}
 	result := &multiAgentSelection{Contract: multiAgentContract, Candidates: facts, Summaries: summaries, Searches: []map[string]any{}}
@@ -1379,6 +1440,10 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 	scope := map[string]any{}
 	if len(scopedContext) > 0 {
 		for key, value := range scopedContext[0] {
+			if key == "go_baseline_plan" {
+				result.captureBaseline(mapFromAny(value))
+				continue
+			}
 			if key == "lorebook_candidates" || key == "lorebook_budget_chars" || key == "recent_conversation_reading" {
 				inputContext[key] = value
 			} else {
@@ -1390,7 +1455,7 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 	refs := multiAgentReferences(facts, summaries, lore, nil)
 	inputContext["candidate_refs"] = refs
 	for _, role := range multiAgentRoles {
-		if cfg.Roles[role].Enabled {
+		if cfg.Roles[role].Enabled || (!cfg.Enabled && cfg.Jev.Enabled) {
 			result.Roles = append(result.Roles, multiAgentRoleResult{Role: role, Source: "go_default", Reason: "no_recommendation"})
 		}
 	}
@@ -1732,11 +1797,20 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 			}
 			result.AnalysisAttempts++
 			if call.Dispatched {
-				result.AnalysisCalls++
+				if call.Jev != nil {
+					result.AnalysisCalls += call.Jev.Requests
+				} else {
+					result.AnalysisCalls++
+				}
 			}
 		}
 		if multiAgentHasSelection(r.Selection) {
 			r.Source, r.Reason = "ai", "received_recommendation"
+			if cfg.Jev.Enabled && !cfg.Enabled {
+				r.Source, r.Reason = "jev", "received_ranking"
+			}
+		} else if cfg.Jev.Enabled && !cfg.Enabled && r.Selection.SelectedLorebookRefs != nil {
+			r.Source, r.Reason = "jev", "received_lorebook_ranking"
 		} else if r.Calls[len(r.Calls)-1].Error != "" {
 			r.Reason = "call_failed_without_recommendation"
 		}
@@ -1778,6 +1852,22 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 				}
 			}
 		}
+	}
+	if cfg.Enabled && cfg.Jev.Enabled {
+		measurement.addElapsed("analysis_result_projection", stageStarted)
+		stageStarted = time.Now()
+		result.JevReview = s.reviewWithJev(ctx, cfg, result, req, capChars, maxItems, laneCaps, inputContext, scope)
+		applyJevReview(result)
+		requestID, _ := ctx.Value(multiAgentHUDRequestKey{}).(string)
+		if snapshot, ok := s.TurnWorkflows.snapshot(requestID); ok {
+			for _, item := range snapshot.Preprocessing {
+				if role := result.role(item.Role); role != nil && len(item.Calls) > 0 {
+					s.TurnWorkflows.recordPreprocessingCall(requestID, item.Role, item.Calls[len(item.Calls)-1], role.Source)
+				}
+			}
+		}
+		measurement.addElapsed("jev_review_wall", stageStarted)
+		stageStarted = time.Now()
 	}
 	return result
 }
@@ -1821,7 +1911,7 @@ func multiAgentOrderCandidates(selection *multiAgentSelection, facts []prepareTu
 		return
 	}
 	for _, lane := range multiAgentRoles {
-		if !selection.usesAI(lane) {
+		if !selection.usesAI(lane) && !selection.usesJev(lane) {
 			continue
 		}
 		order := map[string]int{}
@@ -1850,7 +1940,7 @@ func multiAgentOrderCandidates(selection *multiAgentSelection, facts []prepareTu
 			facts[position] = laneFacts[i]
 		}
 	}
-	if selection.usesAI("event_recent") {
+	if selection.usesAI("event_recent") || selection.usesJev("event_recent") {
 		order := map[string]int{}
 		for i, id := range selection.role("event_recent").Selection.SelectedSummaryIDs {
 			if _, seen := order[id]; !seen {
@@ -1889,6 +1979,24 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 	}
 	for _, ref := range lore.deliveredSourceRefs() {
 		delivered[ref] = map[string]any{"source_refs": []string{ref}, "source_table": "lorebook_reference", "visibility": "reference_only"}
+	}
+	if selection.JevReview != nil {
+		for i := range selection.JevReview.Items {
+			item := &selection.JevReview.Items[i]
+			item.DeliveryStatus, item.DeliveryReason = "not_delivered", "not_in_final_selection"
+			if _, ok := delivered[item.ID]; ok {
+				item.DeliveryStatus, item.DeliveryReason = "delivered", "selected_by_go"
+				continue
+			}
+			for _, group := range []string{"priority_items", "turn_summary_items"} {
+				for _, raw := range outputFidelityLineageSlice(plan[group]) {
+					row := mapFromAny(raw)
+					if extractionFirstNonEmpty(stringFromMap(row, "canonical_fact_id"), stringFromMap(row, "summary_id")) == item.ID {
+						item.DeliveryReason = stringFromMap(row, "selection_reason")
+					}
+				}
+			}
+		}
 	}
 	items := []map[string]any{}
 	parts, allRefs := []string{}, []string{}
@@ -1982,7 +2090,8 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 			call := selection.lorebookCall
 			for _, id := range *call.Result.SelectedLorebookRefs {
 				if source, ok := delivered[id]; ok && !seen[id] {
-					appendNote(role.Role, "selection_reason", call.Result.Reasons[id], call.Round, []map[string]any{source}, id)
+					reason := extractionFirstNonEmpty(role.Selection.Reasons[id], call.Result.Reasons[id])
+					appendNote(role.Role, "selection_reason", reason, call.Round, []map[string]any{source}, id)
 					seen[id] = true
 				}
 			}
@@ -2021,7 +2130,11 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 			compact[ref] = row
 		}
 		catalog, _ := json.Marshal(compact)
-		text = "[Preprocessing Specialist Notes]\nThese are attributed AI interpretations beside the original evidence. F/S refs identify individual memories; L refs identify lorebook sources. P refs retain provenance and knowledge scope: t=source_table, n=source_turn, v=visibility, o=perspective_owner, a=allowed_viewers, r=source_refs. Uncertainty groups share the listed P scopes. The user directs the story, including revisions.\nSource scope catalog: " + string(catalog) + "\n\n" + strings.Join(parts, "\n")
+		reviewGuidance := ""
+		if selection.JevReview != nil {
+			reviewGuidance = " Jev labels qualify editor interpretations, not stored facts. Follow original evidence and linked current state over a contradicted interpretation; unknown is not false. Historical facts remain past. Private/model information does not establish character awareness."
+		}
+		text = "[Preprocessing Specialist Notes]\nThese are attributed AI interpretations beside the original evidence. F/S refs identify individual memories; L refs identify lorebook sources. P refs retain provenance and knowledge scope: t=source_table, n=source_turn, v=visibility, o=perspective_owner, a=allowed_viewers, r=source_refs. Uncertainty groups share the listed P scopes. The user directs the story, including revisions." + reviewGuidance + "\nSource scope catalog: " + string(catalog) + "\n\n" + strings.Join(parts, "\n")
 	}
 	return map[string]any{"contract_version": "memory_preprocessing_notes.v1", "authority": "ai_interpretation", "items": items, "source_refs": allRefs, "source_catalog": sourceCatalog, "final_text": text, "used_chars": len([]rune(text)), "count": len(items)}
 }
@@ -2030,7 +2143,10 @@ func multiAgentWants(selection *multiAgentSelection, lane, id string, summary bo
 	if selection == nil {
 		return true
 	}
-	if !selection.usesAI(lane) {
+	if r := selection.role(lane); r != nil && r.Source == "jev" {
+		return true
+	}
+	if !selection.usesAI(lane) && !selection.usesJev(lane) {
 		return selection.BaselineIDs[id]
 	}
 	r := selection.role(lane)

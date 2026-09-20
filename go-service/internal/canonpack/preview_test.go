@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-func TestDocumentedNeutralManifestPassesPreview(t *testing.T) {
-	manifest, err := os.ReadFile("../../../docs/canon-pack-manifest-v1.example.json")
+func TestNeutralManifestFixturePassesPreview(t *testing.T) {
+	manifest, err := os.ReadFile("testdata/neutral-manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,7 +30,7 @@ func TestDocumentedNeutralManifestPassesPreview(t *testing.T) {
 
 	report := PreviewZIP(archive.Bytes(), "3.1.0")
 	if !report.Valid {
-		t.Fatalf("documented neutral manifest failed preview: %#v", report.Diagnostics)
+		t.Fatalf("neutral manifest fixture failed preview: %#v", report.Diagnostics)
 	}
 	if report.ValidationProfile != ValidationProfile || report.Summary.PackID == "" || report.Summary.StableWorkID == "" {
 		t.Fatalf("preview summary/profile missing: %#v", report)
@@ -38,7 +38,7 @@ func TestDocumentedNeutralManifestPassesPreview(t *testing.T) {
 }
 
 func TestInspectZIPBindsExactArchiveAndManifestBytes(t *testing.T) {
-	manifest, err := os.ReadFile("../../../docs/canon-pack-manifest-v1.example.json")
+	manifest, err := os.ReadFile("testdata/neutral-manifest.json")
 	if err != nil {
 		t.Fatal(err)
 	}

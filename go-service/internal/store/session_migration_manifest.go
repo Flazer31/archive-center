@@ -78,9 +78,12 @@ type SessionMigrationGeneratedKeyPlan struct {
 }
 
 const (
-	SessionMigrationSemanticJSONIDArray     = "json_id_array"
-	SessionMigrationSemanticTypedArtifactID = "typed_artifact_id"
-	SessionMigrationSemanticPrefixedID      = "prefixed_id"
+	SessionMigrationSemanticJSONIDArray        = "json_id_array"
+	SessionMigrationSemanticTypedArtifactID    = "typed_artifact_id"
+	SessionMigrationSemanticPrefixedID         = "prefixed_id"
+	SessionMigrationSemanticSourceRevisionJSON = "source_revision_json"
+	SessionMigrationSemanticBodyTrackingEntity = "body_tracking_entity"
+	SessionMigrationSemanticBodyTrackingJSON   = "body_tracking_json"
 )
 
 // SessionMigrationSemanticReferencePlan covers canonical lineage references
@@ -282,7 +285,7 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 		"guidance_plan_states":                 "id,chat_session_id,story_plan_json,director_json,state_status,last_turn,warnings_json,created_at,updated_at",
 		"world_rules":                          "id,chat_session_id,scope,scope_name,category,key,value_json,genre,source_turn,pinned,suppressed,user_corrected,created_at,updated_at",
 		"session_active_scopes":                "id,chat_session_id,active_scope,scope_name,updated_at",
-		"character_states":                     "id,chat_session_id,character_name,appearance_json,personality_json,status_json,relationships_json,speech_style_json,turn_index,created_at,updated_at",
+		"character_states":                     "id,chat_session_id,character_name,appearance_json,personality_json,status_json,relationships_json,speech_style_json,field_provenance_json,turn_index,created_at,updated_at",
 		"pending_threads":                      "id,chat_session_id,thread_key,description,status,created_turn,resolved_turn,source_turn,priority,hook_type,hook_metadata_json,pinned,suppressed,user_corrected,created_at,updated_at",
 		"active_states":                        "id,chat_session_id,state_type,content,turn_index,created_at",
 		"canonical_state_layers":               "id,chat_session_id,layer_type,content,source_state_type,turn_index,source_turn,source_record,last_verified_turn,confidence,created_at",
@@ -381,12 +384,23 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 	})
 	setPlan("status_current_values", func(plan *SessionMigrationExecutionPlan) {
 		plan.ForeignKeys = []SessionMigrationForeignKeyPlan{{Column: "registry_id", ReferenceTable: "status_schema_registry", ReferenceColumn: "id"}}
+		plan.SemanticReferences = []SessionMigrationSemanticReferencePlan{{Column: "evidence_json", Kind: SessionMigrationSemanticSourceRevisionJSON, References: map[string]SessionMigrationArtifactReference{"default": {Table: "memory_source_revisions", Column: "source_revision"}}}}
+		plan.SemanticReferences = append(plan.SemanticReferences,
+			SessionMigrationSemanticReferencePlan{Column: "owner_id", Kind: SessionMigrationSemanticBodyTrackingEntity, References: map[string]SessionMigrationArtifactReference{"default": {Table: "entity_identities", Column: "stable_entity_id"}}},
+			SessionMigrationSemanticReferencePlan{Column: "value_json", Kind: SessionMigrationSemanticBodyTrackingJSON, References: map[string]SessionMigrationArtifactReference{"default": {Table: "entity_identities", Column: "stable_entity_id"}}})
+		plan.SemanticReferences[0].References["body_tracking_entity"] = SessionMigrationArtifactReference{Table: "entity_identities", Column: "stable_entity_id"}
 	})
 	setPlan("status_change_events", func(plan *SessionMigrationExecutionPlan) {
 		plan.ForeignKeys = []SessionMigrationForeignKeyPlan{
 			{Column: "registry_id", ReferenceTable: "status_schema_registry", ReferenceColumn: "id"},
 			{Column: "status_value_id", ReferenceTable: "status_current_values", ReferenceColumn: "id"},
 		}
+		plan.SemanticReferences = []SessionMigrationSemanticReferencePlan{{Column: "evidence_json", Kind: SessionMigrationSemanticSourceRevisionJSON, References: map[string]SessionMigrationArtifactReference{"default": {Table: "memory_source_revisions", Column: "source_revision"}}}}
+		plan.SemanticReferences = append(plan.SemanticReferences,
+			SessionMigrationSemanticReferencePlan{Column: "owner_id", Kind: SessionMigrationSemanticBodyTrackingEntity, References: map[string]SessionMigrationArtifactReference{"default": {Table: "entity_identities", Column: "stable_entity_id"}}},
+			SessionMigrationSemanticReferencePlan{Column: "previous_value_json", Kind: SessionMigrationSemanticBodyTrackingJSON, References: map[string]SessionMigrationArtifactReference{"default": {Table: "entity_identities", Column: "stable_entity_id"}}},
+			SessionMigrationSemanticReferencePlan{Column: "new_value_json", Kind: SessionMigrationSemanticBodyTrackingJSON, References: map[string]SessionMigrationArtifactReference{"default": {Table: "entity_identities", Column: "stable_entity_id"}}})
+		plan.SemanticReferences[0].References["body_tracking_entity"] = SessionMigrationArtifactReference{Table: "entity_identities", Column: "stable_entity_id"}
 	})
 	setPlan("status_effects", func(plan *SessionMigrationExecutionPlan) {
 		plan.ForeignKeys = []SessionMigrationForeignKeyPlan{{Column: "registry_id", ReferenceTable: "status_schema_registry", ReferenceColumn: "id"}}
@@ -460,14 +474,16 @@ func buildSessionMigrationExecutionPlansV1() map[string]SessionMigrationExecutio
 				TypeColumn: "child_artifact_type",
 				References: map[string]SessionMigrationArtifactReference{
 					"precise_memory_unit": {Table: "precise_memory_units", Column: "unit_id"},
+					"status_change_event": {Table: "status_change_events", Column: "id"},
 				},
 			},
 			{
 				Column: "parent_artifact_id", Kind: SessionMigrationSemanticTypedArtifactID,
 				TypeColumn: "parent_artifact_type",
 				References: map[string]SessionMigrationArtifactReference{
-					"source_revision": {Table: "memory_source_revisions", Column: "source_revision"},
-					"direct_evidence": {Table: "direct_evidence_records", Column: "id"},
+					"source_revision":     {Table: "memory_source_revisions", Column: "source_revision"},
+					"direct_evidence":     {Table: "direct_evidence_records", Column: "id"},
+					"status_change_event": {Table: "status_change_events", Column: "id"},
 				},
 			},
 		}

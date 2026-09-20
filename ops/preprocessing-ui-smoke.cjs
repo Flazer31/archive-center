@@ -19,11 +19,21 @@ function goMap(name) {
   return Object.fromEntries([...block.matchAll(/"([^"]+)":\s*("(?:\\.|[^"\\])*"|\x60[^\x60]*\x60)/g)].map(m => [m[1], m[2][0] === '`' ? m[2].slice(1, -1) : JSON.parse(m[2])]));
 }
 const roles = JSON.parse('[' + go.match(/var multiAgentRoles = \[\]string\{([^}]+)\}/)[1] + ']');
+const jevModeSource = fs.readFileSync(path.join(repo, 'go-service/internal/httpapi/prepare_turn_jev.go'), 'utf8');
+const modeViews = Object.fromEntries([...jevModeSource.matchAll(/"([01]{2})": map\[string\]string\{"mode": "([^"]+)", "label": "([^"]+)", "description": "([^"]+)"\}/g)].map(m=>[m[1], {mode:m[2],label:m[3],description:m[4]}]));
+assert.equal(Object.keys(modeViews).length,4);
+const jevPrompts = [...jevModeSource.matchAll(/\{Key: "([^"]+)", Label: "([^"]+)", Mode: "([^"]+)", Type: "([^"]+)",\r?\n\s*Instructions: ("(?:\\.|[^"\\])*"),\r?\n\s*Criteria: \[\]jevPromptCriterion\{([\s\S]*?)\r?\n\s*\}\}/g)].map(m => ({
+  key:m[1],label:m[2],mode:m[3],type:m[4],instructions:JSON.parse(m[5]),
+  criteria:[...m[6].matchAll(/\{"([^"]+)", ("(?:\\.|[^"\\])*")\}/g)].map(c=>({key:c[1],text:JSON.parse(c[2])}))
+}));
+assert.equal(jevPrompts.length,5,'shipped Jev question definitions missing');
 const fixture = {
+  mode_views: modeViews,
+  jev_prompts: jevPrompts.map(p=>({defaults:p,effective:structuredClone(p)})),
   role_order: roles, role_names: goMap('multiAgentRoleNames'), default_prompts: goMap('multiAgentRolePrompts'),
   shared_prompt: go.match(/const multiAgentSharedPrompt = \x60([\s\S]*?)\x60/)[1],
   default_shared_prompt: go.match(/const multiAgentSharedPrompt = \x60([\s\S]*?)\x60/)[1],
-  settings: { enabled: false, candidate_chars: 32000, shared_prompt: '', roles: Object.fromEntries(roles.map(role => [
+  settings: { enabled: false, jev:{enabled:false,endpoint:'https://api.typesafe.ai/v1/systemone',model:'jev-1.13.0',api_key_set:true}, candidate_chars: 32000, shared_prompt: '', roles: Object.fromEntries(roles.map(role => [
     role, { enabled: true, use_publisher: false, provider: '', endpoint: '', model: '', api_key: 'fixture-saved-key-' + role,
       prompt: '', temperature: 0.2, max_tokens: 2048, timeout_ms: 120000, reasoning_effort: '' }
   ])) }
@@ -57,12 +67,15 @@ const runtime = [
   // endpoint. This fixture isolates prompt, API-key and layout/save behavior.
   'const bindLlmSettingsView = () => async () => {};',
   'async function bridgeFetch(route, options = {}) {',
-  '  if (route !== "/config/memory-preprocessing") throw new Error("Unexpected route: " + route);',
+  '  if (!["/config/memory-preprocessing", "/config/memory-preprocessing/jev-test"].includes(route)) throw new Error("Unexpected route: " + route);',
   '  window.fixtureCalls.push({route,method:options.method || "GET",body:options.body});',
+  '  if (route.endsWith("/jev-test")) return {ok:true,model:options.body.model,duration_ms:12,usage:{input_tokens:42}};',
   '  if (options.method === "PUT") {',
   '    if (window.fixtureSaveFails) return null;',
-  '    view.settings = structuredClone(options.body);',
+  '    view.settings = {...view.settings, ...structuredClone(options.body)};',
+  '    if (view.settings.jev && Object.hasOwn(view.settings.jev,"api_key")) { view.settings.jev.api_key_set = view.settings.jev.api_key !== ""; delete view.settings.jev.api_key; }',
   '    view.shared_prompt = view.settings.shared_prompt || view.default_shared_prompt;',
+  '    view.jev_prompts = view.jev_prompts.map(({defaults:p}) => { const saved = (view.settings.jev.prompts || {})[p.key] || {}; return {defaults:p,effective:{...p,instructions:saved.instructions?.trim() ? saved.instructions : p.instructions,criteria:p.criteria.map(c=>({...c,text:saved.criteria?.[c.key]?.trim() ? saved.criteria[c.key] : c.text}))}}; });',
   '  }',
   '  return structuredClone(view);',
   '}',
@@ -87,6 +100,9 @@ const runtime = [
     assert.equal(await root.locator('.mo-ma-role').count(), roles.length);
     assert.equal(await root.locator('.mo-ma-role[open]').count(), 1);
     assert.equal(await root.locator('#mo-ma-enabled').isChecked(), false);
+
+    assert.equal(await root.locator('#mo-jev-enabled').count(), 0, 'Jev must be a sibling page');
+    assert.equal(await page.getByRole('tab', {name:'Jev',exact:true}).count(), 1);
 
     const first = roles[0], input = key => root.locator('#mo-ma-' + first + '-' + key);
     const desktopPrompt = await input('prompt').boundingBox();
@@ -146,6 +162,7 @@ const runtime = [
     await root.locator('#mo-ma-save').click();
     await root.getByText('저장했습니다. 다음 요청부터 적용됩니다.', { exact: true }).waitFor();
     const saved = await page.evaluate(() => window.fixtureCalls.find(c => c.method === 'PUT').body);
+    assert.equal(Object.hasOwn(saved, 'jev'), false, 'preprocessing save must omit Jev settings');
     assert.equal(saved.roles[first].model, 'independent-role-model', 'shared connection erased separately configured model');
     assert.equal(saved.roles[first].prompt, editedPrompt);
     assert.equal(saved.roles[first].temperature, 0.6);
@@ -247,10 +264,105 @@ const runtime = [
       }
       await page.evaluate(() => loadMemoryPreprocessingPanel());
     }
+    await page.evaluate(async () => { await bridgeFetch('/config/memory-preprocessing', {method:'PUT',body:{enabled:true}}); _settingsActiveTab = 'jev'; await renderSettingsPanel({ recompose: true }); });
+    const jevRoot = page.locator('#mo-jev-root');
+    await jevRoot.getByRole('heading', {name:'Jev',exact:true}).waitFor();
+    assert.equal(await page.getByRole('tab',{name:'Jev',exact:true}).getAttribute('aria-selected'),'true');
+    assert.equal(await page.locator('#mo-memory-preprocessing-root').count(),0);
+    assert.match(await jevRoot.textContent(),/전처리를 꺼도 Jev만 사용할 수 있습니다/);
+    assert.equal(await jevRoot.locator('#mo-jev-api_key').inputValue(),'');
+    assert.equal(await jevRoot.locator('#mo-jev-api_key').getAttribute('type'),'password');
+    assert.match(await jevRoot.locator('#mo-jev-mode').textContent(),/기존 AI 전처리/);
+    await jevRoot.locator('#mo-jev-enabled').check();
+    assert.match(await jevRoot.locator('#mo-jev-mode').textContent(),/Jev 검증/);
+    await jevRoot.locator('#mo-jev-api_key').fill('fixture-new-jev-key');
+    const savesBefore = await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').length);
+    await jevRoot.locator('#mo-jev-test').click();
+    assert.match(await jevRoot.locator('#mo-jev-test-result').textContent(),/연결 성공/);
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').length),savesBefore);
+    const preprocessingBefore = await page.evaluate(()=>{const {jev,...other}=view.settings;return other;});
+    await jevRoot.locator('#mo-jev-save').click();
+    await jevRoot.getByText('Jev 설정을 저장했습니다. 다음 요청부터 적용됩니다.',{exact:true}).waitFor();
+    const jevSaved = await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').at(-1).body);
+    assert.deepEqual(Object.keys(jevSaved),['jev']);
+    assert.equal(jevSaved.jev.api_key,'fixture-new-jev-key');
+    assert.equal(await jevRoot.locator('#mo-jev-api_key').inputValue(),'');
+    assert.deepEqual(await page.evaluate(()=>{const {jev,...other}=view.settings;return other;}),preprocessingBefore);
+    await page.evaluate(async()=>{await bridgeFetch('/config/memory-preprocessing',{method:'PUT',body:{enabled:false}});await loadJevPanel();});
+    assert.match(await jevRoot.locator('#mo-jev-mode').textContent(),/Jev 주력/);
+    await jevRoot.locator('#mo-jev-enabled').uncheck();
+    assert.match(await jevRoot.locator('#mo-jev-mode').textContent(),/Go 기본/);
+    await jevRoot.locator('#mo-jev-enabled').check();
+    await jevRoot.locator('#mo-jev-clear-key').check();
+    await jevRoot.locator('#mo-jev-save').click();
+    await jevRoot.getByText('Jev 설정을 저장했습니다. 다음 요청부터 적용됩니다.',{exact:true}).waitFor();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').at(-1).body.jev.api_key),'');
+    assert.equal(await page.evaluate(()=>view.settings.enabled),false);
+    assert.equal(await jevRoot.locator('.mo-jev-prompt').count(),jevPrompts.length);
+    const promptInput = (p,key) => jevRoot.locator('#mo-jev-'+p.key+'-'+key);
+    for(const p of jevPrompts){
+      await jevRoot.locator('#mo-jev-prompt-'+p.key+' > summary').click();
+      assert.equal(await promptInput(p,'instructions').inputValue(),p.instructions);
+      await promptInput(p,'instructions').fill('편집 '+p.key+': {item} / {role_focus}\n</textarea><b> & "quote" 100%');
+      await promptInput(p,'criterion-'+p.criteria[0].key).fill('기준 '+p.key+'\n<exact> & "quote"');
+    }
+    await page.evaluate(()=>{window.fixtureSaveFails=true;});
+    await jevRoot.locator('#mo-jev-save').click();
+    await jevRoot.getByText('저장 실패: 백엔드에 설정을 저장하지 못했습니다.',{exact:true}).waitFor();
+    assert.match(await promptInput(jevPrompts[0],'instructions').inputValue(),/^편집 rank/);
+    assert.equal(await jevRoot.locator('#mo-jev-save').isEnabled(),true);
+    await page.evaluate(()=>{window.fixtureSaveFails=false;});
+    await jevRoot.locator('#mo-jev-save').click();
+    await jevRoot.getByText('Jev 설정을 저장했습니다. 다음 요청부터 적용됩니다.',{exact:true}).waitFor();
+    const promptSaved = await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').at(-1).body);
+    assert.deepEqual(Object.keys(promptSaved),['jev']);
+    for(const p of jevPrompts){
+      assert.equal(await promptInput(p,'instructions').inputValue(),promptSaved.jev.prompts[p.key].instructions);
+      assert.equal(await promptInput(p,'criterion-'+p.criteria[0].key).inputValue(),promptSaved.jev.prompts[p.key].criteria[p.criteria[0].key]);
+    }
+    await jevRoot.locator('#mo-jev-test').click();
+    assert.equal(await page.evaluate(()=>Object.hasOwn(window.fixtureCalls.filter(c=>c.method==='POST').at(-1).body,'prompts')),false,'connection test sent prompt drafts');
+    const restorePrompt = jevPrompts.find(p=>p.key==='time');
+    await jevRoot.locator('#mo-jev-prompt-time > summary').click();
+    const savesBeforeRestore = await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').length);
+    await jevRoot.locator('#mo-jev-time-restore').click();
+    assert.equal(await page.evaluate(()=>window.fixtureCalls.filter(c=>c.method==='PUT').length),savesBeforeRestore,'restore saved without explicit save');
+    assert.equal(await promptInput(restorePrompt,'instructions').inputValue(),restorePrompt.instructions);
+    for(const c of restorePrompt.criteria) assert.equal(await promptInput(restorePrompt,'criterion-'+c.key).inputValue(),c.text);
+    await jevRoot.locator('#mo-jev-save').click();
+    await jevRoot.getByText('Jev 설정을 저장했습니다. 다음 요청부터 적용됩니다.',{exact:true}).waitFor();
+    await page.evaluate(()=>loadJevPanel());
+    assert.equal(await promptInput(restorePrompt,'instructions').inputValue(),restorePrompt.instructions);
+    assert.equal(await promptInput(jevPrompts[0],'instructions').inputValue(),promptSaved.jev.prompts.rank.instructions,'restoring one question changed another');
+    for(const width of [1600,900,390]){
+      await page.setViewportSize({width,height:1100});
+      await page.locator('.mo-workspace').evaluate(el=>{el.scrollTop=0;});
+      const layout = await jevRoot.evaluate(el=>{
+        const root=el.getBoundingClientRect(),workspace=el.closest('.mo-workspace');
+        const overflow=[...el.querySelectorAll('input,textarea,summary,button,section')].filter(n=>n.checkVisibility()).filter(n=>{const r=n.getBoundingClientRect();return r.left<root.left-1||r.right>root.right+1;}).map(n=>n.id||n.tagName);
+        return {overflow,scrollWidth:workspace.scrollWidth,clientWidth:workspace.clientWidth};
+      });
+      assert.deepEqual(layout.overflow,[], 'Jev layout overflow at '+width);
+      assert.ok(layout.scrollWidth<=layout.clientWidth+1);
+      measurements.push({panel:'jev',viewport:width,...layout});
+      await page.screenshot({path:path.join(output,'jev-'+width+'.png')});
+      await jevRoot.locator('.mo-jev-prompt').evaluateAll(nodes=>nodes.forEach(node=>{node.open=true;}));
+      const promptOverflow = await jevRoot.locator('textarea').evaluateAll(nodes=>nodes.filter(el=>{
+        const b=el.getBoundingClientRect(),r=el.closest('section').getBoundingClientRect();return b.left<r.left-1||b.right>r.right+1;
+      }).map(el=>el.id));
+      assert.deepEqual(promptOverflow,[],'Jev prompt columns overlap at '+width);
+      await promptInput(jevPrompts[0],'instructions').scrollIntoViewIfNeeded();
+      await page.screenshot({path:path.join(output,'jev-prompts-'+width+'.png')});
+    }
+    await jevRoot.locator('#mo-jev-open-preprocessing').click();
+    await root.getByRole('heading',{name:'전처리 다중 에이전트',exact:true}).waitFor();
+    assert.equal(await root.locator('#mo-ma-enabled').isChecked(),false);
+    assert.equal(await root.locator('#mo-jev-enabled').count(),0);
+
     assert.deepEqual(errors, []);
     assert.deepEqual(await page.evaluate(() => window.fixtureWarnings), []);
     const receipt = { source: process.env.ARCHIVE_CENTER_UI_SOURCE || path.join(repo, 'Archive Center.js'), measurements,
-      tested: ['responsive real DOM layout', 'scoped dark controls', 'independent role prompt editing and restore',
+      tested: ['five Jev prompt/criteria editors, save/reopen, escaped text, per-question restore and failed-save preservation', 'independent sibling Jev page and four-mode display', 'Jev-only save, masked key and explicit clearing without changing preprocessing', 'Jev synthetic connection test without settings mutation or prompt drafts', 'responsive real DOM layout', 'scoped dark controls', 'independent role prompt editing and restore',
         'connection inheritance toggle', 'disabled input values preserved on save', 'unchanged other-role prompts',
         'editable shared prompt and default restore', 'failed save preserves edits',
         'provider-specific Flex controls and hidden mode preservation', 'visible per-role temperature and max tokens',

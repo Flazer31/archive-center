@@ -111,6 +111,9 @@ func prepareTurnCommonAssemblySources(input prepareTurnAssemblyInput) *prepareTu
 type prepareTurnAssemblyPerspective struct {
 	Public                                        map[string]any
 	NarrativeValues                               []store.StatusCurrentValue
+	ReversibleValues                              []store.StatusCurrentValue
+	StoryClock                                    map[string]any
+	BodyTracking                                  *prepareTurnBodyTrackingContext
 	ActiveStates                                  []store.ActiveState
 	CharacterText                                 string
 	CharacterSeeds                                []prepareTurnPriorityFactSeed
@@ -685,6 +688,12 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		sourceOrder       int
 	}
 	characterCandidates := make([]characterCandidate, 0, len(charStates))
+	var reversibleValues []store.StatusCurrentValue
+	var fieldStoryClock map[string]any
+	if perspectiveInput != nil {
+		reversibleValues, fieldStoryClock = perspectiveInput.ReversibleValues, perspectiveInput.StoryClock
+	}
+	fieldCurrentReadings := prepareTurnCharacterFieldCurrentReadings(narrativeCurrentValues, reversibleValues, fieldStoryClock)
 	currentEntityNames := entityScope.Known
 	currentEntityAliases := prepareTurnExplicitAliasLists(entityIdentityAliases)
 	currentSceneEntityNames := entityScope.Scene
@@ -775,17 +784,21 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 			if objective := compactPrepareTurnLine(strings.Join(objectiveParts, "; "), 0); objective != "" {
 				line := fmt.Sprintf("- %s: %s", name, objective)
 				charObjectiveLines = append(charObjectiveLines, line)
+				seedStart := len(out.PriorityFactSeeds)
 				appendPrepareTurnPrioritySourceMetadata(&out, "character_objective", "character_states", "required", line,
 					prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "objective"),
 					prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false, "general", "", nil)
+				prepareTurnAttachCharacterFieldContext(&out, seedStart, candidate.state, fieldCurrentReadings)
 			}
 		}
 		if relationships != "" {
 			line := fmt.Sprintf("- %s: relationships=%s", name, compactPrepareTurnLine(relationships, 0))
 			charRelationshipLines = append(charRelationshipLines, line)
+			seedStart := len(out.PriorityFactSeeds)
 			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
 				prepareTurnPriorityStoredOccurrence("character_states", candidate.state.ID, "relationship"),
 				prepareTurnPriorityStoredRowID(candidate.state.ID), candidate.state.TurnIndex, 0, false, "perspective_scoped", name, []string{name})
+			prepareTurnAttachCharacterFieldContext(&out, seedStart, candidate.state, fieldCurrentReadings)
 		}
 	}
 	out.CharacterMemorySupport = buildPrepareTurnCharacterMemorySupport(
@@ -804,6 +817,14 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		charRelationshipLines = append(charRelationshipLines, line)
 		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
 			"", nil, 0, 0, false, "perspective_scoped", "", nil)
+	}
+	if perspectiveInput != nil && perspectiveInput.BodyTracking != nil {
+		bodyNames := make([]string, 0, len(perspectiveInput.BodyTracking.Config.Characters))
+		for _, character := range perspectiveInput.BodyTracking.Config.Characters {
+			bodyNames = append(bodyNames, character.CharacterName)
+		}
+		bodyScope := buildPrepareTurnRequestEntityScopeWithAliases(rawUserInput, recollectionContext.currentEntities, bodyNames, entityIdentityAliases, recollectionContext.currentAssistantContext, extractionStringFromAny(perspectiveContext["current_pov"]))
+		prepareTurnAppendBodyTracking(&out, perspectiveInput.BodyTracking, bodyScope, perspectiveContext, fieldStoryClock)
 	}
 	out.CharacterText = makePrepareTurnSection("[Characters]", charLines)
 	out.CharacterObjectiveText = makePrepareTurnSection("[Character Objective States]", charObjectiveLines)
@@ -855,9 +876,16 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 					importance = 1
 					importancePresent = true
 				}
+				seedStart := len(out.PriorityFactSeeds)
 				appendPrepareTurnPrioritySourceMetadata(out, "unresolved_goal", "pending_threads", "required", line,
 					prepareTurnPriorityStoredOccurrence("pending_threads", pt.ID, ""),
 					prepareTurnPriorityStoredRowID(pt.ID), maxInt(pt.SourceTurn, maxInt(pt.CreatedTurn, pt.LastSeenTurn)), importance, importancePresent, "general", "", nil)
+				// Keep the stored identity so the current-state reading owner can
+				// attach progress and evidence without rewriting historical text.
+				lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(parseJSONMap(pt.HookMetadataJSON), "lifecycle_key"))
+				for i := seedStart; i < len(out.PriorityFactSeeds); i++ {
+					out.PriorityFactSeeds[i].Fact.LifecycleKey = lifecycleKey
+				}
 				if pinnedActive {
 					pendingPinnedActiveSelected++
 				}
@@ -1191,6 +1219,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		out.Counts["subjective_relationship_lane_reason"] = "no_request_or_current_scene_evidence_selected"
 	}
 
+	prepareTurnAttachLastConfirmedClock(&out, fieldStoryClock)
 	// This template contains immutable request sources, not a previous query's
 	// selected candidate pool. Each question receives its own score/lineage maps.
 	template := out
@@ -1209,6 +1238,8 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		projectHierarchy(&projected, selected)
 		beforeCanon.appendTo(&projected)
 		projectCanon(&projected, signatures)
+		prepareTurnAttachLifecycleContext(&projected, narrativeCurrentValues, fieldStoryClock)
+		prepareTurnAttachTemporalContext(&projected, fieldStoryClock)
 		if selection.PriorityEnabled {
 			prepareTurnResolvePrioritySourcePool(&projected, priorityMemoryQuery, queries, selection.CurrentTurn, selection.SemanticFacts)
 		}
@@ -1218,6 +1249,8 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	deliveryBudgetContext.BudgetMode, deliveryBudgetContext.Budgets = input.BudgetMode, input.Budgets
 	deliveryBudgetContext.Query, deliveryBudgetContext.QuerySource = priorityMemoryQuery, priorityMemoryQuerySource
 	deliveryBudgetContext.QuerySet = priorityMemoryQuerySet
+	prepareTurnAttachLifecycleContext(&out, narrativeCurrentValues, fieldStoryClock)
+	prepareTurnAttachTemporalContext(&out, fieldStoryClock)
 	if !assembleDelivery {
 		if deliveryBudgetContext.PriorityEnabled {
 			prepareTurnResolvePrioritySourcePool(&out, strings.TrimSpace(priorityMemoryQuery), prepareTurnPriorityQuerySetFromAny(priorityMemoryQuerySet), deliveryBudgetContext.CurrentTurn, append([]prepareTurnPrioritySemanticFact(nil), deliveryBudgetContext.SemanticFacts...))
