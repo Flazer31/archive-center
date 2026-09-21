@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.6.0
+//@display-name Archive Center 4.6.1
 //@author memory-scaffold
 //@api 3.0
-//@version 4.6.0
+//@version 4.6.1
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.6.0";
+  const VERSION = "4.6.1";
   const BUILD_ID = VERSION;
   const BUILD_CHANNEL = "stable";
   const BUILD_TIME = "2026-09-21 KST";
-  const BUILD_NOTES = "Archive Center 4.6.0";
+  const BUILD_NOTES = "Archive Center 4.6.1";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;

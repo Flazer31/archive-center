@@ -1,5 +1,5 @@
 param(
-    [string]$PackageVersion = "4.6.0",
+    [string]$PackageVersion = "4.6.1",
     [string]$OutputRoot = "",
     [switch]$ForceRefresh
 )

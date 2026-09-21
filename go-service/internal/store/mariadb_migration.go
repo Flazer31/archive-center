@@ -984,6 +984,30 @@ func sessionMigrationReadManifestRowsMode(
 	selectColumns := make([]string, len(plan.Columns))
 	for index, column := range plan.Columns {
 		selectColumns[index] = "t0." + sessionMigrationQuoteIdentifier(column)
+		if entry.Table == "precise_memory_units" && column == "direct_evidence_ids_json" {
+			// Rerolls retain invalidated units but physically remove their evidence.
+			// Project only those absent historical links away during copy/readback;
+			// never rewrite the source, its excerpt, payload or lifecycle. Existing
+			// rows (including wrong-session references) and malformed IDs still reach
+			// the ordinary remapper unchanged. Copy and parity use the same view.
+			selectColumns[index] = `CASE WHEN t0.lifecycle_state = 'invalidated'
+				AND JSON_TYPE(t0.direct_evidence_ids_json) = 'ARRAY' AND EXISTS (
+					SELECT 1 FROM memory_source_revisions source_revision
+					WHERE BINARY source_revision.chat_session_id = BINARY t0.chat_session_id
+					  AND BINARY source_revision.source_revision = BINARY t0.source_revision
+					  AND source_revision.lifecycle_state IN ('superseded', 'invalidated', 'deleted')
+				) THEN COALESCE((
+					SELECT JSON_ARRAYAGG(JSON_EXTRACT(ref.raw_id, '$') ORDER BY ref.ordinal)
+					FROM JSON_TABLE(t0.direct_evidence_ids_json, '$[*]' COLUMNS (
+						ordinal FOR ORDINALITY, raw_id JSON PATH '$'
+					)) ref
+					LEFT JOIN direct_evidence_records parent_evidence
+					  ON parent_evidence.id = ref.raw_id
+					WHERE parent_evidence.id IS NOT NULL
+					   OR COALESCE(JSON_TYPE(ref.raw_id), 'NULL') <> 'INTEGER'
+					   OR ref.raw_id <= 0 OR ref.raw_id > 9223372036854775807
+				), JSON_ARRAY()) ELSE t0.direct_evidence_ids_json END AS direct_evidence_ids_json`
+		}
 	}
 	query := "SELECT " + strings.Join(selectColumns, ",") + " FROM " +
 		sessionMigrationQuoteIdentifier(entry.Table) + " t0"
@@ -1014,13 +1038,13 @@ func sessionMigrationReadManifestRowsMode(
 		query += " WHERE t" + strconv.Itoa(aliasIndex) + "." + sessionMigrationQuoteIdentifier(currentEntry.SessionColumn) + " = ?"
 	}
 	if entry.Table == "memory_derivation_dependencies" {
-		// Replacement retains source/status history but deletes its old direct
+		// Replacement retains source/status/precise history but deletes old direct
 		// evidence rows. An explicitly invalidated relation to that absent parent
 		// has no operational target to copy. Keep active or unknown relations
 		// strict, and use this same selection for copy and parity readback.
 		query += ` AND NOT (
 			t0.lifecycle_state = 'invalidated'
-			AND t0.child_artifact_type = 'status_change_event'
+			AND t0.child_artifact_type IN ('status_change_event', 'precise_memory_unit')
 			AND t0.parent_artifact_type = 'direct_evidence'
 			AND EXISTS (
 				SELECT 1 FROM memory_source_revisions source_revision
