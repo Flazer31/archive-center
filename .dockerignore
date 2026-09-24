@@ -1,0 +1,34 @@
+# Source control and CI
+.git/
+.github/
+.gitleaksignore
+
+# Local runtime state, never part of an image
+.env
+.env.*
+.updates/
+data/
+logs/
+
+# Everything not needed by the Go build, migrations, or prompts
+ops/
+scripts/
+tests/
+testdata/
+tools/
+licenses/
+docs/
+*.md
+*.ps1
+*.sh
+*.cjs
+*.cjs.map
+Archive Center.js
+archive-center-runtime.test.cjs
+install-windows.ps1
+install.sh
+Dockerfile
+docker-compose.yml
+compose.yml
+compose.yaml
+.dockerignore

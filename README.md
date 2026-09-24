@@ -80,6 +80,21 @@ RisuAI에 설치된 `Archive Center.js`는 RisuAI의 플러그인 업데이트 �
 Raw `git clone` is a source/operator path. It does not by itself configure
 MariaDB, ChromaDB, package launchers, or live service env.
 
+## Docker
+
+릴리즈마다 `ghcr.io/flazer31/archive-center` 이미지가 linux/amd64와
+linux/arm64로 빌드됩니다. `compose.yml`은 MariaDB, ChromaDB, 스키마
+마이그레이션, Go 백엔드를 한 번에 올립니다.
+
+```sh
+docker compose up -d
+```
+
+백엔드는 `127.0.0.1:28080`에 바인딩되며 RisuAI의 백엔드 URL을
+`http://127.0.0.1:28080`으로 지정합니다. DB 비밀번호는 같은 폴더의 `.env`에
+`MARIADB_PASSWORD=...`로 바꿀 수 있습니다. 컨테이너 안에서는 패키지 업데이트가
+비활성화됩니다. 새 버전은 이미지를 다시 받아(`docker compose pull`) 적용합니다.
+
 ## Package and Data Safety
 
 Release packages provide Windows x64, Linux x64/arm64, macOS Intel/Apple
