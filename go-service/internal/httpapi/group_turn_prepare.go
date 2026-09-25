@@ -934,6 +934,17 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		s.TurnWorkflows.finishStage(workflowRequestID, turnWorkflowStageRecall, "succeeded", "")
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageContext)
 	}
+	multiConfig, multiConfigErr := s.loadMultiAgentSettings()
+	preprocessingMode := "disabled"
+	if multiConfigErr != nil {
+		preprocessingMode = "unavailable"
+	} else if multiConfig.Enabled {
+		preprocessingMode = "enabled"
+	}
+	s.TurnWorkflows.setFact(workflowRequestID, turnWorkflowHUDFact{
+		Key: "preprocessing_mode", Owner: "go", Scope: "current_request",
+		Status: preprocessingMode, Severity: turnWorkflowHUDSeverityNormal,
+	})
 
 	recollectionStartedAt := time.Now()
 	var personaRoleTrace map[string]any
@@ -1092,7 +1103,6 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 			injectionAssembly = buildPrepareTurnInjectionAssemblyWithBudget(assemblyInput)
 			assemblyTiming.addElapsed("initial_candidates", assemblyStageStarted)
 			assemblyStageStarted = time.Now()
-			multiConfig, multiConfigErr := s.loadMultiAgentSettings()
 			if multiConfigErr != nil {
 				injectionAssembly.MemoryDeliveryPlan["preprocessing_config_error"] = multiConfigErr.Error()
 			} else if multiConfig.Enabled || multiConfig.Jev.Enabled {
@@ -1145,6 +1155,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					"perspective": injectionAssembly.PerspectiveContext, "protected_memory_guidance": injectionAssembly.ProtectedMemoryText,
 					"lorebook_candidates": prepareTurnLorebookPreprocessingCandidates(lorebookReference), "lorebook_budget_chars": lorebookReferenceMaxChars,
 					"recent_conversation_reading": multiAgentRecentReading(priorityMemoryRequest, chatLogs, assemblyInput.Common.GeneralMemories),
+					"story_time_note":             storyTimePromptNote(assemblyInput.Perspective.StoryClock),
 					"go_baseline_plan":            injectionAssembly.MemoryDeliveryPlan,
 				})
 				if len(selection.Searches) > 0 {
@@ -1867,6 +1878,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 		supervisorCallStatus,
 		countPrepareTurnSupervisorDirectiveItems(guidanceItems),
 		boundedMemoryDeliveryLineage,
+		mapFromAny(mapFromAny(supervisorInputPack["llm_trace"])["provider_call_budget_ledger"]),
 	)
 	for k, v := range progressionLedgerTracePreviewFields(progressionLedger) {
 		tracePreview[k] = v
@@ -2846,12 +2858,15 @@ func countPrepareTurnSupervisorDirectiveItems(items []prepareTurnGuidanceItem) i
 	return count
 }
 
-func buildPrepareTurnCompactOrchestrationProjection(supervisorStatus string, guidanceItemCount int, lineage map[string]any) map[string]any {
+func buildPrepareTurnCompactOrchestrationProjection(supervisorStatus string, guidanceItemCount int, lineage, publisherLedger map[string]any) map[string]any {
 	memoryCount := maxInt(intFromAny(lineage["final_delivered_count"], 0), 0)
 	supervisorCallCount := 0
 	switch strings.TrimSpace(supervisorStatus) {
 	case "applied", "applied_partial", "valid_empty", "publisher_plan_no_valid_items", "publisher_response_container_invalid", "publisher_llm_empty_content", "publisher_json_malformed", "publisher_json_truncated", "publisher_schema_invalid", "failed_open":
 		supervisorCallCount = 1
+	}
+	if attempts, observed := publisherLedger["attempt_count"]; observed {
+		supervisorCallCount = intFromAny(attempts, supervisorCallCount)
 	}
 	return map[string]any{
 		"contract_version": "prepare_turn.compact_orchestration.v1",

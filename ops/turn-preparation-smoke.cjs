@@ -61,6 +61,9 @@ function beforeContext(transport, inputCount) {
     finishTurnWorkflowHUDCurrentGeneration:requestId=>hud.push({requestId,status:'finished'}),observeTurnWorkflowHUDTiming:()=>{},
     captureAssistantPrefillSeedForSession:async()=>null,
     getCurrentActiveChatSourceObservationMessages:async()=>({chat,messages:rows.map((r,i)=>({role:'user',content:r.data,risuMessageIndex:i,raw:r}))}),
+    reconcileRollbackFromHostSignal:async(sid,_host,options)=>{
+      assert.equal(sid,'test-session');assert.equal(options.activeChat,chat);events.push(['deletion_observation',sid]);return false;
+    },
     beginNextInputFinalizationPipeline:()=>({owned:false,started:false}),
     buildYumiV1ArchiveReadContext:async(payloadMessages,activeMessages)=>({payloadMessages,activeMessages,stats:{markerBlocks:0}}),
     bindRawInputObservationToRequest:()=>null,buildPostOutputSecondaryRequestContext:()=>null,

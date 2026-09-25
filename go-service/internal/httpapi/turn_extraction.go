@@ -45,8 +45,9 @@ type completeTurnEmbeddingConfig struct {
 }
 
 type completeTurnExtractionConfig struct {
-	Critic   completeTurnLLMConfig
-	Embedder completeTurnEmbeddingConfig
+	Critic            completeTurnLLMConfig
+	Embedder          completeTurnEmbeddingConfig
+	CriticInputPolicy completeTurnCriticInputPolicy
 }
 
 type artifactSaveResult struct {
@@ -626,6 +627,7 @@ func completeTurnExtractionConfigFromMeta(meta map[string]any) completeTurnExtra
 
 func (s *Server) completeTurnExtractionConfig(meta map[string]any) completeTurnExtractionConfig {
 	cfg := completeTurnExtractionConfigFromMeta(meta)
+	cfg.CriticInputPolicy = s.completeTurnCriticInputPolicy(meta)
 	rt := s.runtimeConfigSnapshot()
 	criticMap := mapFromAny(meta["critic"])
 

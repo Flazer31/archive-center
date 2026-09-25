@@ -1041,7 +1041,7 @@ func adminSessionNormalizePlan(req adminSessionNormalizeRequest, entries []dto.C
 		"critic_rescan_force_backfills":  false,
 		"critic_rescan_resume_existing":  true,
 		"world_rule_review_needed":       rawTurns > 0 && worldRules == 0,
-		"episode_review_needed":          rawTurns >= normalizedEpisodeInterval(0) && episodes == 0,
+		"episode_review_needed":          rawTurns >= normalizedEpisodeInterval(intFromAny(req.ClientMeta["episode_interval_turns"], 0)) && episodes == 0,
 		"vector_reindex_max_items":       req.MaxItems,
 		"vector_reindex_force":           adminSessionNormalizeForceReindex(req),
 		"resume_existing":                adminSessionNormalizeResumeExisting(req),

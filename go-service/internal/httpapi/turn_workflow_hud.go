@@ -2647,11 +2647,13 @@ func prepareTurnWorkflowRequestID(contract dto.PrepareTurnSourceContractProjecti
 }
 
 func completeTurnWorkflowRequestID(req dto.M4CompleteTurnRequest) string {
-	lineage := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])
-	if value := strings.TrimSpace(extractionStringFromAny(lineage["archive_center_request_correlation_id"])); value != "" {
+	// The Host watches this explicit HUD key. Retained lineage is diagnostic
+	// fallback and must not redirect progress to an older request's card.
+	if value := strings.TrimSpace(extractionStringFromAny(req.ClientMeta["turn_workflow_request_id"])); value != "" {
 		return value
 	}
-	return strings.TrimSpace(extractionStringFromAny(req.ClientMeta["turn_workflow_request_id"]))
+	lineage := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])
+	return strings.TrimSpace(extractionStringFromAny(lineage["archive_center_request_correlation_id"]))
 }
 
 func resolvePrepareTurnWorkflowLogicalTurn(request dto.PrepareTurnContractRequest, decision dto.PrepareTurnCurrentInputDecisionV1, stored []store.ChatLog) int {

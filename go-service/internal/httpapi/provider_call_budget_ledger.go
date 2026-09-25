@@ -152,6 +152,7 @@ func safeProviderCallBudgetLedger(value any) map[string]any {
 		"requested_max_tokens", "requested_max_completion_tokens",
 		"status", "failure_stage", "failure_code", "http_status", "termination_kind",
 		"native_finish_reason", "retry_after_seconds",
+		"attempt_count", "retry_count", "total_prompt_chars", "usage_reported_attempts",
 	} {
 		if field, ok := ledger[key]; ok {
 			safe[key] = field

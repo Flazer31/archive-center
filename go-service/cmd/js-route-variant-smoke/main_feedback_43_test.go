@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -87,6 +88,174 @@ function target() {
 	cmd.Stdin = strings.NewReader(script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("production HUD fixture: %v\n%s", err, output)
+	}
+}
+
+func TestHUDSuccessfulCardsDismissOnHostClick(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	var production []string
+	for _, name := range []string{"escapeTurnWorkflowHUDHTML", "turnWorkflowHUDDismissButtonHTML", "turnWorkflowHUDStageStatus", "turnWorkflowHUDStageStatusColor", "turnWorkflowHUDStageDuration", "turnWorkflowHUDStageReason", "turnWorkflowHUDStageLedgerHTML", "turnWorkflowHUDCountPresentation", "turnWorkflowHUDCountLedgerHTML", "turnWorkflowHUDTimingHTML", "projectTurnWorkflowHUDPhaseView", "buildTurnWorkflowHUDPresentation", "turnWorkflowHUDSlotHTML", "buildTurnWorkflowHUDStackPresentation", "turnWorkflowHUDRecoveryPresentation", "turnWorkflowHUDErrorSummaryHTML", "turnWorkflowHUDTurnLabel", "turnWorkflowHUDCloseButtonOnly", "turnWorkflowHUDSeverityStyle", "turnWorkflowHUDWarningListHTML", "takeTurnWorkflowHUDDismissListenerIds", "dismissTurnWorkflowHUD", "dismissTurnWorkflowHUDPrevious"} {
+		production = append(production, extractArchiveCenterJSFunction(t, src, name))
+	}
+	for _, name := range []string{"removeTurnWorkflowHUDDismissListeners", "attachTurnWorkflowHUDDismiss", "applyTurnWorkflowHUDStack"} {
+		production = append(production, extractArchiveCenterJSAsyncFunction(t, src, name))
+	}
+	production = append(production, regexp.MustCompile(`(?m)^  const TURN_WORKFLOW_HUD_[A-Z_]+_STYLE = [^\r\n]+`).FindAllString(src, -1)...)
+	for _, name := range []string{"startTurnWorkflowHUDPreviousWatch", "renderTurnWorkflowHUDPrevious", "consumeTurnWorkflowHUDPrevious", "turnWorkflowHUDStreamFailure"} {
+		production = append(production, extractArchiveCenterJSFunction(t, src, name))
+	}
+	for _, name := range []string{"consumeTurnWorkflowHUDPreviousStreamLine", "consumeTurnWorkflowHUDPreviousStream"} {
+		production = append(production, extractArchiveCenterJSAsyncFunction(t, src, name))
+	}
+	production = append(production, extractTurnWorkflowHUDStreamIO(t, src))
+	script := strings.Join(production, "\n") + `
+const assert=require('node:assert/strict');
+const t=key=>key,tf=(key,args)=>key+JSON.stringify(args),BUILD_ID='fixture';
+const TURN_WORKFLOW_HUD_SURFACE_SELECTOR='.surface';
+const TURN_WORKFLOW_HUD_CONTRACT='turn_workflow_hud.v3';
+let settings={turnWorkflowHUDMode:'normal'};
+let _turnWorkflowHUDPreviousStreamAbortController=null,_turnWorkflowHUDPreviousStreamReader=null;
+let _turnWorkflowHUDRenderChain=Promise.resolve(),streamController,streamOpens=0;
+function turnWorkflowHUDIsEnabled(){return true;}
+function resolveBridgeRuntimeRoute(){return {url:'http://fixture.invalid'};}
+async function openTurnWorkflowHUDStream(){
+ streamOpens++;
+ return new ReadableStream({start(controller){streamController=controller;}}).getReader();
+}
+async function sendPrevious(view){
+ streamController.enqueue(new TextEncoder().encode(JSON.stringify(view)+'\n'));
+ for(let i=0;i<10;i++){await new Promise(setImmediate);await flush();}
+}
+let _turnWorkflowHUDUnloaded=false,_turnWorkflowHUDDismissListenerIds=[];
+let _turnWorkflowHUDActiveRequestId='',_turnWorkflowHUDPreviousRequestId='';
+let _turnWorkflowHUDLastView=null,_turnWorkflowHUDPreviousLastView=null;
+let _turnWorkflowHUDWatchToken=0,_turnWorkflowHUDWatchRunning=false,_turnWorkflowHUDLastRevision=0,_turnWorkflowHUDTerminalRequestId='';
+let _turnWorkflowHUDPreviousWatchToken=0,_turnWorkflowHUDPreviousWatchRunning=false,_turnWorkflowHUDPreviousLastRevision=0;
+let _turnWorkflowHUDCurrentFinalizationMode='next_user_input',_turnWorkflowHUDElapsedElement=null;
+const _turnWorkflowHUDHostWarningsByRequestId=new Map();
+const handlers=new Map(),operations=[];let serial=0,cancelCurrent=0,cancelPrevious=0;
+function cancelTurnWorkflowHUDStream(){cancelCurrent++;}
+function cancelTurnWorkflowHUDPreviousStream(){cancelPrevious++;}
+function clearTurnWorkflowHUDTimer(){_turnWorkflowHUDElapsedElement=null;}
+async function updateTurnWorkflowHUDElapsed(){throw Error('fixture has no active timers');}
+function scheduleTurnWorkflowHUDElapsedFrame(){throw Error('fixture has no active timers');}
+function debugLog(...args){throw Error(JSON.stringify(args));}
+function queueTurnWorkflowHUDOperation(label,fn){operations.push(fn);return Promise.resolve();}
+async function attachTurnWorkflowHUDRecovery(root,view,action){assert.ok(!action,'fixture requests no recovery action');}
+function element(name){
+ const own=new Map();
+ return {name,html:'',
+  async setInnerHTML(html){this.html=html;},
+  async querySelector(selector){return selector==='button'?button:card;},
+  async querySelectorAll(selector){assert.equal(selector,'details[open]');return {length:async()=>0};},
+  async getBoundingClientRect(){return {left:100,top:100,right:200,bottom:200};},
+  async addEventListener(type,fn,options){assert.equal(type,'click');const id=++serial;const entry={fn,options};own.set(id,entry);handlers.set(id,entry);return id;},
+  async removeEventListener(type,id,options){assert.equal(type,'click');assert.ok(own.has(id),'wrong SafeElement owner');assert.equal(own.get(id).options,options);own.delete(id);handlers.delete(id);}
+ };
+}
+const root=element('root'),card=element('card'),button=element('button');
+async function getTurnWorkflowHUDMainDocument(){return {querySelector:async selector=>{assert.equal(selector,TURN_WORKFLOW_HUD_SURFACE_SELECTOR);return root;}};}
+async function ensureTurnWorkflowHUDRoot(){return root;}
+async function flush(){while(operations.length)await operations.shift()();}
+function view(id,status){return {request_id:id,status,severity:['failed','recovering'].includes(status)?'error':'normal',dismissal_policy:['failed','recovering'].includes(status)?'x_only':'none',logical_turn:2,stages:[],counts:[],current_stage:{key:'complete',ordinal:12,total:12,status:'pending'},error:status==='failed'?{code:'CRITIC_PROVIDER_TIMEOUT',message_key:'turn_hud.error.critic_llm_failed'}:undefined};}
+async function mount(current,previous){
+ await removeTurnWorkflowHUDDismissListeners();
+ _turnWorkflowHUDActiveRequestId=current?.request_id||'';_turnWorkflowHUDLastView=current;
+ _turnWorkflowHUDPreviousRequestId=previous?.request_id||'';_turnWorkflowHUDPreviousLastView=previous;
+ _turnWorkflowHUDCurrentFinalizationMode='next_user_input';
+ cancelCurrent=cancelPrevious=0;
+ await applyTurnWorkflowHUDStack(root);
+}
+async function outsideClick(){
+ for(const entry of [...handlers.values()])await entry.fn({clientX:900,clientY:900,preventDefault(){throw Error('click was consumed');},stopPropagation(){throw Error('Host action was blocked');}});
+ await flush();
+}
+(async()=>{
+ for(const mode of ['normal','compact']){
+  settings.turnWorkflowHUDMode=mode;
+  for(const otherStatus of ['running','failed','recovering']){
+   const previous=view('previous',otherStatus);
+   await mount(view('current','completed'),previous);
+   assert.equal([...handlers.values()].filter(x=>x.options===true).length,1,'one capture listener per stack');
+   await outsideClick();
+   assert.equal(_turnWorkflowHUDActiveRequestId,'');assert.equal(_turnWorkflowHUDPreviousLastView,previous);
+   assert.equal(cancelPrevious,0,'successful current card cancelled previous processing');
+   assert.ok(root.html.includes('previous'),'previous card disappeared');
+   assert.equal([...handlers.values()].filter(x=>x.options===true).length,0,'completion listener leaked');
+   const current=view('current',otherStatus);
+   await mount(current,view('previous','completed'));
+   await outsideClick();
+   assert.equal(_turnWorkflowHUDPreviousRequestId,'');assert.equal(_turnWorkflowHUDLastView,current);
+   assert.equal(cancelCurrent,0,'successful previous card cancelled current processing');
+  }
+  await mount(view('current','completed'),view('previous','completed'));
+  assert.equal(handlers.size,1,'completed cards should share one Host listener');
+  await outsideClick();assert.equal(root.html,'');assert.equal(handlers.size,0);
+  await mount(view('current','completed'),null);
+  const stale=[...handlers.values()][0].fn;
+  await mount(view('new-current','running'),view('current','running'));
+  await stale({});await flush();
+  assert.equal(_turnWorkflowHUDActiveRequestId,'new-current','stale completed callback cleared the next request');
+  assert.equal(_turnWorkflowHUDPreviousRequestId,'current','stale callback cleared the shifted previous request');
+  await mount({...view('generation','running'),host_generation_finished:true},null);
+  assert.equal(handlers.size,1);await outsideClick();assert.equal(root.html,'');
+  await mount({...view('recovered','completed'),severity:'notice',display_mode:'notice'},null);
+  assert.equal([...handlers.values()].filter(x=>x.options===true).length,1);await outsideClick();assert.equal(root.html,'');
+  await mount(view('failed','failed'),null);await outsideClick();assert.equal(_turnWorkflowHUDActiveRequestId,'failed');
+  for(const entry of [...handlers.values()])await entry.fn({clientX:150,clientY:150});
+  await flush();assert.equal(_turnWorkflowHUDActiveRequestId,'','explicit X stopped working');
+  const runningPrevious=view('previous-running','running');
+  await mount(view('failed-current','failed'),runningPrevious);
+  for(const entry of [...handlers.values()])await entry.fn({clientX:150,clientY:150});
+  await flush();
+  assert.equal(_turnWorkflowHUDActiveRequestId,'');
+  assert.equal(_turnWorkflowHUDPreviousLastView,runningPrevious,'closing current failure also closed previous Critic');
+  assert.equal(cancelPrevious,0,'current X cancelled previous Critic HUD stream');
+  assert.ok(root.html.includes('previous'),'current X hid the independent previous card');
+  for(let i=0;i<20;i++){await mount(view('completed-'+i,'completed'),null);assert.equal(handlers.size,1);}
+  await removeTurnWorkflowHUDDismissListeners();assert.equal(handlers.size,0);
+
+  // Start the real previous-stream owner with no response bytes yet. This is
+  // the gap after /complete-turn starts, not a pre-mounted previous card.
+  await mount({...view('next-current','running'),current_stage:{key:'awaiting_final_output',
+    label_key:'turn_hud.stage.awaiting_final_output',status:'running',ordinal:6,total:12,llm_call:false}},null);
+  startTurnWorkflowHUDPreviousWatch('pending-previous');
+  await flush();
+  assert.ok(root.html.includes('data-turn-workflow-card="previous"'),mode+': previous request invisible until first stream byte');
+  assert.ok(root.html.includes('data-turn-workflow-card="current"'),mode+': current request disappeared');
+  assert.equal(_turnWorkflowHUDPreviousLastRevision,0,'waiting card must not fabricate a backend revision');
+  assert.equal(_turnWorkflowHUDPreviousLastView.current_stage.llm_call,false,'waiting card must not claim Critic was called');
+  if(process.env.ARCHIVE_CENTER_PREVIOUS_HUD_PREVIEW){
+   require('node:fs').writeFileSync(process.env.ARCHIVE_CENTER_PREVIOUS_HUD_PREVIEW+'.'+mode+'.html',
+    '<!doctype html><meta charset="utf-8"><body style="background:#151821;color:#eee;font:13px sans-serif"><h3>'+mode+' · awaiting first previous-turn event</h3><main style="width:224px;display:flex;flex-direction:column;gap:7px">'+root.html+'</main>');
+  }
+  await outsideClick();
+  assert.equal(_turnWorkflowHUDPreviousRequestId,'pending-previous','running previous card was dismissed');
+  const opens=streamOpens;
+  startTurnWorkflowHUDPreviousWatch('pending-previous');
+  assert.equal(streamOpens,opens,'same request opened a duplicate stream');
+  const previous={...view('pending-previous','running'),contract_version:TURN_WORKFLOW_HUD_CONTRACT,revision:9,
+    current_stage:{key:'critic_llm',label_key:'turn_hud.stage.critic_llm',status:'running',ordinal:9,total:12,llm_call:true}};
+  await sendPrevious(previous);
+  assert.equal(_turnWorkflowHUDPreviousLastRevision,9);
+  assert.ok(root.html.includes('turn_hud.stage.critic_llm'));
+  await sendPrevious({...previous,status:'completed',revision:12,stages:[{...previous.current_stage,status:'succeeded',duration_ms:1200}]});
+  assert.equal(_turnWorkflowHUDPreviousWatchRunning,false);
+  await outsideClick();
+  assert.equal(_turnWorkflowHUDPreviousRequestId,'');
+  assert.equal(_turnWorkflowHUDActiveRequestId,'next-current','completed previous card dismissed current request');
+  streamController.close();
+ }
+})().catch(err=>{console.error(err);process.exitCode=1;});
+`
+	node := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
+	if node == "" {
+		node = "node"
+	}
+	cmd := exec.Command(node, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("production HUD dismissal: %v\n%s", err, output)
 	}
 }
 

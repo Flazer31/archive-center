@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
@@ -54,6 +55,8 @@ type Server struct {
 	RollbackDecisions        *rollbackDecisionLedger
 	RequestShutdown          func(exitCode int)
 	DiagnosticWriter         *diagnostics.Writer
+	indexRecoveryState       atomic.Int32 // 0: ready, 1: settings needed, 2: rebuilding, 3: failed
+	indexRecoveryContext     context.Context
 }
 
 // ValidateRuntimeDependencies verifies live dependencies before the HTTP
@@ -69,7 +72,23 @@ func (s *Server) ValidateRuntimeDependencies(ctx context.Context) error {
 	if s.VectorOpenError != nil {
 		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, s.VectorOpenError)
 	}
+	if recovery, ok := s.Vector.(vector.IndexRecovery); ok && s.Cfg.StoreMode == config.StoreModeMariaDBAuthority {
+		if err := recovery.ResumeIndexRecovery(ctx, s.indexRecoveryJournalPath()); err != nil {
+			return fmt.Errorf("resume chromadb index recovery: %w", err)
+		}
+	}
 	health, err := s.Vector.Health(ctx)
+	if vector.IsIndexLoadError(err) && s.Cfg.StoreMode == config.StoreModeMariaDBAuthority {
+		if _, ok := s.Vector.(vector.IndexRecovery); ok {
+			s.indexRecoveryContext = ctx
+			s.indexRecoveryState.Store(1)
+			// Management must be reachable while rebuilding or waiting for Host
+			// embedding settings. The existing recovery owner starts workers only
+			// after it finishes; /ready continues to report vector readiness.
+			s.retryIndexRecoveryAfterConfigSync()
+			return nil
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("chromadb startup preflight failed (api_path=%s): %w", s.Cfg.ChromaAPIPath, err)
 	}

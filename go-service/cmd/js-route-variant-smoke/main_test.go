@@ -27,7 +27,7 @@ func TestArchiveCenterJSCriticLedgerDebugRendererIsDefined(t *testing.T) {
 func TestArchiveCenterJSDefaultPublisherCriticAndMemoryBudgets(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	for _, marker := range []string{
-		`maxInjectionChars: 18000`,
+		`maxInjectionChars: 32000`,
 		`pluginMainTimeoutMs: 120000`,
 		`pluginMainMaxCompletionTokens: 30000`,
 		`subLlmTimeoutMs: 120000`,
@@ -183,7 +183,7 @@ func TestArchiveCenterJSConsumesReferenceLaneOutsideMainInjectionBudget(t *testi
 		`reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),`,
 		`lorebook_reference_max_chars: Number(settings.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars),`,
 		`reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),`,
-		`reference_injection_enabled: settings.injectionEnabled !== false,`,
+		`reference_injection_enabled: settings.referenceInjectionEnabled !== false,`,
 		`payloadApplicationPlan: result.payload_application_plan`,
 		`publisherCallBudgetLedger: result.publisher_call_budget_ledger || null`,
 		`lorebookReference: result.lorebook_reference || (result.injection_pack && result.injection_pack.lorebook_reference_recall) || null`,

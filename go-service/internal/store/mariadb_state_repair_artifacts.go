@@ -228,6 +228,15 @@ func bodyRepairPruneJSON(raw, entityID, name string, bound bool) string {
 	prune = func(v any, owned bool) (any, bool) {
 		switch item := v.(type) {
 		case map[string]any:
+			// Manual character edits address a field with a JSON path. Remove
+			// the entire body edit; pruning a path segment would retarget it.
+			if path, ok := item["path"].([]any); ok && owned {
+				rawPath, _ := json.Marshal(path)
+				if bodyRepairTopic.Match(rawPath) {
+					removed = true
+					return nil, false
+				}
+			}
 			for _, key := range []string{"subject_entity_id", "character_id", "character_name", "subject_label", "subject", "name", "owner_id"} {
 				if id, ok := item[key].(string); ok && id != "" {
 					owned = id == entityID || id == name
@@ -236,6 +245,10 @@ func bodyRepairPruneJSON(raw, entityID, name string, bound bool) string {
 			}
 			out := map[string]any{}
 			for key, child := range item {
+				if key == "path" {
+					out[key] = child
+					continue
+				}
 				if owned && bodyRepairTopic.MatchString(key) {
 					removed = true
 					continue
@@ -302,6 +315,10 @@ func bodyRepairApplyJSONDelta(current, before, after string) string {
 		item, ok := value.(map[string]any)
 		if !ok {
 			return ""
+		}
+		if path, ok := item["path"].([]any); ok {
+			raw, _ := json.Marshal([]any{path, item["principle"]})
+			return "manual-field:" + string(raw)
 		}
 		for _, key := range []string{"subject_entity_id", "character_id", "character_name", "subject_label", "subject", "name", "owner_id", "id"} {
 			if value, exists := item[key]; exists && value != nil && value != "" {

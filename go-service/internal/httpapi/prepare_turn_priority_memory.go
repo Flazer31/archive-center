@@ -16,7 +16,7 @@ import (
 
 const (
 	prepareTurnPriorityMemoryPlanVersion       = "memory_delivery_plan.v2"
-	prepareTurnPriorityMemoryScoreVersion      = "priority_score.static.v4"
+	prepareTurnPriorityMemoryScoreVersion      = "priority_score.static.v5"
 	prepareTurnFinalizationImmediate           = "immediate_after_response"
 	prepareTurnFinalizationNextInput           = "next_user_input"
 	prepareTurnPrioritySemanticFactsContextKey = "_priority_precise_memory_vector_facts"
@@ -1671,7 +1671,7 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 		seen := map[string]bool{}
 		for _, candidate := range linkedBySource[key] {
 			for _, part := range candidate.Minimum.Parts {
-				if !strings.HasPrefix(part.Key, "@lifecycle/") && !strings.HasPrefix(part.Key, "@temporal/") {
+				if !strings.HasPrefix(part.Key, "@lifecycle/") && !strings.HasPrefix(part.Key, "@temporal/") && !strings.HasPrefix(part.Key, "@current/") {
 					continue
 				}
 				if form == nil {
@@ -2053,6 +2053,46 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 		candidate.OriginalRelevance, candidate.OriginalScore = candidate.Relevance, candidate.FinalScore
 	}
 	prepareTurnBuildReadingForms(candidates, relevanceForText, out.preparation)
+	// Query order comes from the existing recall owner: current input (or its
+	// continuity query), then recent context and supplemental discovery. Keep
+	// the original source scores for canonical resolution and diagnostics.
+	if len(querySet) > 1 {
+		currentRelevance := prepareTurnPriorityRelevanceScorer(nil, querySet[0])
+		if out.preparation != nil {
+			currentRelevance = out.preparation.relevanceScorer(querySet[:1], querySet[0])
+		}
+		scores := make([]float64, len(candidates))
+		low, high := 1.0, 0.0
+		for i, candidate := range candidates {
+			score := currentRelevance(candidate.CompleteText)
+			if candidate.Minimum != nil {
+				score = math.Max(score, currentRelevance(candidate.Minimum.Meaning))
+			}
+			scores[i] = score
+			low, high = math.Min(low, score), math.Max(high, score)
+		}
+		// A short continuation with no distinguishing lexical clue retains the
+		// existing context ranking instead of flattening its relevance scores.
+		if high > low {
+			groups := map[string]float64{}
+			for i := range candidates {
+				candidate := &candidates[i]
+				candidate.Relevance = (2*scores[i] + candidate.Relevance) / 3
+				if candidate.SemanticUnitID != "" {
+					candidate.Relevance = math.Max(candidate.Relevance, candidate.OriginalRelevance)
+				}
+				candidate.FinalScore = prepareTurnPriorityScore(candidate.Relevance, candidate.Importance, candidate.Recency, candidate.ContinuityBonus, candidate.StructuredBias)
+				if candidate.Minimum != nil {
+					groups[candidate.Minimum.Group] = math.Max(groups[candidate.Minimum.Group], candidate.FinalScore)
+				}
+			}
+			for i := range candidates {
+				if candidates[i].Minimum != nil {
+					candidates[i].ContextGroupScore = groups[candidates[i].Minimum.Group]
+				}
+			}
+		}
+	}
 
 	// Request-scoped resolution replaces only candidates with an observed shared
 	// identity. Distinct source occurrences remain distinct even when their text
@@ -2177,9 +2217,20 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 	}
 	selected := map[string][]string{}
 	layouts := map[string]*prepareTurnMemoryReadingLayout{}
+	currentParts := map[prepareTurnMemoryPartIdentity]bool{}
+	hasUndeliveredCurrentState := func(form *prepareTurnMemoryForm) bool {
+		if form != nil {
+			for _, part := range prepareTurnMemoryDeliveryParts(form.Parts) {
+				if strings.HasPrefix(part.Key, "@current/") && !currentParts[prepareTurnMemoryPartIdentity{part.Key, part.Text}] {
+					return true
+				}
+			}
+		}
+		return false
+	}
 	layoutFor := func(lane string) *prepareTurnMemoryReadingLayout {
 		if layouts[lane] == nil {
-			layouts[lane] = &prepareTurnMemoryReadingLayout{}
+			layouts[lane] = &prepareTurnMemoryReadingLayout{currentParts: currentParts}
 		}
 		return layouts[lane]
 	}
@@ -2330,7 +2381,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 			}
 			return
 		}
-		if out.Preprocessing == nil && authorityExactKeys[collapseTextKey(summary.CompleteText)] {
+		if out.Preprocessing == nil && authorityExactKeys[collapseTextKey(summary.CompleteText)] && !hasUndeliveredCurrentState(summary.Minimum) {
 			summary.SelectionStatus = "deferred"
 			summary.SelectionReason = "authority_exact_duplicate"
 			return
@@ -2350,7 +2401,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		row := prepareTurnMemoryReadingRow{Order: order, Plain: line}
 		if summary.Minimum != nil {
 			form := summary.Minimum
-			row.Group, row.Header, row.Parts, row.Ref = form.Group, fmt.Sprintf("[source turn %d; %s]", summary.SourceTurn, summary.SourceRef), form.Parts, preprocessingRefs[summary.SummaryID]
+			row.Group, row.Header, row.Parts, row.Ref = form.Group, fmt.Sprintf("[source turn %d]", summary.SourceTurn), prepareTurnMemoryDeliveryParts(form.Parts), preprocessingRefs[summary.SummaryID]
 		}
 		edit := layoutFor(lane).preview(row)
 		newChars := appendedChars(lane, edit.delta, nil)
@@ -2389,12 +2440,12 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 			}
 			return
 		}
-		if out.Preprocessing == nil && authorityExactKeys[collapseTextKey(candidate.CompleteText)] {
+		if out.Preprocessing == nil && authorityExactKeys[collapseTextKey(candidate.CompleteText)] && !hasUndeliveredCurrentState(candidate.Minimum) {
 			candidate.SelectionStatus = "deferred"
 			candidate.SelectionReason = "authority_exact_duplicate"
 			return
 		}
-		if out.Preprocessing == nil && selectedTurnSummaryExactKeys[collapseTextKey(candidate.CompleteText)] {
+		if out.Preprocessing == nil && selectedTurnSummaryExactKeys[collapseTextKey(candidate.CompleteText)] && !hasUndeliveredCurrentState(candidate.Minimum) {
 			candidate.SelectionStatus = "deferred"
 			candidate.SelectionReason = "turn_summary_exact_duplicate"
 			return
@@ -2805,7 +2856,7 @@ func renderPrepareTurnPriorityMemoryDeliveryPlan(out *prepareTurnInjectionAssemb
 		"priority_items":                    priorityItems,
 		"selected_fact_ids":                 selectedFactIDs,
 		"delivered_context_fact_ids":        deliveredContextFactIDs,
-		"context_score_policy":              "minimum_source_context_max_original_relevance_existing_formula",
+		"context_score_policy":              "minimum_source_context_then_current_query_2_to_1_with_precise_floor",
 		"turn_summary_items":                turnSummaryItems,
 		"selected_turn_summary_ids":         selectedTurnSummaryIDs,
 		"final_text_sha256":                 finalHash,

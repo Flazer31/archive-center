@@ -82,8 +82,8 @@ func sessionMigrationExpectCurrentRelationalLedger(
 ) {
 	mock.ExpectQuery("SELECT source_session_id, target_session_id, status.*FROM session_migrations.*WHERE id = \\?").
 		WithArgs(migrationID).
-		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "status"}).
-			AddRow(sourceID, targetID, status))
+		WillReturnRows(sqlmock.NewRows([]string{"source_session_id", "target_session_id", "status", "mode"}).
+			AddRow(sourceID, targetID, status, SessionMigrationModeCopyKeepSource))
 	parityRows := sqlmock.NewRows([]string{
 		"table_name", "source_row_count", "source_content_hash", "target_row_count", "target_content_hash",
 	})
@@ -858,6 +858,26 @@ func TestSessionMigrationCommittedAdmissionRequiresCompleteContract(t *testing.T
 	}
 }
 
+func TestSessionMigrationDeletedAdmissionPreservesRedactedHistory(t *testing.T) {
+	row := sessionMigrationTestRow(map[string]string{
+		"source_revision": "deleted-revision", "lifecycle_state": "deleted",
+		"derived_admission_state": "committed", "derived_result_hash": "historical-fingerprint",
+	})
+	row.Values["derived_result_json"] = sessionMigrationCell{}
+	if err := sessionMigrationValidateAdmissionResult(row); err != nil {
+		t.Fatalf("deleted result was intentionally cleared by rollback: %v", err)
+	}
+	if hash, body, err := sessionMigrationRemappedAdmissionResult(row); err != nil || hash != "" || body != "" {
+		t.Fatalf("deleted history must not synthesize a new admission: hash=%q body=%q err=%v", hash, body, err)
+	}
+	for _, state := range []string{"active", "superseded", "invalidated"} {
+		row.Values["lifecycle_state"] = sessionMigrationCell{Valid: true, Text: state}
+		if err := sessionMigrationValidateAdmissionResult(row); err == nil {
+			t.Fatalf("missing result in %s history changed its existing validation", state)
+		}
+	}
+}
+
 func TestSessionMigrationExpectedVectorDocumentsMatchAllManagedTierContracts(t *testing.T) {
 	tests := []struct {
 		table      string
@@ -1036,7 +1056,7 @@ func TestSessionMigrationListVectorDocumentsReadsTransientTurnContext(t *testing
 	if !ok || plan.Vector == nil {
 		t.Fatal("memories vector plan missing")
 	}
-	mock.ExpectQuery("(?s)SELECT ve.document_id.*t\\.`turn_index`.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`id` AS CHAR\\) = arm.target_key").
+	mock.ExpectQuery("(?s)SELECT ve.document_id.*t\\.`turn_index`.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`id` AS CHAR CHARACTER SET utf8mb4\\) COLLATE utf8mb4_unicode_ci = arm.target_key").
 		WithArgs("id", int64(7), "memories").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"document_id", "source_session_id", "target_session_id", "target_key", "embedding",
@@ -1067,7 +1087,7 @@ func TestSessionMigrationListVectorDocumentsUsesVectorIDAlternateKey(t *testing.
 	if !ok || plan.Vector == nil || plan.PrimaryKey[0] == plan.Vector.IDColumn {
 		t.Fatal("precise memory vector alternate-key plan missing")
 	}
-	mock.ExpectQuery("(?s)arm.key_column_name = \\?.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`unit_id` AS CHAR\\) = arm.target_key").
+	mock.ExpectQuery("(?s)arm.key_column_name = \\?.*arm.source_key = ve.source_row_id.*CAST\\(t\\.`unit_id` AS CHAR CHARACTER SET utf8mb4\\) COLLATE utf8mb4_unicode_ci = arm.target_key").
 		WithArgs("unit_id", int64(7), "precise_memory_units").
 		WillReturnRows(sqlmock.NewRows([]string{
 			"document_id", "source_session_id", "target_session_id", "target_key", "embedding",

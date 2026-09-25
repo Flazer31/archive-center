@@ -162,7 +162,9 @@ func prepareTurnAppendBodyTracking(out *prepareTurnInjectionAssembly, input *pre
 			fact := prepareTurnPriorityMemoryFact{
 				Text: text, SourcePath: path, EntitySurface: character.CharacterName, Structured: true,
 				MemoryRole: kind,
-				Reading:    &prepareTurnMemoryContext{Path: path, Label: "Body context", Parts: []prepareTurnMemoryPart{{Key: path, Value: text, FactTexts: []string{text}}}},
+				// The occurrence path owns source identity, including session keys.
+				// Its model-facing label needs only the character and reading kind.
+				Reading: &prepareTurnMemoryContext{Path: path, DisplayPath: prepareTurnMemoryPath([]string{"body_tracking", character.EntityID, kind}), Label: "Body context", Parts: []prepareTurnMemoryPart{{Key: path, Value: text, FactTexts: []string{text}}}},
 			}
 			appendPrepareTurnPriorityFactSeeds(out, prepareTurnPrioritySourceMetadata{
 				Lane: lane, SourceTable: table, Tier: "required", SourceRowID: rowID,

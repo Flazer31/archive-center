@@ -193,6 +193,20 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	if s.TurnWorkflows != nil && workflowRequestID != "" {
+		if _, found := s.TurnWorkflows.snapshot(workflowRequestID); !found {
+			// A restart can discard the previous turn's in-memory HUD while its
+			// accepted output still awaits Critic processing. Register only the
+			// observed finalization; retain unknown preparation times and the
+			// independent current request's active-session ownership.
+			s.TurnWorkflows.recordOperation(turnWorkflowHUDViewModel{
+				ContractVersion: turnWorkflowHUDContractVersion,
+				RequestID:       workflowRequestID, ChatSessionID: sid,
+				Attempt: 1, Revision: 1, Status: "running",
+				Severity: turnWorkflowHUDSeverityNormal, DismissalPolicy: turnWorkflowHUDDismissNone,
+				StartedAt: time.Now().UTC(), Stages: newTurnWorkflowHUDStages(),
+				Counts: newTurnWorkflowHUDCounts(), Facts: newTurnWorkflowHUDFacts(),
+			})
+		}
 		s.TurnWorkflows.setEstimatedLogicalTurn(workflowRequestID, req.TurnIndex)
 		s.TurnWorkflows.startStage(workflowRequestID, turnWorkflowStageFinalAccepted)
 		payloadObservation := mapFromAny(req.ClientMeta["source_to_final_lineage_observation"])

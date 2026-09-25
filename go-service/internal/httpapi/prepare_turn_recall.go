@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -1203,6 +1204,23 @@ func prepareTurnRecallPhrasePairs(text string) map[string]bool {
 	for i := 0; i+1 < len(terms); i++ {
 		if terms[i] != terms[i+1] && (distinctive[terms[i]] || distinctive[terms[i+1]]) {
 			pairs[terms[i]+"\x00"+terms[i+1]] = true
+		}
+	}
+	// A complete three-word description can consist entirely of the shortest
+	// token tier. Keep it as a phrase, including the existing final-word forms
+	// (e.g. a subject/object particle), without broadening bare glue bigrams.
+	for i := 0; i+2 < len(terms); i++ {
+		lastForms := prepareTurnRecallTermForms(terms[i+2])
+		// Copular endings belong to this description match, not the shared
+		// identity/alias token normalizer (a name ending in 다 stays exact).
+		for _, ending := range []string{"이다", "다"} {
+			if stem, found := strings.CutSuffix(terms[i+2], ending); found && utf8.RuneCountInString(stem) >= 2 {
+				lastForms = append(lastForms, stem)
+				break
+			}
+		}
+		for _, last := range lastForms {
+			pairs[terms[i]+"\x00"+terms[i+1]+"\x00"+last] = true
 		}
 	}
 	return pairs

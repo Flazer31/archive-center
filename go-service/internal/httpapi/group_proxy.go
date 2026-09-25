@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
@@ -305,8 +306,80 @@ func (s *Server) runSupervisorLLM(ctx context.Context, sid string, supervisorPac
 	}
 	applyProxyReasoningFromLLMConfig(&reqBody, cfg)
 	applyProxyOverridesFromLLMConfig(&reqBody, cfg)
-	// Publisher planning is exactly one provider request. A rejected request is
-	// reported explicitly; it is never retried with a different parameter set.
+	// One assembled request is reused; retries never alter model parameters or
+	// rerun retrieval, preprocessing, or canonical persistence.
+	attempts := []map[string]any{}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, map[string]any{"failure_code": "publisher_llm_request_canceled", "attempts": attempts}, err
+		}
+		result, trace, err := s.runSupervisorLLMAttempt(ctx, sid, supervisorPack, cfg, reqBody, promptSource, cloneMap(callLedger))
+		attempt := safeProviderCallBudgetLedger(trace["provider_call_budget_ledger"])
+		attempt["attempt"] = len(attempts) + 1
+		attempts = append(attempts, attempt)
+		ledger := mapFromAny(trace["provider_call_budget_ledger"])
+		ledger["attempt_count"] = len(attempts)
+		ledger["retry_count"] = len(attempts) - 1
+		ledger["total_prompt_chars"] = len(attempts) * intFromAny(callLedger["final_prompt_chars"], 0)
+		reported := 0
+		for _, key := range []string{"input_tokens", "output_tokens", "reasoning_tokens", "cached_input_tokens", "total_tokens"} {
+			total := 0
+			for _, previous := range attempts {
+				total += intFromAny(previous[key], 0)
+			}
+			ledger[key] = total
+		}
+		for _, previous := range attempts {
+			if previous["provider_usage_status"] == "reported" {
+				reported++
+			}
+		}
+		ledger["usage_reported_attempts"] = reported
+		if reported > 0 {
+			ledger["provider_usage_status"] = "reported"
+		}
+		trace["attempts"] = attempts
+
+		retryable := false
+		if err != nil {
+			var localErr *proxyLocalRequestError
+			status := intFromAny(trace["upstream_status"], 0)
+			retryable = !errors.Is(err, context.Canceled) && !errors.As(err, &localErr) &&
+				(status < 400 || status == 408 || status == 425 || status == 429 || status >= 500)
+		} else {
+			switch extractionStringFromAny(ledger["failure_code"]) {
+			case "publisher_response_container_invalid", "publisher_llm_empty_content", "publisher_json_malformed", "publisher_json_truncated", "publisher_schema_invalid":
+				retryable = true
+			}
+		}
+		if !retryable || ctx.Err() != nil || !cfg.RetryBudget.take() {
+			return result, trace, err
+		}
+		delay := time.Duration(minInt(len(attempts), 5)) * time.Second
+		// Preserve the provider's rate-limit delay without overflowing Duration.
+		if seconds := intFromAny(attempt["retry_after_seconds"], 0); seconds > 0 {
+			providerDelay := time.Duration(minInt(seconds, int((1<<63-1)/int64(time.Second)))) * time.Second
+			if providerDelay > delay {
+				delay = providerDelay
+			}
+		}
+		attempt["retry_delay_ms"] = delay.Milliseconds()
+		slog.InfoContext(ctx, "publisher retry scheduled", "session_id", sid,
+			"next_attempt", len(attempts)+1, "delay_ms", delay.Milliseconds(), "failure_code", attempt["failure_code"])
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			trace["failure_code"] = "publisher_llm_request_canceled"
+			return nil, trace, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (s *Server) runSupervisorLLMAttempt(ctx context.Context, sid string, supervisorPack map[string]any, cfg completeTurnLLMConfig, reqBody dto.ProxyPluginMainRequest, promptSource string, callLedger map[string]any) (map[string]any, map[string]any, error) {
+	// Transport-level parameter fallback stays disabled. The Publisher owner
+	// alone consumes the configured retry budget.
 	upstream, upstreamStatus, err := performProxyPluginMainWithRetryBudgetAndPolicy(ctx, reqBody, nil, proxyRequestPolicy{JSONResponse: true, Purpose: "publisher", SessionID: sid})
 	providerResponse := mapFromAny(upstream[proxyResponseMetadataKey])
 	observeProviderJSONResponsePolicy(callLedger, upstream)

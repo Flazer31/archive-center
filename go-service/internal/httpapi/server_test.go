@@ -248,6 +248,7 @@ func TestHandleReadyWithDependencies(t *testing.T) {
 func TestHandleVersion(t *testing.T) {
 	mux := http.NewServeMux()
 	srv := setupTestServer()
+	srv.Cfg.BuildVersion = "fixture-build-version"
 	srv.RegisterRoutes(mux)
 
 	req := httptest.NewRequest(http.MethodGet, "/version", nil)
@@ -263,8 +264,8 @@ func TestHandleVersion(t *testing.T) {
 		t.Fatalf("failed to decode response: %v", err)
 	}
 
-	if resp.Version != "4.6.1" {
-		t.Errorf("Version = %q, want %q", resp.Version, "4.6.1")
+	if resp.Version != srv.Cfg.BuildVersion {
+		t.Errorf("Version = %q, want %q", resp.Version, srv.Cfg.BuildVersion)
 	}
 	if resp.Commit != "unknown" {
 		t.Errorf("Commit = %q, want %q", resp.Commit, "unknown")

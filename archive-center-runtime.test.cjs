@@ -104,6 +104,21 @@ async function loadRuntime(options = {}) {
         });
       }
       if (request.path === "/prepare-turn") {
+        if (body && body.source_decision_only === true) {
+          const userMessage = activeChat.message.findLast(message => message.role === "user" && !message.disabled);
+          assert(userMessage, "source-decision fixture requires an observed user message");
+          return jsonResponse({
+            status: "ok",
+            source: "database",
+            backend_instance_id: "backend-test",
+            current_input_decision: {
+              status: "eligible",
+              effective_user_input: userMessage.data,
+              context_injection_eligible: true,
+              selected_observation_ref: "fixture-active-user",
+            },
+          });
+        }
         return jsonResponse({
           status: "ok",
           source: "database",
@@ -188,7 +203,7 @@ async function testDelayedBranchIdentityPreflight() {
   runtime.activeChat.message.push(
     { role: "user", data: "Earlier input", chatId: "user-1" },
     { role: "char", data: "Earlier answer", chatId: "assistant-1" },
-    { role: "system", data: "{{specialcomment::branchedfrom::assistant-1}}", disabled: true, chatId: "branch-1" },
+    { role: "comment", data: "{{specialcomment::branchedfrom::parent-chat::Parent::assistant-1::}}", disabled: true, chatId: "branch-1" },
     { role: "user", data: "New branch input", chatId: "user-2" },
   );
   const payload = { messages: [{ role: "user", content: "New branch input" }] };
@@ -199,12 +214,13 @@ async function testDelayedBranchIdentityPreflight() {
     "worldline identity request",
   );
   await waitFor(
-    () => requestBodies(runtime, "/prepare-turn").length === 1,
+    () => requestBodies(runtime, "/prepare-turn").filter(body => !body.source_decision_only).length === 1,
     "current prepare-turn while branch identity remains pending",
   );
   const returned = await pending;
   assert.equal(returned, payload);
-  assert.equal(requestBodies(runtime, "/prepare-turn").length, 1);
+  assert.equal(requestBodies(runtime, "/prepare-turn").filter(body => body.source_decision_only).length, 1);
+  assert.equal(requestBodies(runtime, "/prepare-turn").filter(body => !body.source_decision_only).length, 1);
   gate.resolve();
 }
 
@@ -212,13 +228,14 @@ async function testUnresolvedBranchPreservesPayload() {
   const runtime = await loadRuntime({ worldlineState: "unresolved" });
   runtime.activeChat.message.push(
     { role: "char", data: "Earlier answer", chatId: "assistant-1" },
-    { role: "system", data: "{{specialcomment::branchedfrom::assistant-1}}", disabled: true, chatId: "branch-1" },
+    { role: "comment", data: "{{specialcomment::branchedfrom::parent-chat::Parent::assistant-1::}}", disabled: true, chatId: "branch-1" },
     { role: "user", data: "New branch input", chatId: "user-2" },
   );
   const payload = { messages: [{ role: "user", content: "New branch input" }] };
   const returned = await runtime.hooks.beforeRequest(payload, "model");
   assert.equal(returned, payload);
-  assert.equal(requestBodies(runtime, "/prepare-turn").length, 1);
+  assert.equal(requestBodies(runtime, "/prepare-turn").filter(body => body.source_decision_only).length, 1);
+  assert.equal(requestBodies(runtime, "/prepare-turn").filter(body => !body.source_decision_only).length, 1);
 }
 
 async function testAssistantOnlyBackfillReportsNormalizeRequirement() {

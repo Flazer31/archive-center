@@ -109,7 +109,7 @@ func Test44RecentSummaryCanonicalSourceAndUnchangedInputs(t *testing.T) {
 // Exercises the registered route, scoped DB reads, both AI rounds and actual
 // grouped HTTP packets. The provider is local and makes controlled selections;
 // it verifies transport and assembly, not real-model memory quality.
-func Test44RecentSummaryRegisteredRouteGroupedRounds(t *testing.T) {
+func Test47OriginalRecentContextRegisteredRouteGroupedRounds(t *testing.T) {
 	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
 	old := strings.Repeat("Older raw dialogue and scenery. ", 100)
 	latest := "Exact latest dialogue."
@@ -143,11 +143,11 @@ func Test44RecentSummaryRegisteredRouteGroupedRounds(t *testing.T) {
 			}
 			older := mapFromAny(recent[1])
 			text := modelRecentTextForTest(older)
-			if !strings.Contains(text, "Mira promised to return the compass.") || !strings.Contains(text, "first direction") || !strings.Contains(text, "second direction") || strings.Contains(text, "Older raw dialogue") {
-				t.Errorf("registered route did not reuse stored reading: %s", text)
+			if text != "user:\nfirst direction\nuser:\nsecond direction\nassistant:\n"+strings.TrimSpace(old) {
+				t.Error("registered route did not retain the configured original reading and role boundaries")
 			}
-			if len(outputFidelityLineageSlice(older["summary_sources"])) != 1 {
-				t.Error("summary source missing")
+			if older["summary_sources"] != nil || input["recent_context_status"] != "full_configured_recent_context" {
+				t.Error("original reading was mislabeled as stored summary")
 			}
 			refs := []string{}
 			for _, raw := range outputFidelityLineageSlice(input["candidates"]) {
@@ -312,33 +312,44 @@ func Test43CompactNoteCatalogPreservesExactScope(t *testing.T) {
 	}
 	notes := buildPrepareTurnPreprocessingNotes(selection, map[string]any{"priority_items": planItems}, nil)
 	text := extractionStringFromAny(notes["final_text"])
-	marker := "Source scope catalog: "
+	marker := "Knowledge scopes:\n"
 	_, rest, found := strings.Cut(text, marker)
 	if !found {
 		t.Fatal("missing readable catalog")
 	}
-	line, _, _ := strings.Cut(rest, "\n")
-	var compact map[string]map[string]any
-	if err := json.Unmarshal([]byte(line), &compact); err != nil {
-		t.Fatal(err)
+	lines, _, _ := strings.Cut(rest, "\n\n")
+	catalog := mapFromAny(notes["source_catalog"])
+	if len(strings.Split(lines, "\n")) != len(catalog) || strings.Contains(lines, "precise_memory_facts") {
+		t.Fatal("knowledge catalog lost scope rows or still carries internal table identifiers")
 	}
-	keys := map[string]string{"t": "source_table", "n": "source_turn", "v": "visibility", "o": "perspective_owner", "a": "allowed_viewers", "r": "source_refs"}
-	expanded := map[string]any{}
-	for ref, row := range compact {
-		x := map[string]any{}
-		for key, value := range row {
-			full, ok := keys[key]
-			if !ok {
-				t.Fatalf("uncompacted or undocumented scope key: %s", key)
+	for ref, raw := range catalog {
+		row := mapFromAny(raw)
+		var line string
+		for _, candidate := range strings.Split(lines, "\n") {
+			if strings.HasPrefix(candidate, ref+" — ") {
+				line = candidate
 			}
-			x[full] = value
 		}
-		expanded[ref] = x
+		if line == "" || !strings.Contains(line, "visibility: owner_private") || !strings.Contains(line, "owner: "+stringFromMap(row, "perspective_owner")) {
+			t.Fatalf("knowledge scope was changed: %s %+v", line, row)
+		}
+		if turn := intFromAny(row["source_turn"], 0); turn > 0 && !strings.Contains(line, fmt.Sprintf("turn: %d;", turn)) {
+			t.Fatal("source turn lost")
+		}
+		if viewers, exists := row["allowed_viewers"]; !exists {
+			if strings.Contains(line, "viewers:") {
+				t.Fatal("missing viewers were invented")
+			}
+		} else if viewers == nil {
+			if !strings.Contains(line, "viewers: null") {
+				t.Fatal("null viewers became public or empty")
+			}
+		} else if !strings.Contains(line, "viewers: ["+strings.Join(stringsFromAny(viewers), " | ")+"]") {
+			t.Fatal("allowed viewers changed")
+		}
 	}
-	want, _ := json.Marshal(notes["source_catalog"])
-	got, _ := json.Marshal(expanded)
-	if string(want) != string(got) || len(line) >= len(want) {
-		t.Fatal("compaction changed scope, absence/null, provenance or failed to save space")
+	if len(lines) >= len(mustCompactJSON(catalog)) {
+		t.Fatal("readable catalog did not reduce representation size")
 	}
 	for _, role := range selection.Roles {
 		for _, note := range role.Selection.Reasons {
@@ -355,7 +366,7 @@ func Test43CompactNoteCatalogPreservesExactScope(t *testing.T) {
 	for _, raw := range outputFidelityLineageSlice(notes["items"]) {
 		item := mapFromAny(raw)
 		for _, ref := range stringsFromAny(item["scope_refs"]) {
-			if compact[ref] == nil {
+			if catalog[ref] == nil {
 				t.Fatalf("note lost scope %s", ref)
 			}
 		}
@@ -433,8 +444,8 @@ func Test43PreprocessingFactNotesHaveDistinctStableReferences(t *testing.T) {
 	if !strings.Contains(note, sel.Roles[0].Selection.Reasons["watch"]) {
 		t.Fatal("Go silently rewrote or rejected a mistaken AI interpretation")
 	}
-	if strings.Count(note, "pending_threads:1") != 1 {
-		t.Error("same source metadata repeated in final notes")
+	if strings.Contains(note, "pending_threads:1") || strings.Count(mustCompactJSON(notes["source_catalog"]), "pending_threads:1") != 1 {
+		t.Error("source mapping must remain once in diagnostics, outside final notes")
 	}
 	linked := 0
 	for _, item := range supervisorDeliveredContextItems(plan, nil, nil) {
@@ -557,7 +568,7 @@ func Test43PreprocessingNotesFollowAcceptedRoundAndScope(t *testing.T) {
 			if tc.want == "" && text != "" {
 				t.Fatal("Go baseline selection fabricated specialist interpretation")
 			}
-			if tc.want != "" && (!strings.Contains(text, "owner_private") || !strings.Contains(text, "Mira") || !strings.Contains(text, "allowed_viewers")) {
+			if tc.want != "" && (!strings.Contains(text, "owner_private") || !strings.Contains(text, "Mira") || !strings.Contains(text, "viewers:")) {
 				t.Fatal("private source scope was lost")
 			}
 			if len(tc.ids) == 2 && strings.Index(text, "FIRST_NOTE_B") >= strings.Index(text, "FIRST_NOTE_A") {
@@ -1162,4 +1173,46 @@ func Test46FirstReadingPreservesSemanticMatchAndSupplement(t *testing.T) {
 	if got := packet["candidates"].([]map[string]any); len(got) != 1 || got[0]["id"] != lexical.CanonicalFactID {
 		t.Fatal("first-input ordering changed supplemental search order")
 	}
+}
+
+func Test47FirstReadingKeepsOldRelationshipWhenSceneChanges(t *testing.T) {
+	input := "세린은 오래전에 구해준 동료와 식사하며 가족 이야기를 꺼낸다."
+	previous := "세린은 항구에서 주민들과 물품을 정리하고 보수 일정을 논의한다."
+	relationship := "리오는 세린이 목숨을 구해준 뒤 공개적으로 신뢰를 약속했다. 그러나 자신의 동생에 관한 농담은 하지 말아 달라고 부탁했다."
+	memories := []store.Memory{{ID: 701, ChatSessionID: "relationship-test", TurnIndex: 3, Importance: .8, SummaryJSON: mustCompactJSON(map[string]any{
+		"narrative_events":          []any{map[string]any{"actor": "세린", "event": relationship, "visibility": "public", "evidence_excerpt": relationship}},
+		"relationship_observations": []any{map[string]any{"source_entity": "리오", "target_entity": "세린", "domain": "trust_and_boundary", "observation": relationship, "visibility": "public", "evidence_excerpt": relationship}},
+	})}}
+	for i := 0; i < 160; i++ {
+		text := fmt.Sprintf("세린은 항구의 제%d 물품 창고에서 주민들과 오늘의 보수 일정을 확인했다. 담당자는 나무 상자와 도구의 수량, 배의 접안 순서, 작업 구역을 기록했다. 작업 뒤에는 여관에서 저녁을 먹고 다음날 운반할 물품을 준비했다. 이 기록은 해당 창고의 오늘 작업에 관한 것이다.", i+1)
+		memories = append(memories, store.Memory{ID: int64(1000 + i), ChatSessionID: "relationship-test", TurnIndex: 100 + i, Importance: .8, SummaryJSON: mustCompactJSON(map[string]any{
+			"narrative_events": []any{map[string]any{"actor": "세린", "event": text, "location": fmt.Sprintf("항구 창고 %d", i), "result": "오늘 보수 물품 점검을 마쳤다.", "visibility": "public", "evidence_excerpt": text}},
+		})})
+	}
+	selection := prepareTurnMemorySelectionContext{PriorityEnabled: true, CurrentTurn: 400, MaxItems: 8, Query: input, QuerySet: []string{input, previous}}
+	out := buildPrepareTurnInjectionAssemblyWithBudget(prepareTurnAssemblyInput{Memories: memories, UserInput: input, TopK: 8, MaxChars: 18000, BudgetMode: "auto", Perspective: &prepareTurnAssemblyPerspective{Selection: selection}})
+	facts, summaries := multiAgentCandidatePool(&out)
+	before := mustCompactJSON(facts)
+	cfg := defaultMultiAgentSettings()
+	cfg.CandidateChars = 32000
+	packet := multiAgentInput("event_recent", facts, summaries, dto.PrepareTurnRequest{RawUserInput: &input}, cfg, 18000, 8, nil)
+	choice := multiAgentRecommendation{}
+	for _, entry := range packet["candidates"].([]map[string]any) {
+		if strings.Contains(extractionStringFromAny(entry["text"]), relationship) {
+			choice.SelectedIDs = append(choice.SelectedIDs, extractionStringFromAny(entry["ref"]))
+		}
+	}
+	if len(choice.SelectedIDs) == 0 {
+		t.Fatal("previous-scene material hid the current scene's trust and family boundary")
+	}
+	if before != mustCompactJSON(facts) || intFromAny(packet["input_candidate_chars"], 0) > cfg.CandidateChars {
+		t.Fatal("reading mutated source scores or exceeded its existing budget")
+	}
+	resolveMultiAgentReferences(&choice, packet)
+	out.Preprocessing = &multiAgentSelection{Candidates: facts, Summaries: summaries, Roles: []multiAgentRoleResult{{Role: "event_recent", Source: "ai", Selection: choice}}}
+	plan := finalizePrepareTurnPriorityMemoryDeliveryPlan(&out, 18000, 8, "auto", nil, selection)
+	if !strings.Contains(extractionStringFromAny(plan["final_text"]), relationship) {
+		t.Fatal("selected relationship lost its trust or boundary in final delivery")
+	}
+	assert45Budget(t, plan, 18000)
 }

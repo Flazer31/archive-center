@@ -810,3 +810,54 @@ func requireDashboardRow(t *testing.T, card dashboardCard, label string) dashboa
 	t.Fatalf("dashboard row %q missing: %+v", label, card.Rows)
 	return dashboardRow{}
 }
+
+func TestDashboardShowsWorkflowErrorsOutsideCompactHUD(t *testing.T) {
+	srv := setupTestServer()
+	srv.TurnWorkflows.begin("previous-error", "session-a", 7)
+	srv.TurnWorkflows.failWithDetails("previous-error", "CRITIC_TIMEOUT", "turn_hud.error.complete_turn_aborted", turnWorkflowStageCriticLLM, true, []turnWorkflowHUDDetail{{Key: "provider", Value: "synthetic-provider-detail"}})
+	srv.TurnWorkflows.begin("current-warning", "session-a", 8)
+	srv.TurnWorkflows.finishStage("current-warning", turnWorkflowStagePublisherLLM, "failed", "publisher_llm_timeout")
+	srv.TurnWorkflows.addWarning("current-warning", "PUBLISHER_LLM_FAILED_OPEN", "turn_hud.warning.publisher_llm_failed_open", turnWorkflowStagePublisherLLM)
+	srv.TurnWorkflows.begin("foreign-error", "session-b", 9)
+	srv.TurnWorkflows.failWithDetails("foreign-error", "FOREIGN_SECRET", "foreign", turnWorkflowStageCriticLLM, false, []turnWorkflowHUDDetail{{Key: "foreign", Value: "do-not-leak"}})
+	mux := http.NewServeMux()
+	srv.RegisterRoutes(mux)
+	request := func(current, previous string) dashboardViewModel {
+		t.Helper()
+		body, _ := json.Marshal(dashboardViewModelRequest{PluginEnabled: true, CurrentSessionID: "session-a", CurrentWorkflowRequestID: current, PreviousWorkflowRequestID: previous})
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/dashboard/view-model", bytes.NewReader(body)))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		var vm dashboardViewModel
+		if err := json.Unmarshal(rec.Body.Bytes(), &vm); err != nil {
+			t.Fatal(err)
+		}
+		return vm
+	}
+	vm := request("current-warning", "previous-error")
+	card := requireDashboardCard(t, vm, "workflow_errors")
+	encoded, _ := json.Marshal(card)
+	for _, text := range []string{"synthetic-provider-detail", "CRITIC_TIMEOUT", "publisher_llm_timeout", "turn_hud.warning.publisher_llm_failed_open"} {
+		if !strings.Contains(string(encoded), text) {
+			t.Fatalf("dashboard lost hidden HUD detail %q: %s", text, encoded)
+		}
+	}
+	if strings.Count(string(encoded), "synthetic-provider-detail") != 1 {
+		t.Fatalf("duplicate request diagnostics: %s", encoded)
+	}
+	// HUD dismissal removes frontend request IDs, not the last backend diagnostic.
+	closed := requireDashboardCard(t, request("", ""), "workflow_errors")
+	if len(closed.Rows) == 0 {
+		t.Fatal("dismissing HUD removed dashboard diagnostics")
+	}
+	cross := request("foreign-error", "foreign-error")
+	out, _ := json.Marshal(cross)
+	if strings.Contains(string(out), "FOREIGN_SECRET") || strings.Contains(string(out), "do-not-leak") {
+		t.Fatalf("cross-session diagnostic leaked: %s", out)
+	}
+	if buildWorkflowErrorDashboardCard([]turnWorkflowHUDViewModel{{RequestID: "success", Status: "completed"}}) != nil {
+		t.Fatal("successful empty workflow fabricated errors")
+	}
+}

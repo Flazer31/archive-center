@@ -722,6 +722,9 @@ func (s *Server) beginCompleteTurnSourceAcceptance(ctx context.Context, req dto.
 	}
 	logicalTurnResolved := false
 	inputGroupIDs := completeTurnInputGroupLogicalIDs(sid, observation)
+	if baseline := s.resolveDurableSessionRoutingBaseline(ctx, sid, nil); baseline != nil && baseline.Reason == "timeline_stitch" {
+		inputGroupIDs = stitchedInputGroupLogicalIDs(inputGroupIDs, observation, baseline)
+	}
 	for _, candidate := range ledger.current {
 		if decision.LogicalTurnID == "" {
 			break

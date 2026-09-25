@@ -51,6 +51,28 @@ func Test44GroupedMultiAgentRoundWireAndResults(t *testing.T) {
 				inputChars += len([]rune(wire.Messages[1].Content))
 				result := map[string]any{}
 				members, grouped := packet["roles"].([]any)
+				if grouped {
+					marker := "Complete response shape for this request"
+					at := strings.Index(wire.Messages[0].Content, marker)
+					if at < 0 {
+						t.Error("grouped wire lacks an example for its actual assignments")
+					} else {
+						lines := strings.SplitN(wire.Messages[0].Content[at:], "\n", 3)
+						var shape struct {
+							Roles map[string]map[string]any `json:"roles"`
+						}
+						if len(lines) < 2 || json.Unmarshal([]byte(lines[1]), &shape) != nil || len(shape.Roles) != len(members) {
+							t.Error("response example does not cover the actual grouped roles")
+						}
+						for _, raw := range members {
+							role := extractionStringFromAny(mapFromAny(raw)["role"])
+							fields, exists := shape.Roles[role]
+							if !exists || fields["selected_ids"] == nil || fields["reasons"] == nil || fields["recent_context_refs"] == nil {
+								t.Errorf("missing round-one response shape for %s", role)
+							}
+						}
+					}
+				}
 				if !grouped {
 					members = []any{map[string]any{"role": packet["role"], "input": packet}}
 				}
@@ -261,6 +283,28 @@ func Test44GroupedConnectionOptionsStayIndependent(t *testing.T) {
 	}
 }
 
+func Test47GroupedMisplacedOuterBracesKeepReceivedRoles(t *testing.T) {
+	// Same misplaced wrapper boundaries observed in a real grouped model reply.
+	raw := `{"roles":{"event_recent":{"selected_ids":["F1"]}},"subjective_relationship":{"selected_ids":["F2"],"reasons":{"F2":"Quoted \"world_state\":{\"selected_ids\":[\"fake\"]} stays prose."}}},"unresolved_goal":{"selected_ids":["F3"]}}}`
+	parsed := parseMultiAgentGroupedResults(raw)
+	for role, want := range map[string]string{"event_recent": "F1", "subjective_relationship": "F2", "unresolved_goal": "F3"} {
+		call := finishMultiAgentCall(multiAgentCall{Round: 1, Raw: parsed[role]}, 200, nil, "")
+		if call.Error != "" || len(call.Result.SelectedIDs) != 1 || call.Result.SelectedIDs[0] != want {
+			t.Errorf("received %s recommendation lost: %+v", role, call)
+		}
+	}
+	if _, exists := parsed["world_state"]; exists {
+		t.Fatal("quoted role-like prose became a recommendation")
+	}
+	nested := parseMultiAgentGroupedResults(`{"metadata":{"world_state":{"selected_ids":["fake"]}},"roles":{"event_recent":{"selected_ids":["F1"]}}}`)
+	if _, exists := nested["world_state"]; exists {
+		t.Fatal("nested metadata became a recommendation")
+	}
+	if !strings.Contains(nested["event_recent"], "F1") {
+		t.Fatal("normal grouped recommendation lost")
+	}
+}
+
 func Test44GroupedRecommendationPartialRoleIsolation(t *testing.T) {
 	raw := `{"roles":{"event_recent":{"selected_ids":["F1"]},"world_state":{"selected_ids":42,"unresolved":["world uncertain"]},"open_objectives":{"selected_ids":["F3"]}}}`
 	parsed := parseMultiAgentGroupedResults(raw)
@@ -333,6 +377,26 @@ func Test44GroupedRoundsKeepIndividualSelectionsAndActualUsage(t *testing.T) {
 		}
 		if len(assignments) != expected || round > 2 {
 			t.Errorf("round=%d members=%d", round, len(assignments))
+		}
+		prompt := stringFromMap(mapFromAny(messages[0]), "content")
+		at := strings.Index(prompt, "Complete response shape for this request")
+		if at < 0 {
+			t.Error("actual round assignments absent from response example")
+		} else {
+			lines := strings.SplitN(prompt[at:], "\n", 3)
+			var shape struct {
+				Roles map[string]map[string]any `json:"roles"`
+			}
+			if len(lines) < 2 || json.Unmarshal([]byte(lines[1]), &shape) != nil || len(shape.Roles) != len(assignments) {
+				t.Error("round response example includes missing or inactive roles")
+			}
+			for _, raw := range assignments {
+				role := stringFromMap(mapFromAny(raw), "role")
+				fields, ok := shape.Roles[role]
+				if !ok || (round == 2 && fields["reuse_previous_reasons"] != true) {
+					t.Error("round-specific response shape missing", round, role)
+				}
+			}
 		}
 		results := map[string]any{}
 		for _, raw := range assignments {

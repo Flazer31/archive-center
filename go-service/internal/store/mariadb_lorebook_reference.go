@@ -106,7 +106,7 @@ func ValidateLorebookReferenceSnapshot(item *LorebookReferenceSnapshot) error {
 			return ErrInvalidLorebookReference
 		}
 		if item.ConsentState == LorebookConsentActive && item.CompleteSnapshot &&
-			(item.Scope.CharacterIndex == nil || item.Scope.ChatIndex == nil || !item.Scope.EnabledModulesObserved) {
+			(item.Scope.CharacterIndex == nil || item.Scope.ChatIndex == nil) {
 			return ErrInvalidLorebookReference
 		}
 	case LorebookObservationPartial:

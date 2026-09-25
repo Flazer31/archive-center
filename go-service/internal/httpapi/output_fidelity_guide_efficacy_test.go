@@ -28,7 +28,7 @@ func outputFidelity35CPrepareResponseWithOptions(t *testing.T, caseID, guideMode
 	return outputFidelity36FPrepareResponseWithBudgets(t, caseID, guideMode, guideStrength, "standard", supervisorEndpoint, withMemorySupport, injectionEnabled, 9000, narrativeSupportMaxChars)
 }
 
-func outputFidelity36FPrepareResponseWithBudgets(t *testing.T, caseID, guideMode, guideStrength, publisherGuidanceFormat, supervisorEndpoint string, withMemorySupport, injectionEnabled bool, maxInjectionChars, narrativeSupportMaxChars int) map[string]any {
+func outputFidelity36FPrepareResponseWithBudgets(t *testing.T, caseID, guideMode, guideStrength, publisherGuidanceFormat, supervisorEndpoint string, withMemorySupport, injectionEnabled bool, maxInjectionChars, narrativeSupportMaxChars int, configure ...func(*Server, map[string]any)) map[string]any {
 	t.Helper()
 	corpus, _ := loadOutputFidelityCorpus(t)
 	fixture := outputFidelityCaseByID(t, corpus, caseID)
@@ -91,7 +91,7 @@ func outputFidelity36FPrepareResponseWithBudgets(t *testing.T, caseID, guideMode
 		srv.RuntimeConfig.SupervisorTimeoutSec = 2
 	}
 
-	body, err := json.Marshal(map[string]any{
+	requestBody := map[string]any{
 		"chat_session_id":             sid,
 		"turn_index":                  21,
 		"raw_user_input":              current.ReplayText,
@@ -170,7 +170,11 @@ func outputFidelity36FPrepareResponseWithBudgets(t *testing.T, caseID, guideMode
 			"guide_strength":        guideStrength,
 			"narrative_stance":      "balanced",
 		},
-	})
+	}
+	for _, apply := range configure {
+		apply(srv, requestBody)
+	}
+	body, err := json.Marshal(requestBody)
 	if err != nil {
 		t.Fatal(err)
 	}

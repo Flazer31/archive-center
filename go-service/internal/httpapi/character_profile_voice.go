@@ -311,8 +311,21 @@ func loadCharacterProjection(raw, contractVersion, subjectEntityID string, creat
 		return create(), true
 	}
 	projection := map[string]any{}
-	if json.Unmarshal([]byte(trimmed), &projection) != nil ||
-		extractionStringFromAny(projection["contract_version"]) != contractVersion ||
+	if json.Unmarshal([]byte(trimmed), &projection) != nil {
+		return nil, false
+	}
+	// After replacement, the store can return only durable operator edits.
+	// Rebuild the automatic voice envelope from the newly accepted source;
+	// its obsolete evidence/identity must not be resurrected with the settings.
+	if contractVersion == voiceBehaviorProjectionContractVersion && projection["contract_version"] == nil && projection["manual_overrides"] != nil {
+		next := create()
+		next["manual_overrides"] = projection["manual_overrides"]
+		if principles, exists := projection["principles"]; exists {
+			next["principles"] = principles
+		}
+		return next, true
+	}
+	if extractionStringFromAny(projection["contract_version"]) != contractVersion ||
 		extractionStringFromAny(projection["subject_entity_id"]) != subjectEntityID {
 		return nil, false
 	}

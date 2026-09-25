@@ -15,6 +15,129 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
 
+func Test47IdenticalSearchExecutesOnceAndRetainsRoleEvidence(t *testing.T) {
+	for _, mode := range []string{"shared", "distinct", "shared_failure"} {
+		t.Run(mode, func(t *testing.T) {
+			const question = "Which recorded condition applies to the reed lantern?"
+			facts := []prepareTurnPriorityMemoryCandidate{
+				{CanonicalFactID: "visit", Lane: "event_recent", CompleteText: "Mira previously visited the lantern workshop.", SourceTurn: 2, Visibility: "public"},
+				{CanonicalFactID: "lantern", Lane: "world_state", CompleteText: "The reed lantern stands at the gate.", SourceTurn: 8, Visibility: "public"},
+			}
+			found := []prepareTurnPriorityMemoryCandidate{
+				{CanonicalFactID: "condition", Lane: "world_state", CompleteText: "RECOVERED_CONDITION: the reed lantern reveals wet ink only.", SourceTurn: 3, Visibility: "public", SupplementalQueryMatched: true},
+				{CanonicalFactID: "private", Lane: "subjective_relationship", CompleteText: "PRIVATE_READER_MEMORY", PerspectiveOwner: "Nell", Visibility: "owner_private", SupplementalQueryMatched: true},
+			}
+			var mu sync.Mutex
+			seen := map[string]int{}
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var wire struct {
+					Messages []struct {
+						Content string `json:"content"`
+					} `json:"messages"`
+				}
+				if json.NewDecoder(r.Body).Decode(&wire) != nil || len(wire.Messages) != 2 {
+					t.Error("unexpected provider request")
+					http.Error(w, "fixture", 400)
+					return
+				}
+				var packet map[string]any
+				if json.Unmarshal([]byte(wire.Messages[1].Content), &packet) != nil {
+					t.Error("invalid reading packet")
+					return
+				}
+				role := extractionStringFromAny(packet["role"])
+				if role != "event_recent" && role != "world_state" {
+					t.Error("unexpected role", role)
+					return
+				}
+				mu.Lock()
+				seen[role]++
+				mu.Unlock()
+				items := outputFidelityLineageSlice(packet["candidates"])
+				if len(items) == 0 {
+					t.Error("lost original candidates")
+					return
+				}
+				answer := multiAgentRecommendation{SelectedIDs: []string{extractionStringFromAny(mapFromAny(items[0])["ref"])}}
+				if packet["previous_result"] == nil {
+					q := question
+					if mode == "distinct" && role == "world_state" {
+						q = "Who last moved the reed lantern?"
+					}
+					answer.SearchRequests = []string{q}
+				} else {
+					if strings.Contains(wire.Messages[1].Content, "PRIVATE_READER_MEMORY") {
+						t.Error("private evidence entered public role")
+					}
+					if mode != "shared_failure" && !strings.Contains(wire.Messages[1].Content, "RECOVERED_CONDITION") {
+						t.Error("shared search evidence did not reach", role)
+					}
+				}
+				content, _ := json.Marshal(answer)
+				_ = json.NewEncoder(w).Encode(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": string(content)}}}})
+			}))
+			defer provider.Close()
+			cfg := defaultMultiAgentSettings()
+			cfg.Enabled = true
+			for role, c := range cfg.Roles {
+				c.Enabled = role == "event_recent" || role == "world_state"
+				c.Provider, c.Endpoint, c.Model, c.APIKey = "custom", provider.URL, role, "fixture-key"
+				cfg.Roles[role] = c
+			}
+			searchCalls := 0
+			search := func(q string) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, map[string]any) {
+				mu.Lock()
+				searchCalls++
+				mu.Unlock()
+				if q != question && !(mode == "distinct" && q == "Who last moved the reed lantern?") {
+					t.Error("unexpected question", q)
+				}
+				trace := map[string]any{"memory_search_result": "ok", "query_embedding_count": 1, "query_text_count": 1}
+				if mode == "shared_failure" {
+					trace["memory_search_result"] = "error"
+					return nil, nil, trace
+				}
+				return found, nil, trace
+			}
+			// Two separate preparations must not share results across requests.
+			for run := 0; run < 2; run++ {
+				got := (&Server{}).runMultiAgent(context.Background(), cfg, dto.PrepareTurnRequest{}, facts, nil, 4000, 5, nil, search)
+				want := run + 1
+				if mode == "distinct" {
+					want *= 2
+				}
+				if searchCalls != want {
+					t.Fatalf("physical searches=%d want=%d", searchCalls, want)
+				}
+				if len(got.Searches) != 2 {
+					t.Fatal("lost role-scoped search traces")
+				}
+				embeds := 0
+				for _, trace := range got.Searches {
+					embeds += intFromAny(trace["query_embedding_count"], 0)
+				}
+				wantEmbeds := 1
+				if mode == "distinct" {
+					wantEmbeds = 2
+				}
+				if embeds != wantEmbeds {
+					t.Fatal("provider usage counted once per reader", embeds)
+				}
+				for _, role := range []string{"event_recent", "world_state"} {
+					if got.role(role).Source != "ai" || len(got.role(role).Selection.SelectedIDs) == 0 {
+						t.Error("working recommendation lost", role)
+					}
+				}
+			}
+			for _, role := range []string{"event_recent", "world_state"} {
+				if seen[role] != 4 {
+					t.Error("rounds changed", role, seen[role])
+				}
+			}
+		})
+	}
+}
+
 // The provider and retrieval are external boundaries. All packet construction,
 // grouped dispatch, reference resolution, selection and payload assembly are real.
 func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
@@ -22,14 +145,14 @@ func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
 		for _, reply := range []string{"recommendation", "empty", "failure"} {
 			t.Run(fmt.Sprintf("grouped_%v_%s", grouped, reply), func(t *testing.T) {
 				facts := []prepareTurnPriorityMemoryCandidate{
-					{CanonicalFactID: "promise", Lane: "unresolved_goal", CompleteText: "status=open; Ainz promised Minwoo five casks of ale.", SourceRef: "pending_threads:403", SourceTable: "pending_threads", SourceTurn: 46},
+					{CanonicalFactID: "promise", Lane: "unresolved_goal", CompleteText: "status=open; Nero promised Jiwoo five casks of ale.", SourceRef: "pending_threads:403", SourceTable: "pending_threads", SourceTurn: 46},
 					{CanonicalFactID: "plate", Lane: "unresolved_goal", CompleteText: "An adventurer plate was also promised.", SourceRef: "pending_threads:401", SourceTable: "pending_threads", SourceTurn: 41},
 					{CanonicalFactID: "completed-event", Lane: "event_recent", CompleteText: "The ale outing was completed at the inn.", SourceRef: "memories:1523", SourceTurn: 47, Visibility: "public_projection"},
-					{CanonicalFactID: "private-ale", Lane: "subjective_relationship", CompleteText: "PRIVATE_ALE_INTERPRETATION", SourceRef: "private:1", PerspectiveOwner: "Ainz", Visibility: "owner_private", SupplementalQueryMatched: true},
-					{CanonicalFactID: "walk", Lane: "event_recent", CompleteText: "Minwoo and Yuri are walking around E-Rantel.", SourceRef: "memories:1600", SourceTurn: 105},
+					{CanonicalFactID: "private-ale", Lane: "subjective_relationship", CompleteText: "PRIVATE_ALE_INTERPRETATION", SourceRef: "private:1", PerspectiveOwner: "Nero", Visibility: "owner_private", SupplementalQueryMatched: true},
+					{CanonicalFactID: "walk", Lane: "event_recent", CompleteText: "Jiwoo and Mira are walking around Westport.", SourceRef: "memories:1600", SourceTurn: 105},
 				}
 				summaries := []prepareTurnPriorityTurnSummaryCandidate{
-					{SummaryID: "fulfilled-summary", SourceRef: "memories:1523", SourceTurn: 47, CompleteText: "아인즈가 여관 1층 홀을 정오부터 통째로 빌려 민우와의 생맥주 약속을 이행했다.", SourceVectorSimilarityObserved: true, SourceVectorSimilarity: .95},
+					{SummaryID: "fulfilled-summary", SourceRef: "memories:1523", SourceTurn: 47, CompleteText: "네로스가 여관 1층 홀을 정오부터 통째로 빌려 지우와의 생맥주 약속을 이행했다.", SourceVectorSimilarityObserved: true, SourceVectorSimilarity: .95},
 					{SummaryID: "unrelated-summary", SourceRef: "memories:9", SourceTurn: 9, CompleteText: "Distant nebula survey."},
 				}
 				var mu sync.Mutex
@@ -76,7 +199,7 @@ func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
 						case "event_recent":
 							answer.SelectedIDs = []string{"F5"}
 							if !second {
-								answer.SearchRequests = []string{"Yuri walking around E-Rantel"}
+								answer.SearchRequests = []string{"Mira walking around Westport"}
 							}
 						case "unresolved_goal":
 							answer.SelectedIDs = []string{"F1", "F2"}
@@ -152,7 +275,7 @@ func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
 						if strings.Contains(q, "five casks") {
 							return facts[:4], summaries, map[string]any{"memory_search_result": "ok"}
 						}
-						if strings.Contains(q, "Yuri") {
+						if strings.Contains(q, "Mira") {
 							return facts[4:], nil, map[string]any{"memory_search_result": "ok"}
 						}
 						t.Error("unexpected search", q)

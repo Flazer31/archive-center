@@ -14,6 +14,7 @@ import (
 )
 
 func expectCanonicalTailCleanup44(mock sqlmock.Sqlmock, sid string, turn int, legacyPhysicalCleanup, deleteTailChat bool, affected int64) {
+	mock.ExpectExec(`(?s)INSERT INTO character_events.*SELECT state.chat_session_id.*manual_character_override.*FROM character_states state`).WithArgs(sid, turn).WillReturnResult(sqlmock.NewResult(0, 0))
 	// Independent SQL contract: do not obtain this list from the production
 	// command builder. A missing table, changed range/argument or reordered
 	// dependency must be visible to this production transaction test.
@@ -299,6 +300,7 @@ func TestMariaDBRollbackCanonicalTailRollsBackOnDerivedDeleteFailure(t *testing.
 	mock.ExpectQuery("SELECT source_revision").
 		WithArgs("session-1", 4).
 		WillReturnRows(sqlmock.NewRows([]string{"source_revision"}))
+	mock.ExpectExec(`(?s)INSERT INTO character_events.*SELECT state.chat_session_id`).WithArgs("session-1", 4).WillReturnResult(sqlmock.NewResult(0, 0))
 	mock.ExpectExec("DELETE FROM effective_input_logs").WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectExec("DELETE FROM memories").WillReturnError(failure)
 	mock.ExpectRollback()

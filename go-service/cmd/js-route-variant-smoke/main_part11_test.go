@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -237,7 +238,7 @@ func TestEffectiveInputUsesCompletePayloadPlanAndCurrentTurnRuntime(t *testing.T
 		extractArchiveCenterJSFunction(t, src, "buildFinalPayloadParityTrace"),
 		extractArchiveCenterJSFunction(t, src, "resolveLatestTransparencyTrace"),
 		extractArchiveCenterJSFunction(t, src, "renderEffectiveInputSection"),
-		extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody"),
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody")),
 	}, "\n")
 	script := functions + `
 const AUXILIARY_INJECTION_PLACEMENT_OPTIONS = Object.freeze(["auto","before_latest_user","after_anchor_marker","after_last_cache_point","after_first_system","end"]);
@@ -586,6 +587,10 @@ const vm = {
     {title: "Queued", severity: "notice", summary: {notice: 1}, chips: [{tone: "notice", label: "queued"}], rows: []},
   ],
 };
+const errorHTML = renderDashboardViewModel({status:"ok",cards:[{id:"workflow_errors",severity:"fail",rows:[{label_key:"turn_hud.stage.critic_llm",status:"fail",message_key:"synthetic.explanation",detail_code:"CRITIC_TIMEOUT",detail:"provider=synthetic detail",turn_index:7}]}]},{});
+for(const text of ["dash.workflowErrors","synthetic.explanation","CRITIC_TIMEOUT","provider=synthetic detail","turn 7"]){
+ if(!errorHTML.includes(text))throw new Error("Dashboard lost hidden HUD error detail: "+text);
+}
 const html = renderDashboardViewModel(vm, {});
 if (!html.includes("has-notice") || !html.includes("mo-dash-chip-notice") || !html.includes("mo-dot-notice")) {
   throw new Error("notice card did not render with advisory styles: " + html);
@@ -972,8 +977,8 @@ func TestCompleteTurnHUDUsesBackendLedgerRequestBeforeCachedLineage(t *testing.T
 		t.Fatalf("complete-turn HUD key is not aligned with the backend ledger owner: %s", requestID)
 	}
 	presentation := extractArchiveCenterJSFunction(t, src, "buildTurnWorkflowHUDPresentation")
-	if !strings.Contains(presentation, "turnWorkflowHUDErrorDetailsHTML(error)") {
-		t.Fatal("recovering HUD does not render retry attempt details")
+	if !strings.Contains(presentation, "turnWorkflowHUDErrorSummaryHTML(error)") {
+		t.Fatal("recovering HUD does not render a short error summary")
 	}
 }
 
@@ -1002,14 +1007,14 @@ func TestTurnWorkflowHUDTransportFailureClassificationAndPersistenceRuntime(t *t
 	if !strings.Contains(watch, `turnWorkflowHUDHasHostWarning(normalizedRequestId)`) {
 		t.Fatal("HUD stream cleanup can still erase a recorded host transport warning")
 	}
-	recoveringStart := strings.Index(presentation, `if (view.status === "recovering")`)
-	failedStart := strings.Index(presentation, `if (view.status === "failed" || severity === "error")`)
-	if recoveringStart < 0 || failedStart <= recoveringStart ||
-		!strings.Contains(presentation[recoveringStart:failedStart], `+ turnWorkflowHUDWarningListHTML(view)`) {
-		t.Fatal("recovering HUD mode does not preserve the host warning list")
+	if strings.Contains(presentation, "turnWorkflowHUDErrorDetailsHTML") {
+		t.Fatal("floating HUD still renders raw error details")
 	}
-	if count := strings.Count(presentation, `+ turnWorkflowHUDWarningListHTML(view)`); count != 5 {
-		t.Fatalf("HUD warning list must be rendered in all five presentation modes; count=%d", count)
+	if !strings.Contains(presentation, "turnWorkflowHUDErrorSummaryHTML(error)") {
+		t.Fatal("failed/recovering HUD must retain the short error summary")
+	}
+	if count := strings.Count(presentation, `+ turnWorkflowHUDWarningListHTML(view)`); count != 3 {
+		t.Fatalf("non-error HUD warning presentations changed; count=%d", count)
 	}
 	for _, marker := range []string{
 		`kind: String(kind || "unknown")`,
@@ -1578,21 +1583,11 @@ function assert(condition, message) {
     logical_turn:55,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
   }), "normal completed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  assert(surface.card && typeof surface.card.listeners.click === "function", "normal completed HUD has no body dismissal");
-  surface.card.openDetails = 1; // Native summary expansion precedes the trimmed Host click.
-  await dispatchRisuEvent("click", {clientX:50, clientY:50});
-  await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML !== "", "expanding completed HUD details dismissed the card");
-  surface.card.openDetails = 0;
-  await dispatchRisuEvent("click", {clientX:50, clientY:50});
-  await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML !== "", "collapsing completed HUD details dismissed the card");
+  assert(typeof surface.listeners.click === "function", "normal completed HUD has no Host dismissal");
   await dispatchRisuEvent("click", {clientX:250, clientY:250});
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML !== "", "outside click dismissed the completed HUD");
-  await dispatchRisuEvent("click", {clientX:50, clientY:50});
-  await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML === "", "completed HUD body did not dismiss HUD");
+  assert(surface.innerHTML === "", "outside click did not dismiss the completed HUD");
+  assert(risuEventListeners.size === 0, "successful dismissal leaked its listener");
   await renderTurnWorkflowHUD({
     contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"completed-x",revision:1,
     logical_turn:55,status:"completed",severity:"normal",dismissal_policy:"card_or_x",counts,stages
@@ -1638,7 +1633,7 @@ function assert(condition, message) {
   assert(surface.card.attributes.style.includes("rgba(245,196,81,.58)"), "OOC notice did not use the yellow attention accent");
   assert(surface.innerHTML.includes("color:#F5C451"), "OOC notice title did not use the yellow attention color");
   assert(_turnWorkflowHUDWatchRunning === false, "OOC notice left the workflow status watcher running");
-  assert(surface.card && typeof surface.card.listeners.click === "function", "OOC informational notice lost normal card dismissal");
+  assert(typeof surface.listeners.click === "function", "OOC informational notice lost Host click dismissal");
   await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "OOC informational notice did not dismiss");
@@ -1652,7 +1647,7 @@ function assert(condition, message) {
   assert(_turnWorkflowHUDActiveRequestId === "", "terminal deletion notice remained the active workflow request");
   assert(surface.innerHTML.includes("삭제 확인 테스트"), "backend deletion notice title was not rendered");
   assert(surface.innerHTML.includes("삭제 출력 정리 테스트"), "backend deletion notice detail was not rendered");
-  assert(surface.card && typeof surface.card.listeners.click === "function", "successful deletion notice lost card dismissal");
+  assert(typeof surface.listeners.click === "function", "successful deletion notice lost Host click dismissal");
   await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "successful deletion notice did not dismiss");
@@ -1666,7 +1661,7 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("리롤 확인 테스트"), "backend reroll notice title was not rendered");
   assert(surface.innerHTML.includes("기존 턴 교체 테스트"), "backend reroll notice detail was not rendered");
-  assert(surface.card && typeof surface.card.listeners.click === "function", "successful reroll notice lost card dismissal");
+  assert(typeof surface.listeners.click === "function", "successful reroll notice lost Host click dismissal");
   await dispatchRisuEvent("click", {clientX:50, clientY:50});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "successful reroll notice did not dismiss");
@@ -1684,16 +1679,10 @@ function assert(condition, message) {
     error:{code:"BAD_<CODE>",message_key:"turn_hud.transport_unavailable",retryable:false,preserved_counts:counts}
   }), "failed HUD view was rejected");
   await _turnWorkflowHUDRenderChain;
-  assert(surface.innerHTML.includes("BAD_&lt;CODE&gt;"), "error metadata was not HTML escaped");
-  assert(surface.card.attributes.style.includes("background:#2A151D"), "failed HUD has no opaque fintech error window");
-  assert(surface.innerHTML.includes("color:#E158A6"), "failed HUD does not use the supplied pink error accent");
-  assert(surface.innerHTML.includes("실패 · 0.8초"), "failed HUD omitted failed stage status or duration");
-  assert(surface.innerHTML.includes("CRITIC_LLM_FAILED"), "failed HUD omitted the failed stage reason code");
-  assert(surface.innerHTML.includes(">21</span>"), "failed HUD omitted preserved generated counts");
-  assert(!surface.innerHTML.includes("WORKFLOW FACTS"), "failed HUD still exposes internal workflow facts");
-  assert(!surface.innerHTML.includes("민감한 기억 상세 본문"), "failed HUD still exposes memory item previews");
-  for (let index = 1; index <= 12; index++) {
-    assert(surface.innerHTML.includes("stage.label." + index), "failed HUD omitted stage " + index);
+  assert(surface.innerHTML.includes(escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))), "failed HUD omitted its message-key summary");
+  assert(surface.card.attributes.style.includes("background:#2A151D"), "failed HUD has no error styling");
+  for(const text of ["BAD_", "CRITIC_LLM_FAILED", "stage.label.", "<details", "<table", "민감한 기억 상세 본문"]) {
+    assert(!surface.innerHTML.includes(text), "failed floating HUD still includes detail: " + text);
   }
   assert(surface.button, "failed HUD has no visible close button");
   const failedCard = surface.card;
@@ -1827,8 +1816,9 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(recoveryBridgeCalls.length === 3, "HTTP-error recovery must make one POST and one status refresh");
   assert(recoveryBridgeCalls[2].path === "/turn-workflow/status?request_id=recoverable-http-error", "recovery refresh queried another workflow");
-  assert(surface.innerHTML.includes("recovery_target_unavailable"), "structured backend recovery code was hidden");
-  assert(surface.innerHTML.includes("복구할 원본 기억을 확정하지 못했습니다."), "structured backend recovery message was hidden");
+  assert(!surface.innerHTML.includes("recovery_target_unavailable"), "floating HUD leaked the detailed recovery code");
+  const retainedRecoveryWarnings = JSON.stringify(_turnWorkflowHUDHostWarningsByRequestId.get("recoverable-http-error"));
+  assert(retainedRecoveryWarnings.includes("recovery_target_unavailable") && retainedRecoveryWarnings.includes("복구할 원본 기억을 확정하지 못했습니다."), "structured recovery detail was lost before dashboard rendering");
   assert(!surface.innerHTML.includes("missing its HUD ViewModel"), "structured 409 was replaced by a missing-ViewModel error");
   recoveryBridgeFailure = false;
   await dispatchRisuEvent("click", {clientX:120, clientY:20});
@@ -2161,6 +2151,17 @@ async function bridgeFetch(path, options) {
     throw new Error("guide none was not transported as an explicit OFF contract: "+JSON.stringify(guideOffBody.settings));
   }
   if (!hudWatchIds.includes("request-a")) throw new Error("full prepare did not start the correlated workflow HUD");
+  for (const referenceEnabled of [false, true]) {
+    settings.referenceInjectionEnabled = referenceEnabled;
+    await tryPrepareTurn("session-a", "hello", [{role:"user",content:"hello"}], null, "model", null, {
+      sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+    });
+    const request = capturedBodies[capturedBodies.length - 1];
+    if (request.settings.reference_injection_enabled !== referenceEnabled || request.settings.injection_enabled !== true ||
+        request.settings.reference_injection_budget_basis_chars !== 3000 || request.settings.lorebook_reference_mode !== "reference_assist") {
+      throw new Error("original-work toggle changed another lane or failed transport: " + JSON.stringify(request.settings));
+    }
+  }
   if (lorebookSyncCalls !== capturedBodies.length) throw new Error("prepare-turn did not synchronize the active lorebook scope");
 })().catch(function(err) { console.error(err && err.stack || err); process.exit(1); });
 `
@@ -2216,6 +2217,7 @@ const _lorebookReferenceSync = {attemptedScopeKey:"", syncedScopeKey:"", inFligh
 let characterIndex = 2;
 let chatIndex = 3;
 let enabledModules = ["module-b", "module-a"];
+let moduleReadThrows = false;
 let lorebookReads = 0;
 let shouldFailRead = false;
 const snapshots = [];
@@ -2227,6 +2229,7 @@ const R = {
   async getCurrentChatIndex(){ return chatIndex; },
   async getDatabase(paths){
     if (JSON.stringify(paths) !== JSON.stringify(["enabledModules"])) throw new Error("unexpected database path");
+    if (moduleReadThrows) throw new Error("module metadata unavailable");
     return {enabledModules};
   },
   async getCurrentLorebookEntries(){
@@ -2320,6 +2323,30 @@ async function bridgeFetch(path, options){
       !storeFailure.extra.diagnostics.some((item) => item.key === "backend_detail" && String(item.value).includes("lorebook_reference_scopes"))) {
     throw new Error("snapshot store failure diagnostics were collapsed: " + JSON.stringify(storeFailure));
   }
+  failSnapshotStore = false;
+  for (const mode of ["absent", "throws", "empty"]) {
+    enabledModules = mode === "empty" ? [] : undefined;
+    moduleReadThrows = mode === "throws";
+    await syncCurrentLorebookReference({sessionId:"session-a", force:true});
+    const sent = snapshots[snapshots.length - 1];
+    const prepared = currentLorebookReferencePrepareScope("session-a");
+    if (sent.observation_state !== "observed" || !sent.complete_snapshot ||
+        sent.enabled_modules_observed !== (mode === "empty") || sent.entries.length !== 1 ||
+        prepared.observation_state !== "observed" || prepared.enabled_modules_observed !== sent.enabled_modules_observed) {
+      throw new Error("aggregate lorebook blocked by separate module metadata: " + JSON.stringify({mode,sent,prepared}));
+    }
+    const readsBefore = lorebookReads;
+    await syncCurrentLorebookReference({sessionId:"session-a"});
+    if (lorebookReads !== readsBefore + (mode === "empty" ? 0 : 1)) {
+      throw new Error("unobserved module changes incorrectly reused cached catalog: " + mode);
+    }
+  }
+  characterIndex = null;
+  await syncCurrentLorebookReference({sessionId:"session-a", force:true});
+  const partial = snapshots[snapshots.length - 1];
+  if (partial.observation_state !== "partial" || partial.complete_snapshot || partial.entries.length !== 1) {
+    throw new Error("unknown chat coordinates were claimed as fully observed: " + JSON.stringify(partial));
+  }
 })().catch(function(err){ console.error(err && err.stack || err); process.exit(1); });
 `
 	cmd := exec.Command(nodePath, "-")
@@ -2340,15 +2367,25 @@ func TestLegacyAutomaticInjectionBudgetMigratesOnceToCurrentBase(t *testing.T) {
 	}
 	src := readArchiveCenterJS(t)
 	fn := extractArchiveCenterJSFunction(t, src, "migrateLegacyInjectionBudgetSettings")
-	script := "const DEFAULT_SETTINGS = {maxInjectionChars: 18000, injectionBudgetProfileVersion: \"p409_18000_base_v1\"};\n" + fn + `
+	budget := regexp.MustCompile(`(?m)^\s+maxInjectionChars: (\d+),`).FindStringSubmatch(src)
+	profile := regexp.MustCompile(`(?m)^\s+injectionBudgetProfileVersion: ("[^"]+"),`).FindStringSubmatch(src)
+	if len(budget) != 2 || len(profile) != 2 {
+		t.Fatal("memory budget defaults are missing from the production JS")
+	}
+	script := "const DEFAULT_SETTINGS = {maxInjectionChars: " + budget[1] + ", injectionBudgetProfileVersion: " + profile[1] + "};\n" + fn + `
 const legacy = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000});
-if (legacy.maxInjectionChars !== 18000) throw new Error("legacy default was not migrated: " + JSON.stringify(legacy));
+if (legacy.maxInjectionChars !== 32000) throw new Error("legacy default was not migrated: " + JSON.stringify(legacy));
 const custom = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 7500});
 if (custom.maxInjectionChars !== 7500) throw new Error("non-default user value was overwritten: " + JSON.stringify(custom));
 const oldProfileDefault = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 9000, injectionBudgetProfileVersion: "p34_9000_base_v1"});
-if (oldProfileDefault.maxInjectionChars !== 18000) throw new Error("old profile default was not migrated: " + JSON.stringify(oldProfileDefault));
+if (oldProfileDefault.maxInjectionChars !== 32000) throw new Error("old profile default was not migrated: " + JSON.stringify(oldProfileDefault));
 const versioned = migrateLegacyInjectionBudgetSettings({maxInjectionChars: 6000, injectionBudgetProfileVersion: "p34_9000_base_v1"});
 if (versioned.maxInjectionChars !== 6000) throw new Error("versioned user value was migrated repeatedly: " + JSON.stringify(versioned));
+for (const maxInjectionChars of [16000, 18000, 32000]) {
+  const saved = migrateLegacyInjectionBudgetSettings({maxInjectionChars, injectionBudgetProfileVersion: "p409_18000_base_v1"});
+  if (saved.maxInjectionChars !== maxInjectionChars) throw new Error("saved memory budget was overwritten: " + JSON.stringify(saved));
+  if (saved.injectionBudgetProfileVersion !== "p47_32000_base_v1") throw new Error("budget profile was not updated");
+}
 `
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {
@@ -2392,7 +2429,7 @@ async function tryPrepareTurn() { prepareCalls++; throw new Error("prepare-turn 
 	}
 }
 
-func TestBeforeRequestModelRunsDecisionThenFullWithoutRollbackReclassificationRuntime(t *testing.T) {
+func TestBeforeRequestModelReconcilesFullHostBeforeDecisionAndPreparationRuntime(t *testing.T) {
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))
 	if nodePath == "" {
 		var err error
@@ -2439,7 +2476,7 @@ async function resolveCanonicalWriteSessionId(value) { return value; }
 function captureSessionHostContextFromCache() { return {sessionId:"session-runtime",charIdx:1,chatIdx:2,hostChatId:"host-runtime"}; }
 async function getCurrentActiveChatSourceObservationMessages(_sessionId, _hostContext, includeChat) {
   const messages = [{role: "user", content: "actual input", risuMessageIndex: 1}];
-  return includeChat ? {messages, chat:{scriptstate:{}}} : messages;
+  return includeChat ? {messages, chat:{message:messages,scriptstate:{}}} : messages;
 }
 async function buildYumiV1ArchiveReadContext(payloadMessages, activeMessages) {
   return {payloadMessages, activeMessages, stats:{markerBlocks:0, modelSourceBlocks:0, displayFallbackBlocks:0}};
@@ -2453,7 +2490,7 @@ async function reconcileRollbackFromHostSignal(sessionId, hostContext, options) 
   rollbackReconcileCalls++;
   if (sessionId !== "session-runtime") throw new Error("rollback reconciliation session=" + sessionId);
   if (!hostContext || hostContext.hostChatId !== "host-runtime") throw new Error("rollback reconciliation lost fixed host context");
-  if (!options || options.reason !== "before_request_assistant_observation" || options.hostLifecycleObservation !== "before_request_observed") {
+  if (!options || options.reason !== "before_request_full_active_chat_observed" || options.hostLifecycleObservation !== "before_request_full_active_chat_observed" || !("activeChat" in options)) {
     throw new Error("beforeRequest rollback reconciliation lost caller lifecycle facts: " + JSON.stringify(options));
   }
   lifecycleOrder.push("rollback_reconcile");
@@ -2514,8 +2551,9 @@ async function runFixture(expectedFresh, expectedContinuity) {
   if (preFullSideEffects !== 1) throw new Error("beforeRequest did not start backfill exactly once=" + preFullSideEffects);
 	if (boundedHostLifecycleCalls !== 2) throw new Error("beforeRequest did not capture prefill and exact request coordinates="+boundedHostLifecycleCalls);
   if (runtimeConfigBindingCalls !== 1) throw new Error("runtime config binding checks="+runtimeConfigBindingCalls+", want 1");
-  if (rollbackReconcileCalls !== 0) throw new Error("beforeRequest reclassified rollback without a deletion observation: calls="+rollbackReconcileCalls);
+  if (rollbackReconcileCalls !== 1) throw new Error("full Host reconciliation calls="+rollbackReconcileCalls);
   const sourceDecisionAt = lifecycleOrder.indexOf("source_decision");
+  if (lifecycleOrder.indexOf("rollback_reconcile") >= sourceDecisionAt) throw new Error("deletion reconciliation ran after memory preparation");
   const runtimeConfigAt = lifecycleOrder.indexOf("runtime_config");
   const fullPrepareAt = lifecycleOrder.indexOf("full_prepare");
   if (!(sourceDecisionAt >= 0 && sourceDecisionAt < runtimeConfigAt && runtimeConfigAt < fullPrepareAt)) {
@@ -2815,7 +2853,7 @@ func TestRollbackAssistantObservationsUseRisuMetadataAndContentHash(t *testing.T
 	}
 	src := readArchiveCenterJS(t)
 	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
-	functionBody := extractArchiveCenterJSFunction(t, src, "buildRollbackAssistantObservations")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "buildRollbackAssistantObservations"))
 	script := activeWindowBody + "\n" + functionBody + `
 function extractComparableMessageRoleAndContent(message) { return {role:message.role,content:message.content}; }
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || ""); }
@@ -2943,7 +2981,7 @@ func TestCopiedSessionFinalOutputRecoveryUsesCurrentChatIndex(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	fn := extractArchiveCenterJSAsyncFunction(t, src, "recoverAssistantContentFromActiveChat")
+	fn := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "recoverAssistantContentFromActiveChat"))
 	script := fn + `
 async function resolveCurrentActiveChatObject() { return {chat: {message: []}, source: "R.getChatFromIndex"}; }
 function extractActiveChatComparableMessages() {
@@ -3047,7 +3085,7 @@ func TestRisuRequestObservationDoesNotInferOOCAndSurvivesQueueRuntime(t *testing
 		}
 	}
 	prepareFn := extractArchiveCenterJSAsyncFunction(t, src, "tryPrepareTurn")
-	completeFn := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody")
+	completeFn := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody"))
 	for name, fn := range map[string]string{"prepare": prepareFn, "complete": completeFn} {
 		if !strings.Contains(fn, "risu_request_observation") {
 			t.Fatalf("%s request does not forward risu_request_observation.v1", name)
@@ -3462,7 +3500,7 @@ func TestSessionNormalizeUsesCanonicalRisuChatPairsWithoutLiveFilters(t *testing
 	src := readArchiveCenterJS(t)
 	script := extractArchiveCenterJSFunction(t, src, "computeOrchestrationDirtyHashOr1c") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages") + "\n" +
-		extractArchiveCenterJSFunction(t, src, "buildSessionNormalizeCompletedTurnPairs") + `
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildSessionNormalizeCompletedTurnPairs")) + `
 const AUTO_CONTINUE_USER_INPUT_MARKER = "[continue]";
 function extractActiveChatComparableMessages(chat) {
   return chat.message.map(function(item, index) {
@@ -3480,13 +3518,14 @@ function debugLog() {}
 function assertEqual(actual, expected, label) {
   if (actual !== expected) throw new Error(label + ": got=" + JSON.stringify(actual) + " want=" + JSON.stringify(expected));
 }
+(async()=>{
 const chat = {message:[
   {role:"user",data:"first user"}, {role:"char",data:"first final output"},
   {role:"user",data:"# SYSTEM is visible user text here"}, {role:"char",data:"second final output"},
   {role:"user",data:"third user"}, {role:"char",data:"third draft"}, {role:"char",data:"third final output"},
   {role:"user",data:"fourth user"}, {role:"char",data:"fourth final output"},
 ]};
-let result = buildSessionNormalizeCompletedTurnPairs(chat);
+let result = await buildSessionNormalizeCompletedTurnPairs(chat);
 assertEqual(result.available, true, "canonical chat availability");
 assertEqual(result.pairs.length, 4, "four visible turns must remain four turns");
 assertEqual(result.pairs[1].userContent, "# SYSTEM is visible user text here", "content filters must not erase canonical raw turns");
@@ -3494,15 +3533,15 @@ assertEqual(result.pairs[2].assistantContent, "third final output", "latest visi
 assertEqual(JSON.stringify(result.pairs.map(p => p.risuUserMessageIndex)), JSON.stringify([0,2,4,7]), "canonical raw Risu indexes");
 assertEqual(JSON.stringify(result.pairs.map(p => p.observedPairOrdinal)), JSON.stringify([1,2,3,4]), "canonical observation order");
 assertEqual(result.pairs.some(p => Object.prototype.hasOwnProperty.call(p, "turnIndex")), false, "session normalize adapter does not calculate turns");
-result = buildSessionNormalizeCompletedTurnPairs({message:chat.message.concat([{role:"user",data:"unfinished fifth user"}])});
+result = await buildSessionNormalizeCompletedTurnPairs({message:chat.message.concat([{role:"user",data:"unfinished fifth user"}])});
 assertEqual(result.pairs.length, 4, "unfinished trailing user must not become a completed turn");
-result = buildSessionNormalizeCompletedTurnPairs({messages:chat.message});
+result = await buildSessionNormalizeCompletedTurnPairs({messages:chat.message});
 assertEqual(result.available, false, "noncanonical fallback must stay explicit");
 const longMessages = [];
 for (let turn = 1; turn <= 120; turn++) {
   longMessages.push({role:"user",data:"user "+turn}, {role:"char",data:"assistant "+turn});
 }
-result = buildSessionNormalizeCompletedTurnPairs({message:longMessages});
+result = await buildSessionNormalizeCompletedTurnPairs({message:longMessages});
 assertEqual(result.pairs.length, 120, "long canonical chat must not collapse to its recent tail");
 assertEqual(result.pairs[0].userContent, "user 1", "long chat first turn");
 assertEqual(result.pairs[119].assistantContent, "assistant 120", "long chat last turn");
@@ -3513,8 +3552,9 @@ const indexedGapChat = {message:[
   {role:"system",data:"host metadata"}, {role:"system",data:"host metadata 2"},
   {role:"user",data:"gap user three"}, {role:"char",data:"gap assistant three"},
 ]};
-result = buildSessionNormalizeCompletedTurnPairs(indexedGapChat);
+result = await buildSessionNormalizeCompletedTurnPairs(indexedGapChat);
 assertEqual(JSON.stringify(result.pairs.map(p => p.risuUserMessageIndex)), JSON.stringify([0,4]), "session normalize preserves raw Risu index gaps");
+})().catch(err=>{console.error(err);process.exitCode=1;});
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
@@ -3750,7 +3790,7 @@ func TestActiveChatRescanDropsBackendOwnedPrefixFromRebuildPlan(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan"))
 	script := functionBody + `
 let allInherited = false;
 async function getCurrentChatSessionId() { throw new Error("rescan plan re-read the active session"); }
@@ -3822,7 +3862,7 @@ func TestActiveChatRescanRestoresDeletedUserInputPairingFromAssistantSources(t *
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "computeActiveChatRescanDryRunPlan"))
 	// The rescan merge now uses the same production persistence normalizer as
 	// the first pass; include it instead of replacing its result with a stub.
 	for _, name := range []string{
@@ -3934,7 +3974,7 @@ func TestCompleteTurnObservationUsesRealUserAnchorForAppendStyleReroll(t *testin
 	}
 	src := readArchiveCenterJS(t)
 	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation"))
 	script := activeWindowBody + functionBody + `
 const _streamingAfterRequestSyntheticCallDepth = 0;
 const chat = {id:"chat-1",isStreaming:false,message:[
@@ -3978,7 +4018,7 @@ func TestCompleteTurnObservationDoesNotCrossRisuAllBeforeBoundary(t *testing.T) 
 	}
 	src := readArchiveCenterJS(t)
 	activeWindowBody := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
-	observationBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	observationBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation"))
 	script := activeWindowBody + observationBody + `
 const _streamingAfterRequestSyntheticCallDepth = 0;
 const chat = {id:"chat-1",isStreaming:false,message:[
@@ -4027,7 +4067,7 @@ func TestRisuAfterRequestObservationBypassesActiveChatReread(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation"))
 	script := functionBody + `
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
 async function resolveCurrentActiveChatObject() { throw new Error("v3 reread active chat"); }
@@ -4093,7 +4133,7 @@ func TestRisuNextHostSignalObservationPreservesCommittedChatFacts(t *testing.T) 
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation"))
 	script := functionBody + `
 function computeOrchestrationDirtyHashOr1c(value) { return "hash:"+String(value || "").trim(); }
 async function resolveCurrentActiveChatObject() { throw new Error("next-host-signal v2 reread active chat"); }
@@ -6258,7 +6298,7 @@ func TestNormalSessionFinalOutputRecoverySurvivesCurrentChatIndexReadFailure(t *
 		extractArchiveCenterJSFunction(t, src, "captureSessionHostContextFromCache") + "\n" +
 		extractArchiveCenterJSFunction(t, src, "activeChatMatchesCapturedSession") + "\n" +
 		extractArchiveCenterJSAsyncFunction(t, src, "resolveCurrentActiveChatObject") + "\n" +
-		extractArchiveCenterJSAsyncFunction(t, src, "recoverAssistantContentFromActiveChat") + `
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "recoverAssistantContentFromActiveChat")) + `
 let _sessionCache = null;
 const R = {
   getCurrentCharacterIndex: async () => 4,
@@ -6326,7 +6366,7 @@ func TestPostprocessorReplacementRebuildsDeletionSnapshot(t *testing.T) {
 		}
 	}
 	src := readArchiveCenterJS(t)
-	functionBody := extractArchiveCenterJSAsyncFunction(t, src, "replacePersistedTurnWithPostOutputFinal")
+	functionBody := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "replacePersistedTurnWithPostOutputFinal"))
 	script := functionBody + `
 let snapshotMessages = null;
 function normalizeMainTurnCompareText(text) { return String(text || "").trim(); }
@@ -6499,7 +6539,8 @@ func TestRollbackHostSignalReconciliationIsSessionScopedRuntime(t *testing.T) {
 		extractArchiveCenterJSFunction(t, src, "computeCommonSnapshotPrefixLength"),
 		extractArchiveCenterJSFunction(t, src, "computeCommonSnapshotSuffixLength"),
 		extractArchiveCenterJSFunction(t, src, "buildAssistantOutputDeletionStateOr1f"),
-		extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend"),
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "reconcileActiveChatTailDeletionWithBackend")),
+		extractArchiveCenterJSFunction(t, src, "buildRollbackPendingInputObservation"),
 		extractArchiveCenterJSAsyncFunction(t, src, "reconcileRollbackFromHostSignal"),
 	}, "\n")
 	script := `
@@ -6508,6 +6549,7 @@ const SESSION_FALLBACK = "default";
 const R = {getCharacter:function() {}};
 const _rollbackHostSignalReconcilePromiseBySession = new Map();
 const _rollbackTailReconcileInFlightBySession = new Set();
+const _activeFinalConfirmationRequestContext = null;
 const chats = new Map([
   ["session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"}]}],
   ["session-B", {message:[{role:"user",content:"uB1"},{role:"assistant",content:"aB1",id:"aB1"}]}],
@@ -6517,6 +6559,7 @@ const snapshots = new Map([
   ["session-B", {messagesPreview:[{role:"user",content:"uB1"},{role:"assistant",content:"aB1",id:"aB1"},{role:"user",content:"uB2"},{role:"assistant",content:"aB2",id:"aB2"}],assistantMessagesPreview:[{role:"assistant",content:"aB1",id:"aB1"},{role:"assistant",content:"aB2",id:"aB2"}],turnIndex:22}],
 ]);
 const canonicalBefore = new Map([["session-A",11],["session-B",21]]);
+const backendCounts = new Map([["session-A",2],["session-B",2]]);
 const rollbackCalls = [];
 const activeChatResolutionCalls = [];
 const decisionCalls = [];
@@ -6567,13 +6610,13 @@ async function requestBackendRollbackDecision(sessionId, _fromTurn, _reason, det
     throw new Error("session A transport failed");
   }
   const currentCount = detail.currentAssistantObservations.length;
-  const expectedCount = snapshots.get(sessionId).assistantMessagesPreview.length;
+  const expectedCount = backendCounts.get(sessionId);
   if (currentCount < expectedCount) {
     return {status:"ok",allowed:true,from_turn:canonicalBefore.get(sessionId)+1,decision_token:"decision-"+sessionId};
   }
   return {status:"ok",allowed:false,reason:"assistant_output_not_removed"};
 }
-async function executeAutoRollback(sessionId, turn) { rollbackCalls.push(sessionId + "|" + turn); return true; }
+async function executeAutoRollback(sessionId, turn) { rollbackCalls.push(sessionId + "|" + turn); backendCounts.set(sessionId, 1); return true; }
 function updateSessionSnapshot(sessionId, messages) { snapshots.set(sessionId,{messagesPreview:messages,assistantMessagesPreview:extractAssistantSnapshotMessages(messages),turnIndex:canonicalBefore.get(sessionId)+1}); }
 async function flushMicrotasks() {
   for (let index = 0; index < 8; index += 1) await Promise.resolve();
@@ -6609,8 +6652,8 @@ async function flushMicrotasks() {
     "unchanged session A snapshot triggered another rollback");
   assert(await reconcileRollbackFromHostSignal("session-B", contextB) === false,
     "unchanged session B snapshot triggered another rollback");
-	assert(decisionCalls.length === 3 && rollbackCalls.length === 2,
-	  "unchanged snapshots reached the mutation path: " + JSON.stringify({decisionCalls,rollbackCalls}));
+	assert(decisionCalls.length === 5 && rollbackCalls.length === 2,
+	  "unchanged Host data was not checked or caused another mutation: " + JSON.stringify({decisionCalls,rollbackCalls}));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-A|host-A"; }).length === 3,
     "session A active chat lookup lost its fixed host context: " + JSON.stringify(activeChatResolutionCalls));
   assert(activeChatResolutionCalls.filter(function(value) { return value === "session-B|host-B"; }).length === 2,
@@ -6621,6 +6664,7 @@ async function flushMicrotasks() {
     assistantMessagesPreview:[{role:"assistant",content:"aA1",id:"aA1"},{role:"assistant",content:"aA2",id:"aA2"}],turnIndex:12
   });
   chats.set("session-A", {message:[{role:"user",content:"uA1"},{role:"assistant",content:"aA1",id:"aA1"}]});
+  backendCounts.set("session-A", 2);
   const decisionCountBeforeDeletedTail = decisionCalls.length;
   assert(await reconcileRollbackFromHostSignal("session-A", contextA),
     "assistant-tail UI observation did not reconcile the deleted turn");
@@ -6628,6 +6672,10 @@ async function flushMicrotasks() {
     "assistant-tail UI observation did not reach the existing Go decision path");
   assert(rollbackCalls.length === 3 && rollbackCalls[rollbackCalls.length - 1] === "session-A|12",
     "UI reconciliation removed a range other than the deleted canonical tail: " + JSON.stringify(rollbackCalls));
+  snapshots.clear();
+  backendCounts.set("session-A", 2);
+  assert(await reconcileRollbackFromHostSignal("session-A", contextA), "reload without a snapshot skipped durable comparison");
+  assert(rollbackCalls.length === 4 && backendCounts.get("session-A") === 1, "reload did not reach the canonical owner");
   process.stdout.write("ok");
 })().catch(function(err) {
   console.error(err && err.stack || err);

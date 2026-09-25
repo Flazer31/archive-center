@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/risulongmemory/archive-center-go/internal/config"
 )
 
 func TestArchiveCenterJSSameTurnOverlayInjectionAndTraceRuntime(t *testing.T) {
@@ -563,13 +565,18 @@ func TestArchiveCenterJSRG1jRisuLifecycleOutputBoundaryMarkers(t *testing.T) {
 
 func TestArchiveCenterJSPluginVersionMarkers(t *testing.T) {
 	src := readArchiveCenterJS(t)
+	version := config.Default().BuildVersion
+	channel := "stable"
+	if strings.Contains(version, "-") {
+		channel = "test"
+	}
 	required := []string{
 		"//@name Archive Center",
 		"//@display-name Archive Center",
-		"//@version 4.6.1",
-		`const VERSION = "4.6.1";`,
+		"//@version " + version,
+		`const VERSION = "` + version + `";`,
 		`const BUILD_ID = VERSION;`,
-		`const BUILD_CHANNEL = "stable";`,
+		`const BUILD_CHANNEL = "` + channel + `";`,
 		`"settings.title": ` + "`Archive Center ${VERSION}`",
 		`<h2>Archive Center</h2>`,
 		`<span class="mo-hdr-ver">${VERSION}</span>`,

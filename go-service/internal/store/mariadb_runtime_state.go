@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"reflect"
 	"strings"
 	"time"
 
@@ -63,11 +64,15 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 
 	next := *c
 	var previous *CharacterState
+	var edits []CharacterManualFieldEdit
 	if current, err := m.GetCharacterState(ctx, c.ChatSessionID, c.CharacterName); err == nil && current != nil {
 		previous = current
+		edits = current.manualEdits
 		next.AppearanceJSON = firstNonEmptyString(next.AppearanceJSON, current.AppearanceJSON)
 		next.PersonalityJSON = firstNonEmptyString(next.PersonalityJSON, current.PersonalityJSON)
 		next.StatusJSON = firstNonEmptyString(next.StatusJSON, current.StatusJSON)
@@ -76,6 +81,19 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
+	// Older dedicated voice edits already carry an explicit manual container.
+	// Adopt that known setting on write; never guess manual authority for other
+	// legacy JSON fields whose edit history did not retain their values.
+	if len(edits) == 0 && previous != nil {
+		var voice map[string]any
+		if json.Unmarshal([]byte(previous.SpeechStyleJSON), &voice) == nil {
+			if manual, exists := voice["manual_overrides"]; exists {
+				edits = []CharacterManualFieldEdit{{Path: []string{"speech_style", "manual_overrides"}, Value: manual}}
+			}
+		}
+	}
+	edits = mergeCharacterManualEdits(edits, c.ManualPatch)
+	applyCharacterManualEdits(&next, edits)
 	next.FieldProvenanceJSON = MergeCharacterStateFieldProvenance(previous, next)
 	updatedAt := c.UpdatedAt.UTC()
 	if updatedAt.IsZero() {
@@ -91,9 +109,36 @@ func (m *mariadbStore) SaveCharacterState(ctx context.Context, c *CharacterState
 	}
 
 	next.CreatedAt, next.UpdatedAt = createdAt, updatedAt
-	err := insertCharacterStateSnapshot(ctx, m.db, next)
+	var priorEdits []CharacterManualFieldEdit
+	if previous != nil {
+		priorEdits = previous.manualEdits
+	}
+	var err error
+	if len(edits) > 0 && !reflect.DeepEqual(priorEdits, edits) {
+		tx, beginErr := m.db.BeginTx(ctx, nil)
+		if beginErr != nil {
+			return beginErr
+		}
+		defer tx.Rollback()
+		details, marshalErr := json.Marshal(map[string]any{"edits": edits, "recorded_turn": c.TurnIndex, "source": "manual_patch"})
+		if marshalErr != nil {
+			return marshalErr
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO character_events (chat_session_id, character_name, turn_index, event_type, details_json, created_at) VALUES (?, ?, 0, ?, ?, ?)`, c.ChatSessionID, c.CharacterName, characterManualEditEvent, string(details), updatedAt)
+		if err != nil {
+			return err
+		}
+		if err = insertCharacterStateSnapshot(ctx, tx, next); err != nil {
+			return err
+		}
+		err = tx.Commit()
+	} else {
+		err = insertCharacterStateSnapshot(ctx, m.db, next)
+	}
 	if err == nil {
-		c.FieldProvenanceJSON = next.FieldProvenanceJSON
+		// Preserve the explicit request for the existing dual-write wrapper's
+		// shadow write. Database readers never populate this transient field.
+		*c = next
 	}
 	return err
 }
@@ -219,7 +264,11 @@ func (m *mariadbStore) ListCharacterStatesCurrentBefore(ctx context.Context, cha
 		item.TurnIndex = intFromNull(turnIndex)
 		out = append(out, item)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return mariaApplyCharacterManualEdits(ctx, m.db, chatSessionID, "", out)
 }
 
 func (m *mariadbStore) ListCharacterStateHistory(ctx context.Context, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error) {
@@ -246,10 +295,7 @@ func (m *mariadbStore) GetCharacterState(ctx context.Context, chatSessionID, cha
 	`, chatSessionID, characterName).Scan(&item.ID, &item.ChatSessionID, &item.CharacterName,
 		&appearanceJSON, &personalityJSON, &statusJSON, &relationshipsJSON, &speechStyleJSON, &fieldProvenanceJSON,
 		&turnIndex, &item.CreatedAt, &item.UpdatedAt)
-	if err == sql.ErrNoRows {
-		return nil, ErrNotFound
-	}
-	if err != nil {
+	if err != nil && err != sql.ErrNoRows {
 		return nil, err
 	}
 	item.AppearanceJSON = stringFromNull(appearanceJSON)
@@ -259,7 +305,18 @@ func (m *mariadbStore) GetCharacterState(ctx context.Context, chatSessionID, cha
 	item.SpeechStyleJSON = stringFromNull(speechStyleJSON)
 	item.FieldProvenanceJSON = stringFromNull(fieldProvenanceJSON)
 	item.TurnIndex = intFromNull(turnIndex)
-	return &item, nil
+	var states []CharacterState
+	if err == nil {
+		states = append(states, item)
+	}
+	states, err = mariaApplyCharacterManualEdits(ctx, m.db, chatSessionID, characterName, states)
+	if err != nil {
+		return nil, err
+	}
+	if len(states) == 0 {
+		return nil, ErrNotFound
+	}
+	return &states[0], nil
 }
 
 func (m *mariadbStore) SavePendingThread(ctx context.Context, p *PendingThread) error {

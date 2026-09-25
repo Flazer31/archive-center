@@ -38,7 +38,7 @@ func temporal46AssemblyInput(memory store.Memory, clock map[string]any) prepareT
 
 func assert46TemporalReading(t *testing.T, text string) {
 	t.Helper()
-	for _, required := range []string{"promised to bring the charts tomorrow", "2026-01-01", "2026-03-15", "relative_expression", "elapsed_days", "last_confirmed_story_clock", "past"} {
+	for _, required := range []string{"promised to bring the charts tomorrow", "2026-01-01", "2026-03-15", "original wording", "⏳", "reference=", "before reference", "planned_event"} {
 		if !strings.Contains(text, required) {
 			t.Errorf("source-relative reading lost %s", required)
 		}
@@ -117,7 +117,7 @@ func Test46TemporalScheduleKeepsReadOnlyLifecycleContext(t *testing.T) {
 		t.Fatal("schedule-bearing whole summary missing")
 	}
 	for _, text := range []string{summaries[0].Minimum.Text, extractionStringFromAny(out.MemoryDeliveryPlan["final_text"]), mustCompactJSON(multiAgentInput("event_recent", facts, summaries, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), 18000, 1, nil))} {
-		for _, required := range []string{"next_due_estimate", "2026-03-08", "2026-03-15", "due_passed_with_explicit_outcome", "last_confirmed_story_clock", "Rowan accepted the compass", "recurring"} {
+		for _, required := range []string{"estimated next due", "2026-03-08", "2026-03-15", "due_passed_with_explicit_outcome", "reference=", "Rowan accepted the compass", "recurring"} {
 			if !strings.Contains(text, required) {
 				t.Errorf("existing lifecycle reading omitted schedule result %s", required)
 			}

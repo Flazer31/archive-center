@@ -81,12 +81,78 @@ type sessionMigrationPreviewResponse struct {
 }
 
 func (s *Server) registerSessionMigrationRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("POST /sessions/stitch", s.handleSessionStitch)
 	mux.HandleFunc("POST /sessions/migrate-preview", s.handleSessionMigratePreview)
 	mux.HandleFunc("POST /sessions/migrate-complete", s.handleSessionMigrateComplete)
 	mux.HandleFunc("POST /sessions/migrate-reindex", s.handleSessionMigrateReindex)
 	mux.HandleFunc("POST /sessions/migrate-lock-source", s.handleSessionMigrateLockSource)
 	mux.HandleFunc("POST /sessions/migrate-rollback", s.handleSessionMigrateRollback)
 	mux.HandleFunc("POST /sessions/migrate-cleanup-source", s.handleSessionMigrateCleanupSource)
+}
+
+func (s *Server) handleSessionStitch(w http.ResponseWriter, r *http.Request) {
+	var req store.SessionStitchRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, err.Error())
+		return
+	}
+	st, ok := s.Store.(store.SessionStitchStore)
+	if !ok {
+		writeError(w, http.StatusServiceUnavailable, "session_stitch_store_unavailable", "MariaDB session stitching is unavailable")
+		return
+	}
+	req.RebuildPublicProjection = func(raw string) string {
+		projection := buildPublicMemoryProjection(parseJSONMap(raw), "")
+		if !projection.Eligible {
+			return ""
+		}
+		return projection.SearchText.Text
+	}
+	result, err := st.StitchSessions(r.Context(), req)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "session_stitch_failed", err.Error())
+		return
+	}
+	if err := s.stitchBodyTrackingConfig(result); err != nil {
+		writeError(w, http.StatusInternalServerError, "session_stitch_settings_failed", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) stitchBodyTrackingConfig(result *store.SessionStitchResult) error {
+	s.RuntimeConfigMu.Lock()
+	defer s.RuntimeConfigMu.Unlock()
+	settings, err := readBodyTrackingSettings()
+	if err != nil {
+		return err
+	}
+	if _, exists := settings.Sessions[result.TargetSessionID]; exists {
+		return nil
+	}
+	var combined bodyTrackingConfig
+	characters := map[string]int{}
+	for _, segment := range result.Segments {
+		config, exists := settings.Sessions[segment.SessionID]
+		if !exists {
+			continue
+		}
+		combined.CycleTrackingEnabled, combined.AutomaticPregnancyEnabled, combined.SimulationSeed = config.CycleTrackingEnabled, config.AutomaticPregnancyEnabled, config.SimulationSeed
+		for _, character := range config.Characters {
+			character.OriginEntityID = extractionFirstNonEmpty(character.OriginEntityID, character.EntityID)
+			if id := result.EntityIDMap[character.EntityID]; id != "" {
+				character.EntityID = id
+			}
+			if index, exists := characters[character.EntityID]; exists {
+				combined.Characters[index] = character
+			} else {
+				characters[character.EntityID] = len(combined.Characters)
+				combined.Characters = append(combined.Characters, character)
+			}
+		}
+	}
+	settings.Sessions[result.TargetSessionID] = combined
+	return writeBodyTrackingSettings(settings)
 }
 
 func (s *Server) handleSessionMigratePreview(w http.ResponseWriter, r *http.Request) {
@@ -198,6 +264,13 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		TargetSessionID: targetID,
 		Mode:            mode,
 		OperatorNote:    strings.TrimSpace(req.OperatorNote),
+		RebuildPublicProjection: func(extractionJSON string) string {
+			projection := buildPublicMemoryProjection(parseJSONMap(extractionJSON), "")
+			if !projection.Eligible {
+				return ""
+			}
+			return projection.SearchText.Text
+		},
 	}
 	migrationStore, migrationStoreAvailable := s.Store.(store.SessionMigrationStore)
 	var resumeContext *store.SessionMigrationResumeContext

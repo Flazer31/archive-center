@@ -325,15 +325,15 @@ func TestMemoryRestorationStoredMixedDelivery(t *testing.T) {
 	const sid = "offline-mixed-revalidation"
 	for _, kind := range []string{"plain", "private_summary_only", "private_public_event", "private_public_excerpt"} {
 		t.Run(kind, func(t *testing.T) {
-			p := map[string]any{"turn_summary": "민우는 스트레칭을 하며 어깨를 풀었다.", "importance_score": 7}
+			p := map[string]any{"turn_summary": "지우는 스트레칭을 하며 어깨를 풀었다.", "importance_score": 7}
 			if kind != "plain" {
-				p["subjective_entity_memories"] = []any{map[string]any{"owner_entity_name": "아인즈", "owner_entity_key": "ainz", "memory_text": "동료를 믿을지 혼자 고민했다.", "owner_visibility": "hidden"}}
+				p["subjective_entity_memories"] = []any{map[string]any{"owner_entity_name": "네로스", "owner_entity_key": "nero", "memory_text": "동료를 믿을지 혼자 고민했다.", "owner_visibility": "hidden"}}
 			}
 			if kind == "private_public_event" {
-				p["narrative_events"] = []any{map[string]any{"event": "민우는 스트레칭을 하며 어깨를 풀었다.", "visibility": "public"}}
+				p["narrative_events"] = []any{map[string]any{"event": "지우는 스트레칭을 하며 어깨를 풀었다.", "visibility": "public"}}
 			}
 			if kind == "private_public_excerpt" {
-				p["evidence_excerpts"] = []any{"민우는 스트레칭을 하며 어깨를 풀었다."}
+				p["evidence_excerpts"] = []any{"지우는 스트레칭을 하며 어깨를 풀었다."}
 			}
 			p = normalizeCriticExtraction(p)
 			st := &revalidationStore{turnRecordingStore: &turnRecordingStore{}}
@@ -342,7 +342,7 @@ func TestMemoryRestorationStoredMixedDelivery(t *testing.T) {
 			srv := NewServer(cfg)
 			srv.Store = st
 			srv.StoreOpenError = nil
-			result := srv.saveCriticExtractionArtifacts(context.Background(), sid, 1, p, "민우는 스트레칭을 하며 어깨를 풀었다. 아인즈는 동료를 믿을지 혼자 고민했다.", completeTurnEmbeddingConfig{}, time.Unix(300, 0))
+			result := srv.saveCriticExtractionArtifacts(context.Background(), sid, 1, p, "지우는 스트레칭을 하며 어깨를 풀었다. 네로스는 동료를 믿을지 혼자 고민했다.", completeTurnEmbeddingConfig{}, time.Unix(300, 0))
 			if result.Errors != 0 || len(st.savedMemories) != 1 {
 				t.Fatalf("failed to persist fixture: %+v saved=%d", result, len(st.savedMemories))
 			}
@@ -368,16 +368,16 @@ func TestMemoryRestorationAcceptedMixedDelivery(t *testing.T) {
 	const sid = "offline-accepted-revalidation"
 	for _, kind := range []string{"plain", "private_summary_only", "private_public_event", "private_public_excerpt"} {
 		t.Run(kind, func(t *testing.T) {
-			content := "민우는 스트레칭을 하며 어깨를 풀었다. 아인즈는 동료를 믿을지 혼자 고민했다."
-			p := map[string]any{"turn_summary": "민우는 스트레칭을 하며 어깨를 풀었다.", "importance_score": 7}
+			content := "지우는 스트레칭을 하며 어깨를 풀었다. 네로스는 동료를 믿을지 혼자 고민했다."
+			p := map[string]any{"turn_summary": "지우는 스트레칭을 하며 어깨를 풀었다.", "importance_score": 7}
 			if kind != "plain" {
-				p["subjective_entity_memories"] = []any{map[string]any{"owner_entity_name": "아인즈", "owner_entity_key": "ainz", "memory_text": "동료를 믿을지 혼자 고민했다.", "owner_visibility": "hidden"}}
+				p["subjective_entity_memories"] = []any{map[string]any{"owner_entity_name": "네로스", "owner_entity_key": "nero", "memory_text": "동료를 믿을지 혼자 고민했다.", "owner_visibility": "hidden"}}
 			}
 			if kind == "private_public_event" {
-				p["narrative_events"] = []any{map[string]any{"event": "민우는 스트레칭을 하며 어깨를 풀었다.", "visibility": "public", "evidence_excerpt": "민우는 스트레칭을 하며 어깨를 풀었다."}}
+				p["narrative_events"] = []any{map[string]any{"event": "지우는 스트레칭을 하며 어깨를 풀었다.", "visibility": "public", "evidence_excerpt": "지우는 스트레칭을 하며 어깨를 풀었다."}}
 			}
 			if kind == "private_public_excerpt" {
-				p["evidence_excerpts"] = []any{"민우는 스트레칭을 하며 어깨를 풀었다."}
+				p["evidence_excerpts"] = []any{"지우는 스트레칭을 하며 어깨를 풀었다."}
 			}
 			p = normalizeCriticExtraction(p)
 			st := &revalidationAdmissionStore{revalidationSourceStore: &revalidationSourceStore{revalidationStore: &revalidationStore{turnRecordingStore: &turnRecordingStore{}}}}
@@ -411,7 +411,7 @@ func TestMemoryRestorationKeywordHTTP(t *testing.T) {
 	const sid = "offline-keyword-revalidation"
 	for _, q := range []string{"스트레칭을", "스트레칭", "사건이 끝났으니 오랜만에 스트레칭을 다시 하자."} {
 		st := &revalidationStore{turnRecordingStore: &turnRecordingStore{returnMemories: []store.Memory{
-			{ID: 1, ChatSessionID: sid, TurnIndex: 1, Importance: .7, SummaryJSON: `{"turn_summary":"민우는 매일 아침 스트레칭을 하며 허리와 어깨를 풀었다."}`},
+			{ID: 1, ChatSessionID: sid, TurnIndex: 1, Importance: .7, SummaryJSON: `{"turn_summary":"지우는 매일 아침 스트레칭을 하며 허리와 어깨를 풀었다."}`},
 			{ID: 2, ChatSessionID: sid, TurnIndex: 15, Importance: .7, SummaryJSON: `{"turn_summary":"도적 사건이 끝났고 마을에 평온이 돌아왔다."}`},
 		}}}
 		cfg := config.Default()
@@ -433,7 +433,7 @@ func TestMemoryRestorationAcceptedSoftPrune(t *testing.T) {
 	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
 	const sid = "offline-prune-revalidation"
 	st := &revalidationAdmissionStore{revalidationSourceStore: &revalidationSourceStore{revalidationStore: &revalidationStore{turnRecordingStore: &turnRecordingStore{returnMemories: []store.Memory{
-		{ID: 11, ChatSessionID: sid, TurnIndex: 1, Importance: .9, SummaryJSON: `{"turn_summary":"도적 사건은 끝났다. 민우는 매일 스트레칭을 한다."}`},
+		{ID: 11, ChatSessionID: sid, TurnIndex: 1, Importance: .9, SummaryJSON: `{"turn_summary":"도적 사건은 끝났다. 지우는 매일 스트레칭을 한다."}`},
 		{ID: 12, ChatSessionID: sid, TurnIndex: 1, Importance: .9, SummaryJSON: `{"turn_summary":"다른 기억"}`},
 	}}}}}
 	cfg := config.Default()

@@ -99,7 +99,13 @@ func Test46LifecycleLinkedReadingSurvivesCompletionOutsideRecall(t *testing.T) {
 		if !ok || fact.SourceTurn != promise.TurnIndex || fact.CompleteText != plain.CompleteText || fact.OriginalScore != plain.OriginalScore || fact.Importance != plain.Importance {
 			t.Fatalf("link changed historical identity/score: %+v vs %+v", fact, plain)
 		}
-		for _, value := range []string{"promised to return", "fulfilled at the northern quay", "Rowan accepted the compass", "source turn 20", "accepted-20"} {
+		if !strings.Contains(mustCompactJSON(fact.Reading.Parts), "accepted-20") || !strings.Contains(prepareTurnMemoryReadingText(fact), "accepted-20") {
+			t.Fatal("source and preprocessing must retain the original revision")
+		}
+		if strings.Contains(stringFromMap(out.MemoryDeliveryPlan, "final_text"), "accepted-20") {
+			t.Fatal("source revision must stay outside final memory delivery")
+		}
+		for _, value := range []string{"promised to return", "fulfilled at the northern quay", "Rowan accepted the compass", "source turn 20"} {
 			if !strings.Contains(prepareTurnMemoryReadingText(fact), value) {
 				t.Errorf("selected promise lacks %q", value)
 			}

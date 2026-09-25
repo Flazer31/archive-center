@@ -344,6 +344,7 @@ func TestArchiveCenter42PreviousHUDStreamsTheSameRequestScopedWorkflow(t *testin
 	}
 	script := `
 const settings={turnWorkflowHUDEnabled:true,webDirectBridgeEnabled:false,bridgeUrl:"http://127.0.0.1:28080"};
+const TURN_WORKFLOW_HUD_CONTRACT="turn_workflow_hud.v3";
 const encoder=new TextEncoder();
 let _turnWorkflowHUDPreviousRequestId="";
 let _turnWorkflowHUDPreviousWatchToken=0;
@@ -358,6 +359,7 @@ const paths=[];
 let response;
 const R={nativeFetch:async function(url){paths.push(String(url||""));return response;}};
 function turnWorkflowHUDIsEnabled(){return true;}
+function renderTurnWorkflowHUDPrevious(){} // UI lifecycle is exercised by TestHUDSuccessfulCardsDismissOnHostClick.
 function dismissTurnWorkflowHUD(){throw new Error("previous HUD unexpectedly dismissed the current HUD");}
 function debugLog(){}
 function resolveBridgeRuntimeRoute(raw){return {url:String(raw||"")};}
@@ -416,7 +418,7 @@ func TestArchiveCenter42NextInputFinalizationUsesPreviousStableRowWithoutBlockin
 		extractArchiveCenterJSFunction(t, src, "queueNextInputFinalization"),
 		extractArchiveCenterJSAsyncFunction(t, src, "buildNextInputSourceAcceptanceFinality"),
 		extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages"),
-		extractArchiveCenterJSFunction(t, src, "beginNextInputFinalizationPipeline"),
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "beginNextInputFinalizationPipeline")),
 	}, "\n")
 	script := functions + `
 const NEXT_INPUT_FINALIZATION_STORAGE_KEY="next-input-test";
@@ -472,7 +474,7 @@ async function backfillOneActiveChatCompletedTurn(_sid,pair,options){
   if(pair.userContent!=="same input" || pair.assistantContent!=="final B") throw new Error("wrong previous pair: "+JSON.stringify(pair));
   return await new Promise(resolve=>{releaseBackfill=resolve;});
 }
-async function flush(){for(let i=0;i<8;i++) await Promise.resolve();}
+async function flush(){await new Promise(resolve=>setImmediate(resolve));}
 (async function(){
   const firstContext={sessionId:"session-1",requestId:"request-a",requestType:"model",hostChatId:"chat-1",requestMessageCount:1,userMessageIndex:0,userObservedPairOrdinal:1,userMessageChatId:"user-row-1",userMessageTimeMs:1000,userObservedContentHash:computeOrchestrationDirtyHashOr1c("same input")};
   if(!queueNextInputFinalization(firstContext,{persistence_content_hash:computeOrchestrationDirtyHashOr1c("first A")})) throw new Error("first marker was not queued");

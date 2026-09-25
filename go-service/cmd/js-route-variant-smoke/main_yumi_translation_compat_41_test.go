@@ -18,7 +18,7 @@ func TestYumiV1ArchiveReadContextUsesStoredModelOriginalWithoutMutatingDisplay(t
 	}
 
 	src := readArchiveCenterJS(t)
-	buildContext := extractArchiveCenterJSAsyncFunction(t, src, "buildYumiV1ArchiveReadContext")
+	buildContext := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildYumiV1ArchiveReadContext"))
 	script := buildContext + `
 const zlib = require("zlib");
 function assert(condition, message) { if (!condition) throw new Error(message); }
@@ -53,8 +53,8 @@ function record(model) { return JSON.stringify({v:1, model, status:"done", trans
   assert(result.payloadMessages[0].content === "prefix model original hot suffix", "hot record original was not restored");
   assert(result.payloadMessages[1].content === "model original plain", "u: record original was not restored");
   assert(result.payloadMessages[2].content === "model original gzip", "z: record original was not restored");
-  assert(result.payloadMessages[3].content === "번역문 missing", "missing metadata did not preserve visible translation text");
-  assert(result.payloadMessages[4].content === "번역문 broken", "malformed metadata did not preserve visible translation text");
+  assert(result.payloadMessages[3].content === "" && result.payloadMessages[3].translationOriginalUnavailable, "missing source leaked translated display into Archive reads");
+  assert(result.payloadMessages[4].content === "" && result.payloadMessages[4].translationOriginalUnavailable, "malformed source leaked translated display into Archive reads");
   assert(result.payloadMessages[5] === payloadMessages[5], "unmarked assistant message was unnecessarily copied");
   assert(result.payloadMessages[6] === payloadMessages[6], "user message was altered");
   assert(result.activeMessages[0].content === "model original hot", "active-chat copy did not use stored original");
@@ -63,7 +63,7 @@ function record(model) { return JSON.stringify({v:1, model, status:"done", trans
   assert(JSON.stringify(activeMessages) === activeBefore, "active-chat messages were mutated");
   assert(result.stats.markerBlocks === 6, "unexpected marker block count: " + result.stats.markerBlocks);
   assert(result.stats.modelSourceBlocks === 4, "unexpected original-source block count: " + result.stats.modelSourceBlocks);
-  assert(result.stats.displayFallbackBlocks === 2, "unexpected display fallback block count: " + result.stats.displayFallbackBlocks);
+  assert(result.stats.displayFallbackBlocks === 0 && result.stats.unavailableOriginalBlocks === 2, "unexpected display fallback block count: " + result.stats.displayFallbackBlocks);
 })().catch(function(err) {
   console.error(err && err.stack || err);
   process.exitCode = 1;

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 )
@@ -1048,5 +1051,272 @@ func TestPublisherE8ProviderReceivesProjectionWithoutRawPrivateMemory(t *testing
 	serialized, _ := json.Marshal(result)
 	if strings.Contains(string(serialized), rawPrivate) || strings.Contains(string(serialized), deferredPrivate) {
 		t.Fatalf("publisher result exposed raw or deferred private memory: %s", serialized)
+	}
+}
+
+func TestPublisherRetriesPreviouslyFailedResponses(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		status         int
+		content        string
+		transportError bool
+		timeout        bool
+	}{
+		{name: "unavailable", status: 503},
+		{name: "rate_limit", status: 429},
+		{name: "network", transportError: true},
+		{name: "timeout", timeout: true},
+		{name: "empty", content: ""},
+		{name: "malformed", content: "not JSON"},
+		{name: "schema", content: `{"unsupported":"plan"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			var firstBody []byte
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if calls == 1 {
+					firstBody = body
+				} else if !bytes.Equal(body, firstBody) {
+					t.Fatal("retry changed provider request")
+				}
+				if calls > 2 {
+					t.Fatal("retried successful Publisher")
+				}
+				if calls == 1 && tc.transportError {
+					return nil, errors.New("connection reset")
+				}
+				if calls == 1 && tc.timeout {
+					<-r.Context().Done()
+					return nil, r.Context().Err()
+				}
+				status, content := http.StatusOK, `{"contract_version":"publisher_output.v3","items":[]}`
+				if calls == 1 {
+					content = tc.content
+					if tc.status > 0 {
+						status = tc.status
+					}
+				}
+				payload, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": content}}}, "usage": map[string]any{"prompt_tokens": 100, "completion_tokens": 10, "total_tokens": 110}})
+				header := make(http.Header)
+				if status == 429 {
+					header.Set("Retry-After", "1")
+				}
+				return &http.Response{StatusCode: status, Header: header, Body: io.NopCloser(bytes.NewReader(payload))}, nil
+			})}
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			srv := setupTestServer()
+			result, trace, err := srv.runSupervisorLLM(context.Background(), "retry-fixture", supervisorBoundaryTestPack("strong"), completeTurnLLMConfig{
+				Provider: "openai", APIKey: "synthetic-key", Endpoint: "https://example.invalid/v1", Model: "fixture", TimeoutMs: 25, MaxTokens: 1200, RetryBudget: newLLMRetryBudget(3),
+			})
+			if err != nil || calls != 2 {
+				t.Fatalf("calls=%d err=%v trace=%+v", calls, err, trace)
+			}
+			proposal := mapFromAny(mapFromAny(result["directive"])["supervisor_scene_proposal"])
+			if proposal["status"] != "valid_empty" {
+				t.Fatalf("result=%+v", result)
+			}
+			ledger := safeProviderCallBudgetLedger(trace["provider_call_budget_ledger"])
+			if ledger["attempt_count"] != 2 || ledger["retry_count"] != 1 || ledger["status"] != "succeeded" {
+				t.Fatalf("ledger=%+v", ledger)
+			}
+			attempts := trace["attempts"].([]map[string]any)
+			if len(attempts) != calls || attempts[0]["failure_code"] == nil || attempts[1]["failure_code"] != nil {
+				t.Fatalf("attempts=%+v", attempts)
+			}
+			tokenTotal, reported := 0, 0
+			for _, attempt := range attempts {
+				tokenTotal += intFromAny(attempt["input_tokens"], 0)
+				if attempt["provider_usage_status"] == "reported" {
+					reported++
+				}
+			}
+			if ledger["input_tokens"] != tokenTotal || ledger["usage_reported_attempts"] != reported {
+				t.Fatalf("usage aggregation=%+v", ledger)
+			}
+			if intFromAny(ledger["total_prompt_chars"], 0) != calls*intFromAny(ledger["final_prompt_chars"], 0) {
+				t.Fatalf("prompt accounting=%+v", ledger)
+			}
+		})
+	}
+}
+
+func TestPublisherRetryLimitsAndPermanentFailures(t *testing.T) {
+	for _, tc := range []struct {
+		name                       string
+		status, retries, wantCalls int
+	}{
+		{"zero", 503, 0, 1}, {"one", 503, 1, 2}, {"three", 503, 3, 4},
+		{"invalid_request", 400, 3, 1}, {"invalid_key", 401, 3, 1}, {"forbidden", 403, 3, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls > tc.wantCalls {
+					t.Fatal("retry count exceeded configured limit")
+				}
+				return &http.Response{StatusCode: tc.status, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"failure synthetic-key"}}`))}, nil
+			})}
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			srv := setupTestServer()
+			result, trace, err := srv.runSupervisorLLM(context.Background(), "bounded-retry", supervisorBoundaryTestPack("strong"), completeTurnLLMConfig{
+				Provider: "openai", APIKey: "synthetic-key", Endpoint: "https://example.invalid/v1", Model: "fixture", TimeoutMs: 1000, RetryBudget: newLLMRetryBudget(tc.retries),
+			})
+			if err == nil || result != nil || calls != tc.wantCalls {
+				t.Fatalf("calls=%d err=%v result=%+v", calls, err, result)
+			}
+			if intFromAny(mapFromAny(trace["provider_call_budget_ledger"])["attempt_count"], 0) != calls {
+				t.Fatalf("trace=%+v", trace)
+			}
+			encoded, _ := json.Marshal(trace)
+			if strings.Contains(string(encoded), "synthetic-key") {
+				t.Fatal("trace leaked API key")
+			}
+		})
+	}
+}
+
+func TestPublisherRetryCancellationAndInvalidConfigDoNotDispatchAgain(t *testing.T) {
+	for _, tc := range []string{"canceled_before_call", "canceled_during_wait", "invalid_config"} {
+		t.Run(tc, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			if tc == "canceled_before_call" {
+				cancel()
+			}
+			calls := 0
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				calls++
+				if calls > 1 {
+					t.Fatal("canceled request was retried")
+				}
+				time.AfterFunc(30*time.Millisecond, cancel)
+				return &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"unavailable"}}`))}, nil
+			})}
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			cfg := completeTurnLLMConfig{Provider: "openai", APIKey: "test", Endpoint: "https://example.invalid/v1", Model: "fixture", TimeoutMs: 1000, RetryBudget: newLLMRetryBudget(3)}
+			if tc == "invalid_config" {
+				cfg.APIKey = ""
+			}
+			started := time.Now()
+			_, _, err := setupTestServer().runSupervisorLLM(ctx, "cancel-fixture", supervisorBoundaryTestPack("strong"), cfg)
+			wantCalls := 0
+			if tc == "canceled_during_wait" {
+				wantCalls = 1
+			}
+			if err == nil || calls != wantCalls || time.Since(started) > 500*time.Millisecond {
+				t.Fatalf("calls=%d err=%v elapsed=%s", calls, err, time.Since(started))
+			}
+		})
+	}
+}
+
+func TestPublisherRetriesThroughPrepareTurnAndReleasesFailedRequest(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		failures  int
+		malformed bool
+		compact   bool
+	}{
+		{name: "recovers_before_delivery", failures: 1},
+		{name: "exhausted_provider_failure", failures: 2, compact: true},
+		{name: "exhausted_malformed_response", failures: 2, malformed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls atomic.Int64
+			const guidance = "Keep the current quiet request perceptible."
+			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var request map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&request); err != nil || request["model"] != "test-supervisor" || r.Method != http.MethodPost {
+					t.Errorf("unexpected provider request: method=%s model=%v error=%v", r.Method, request["model"], err)
+					w.WriteHeader(http.StatusBadRequest)
+					return
+				}
+				w.Header().Set("Content-Type", "application/json")
+				if calls.Add(1) <= int64(tc.failures) {
+					if tc.malformed {
+						_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"not JSON"}}]}`)
+					} else {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = io.WriteString(w, `{"error":{"message":"temporarily unavailable"}}`)
+					}
+					return
+				}
+				_, _ = io.WriteString(w, publisherV3OpenAIResponse("active:1", guidance))
+			}))
+			defer provider.Close()
+			var srv *Server
+			var nextBody map[string]any
+			response := outputFidelity36FPrepareResponseWithBudgets(t, "ko_reencounter_supported_v1", "standard", "strong", "standard", provider.URL, true, true, 9000, 3000,
+				func(server *Server, body map[string]any) {
+					srv, nextBody = server, body
+					server.RuntimeConfig.LLMRetryCount = 1
+					if tc.compact {
+						body["response_projection"] = "prepare_turn.production_compact.v1"
+					}
+				})
+			assertResponse := func(response map[string]any, wantAttempts int, succeeded bool) {
+				t.Helper()
+				ledger := mapFromAny(response["publisher_call_budget_ledger"])
+				if intFromAny(ledger["attempt_count"], 0) != wantAttempts || intFromAny(ledger["retry_count"], -1) != wantAttempts-1 {
+					t.Fatalf("configured retry count did not reach response: %#v", ledger)
+				}
+				plan, _ := outputFidelity35CGuideTrace(t, response)
+				lane := outputFidelity36FFindLane(plan, "output_guidance")
+				containsGuidance := strings.Contains(extractionStringFromAny(lane["text"]), guidance)
+				if containsGuidance != succeeded {
+					t.Fatalf("guidance delivery=%t, want=%t: %#v", containsGuidance, succeeded, lane)
+				}
+				memory := outputFidelity36FFindLane(plan, "long_term_memory")
+				if !boolFromAny(memory["applied"]) || strings.TrimSpace(extractionStringFromAny(memory["text"])) == "" {
+					t.Fatalf("Publisher retry erased memory delivery: %#v", memory)
+				}
+				hud := mapFromAny(response["turn_workflow_hud"])
+				if hud["status"] != "awaiting_final_output" {
+					t.Fatalf("prepare-turn remained blocked: %#v", hud)
+				}
+				foundPublisher := false
+				for _, raw := range anySliceFromAny(hud["stages"]) {
+					stage := mapFromAny(raw)
+					if stage["key"] != turnWorkflowStagePublisherLLM {
+						continue
+					}
+					foundPublisher = true
+					wantStatus := "failed"
+					if succeeded {
+						wantStatus = "succeeded"
+					}
+					if stage["status"] != wantStatus || stage["ended_at"] == nil {
+						t.Fatalf("publisher stage not closed: %#v", stage)
+					}
+				}
+				if !foundPublisher {
+					t.Fatalf("publisher HUD stage missing: %#v", hud)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("calls=%d, expected initial plus one retry", calls.Load())
+			}
+			assertResponse(response, 2, tc.failures == 1)
+			// A second request uses the same server and session without recreating
+			// the runtime or clearing state, as a user retry would.
+			encoded, err := json.Marshal(nextBody)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, next := prepareTurnPerfRequest(t, srv, string(encoded))
+			if calls.Load() != 3 {
+				t.Fatalf("next request did not reach provider: %d", calls.Load())
+			}
+			assertResponse(next, 1, true)
+		})
 	}
 }

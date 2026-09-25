@@ -67,7 +67,7 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 		}
 	}
 	src := readArchiveCenterJS(t)
-	bodyFunction := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody")
+	bodyFunction := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnRequestBody"))
 	script := bodyFunction + `
 const AUTO_CONTINUE_USER_INPUT_MARKER="[auto-continue]";
 const DEFAULT_SETTINGS={episodeIntervalTurns:20,chapterIntervalEpisodes:5,arcIntervalChapters:5,sagaIntervalArcs:3};
@@ -289,7 +289,7 @@ func TestPocketRisuSwipeIdentityIsObservedWithoutInventingAnEditSignal(t *testin
 	}
 	src := readArchiveCenterJS(t)
 	activeWindow := extractArchiveCenterJSFunction(t, src, "getRisuActiveMessageWindowStart")
-	observe := extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation")
+	observe := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "buildCompleteTurnSourceAcceptanceObservation"))
 	script := `
 const _streamingAfterRequestSyntheticCallDepth = 0;
 const message = {
@@ -334,7 +334,8 @@ function debugLog(){}
   }
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
-	cmd := exec.Command(nodePath, "-e", script)
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("PocketRisu swipe observation fixture failed: %v\n%s", err, out)
 	}
@@ -424,7 +425,7 @@ func TestOfficialActiveTailContentChangeCanReachCanonicalReplacement(t *testing.
 	src := readArchiveCenterJS(t)
 	backfill := extractArchiveCenterJSAsyncFunction(t, src, "backfillOneActiveChatCompletedTurn")
 	preflight := extractArchiveCenterJSAsyncFunction(t, src, "preflightActiveChatBackfillIdentity")
-	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
+	ensure := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled"))
 	script := `
 const SESSION_FALLBACK = "default";
 const settings = {enabled:true,dbEnabled:true};
@@ -552,7 +553,8 @@ function buildCompletedTurnPairsFromActiveChatMessages(){
   }
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
-	cmd := exec.Command(nodePath, "-e", script)
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("active-tail edit fixture failed: %v\n%s", err, out)
 	}
@@ -570,7 +572,7 @@ func TestActiveChatWorldlinePreflightSeparatesInheritedPrefixBeforeBackfill(t *t
 	src := readArchiveCenterJS(t)
 	builder := extractJSFunctionBlockForTest(t, src, "function buildRisuWorldlineObservationFromMessages(messages, observedAtMs, hostSignalSource)")
 	preflight := extractArchiveCenterJSAsyncFunction(t, src, "preflightActiveChatBackfillIdentity")
-	ensure := extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled")
+	ensure := (archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSAsyncFunction(t, src, "ensureActiveChatCompletedTurnsBackfilled"))
 	script := `
 const SESSION_FALLBACK = "default";
 const settings = {enabled:true,dbEnabled:true};
@@ -633,7 +635,8 @@ const assert = (condition,message) => { if (!condition) throw new Error(message)
   assert(backfilled.length === 2 && backfilled.every(item=>!item.options.routingContext), "ordinary backfill behavior changed");
 })().catch(err=>{ console.error(err); process.exitCode=1; });
 `
-	cmd := exec.Command(nodePath, "-e", script)
+	cmd := exec.Command(nodePath, "-")
+	cmd.Stdin = strings.NewReader(script)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("active-chat worldline preflight fixture failed: %v\n%s", err, out)
 	}
@@ -1314,7 +1317,7 @@ func TestExistingLLMRetryZeroReachesRuntimeConfigAndAdminCritic(t *testing.T) {
 	adminMeta := extractArchiveCenterJSSyncFunction(t, src, "buildAdminRuntimeClientMeta")
 	script := `
 const DEFAULT_SETTINGS={llmRetryCount:3,embeddingProvider:"openai",episodeIntervalTurns:8};
-const settings={llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai",pluginMainTimeoutMs:185000,subLlmTimeoutMs:245000};
+const settings={maxInputContextChars:6400,llmRetryCount:0,pluginMainProvider:"openai",subLlmProvider:"openai",pluginMainTimeoutMs:185000,subLlmTimeoutMs:245000};
 const _backendRuntimeConfigBinding={instanceId:"",dirty:true,configReady:false,code:"runtime_config_not_bound",missingRoles:[]};
 let syncedBody=null;
 let bridgeCalls=0;
@@ -1380,6 +1383,13 @@ async function safeCall(fn){ return await fn(); }
   const saved=await ensureBackendRuntimeConfigBinding("backend-b");
   if(!saved.ok || saved.skipped || bridgeCalls!==callsAfterComplete+2) throw new Error("settings save did not trigger one config bind");
   const meta=buildAdminRuntimeClientMeta();
+  for (const budget of [6400, 1, 0, 128000]) {
+    settings.maxInputContextChars=budget;
+    const observed=buildAdminRuntimeClientMeta().critic_input_budget_observation;
+    if(!observed || observed.contract_version!=="critic_input_budget_observation.v1" || observed.max_input_context_chars!==budget) {
+      throw new Error("admin critic budget lost configured value: "+JSON.stringify({budget,observed}));
+    }
+  }
   if(meta.critic.retry_count !== 0) throw new Error("admin critic meta lost retry=0");
   if(meta.critic.timeout_ms !== 245000) throw new Error("admin critic timeout diverged from UI value: "+meta.critic.timeout_ms);
 })().catch(err=>{ console.error(err); process.exitCode=1; });
@@ -1657,7 +1667,7 @@ func TestRegisteredRequestCallbacksDetachExactBeforeRequestContext(t *testing.T)
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
 		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\n" + extractArchiveCenterJSFunction(t, src, "finishFailedBeforeRequestPreparation") + "\nfunction recordHostDiagnostic(event) {} // Device-local logging is an external boundary here." + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "onAfterRequest")) + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
 		extractArchiveCenterJSFunction(t, src, "startTurnWorkflowHUDWatch"),
 	}, "\n")
@@ -1704,7 +1714,11 @@ function captureSessionHostContextFromCache(sid){
 }
 async function getCurrentActiveChatSourceObservationMessages(_sid,_hostContext,includeChat){
   const messages=[{role:"user",raw_content:current.user,message_index:0}];
-  return includeChat ? {messages,chat:{scriptstate:{}}} : messages;
+  return includeChat ? {messages,chat:{message:messages,scriptstate:{}}} : messages;
+}
+async function reconcileRollbackFromHostSignal(sid,host,options){
+  if(sid!==current.sessionId || host.hostChatId!==current.hostChatId || !Array.isArray(options.activeChat.message)) throw new Error("deletion observation lost captured Host");
+  runtimeUpdates.push({name:"deletionObservation",value:{sessionId:sid}});return false;
 }
 async function buildYumiV1ArchiveReadContext(payloadMessages,activeMessages){
   return {payloadMessages,activeMessages,stats:{markerBlocks:0,modelSourceBlocks:0,displayFallbackBlocks:0}};
@@ -1870,7 +1884,7 @@ func TestOverlappingBeforeRequestContextsFailClosedWithoutOwnershipMixing(t *tes
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextRetryIdentityMatches"),
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "onAfterRequest")) + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 	}, "\n")
 	script := functions + `
 let _activeFinalConfirmationRequestContext=null;
@@ -2014,10 +2028,18 @@ func TestFailOnceProviderRetryUsesProductionBeforeRequestFastPath(t *testing.T) 
 		extractArchiveCenterJSFunction(t, src, "finalConfirmationRequestContextHasReusablePayloadPlan"),
 		extractArchiveCenterJSFunction(t, src, "reapplyFinalConfirmationRetryPayload"),
 		extractArchiveCenterJSFunction(t, src, "installFinalConfirmationRequestContext"),
+		extractArchiveCenterJSFunction(t, src, "renderTurnWorkflowHUDSameRequestRetry"),
+		extractArchiveCenterJSFunction(t, src, "rememberTurnWorkflowHUDHostWarning"),
 		extractArchiveCenterJSAsyncFunction(t, src, "onBeforeRequest") + "\n" + extractArchiveCenterJSFunction(t, src, "finishFailedBeforeRequestPreparation") + "\nfunction recordHostDiagnostic(event) {} // Device-local logging is an external boundary here." + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 	}, "\n")
 	script := functions + `
-const settings={enabled:true,debug:false};
+const settings={enabled:true,debug:false,turnFinalizationMode:'next_user_input'};
+const TURN_WORKFLOW_HUD_CONTRACT='turn_workflow_hud.v3';
+const _turnWorkflowHUDHostWarningsByRequestId=new Map();
+let _turnWorkflowHUDUnloaded=false,_turnWorkflowHUDActiveRequestId='',_turnWorkflowHUDTerminalRequestId='';
+let _turnWorkflowHUDLastView=null,_turnWorkflowHUDCurrentFinalizationMode='immediate_after_response';
+function turnWorkflowHUDIsEnabled(){return true;}
+function tf(key,args){return key+JSON.stringify(args);}
 const updates=[];
 let heavyCalls=0;
 let replayCalls=0;
@@ -2050,9 +2072,11 @@ function captureSessionHostContextFromCache(){return {sessionId:"session-a",char
 async function resolveCurrentActiveChatObject(){return {charIdx:1,chatIdx:2,chat};}
 function computeOrchestrationDirtyHashOr1c(value){return "hash:"+String(value);}
 function updateRuntimeState(name,status,value){updates.push({name,status,value});}
-function renderTurnWorkflowHUDSameRequestRetry(requestId,attemptCount){
+function renderTurnWorkflowHUD(view){
   retryHUDCalls++;
-  if(requestId!==prepared.requestId || attemptCount!==2) throw new Error("retry HUD lost request ownership");
+  if(view.request_id!==prepared.requestId || view.current_stage.key!=="awaiting_final_output") throw new Error("retry did not restore the closed response HUD");
+  if(!Number.isFinite(view.host_timing.main_started_ms)) throw new Error("restored HUD has no attempt clock");
+  if(_turnWorkflowHUDCurrentFinalizationMode!=="next_user_input") throw new Error("restored HUD changed mode");
 }
 function applyContextInjection(payload,orchResult){
   replayCalls++;
@@ -2157,15 +2181,21 @@ let _turnWorkflowHUDActiveRequestId="request-a";
 let _turnWorkflowHUDLastRevision=6;
 let _turnWorkflowHUDLastView={
   contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:"request-a",revision:6,status:"awaiting_final_output",
-  current_stage:{key:"awaiting_final_output",ordinal:6,total:12}
+  current_stage:{key:"awaiting_final_output",ordinal:6,total:12},
+  host_timing:{started_ms:1000,main_started_ms:2000,backend_timing:{total_ms:500}}
 };
 const _turnWorkflowHUDHostWarningsByRequestId=new Map();
 const rendered=[];
 function turnWorkflowHUDIsEnabled(){return true;}
 function tf(_key,values){return "Risu retry · "+String(values.n);}
-function renderTurnWorkflowHUD(view){rendered.push({ordinal:Number(view.current_stage.ordinal),status:String(view.status)});}
+function renderTurnWorkflowHUD(view){rendered.push({ordinal:Number(view.current_stage.ordinal),status:String(view.status),timing:view.host_timing});}
 
+const originalNow=Date.now;
+Date.now=()=>20000;
 if(!renderTurnWorkflowHUDSameRequestRetry("request-a",2)) throw new Error("retry HUD observation was rejected");
+if(rendered[0].timing.main_started_ms!==Date.now()) throw new Error("retry HUD kept the failed attempt's response wait clock");
+if(rendered[0].timing.started_ms!==1000 || rendered[0].timing.backend_timing.total_ms!==500) throw new Error("retry discarded preparation timing");
+Date.now=originalNow;
 const warning=(_turnWorkflowHUDHostWarningsByRequestId.get("request-a")||[])[0];
 if(!warning || warning.message!=="Risu retry · 2") throw new Error("retry attempt notice missing");
 if(rendered.length!==1 || rendered[0].ordinal!==6 || rendered[0].status!=="awaiting_final_output") throw new Error("retry reset or advanced the 6/12 HUD stage");
@@ -2194,11 +2224,11 @@ func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *tes
 	src := readArchiveCenterJS(t)
 	functions := strings.Join([]string{
 		extractArchiveCenterJSFunction(t, src, "queueNextInputFinalization"),
-		extractArchiveCenterJSFunction(t, src, "beginNextInputFinalizationPipeline"),
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "beginNextInputFinalizationPipeline")),
 		extractArchiveCenterJSFunction(t, src, "buildCompletedTurnPairsFromActiveChatMessages"),
 		extractArchiveCenterJSAsyncFunction(t, src, "buildNextInputSourceAcceptanceFinality"),
 		extractArchiveCenterJSFunction(t, src, "acceptRisuAfterRequestFinal"),
-		extractArchiveCenterJSFunction(t, src, "onAfterRequest") + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
+		(archiveTranslationOriginalReadJS(t, src) + extractArchiveCenterJSFunction(t, src, "onAfterRequest")) + "\nfunction observeTurnWorkflowHUDTiming() {} // Timing UI is exercised in its dedicated runtime fixture.",
 		extractArchiveCenterJSAsyncFunction(t, src, "registerRisuLifecycleHooks"),
 	}, "\n")
 	script := functions + `
@@ -2245,7 +2275,6 @@ function warnLog(...args){warnings.push(args.join(" "));}
 function isNarrativeType(type){return !type||type==="model";}
 function isSaveType(type){return !type||type==="model";}
 function updateRuntimeState(){}
-function normalizeAssistantPersistenceCandidate(value){return String(value||"").trim();}
 function takeAssistantPrefillSeedForSession(){return "";}
 function sanitizeNarrativeOutputForDisplay(value){return value;}
 function buildSanitizeTrace(){return null;}
@@ -2260,7 +2289,6 @@ function loadTurnCounter(){return 1;}
 function shouldSkipUserInputPersistence(value){return !String(value||"").trim();}
 function isCanonicalHostUserInputText(value){return !!String(value||"").trim();}
 function peekNextTurnIndex(sid){return sid==="session-a"?75:12;}
-function canonicalizeAssistantOutputForPersistence(value){return value;}
 function normalizeTurnPairCompareText(value){return String(value||"").trim();}
 async function findRecentPersistedCompleteTurnPairForContent(){return null;}
 async function reserveAfterRequestPersistenceTurnIndex(sid,user,assistant,observation,hostContext,orchestrationResult){
@@ -2371,6 +2399,34 @@ function context(sid,cid,requestId,user,turn){
   previousBoundaryResolve({status:'saved',turnIndex:old.userObservedPairOrdinal});
   for(let i=0;i<20;i++) await Promise.resolve();
   if(_nextInputFinalizations.has(old.sessionId)) throw new Error('finished previous marker was not released');
+
+  // Real registered afterRequest + production source decoder and persistence
+  // normalizer; only Host/provider/storage boundaries above are substitutes.
+  for(const original of ['She kept her promise and returned to the village.','彼女は約束を守り、村に戻った。']) {
+    for(const kind of ['plain','u','gzip','giga']) {
+      const translated='그녀는 약속을 지키고 마을로 돌아왔다.';
+      const json=JSON.stringify({v:1,model:original,status:'done',translatedAt:1});
+      const stored=kind==='gzip'?'z:'+require('node:zlib').gzipSync(Buffer.from(json)).toString('base64'):kind==='u'?'u:'+json:json;
+      const display=kind==='giga'?'<GigaTrans>'+original+'</GigaTrans>\n'+translated:
+        '<!-- yumi-tr:v1:hook:start -->'+translated+'<!-- yumi-tr:v1:hook:end -->';
+      activeChat={id:'cid-translation',scriptstate:{'$__yumi_tr.hook':stored},message:[]};
+      const before=JSON.stringify(activeChat);
+      const owner=context('session-translation','cid-translation','translation-'+kind+original,'이야기를 계속한다.',1);
+      _activeFinalConfirmationRequestContext=owner;
+      const beforeCount=completeCalls.length;
+      const returned=registered.afterRequest(display,'model');
+      if(returned!==display || returned instanceof Promise) throw new Error('translated display or synchronous hook contract changed');
+      if(_activeFinalConfirmationRequestContext!==null) throw new Error('original decoding delayed owner detachment');
+      for(let i=0;i<200 && completeCalls.length===beforeCount;i++) await new Promise(resolve=>setTimeout(resolve,1));
+      if(completeCalls.length!==beforeCount+1) throw new Error('translated current-turn save missing: '+warnings.join(' | '));
+      const saved=completeCalls.at(-1);
+      if(saved.assistant!==original || saved.body.assistant_content!==original) throw new Error('current turn saved translation: '+JSON.stringify(saved));
+      if(saved.body.client_meta.turn_workflow_request_id!==owner.requestId) throw new Error('original decoding crossed requests');
+      if(owner.acceptedObservation.persistence_content_hash!==computeOrchestrationDirtyHashOr1c(original)) throw new Error('finality still hashes translated display');
+      if(JSON.stringify(activeChat)!==before) throw new Error('Host translation was overwritten');
+    }
+  }
+
 })().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
 `
 	cmd := exec.Command(nodePath, "-")

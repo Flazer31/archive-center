@@ -421,7 +421,11 @@ func mariaListCharacterStates(ctx context.Context, q mariaQueryer, chatSessionID
 		seen[key] = true
 		out = append(out, item)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	return mariaApplyCharacterManualEdits(ctx, q, chatSessionID, "", out)
 }
 
 func mariaListCharacterStateHistory(ctx context.Context, q mariaQueryer, chatSessionID, characterName string, limit, offset int) ([]CharacterState, error) {

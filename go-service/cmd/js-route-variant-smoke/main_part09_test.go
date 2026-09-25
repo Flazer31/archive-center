@@ -2462,8 +2462,8 @@ func TestArchiveCenterJSLorebookReferenceUsesBoundedBackendProjection(t *testing
 		`return String(tab && tab.key || "") !== "lorebook";`,
 		`visibleTabs.some(function(tab) { return tab.key === presentedActiveTab; })`,
 		`root.innerHTML = renderLorebookReferenceManagementSection();`,
-		`lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled"`,
-		`setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")`,
+		`renderReferenceUsageSettingsPanel("lorebook")`,
+		`lorebookReferenceMode: root.querySelector('#mo-lorebookReferenceAssistEnabled').checked ? 'reference_assist' : 'search_only'`,
 	} {
 		if !strings.Contains(src, marker) {
 			t.Fatalf("Archive Center.js missing lorebook UI marker %q", marker)
@@ -2494,13 +2494,8 @@ func TestArchiveCenterJSLorebookReferenceUsesBoundedBackendProjection(t *testing
 			t.Fatalf("Memory must not retain lorebook tab marker %q", removedMemoryMarker)
 		}
 	}
-	const lorebookAssistControl = `id="mo-lorebookReferenceAssistEnabled"`
-	const floatingUIControl = `id="mo-turnWorkflowHUDEnabled"`
-	if strings.Count(src, lorebookAssistControl) != 1 {
-		t.Fatalf("lorebook auxiliary reference toggle must exist exactly once in Settings")
-	}
-	if lorebookIndex, floatingIndex := strings.Index(src, lorebookAssistControl), strings.Index(src, floatingUIControl); lorebookIndex < 0 || floatingIndex < 0 || lorebookIndex >= floatingIndex {
-		t.Fatalf("lorebook auxiliary reference toggle must render immediately before the floating UI control")
+	if strings.Count(src, `renderReferenceUsageSettingsPanel("lorebook")`) != 1 {
+		t.Fatal("lorebook usage settings must be mounted exactly once in its extension tab")
 	}
 	blocks := []string{
 		extractJSFunctionBlockForTest(t, src, "function getExplorerTabItems()"),

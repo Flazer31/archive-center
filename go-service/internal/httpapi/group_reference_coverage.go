@@ -143,6 +143,9 @@ func referenceCoverageNeededBy(item referenceRecallItem, scope referenceRecallSc
 	}
 
 	queryNormalized := referenceCoverageNormalize(query)
+	if prepareTurnSupportRecallEligible(query, item.Text) {
+		addReason("current_input_description")
+	}
 	switch item.ReferenceKind {
 	case "entity":
 		if scope.sceneEntities[item.SourceID] {

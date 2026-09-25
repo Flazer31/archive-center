@@ -141,7 +141,10 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 	}
 	vectorReady := false
 	vectorDegraded := false
-	if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil {
+	if s.indexRecoveryState.Load() == 2 {
+		checks["chromadb_vector"] = "recovering"
+		checks["chromadb_recovery"] = "running"
+	} else if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" && s.VectorOpenError == nil {
 		health, healthErr := s.Vector.Health(r.Context())
 		if healthErr == nil && strings.TrimSpace(health.Status) == "ok" && health.ModelReady {
 			checks["chromadb_vector"] = "enabled"
@@ -156,6 +159,13 @@ func (s *Server) handleReady(w http.ResponseWriter, r *http.Request) {
 			if !s.Cfg.VectorRequiresEndpoint() {
 				vectorDegraded = true
 			}
+		}
+		if s.indexRecoveryState.Load() == 1 {
+			checks["chromadb_recovery"] = "waiting"
+			checks["chromadb_recovery_detail"] = "embedding settings required; management remains available"
+		} else if s.indexRecoveryState.Load() == 3 {
+			checks["chromadb_recovery"] = "failed"
+			checks["chromadb_recovery_detail"] = "check diagnostic logs or embedding settings"
 		}
 	} else if s.Cfg.ChromaEnabled && strings.TrimSpace(s.Cfg.ChromaEndpoint) != "" {
 		checks["chromadb_vector"] = "open_error"
@@ -637,7 +647,13 @@ func (s *Server) handleConfigUpdate(w http.ResponseWriter, r *http.Request) {
 	if body == nil {
 		body = map[string]any{}
 	}
+	previousEmbedding := s.completeTurnExtractionConfig(nil).Embedder
 	updated := s.updateRuntimeConfig(body)
+	currentEmbedding := s.completeTurnExtractionConfig(nil).Embedder
+	previousEmbedding.Source, currentEmbedding.Source = "", ""
+	if previousEmbedding != currentEmbedding {
+		s.retryIndexRecoveryAfterConfigSync()
+	}
 	trace := s.runtimeConfigTrace()
 	// This is sync presentation only. Preserve actual role readiness and every
 	// saved connection field, including main's use by chapter summaries.

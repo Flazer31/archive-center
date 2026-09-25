@@ -709,11 +709,25 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 			// values in this legacy projection.
 			state = prepareTurnSurfaceText(sanitizeLegacyReversibleMap(parseSurfacePayload(cs.StatusJSON)))
 			speechPayload := parseSurfacePayload(cs.SpeechStyleJSON)
-			if speechMap := mapFromAny(speechPayload); extractionStringFromAny(speechMap["contract_version"]) == voiceBehaviorProjectionContractVersion {
+			manualPrinciples := store.CharacterManualVoicePrinciples(cs)
+			if speechMap := mapFromAny(speechPayload); extractionStringFromAny(speechMap["contract_version"]) == voiceBehaviorProjectionContractVersion || speechMap["manual_overrides"] != nil || len(manualPrinciples) > 0 {
 				// 3.9-D owns durable modeling. 3.9-E will own scoped,
 				// privacy-aware delivery; the legacy character surface must not
 				// become a parallel injection path for the typed projection.
 				typedVoiceProjectionDeferred++
+				// Explicit operator settings have no story-source revision. Use
+				// the existing manual character surface and its budget; automatic
+				// principles still use the scoped typed delivery owner.
+				manual := map[string]any{}
+				for key, value := range mapFromAny(speechMap["manual_overrides"]) {
+					manual[key] = value
+				}
+				if len(manualPrinciples) > 0 {
+					manual["principles"] = manualPrinciples
+				}
+				if len(manual) > 0 {
+					speechStyle = "manual_override=" + prepareTurnSurfaceText(manual)
+				}
 			} else {
 				speechStyle = prepareTurnSurfaceText(speechPayload)
 			}
@@ -954,6 +968,27 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	fragmentStart = prepareTurnFactFragmentStart(&out)
 	out.PersonaText = buildPersonaRecollectionText(personaEntries, maxChars)
 	out.CharacterPrivateText = buildCharacterPrivateRecollectionText(characterPrivateMemories, maxChars)
+	// A recollection's source scene can be dated by an already loaded exact
+	// session/turn source. Never borrow another session's same-numbered turn,
+	// the current clock, or an unrelated event date from that source summary.
+	type recollectionTimeSource struct {
+		session string
+		turn    int
+	}
+	recollectionTimes := map[recollectionTimeSource]map[string]any{}
+	for _, entry := range characterPrivateMemories {
+		recollectionTimes[recollectionTimeSource{entry.SourceChatSessionID, entry.SourceTurn}] = nil
+	}
+	for _, memory := range input.Memories {
+		key := recollectionTimeSource{memory.ChatSessionID, memory.TurnIndex}
+		if _, needed := recollectionTimes[key]; !needed {
+			continue
+		}
+		observed := mapFromAny(mapFromAny(parseJSONMap(memory.SummaryJSON)["temporal_context"])["observed_at"])
+		if len(observed) > 0 {
+			recollectionTimes[key] = map[string]any{"observed_at": observed}
+		}
+	}
 	for _, entry := range personaEntries {
 		line := personaRecollectionEntryLine(entry, maxChars)
 		if line == "" {
@@ -979,13 +1014,17 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		if visibility == "" {
 			visibility = "owner_private"
 		}
+		seedStart := len(out.PriorityFactSeeds)
 		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "protagonist_entity_memories", "required", line,
 			prepareTurnPriorityStoredOccurrence("protagonist_entity_memories", entry.ID, ""),
 			prepareTurnPriorityStoredRowID(entry.ID), entry.SourceTurn, entry.Importance10, entry.Importance10 > 0, visibility, owner, []string{owner})
+		for i := seedStart; i < len(out.PriorityFactSeeds); i++ {
+			out.PriorityFactSeeds[i].Fact.TemporalContext = recollectionTimes[recollectionTimeSource{entry.SourceChatSessionID, entry.SourceTurn}]
+		}
 	}
 
 	if latest := latestPrepareTurnEvidence(evidence); latest != nil {
-		out.LatestDirectEvidenceText = fmt.Sprintf("- [source turn %d; direct_evidence_records:%d] %s", latest.TurnAnchor, latest.ID, compactPrepareTurnLine(latest.EvidenceText, 0))
+		out.LatestDirectEvidenceText = fmt.Sprintf("- [source turn %d] %s", latest.TurnAnchor, compactPrepareTurnLine(latest.EvidenceText, 0))
 	}
 	out.RecentRawTurnText = recentPrepareTurnRawTurn(chatLogs)
 	out.ScopedVerbatimSupport = archivebridge.BuildScopedVerbatimSupport(evidence)
@@ -1239,6 +1278,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		beforeCanon.appendTo(&projected)
 		projectCanon(&projected, signatures)
 		prepareTurnAttachLifecycleContext(&projected, narrativeCurrentValues, fieldStoryClock)
+		prepareTurnAttachCurrentStateContext(&projected, narrativeCurrentValues, fieldStoryClock)
 		prepareTurnAttachTemporalContext(&projected, fieldStoryClock)
 		if selection.PriorityEnabled {
 			prepareTurnResolvePrioritySourcePool(&projected, priorityMemoryQuery, queries, selection.CurrentTurn, selection.SemanticFacts)
@@ -1250,6 +1290,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	deliveryBudgetContext.Query, deliveryBudgetContext.QuerySource = priorityMemoryQuery, priorityMemoryQuerySource
 	deliveryBudgetContext.QuerySet = priorityMemoryQuerySet
 	prepareTurnAttachLifecycleContext(&out, narrativeCurrentValues, fieldStoryClock)
+	prepareTurnAttachCurrentStateContext(&out, narrativeCurrentValues, fieldStoryClock)
 	prepareTurnAttachTemporalContext(&out, fieldStoryClock)
 	if !assembleDelivery {
 		if deliveryBudgetContext.PriorityEnabled {

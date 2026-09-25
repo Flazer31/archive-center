@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -17,6 +19,87 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func TestPrepareTurnHUDReportsPreprocessingSettingWithoutCalls(t *testing.T) {
+	for _, status := range []string{"enabled", "disabled", "unavailable"} {
+		for _, inject := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/inject=%t", status, inject), func(t *testing.T) {
+				t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+				settings := defaultMultiAgentSettings()
+				settings.Enabled = status == "enabled"
+				for key, role := range settings.Roles {
+					role.Enabled = false
+					settings.Roles[key] = role
+				}
+				settingsBytes, err := json.Marshal(settings)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if status == "unavailable" {
+					settingsBytes = []byte("{")
+				}
+				path, err := multiAgentSettingsPath()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, settingsBytes, 0600); err != nil {
+					t.Fatal(err)
+				}
+				server := NewServer(config.Default())
+				mux := http.NewServeMux()
+				server.RegisterRoutes(mux)
+				body, err := json.Marshal(map[string]any{
+					"chat_session_id": "preprocessing-mode", "turn_index": 1,
+					"raw_user_input": "continue",
+					"messages":       []map[string]any{{"role": "user", "content": "continue"}},
+					"host_observations": map[string]any{
+						"contract_version": prepareHostObservationsVersion, "session_id": "preprocessing-mode",
+						"request_id": "mode-request", "request_type": "model", "payload_writable": true,
+						"active_chat": []map[string]any{{
+							"observation_ref": "active:0", "source_kind": "active_chat", "observation_stage": "active_chat_stored_message",
+							"message_index": 0, "role": "user", "raw_content": "continue", "content_hash": prepareOR1CHash("continue"),
+							"hash_algorithm": "or1c_utf16_djb2.v1", "evidence_state": "observed",
+						}},
+						"payload": []map[string]any{{
+							"observation_ref": "payload:0", "source_kind": "before_request_payload", "message_index": 0,
+							"role": "user", "raw_content": "continue", "content_hash": prepareOR1CHash("continue"),
+							"hash_algorithm": "or1c_utf16_djb2.v1", "evidence_state": "observed",
+						}},
+					},
+					"settings": map[string]any{"injection_enabled": inject},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body)))
+				if rec.Code != http.StatusOK {
+					t.Fatalf("prepare status %d: %s", rec.Code, rec.Body.String())
+				}
+				view, ok := server.TurnWorkflows.snapshot("mode-request")
+				if !ok || view.Status != "awaiting_final_output" {
+					t.Fatalf("prepare did not finish: %+v", view)
+				}
+				if len(view.Preprocessing) != 0 {
+					t.Fatal("disabled roles dispatched")
+				}
+				for _, fact := range view.Facts {
+					if fact.Key != "preprocessing_mode" {
+						continue
+					}
+					if fact.Status != status || fact.Owner != "go" || fact.Scope != "current_request" || fact.Severity != turnWorkflowHUDSeverityNormal {
+						t.Fatalf("setting fact = %+v, want %s without workflow severity change", fact, status)
+					}
+					return
+				}
+				t.Fatal("prepare omitted the setting because no role call ran")
+			})
+		}
+	}
+}
 
 func TestTurnWorkflowHUDBeginOrderAndSameSessionInvalidation(t *testing.T) {
 	ledger := newTurnWorkflowHUDLedger()
@@ -43,6 +126,98 @@ func TestTurnWorkflowHUDBeginOrderAndSameSessionInvalidation(t *testing.T) {
 	}
 	if invalidated.CurrentStage == nil || invalidated.CurrentStage.Status != "invalidated" {
 		t.Fatalf("invalidated current stage = %#v", invalidated.CurrentStage)
+	}
+}
+
+func TestCompleteTurnHUDRetainsResultAcrossRestartAndCachedLineage(t *testing.T) {
+	for _, scenario := range []string{"prepared", "restart", "cached_lineage"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+			cfg := config.Default()
+			cfg.StoreMode = config.StoreModeMariaDBAuthority
+			server := NewServer(cfg)
+			server.Store = &turnRecordingStore{}
+			server.StoreOpenError = nil
+			ledger := server.TurnWorkflows
+			const sid, requestID = "hud-finalization-fixture", "previous-request"
+			lineageID := requestID
+			if scenario == "cached_lineage" {
+				lineageID = "cached-request"
+				ledger.beginForNextInputFinalization(lineageID, sid, 1)
+				ledger.startStage(lineageID, turnWorkflowStageAwaitFinal)
+			}
+			if scenario != "restart" {
+				ledger.beginForNextInputFinalization(requestID, sid, 1)
+				ledger.startStage(requestID, turnWorkflowStageAwaitFinal)
+			}
+			ledger.begin("current-request", sid, 2)
+			ledger.startStage("current-request", turnWorkflowStageContext)
+			currentBefore, _ := ledger.snapshot("current-request")
+			calls := 0
+			var duringCall turnWorkflowHUDViewModel
+			var observed bool
+			oldClient := proxyHTTPClient
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "critic.invalid" || r.URL.Path != "/v1/chat/completions" || r.Method != http.MethodPost {
+					return nil, fmt.Errorf("unexpected external request: %s %s", r.Method, r.URL.Redacted())
+				}
+				calls++
+				duringCall, observed = ledger.snapshot(requestID)
+				extraction := criticWireJSONForTest(map[string]any{
+					"turn_summary": "Mira returned the library key.", "importance_score": 5,
+					"evidence_excerpts": []string{"Mira returned the library key."},
+				})
+				response, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": extraction}}}})
+				return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(response))}, nil
+			})}
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			body, _ := json.Marshal(map[string]any{
+				"chat_session_id": sid, "turn_index": 1, "request_type": "model",
+				"user_input": "Return the key.", "assistant_content": "Mira returned the library key.",
+				"client_meta": map[string]any{
+					"turn_workflow_request_id": requestID, "turn_finalization_mode": "next_user_input",
+					"source_to_final_lineage_observation": map[string]any{"archive_center_request_correlation_id": lineageID},
+					"critic":                              map[string]any{"provider": "openai", "endpoint": "https://critic.invalid/v1", "api_key": "fixture-key", "model": "fixture-model", "max_tokens": 1200, "timeout_ms": 30000},
+				},
+			})
+			rec := httptest.NewRecorder()
+			server.handleCompleteTurn(rec, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(body)))
+			var result map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+				t.Fatal(err)
+			}
+			if rec.Code != http.StatusOK || result["critic_triggered"] != true || calls != 1 || intFromAny(result["memories_saved"], 0) < 1 {
+				t.Fatalf("Critic/summary did not complete: status=%d calls=%d result=%v", rec.Code, calls, result)
+			}
+			if !observed || duringCall.CurrentStage == nil || duringCall.CurrentStage.Key != turnWorkflowStageCriticLLM {
+				t.Errorf("Critic ran without updating the displayed request: observed=%t stage=%+v", observed, duringCall.CurrentStage)
+			}
+			view, ok := ledger.snapshot(requestID)
+			if !ok || !turnWorkflowHUDTerminal(view.Status) || view.Status == "failed" {
+				t.Fatalf("summary exists but requested HUD stayed pending: %+v", view)
+			}
+			if stringFromMap(mapFromAny(result["turn_workflow_hud"]), "request_id") != requestID {
+				t.Fatal("complete response cannot update the Host's HUD request")
+			}
+			critic := view.Stages[turnWorkflowHUDStageIndex(view.Stages, turnWorkflowStageCriticLLM)]
+			if critic.Status != "succeeded" || critic.StartedAt == nil || critic.EndedAt == nil {
+				t.Fatalf("Critic timing missing after completion: %+v", critic)
+			}
+			if scenario == "restart" {
+				for _, stage := range view.Stages {
+					if stage.Ordinal >= 7 {
+						break
+					}
+					if stage.StartedAt != nil || stage.EndedAt != nil {
+						t.Fatal("restored HUD invented preparation timing")
+					}
+				}
+			}
+			currentAfter, _ := ledger.snapshot("current-request")
+			if currentAfter.Revision != currentBefore.Revision || currentAfter.Status != currentBefore.Status {
+				t.Fatal("previous finalization replaced the current request HUD")
+			}
+		})
 	}
 }
 

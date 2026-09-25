@@ -251,47 +251,56 @@ func parseMultiAgentGroupedResults(raw string) map[string]string {
 	if start < 0 {
 		return out
 	}
-	raw = raw[start:]
-	d := json.NewDecoder(strings.NewReader(raw))
-	if _, err := d.Token(); err != nil {
-		return out
-	}
-	for d.More() {
-		key, err := d.Token()
+	inRoles := false
+	for at := start + 1; at < len(raw); {
+		if raw[at] == '}' {
+			inRoles = false
+		}
+		if raw[at] != '"' {
+			at++
+			continue
+		}
+		// Read whole JSON strings/values, so role-like prose and nested metadata
+		// cannot become recommendations. A misplaced outer brace does not discard
+		// a later, independently received role object.
+		keyReader := json.NewDecoder(strings.NewReader(raw[at:]))
+		var key string
+		if keyReader.Decode(&key) != nil {
+			break
+		}
+		at += int(keyReader.InputOffset())
+		for at < len(raw) && strings.ContainsRune(" \t\r\n", rune(raw[at])) {
+			at++
+		}
+		if at >= len(raw) || raw[at] != ':' {
+			continue
+		}
+		at++
+		for at < len(raw) && strings.ContainsRune(" \t\r\n", rune(raw[at])) {
+			at++
+		}
+		if at >= len(raw) {
+			break
+		}
+		if key == "roles" && raw[at] == '{' {
+			inRoles = true
+			at++
+			continue
+		}
+		valueReader := json.NewDecoder(strings.NewReader(raw[at:]))
+		var value json.RawMessage
+		err := valueReader.Decode(&value)
+		if inRoles || multiAgentRoleNames[key] != "" {
+			if err != nil {
+				// Preserve the interrupted role for the existing partial-ID parser.
+				value = []byte(strings.TrimSpace(raw[at:]))
+			}
+			out[key] = string(value)
+		}
 		if err != nil {
 			break
 		}
-		if key != "roles" {
-			var ignored json.RawMessage
-			if d.Decode(&ignored) != nil {
-				break
-			}
-			continue
-		}
-		token, err := d.Token()
-		if err != nil || token != json.Delim('{') {
-			break
-		}
-		for d.More() {
-			role, err := d.Token()
-			if err != nil {
-				break
-			}
-			offset := d.InputOffset()
-			var value json.RawMessage
-			err = d.Decode(&value)
-			if err != nil {
-				// Keep the received prefix for the existing partial-ID parser.
-				value = []byte(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw[offset:]), ":")))
-			}
-			if name, ok := role.(string); ok {
-				out[name] = string(value)
-			}
-			if err != nil {
-				break
-			}
-		}
-		break
+		at += int(valueReader.InputOffset())
 	}
 	return out
 }
@@ -316,11 +325,27 @@ func (s *Server) callMultiAgentGroup(ctx context.Context, settings multiAgentSet
 	if strings.TrimSpace(sharedPrompt) == "" {
 		sharedPrompt = multiAgentSharedPrompt
 	}
+	responseRoles := make(map[string]any, len(roles))
+	for _, role := range roles {
+		shape := map[string]any{"selected_ids": []string{}, "selected_summary_ids": []string{}, "reasons": map[string]string{}, "search_requests": []string{}, "related_requests": []any{}, "unresolved": []string{}}
+		if round == 2 {
+			shape["reuse_previous_reasons"] = true
+		} else {
+			shape["recent_context_refs"] = []string{}
+		}
+		if role == "world_state" {
+			shape["selected_lorebook_refs"] = []string{}
+		}
+		responseRoles[role] = shape
+	}
+	responseShape, _ := json.Marshal(map[string]any{"roles": responseRoles})
 	prompt := sharedPrompt + "\n\n" + multiAgentReviewTransport + `
 This request contains the assignments listed in roles. For each assignment, shared_input plus its input is its reading packet; its prompt is the editorial task and output_tokens is an output ceiling, not a length target.
-Return ONE JSON object with a roles object keyed by the supplied assignments, not by the role_keys handoff directory. Each value uses the single-assignment schema above. Round-two shape example: {"roles":{"event_recent":{"selected_ids":["F1"],"selected_summary_ids":[],"reuse_previous_reasons":true,"reasons":{},"search_requests":[],"related_requests":[],"unresolved":[]}}}. Replace the example role and refs with the actual assignments and their complete selections; round one uses recent_context_refs as described above.
-Interpret references inside each assignment's reading packet. Its selectable lists are its candidates, turn_summaries and lorebook_candidates; another assignment's list is not its selection list. Public handoffs and search_evidence supply context for its own selections. Keep source time, perspective and visibility attached; private evidence remains private. Cross-role requests use the existing public-reference contract. The user retains creative direction.
-Report selections separately for each assignment. Original evidence is delivered by Go; reasons add concise editorial connections. In round two reuse unchanged reasons and write additions or changes, while returning complete final selection lists.`
+Return ONE JSON object containing a result for EVERY supplied assignment in roles, not just the first assignment or the role_keys handoff directory. Each value uses the single-assignment schema above. Complete the assignments independently in the same response, preserving each one's useful evidence and uncertainty. Do not stop after answering one role or merely referring work to another role.
+Complete response shape for this request (answer every role; each list contains its scene-relevant choices, not all available refs; empty optional search and handoff lists are valid):
+` + string(responseShape) + `
+For each output role, use that role's selectable_refs directory and reading packet. If role A owns F1 and role B owns F2, A's selected_ids and reason keys use F1; do not copy B's F2 into A's answer. A handoff from A to B sends A's public_handoff_refs, while its reason asks B about B's evidence. Public handoffs and search_evidence supply context for the receiving role's own selections. Keep source time, perspective and visibility attached; private evidence remains private. The user retains creative direction.
+Report selections separately for each assignment. Answering every role does not mean selecting every candidate. Original evidence is delivered by Go; reasons explain source-supported connections and retain the source's uncertainty. In round two reassess which evidence helps this scene, reuse unchanged reasons for retained refs, revise unsupported interpretations, and return complete final selection lists. Search and handoff allowances need not be used when the supplied packet already answers the relevant question.`
 	modelInput := multiAgentGroupedInput(calls, roles, settings)
 	req.MaxTokens, req.MaxCompletionTokens = &totalOutput, &totalOutput
 	req.Messages = []any{map[string]any{"role": "system", "content": prompt}, map[string]any{"role": "user", "content": modelInput}}

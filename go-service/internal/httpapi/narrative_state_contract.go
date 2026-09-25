@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -213,7 +214,7 @@ func normalizeNarrativeStateSlot(raw string) string {
 	var b strings.Builder
 	lastUnderscore := false
 	for _, r := range raw {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || unicode.IsMark(r) {
 			b.WriteRune(r)
 			lastUnderscore = false
 			continue

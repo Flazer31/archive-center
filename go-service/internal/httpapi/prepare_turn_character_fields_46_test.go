@@ -126,6 +126,9 @@ func Test46RestoredCurrentReadingsKeepOriginalProof(t *testing.T) {
 			readings := []string{mustCompactJSON(prepareTurnLifecycleReadings([]store.StatusCurrentValue{current}))}
 			for _, fact := range facts {
 				if fact.SourceFieldPath == "/state/mobility" {
+					if !strings.Contains(mustCompactJSON(fact.Reading.Parts), "original-revision") {
+						t.Fatal("original revision missing from diagnostic reading")
+					}
 					readings = append(readings, prepareTurnMemoryReadingText(fact))
 				}
 			}
@@ -137,7 +140,7 @@ func Test46RestoredCurrentReadingsKeepOriginalProof(t *testing.T) {
 				if turn > 0 {
 					wantTurn = fmt.Sprintf("source turn %d", turn)
 				}
-				for _, required := range []string{wantTurn, "Original supporting observation.", "original-revision"} {
+				for _, required := range []string{wantTurn, "Original supporting observation."} {
 					if !strings.Contains(text, required) {
 						t.Errorf("restored reading lost original proof %s", required)
 					}
@@ -145,6 +148,12 @@ func Test46RestoredCurrentReadingsKeepOriginalProof(t *testing.T) {
 				if strings.Contains(text, "Wrong repair-time assertion") || strings.Contains(text, "source turn 90") {
 					t.Fatal("repair observation replaced state origin")
 				}
+			}
+			if !strings.Contains(readings[0], "original-revision") || !strings.Contains(readings[1], "original-revision") {
+				t.Fatal("source and preprocessing must retain the original revision")
+			}
+			if strings.Contains(stringFromMap(out.MemoryDeliveryPlan, "final_text"), "original-revision") {
+				t.Fatal("revision must not enter final memory delivery")
 			}
 		})
 	}
@@ -285,6 +294,9 @@ func Test46HTTPCharacterFieldsReachAllOptionalAIModes(t *testing.T) {
 					t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
 					assertReading := func(text string) {
 						t.Helper()
+						if strings.Contains(text, "source_session_id: origin") {
+							t.Error("session metadata reached provider or final delivery")
+						}
 						for _, required := range []string{"needs a sling", "full use of the left arm", "Mira lifted the crate freely with both hands", "source turn 10", "effective time: unknown"} {
 							if !strings.Contains(text, required) {
 								t.Errorf("real HTTP delivery missing %s", required)

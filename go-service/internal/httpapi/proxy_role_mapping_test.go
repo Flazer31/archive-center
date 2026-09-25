@@ -51,10 +51,11 @@ func Test44RoleOwnersPreserveProxyMapping(t *testing.T) {
 				name = role + "/configured"
 			}
 			t.Run(name, func(t *testing.T) {
+				const retryCount = 2
 				cfg := completeTurnLLMConfig{
 					Provider: "ollama", Endpoint: "https://role-fixture.invalid/v1", APIKey: "fixture-key",
 					Model: "deepseek-v4-flash:0731-cloud", MaxTokens: 13, MaxCompletionTokens: 4096,
-					Temperature: 0, TimeoutMs: 12345, RetryBudget: newLLMRetryBudget(2),
+					Temperature: 0, TimeoutMs: 12345, RetryBudget: newLLMRetryBudget(retryCount),
 					ExtraHeadersJSON: `{"X-Role-Fixture":"` + role + `"}`,
 					ExtraBodyJSON:    `{"user":"` + role + `"}`,
 				}
@@ -133,8 +134,12 @@ func Test44RoleOwnersPreserveProxyMapping(t *testing.T) {
 						t.Error("provider error lost")
 					}
 				}
-				if calls != 1 {
-					t.Fatalf("provider calls=%d want=1", calls)
+				wantCalls := 1
+				if role == "publisher" {
+					wantCalls += retryCount
+				}
+				if calls != wantCalls {
+					t.Fatalf("provider calls=%d want=%d", calls, wantCalls)
 				}
 				if dir := os.Getenv("ARCHIVE_CENTER_TEST_PROXY_CAPTURE_DIR"); dir != "" {
 					data, err := json.MarshalIndent(wire, "", "  ")

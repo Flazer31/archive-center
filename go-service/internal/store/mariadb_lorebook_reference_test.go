@@ -146,13 +146,12 @@ func TestValidateLorebookReferenceUnavailableCannotPretendToBeComplete(t *testin
 	}
 }
 
-func TestValidateLorebookReferenceCompleteActiveSnapshotRequiresFullyObservedScope(t *testing.T) {
+func TestValidateLorebookReferenceCompleteActiveSnapshotUsesChatScope(t *testing.T) {
 	characterIndex := int64(1)
 	chatIndex := int64(2)
 	tests := []LorebookReferenceScope{
 		{ChatSessionID: "session-a", ChatIndex: &chatIndex, EnabledModulesObserved: true},
 		{ChatSessionID: "session-a", CharacterIndex: &characterIndex, EnabledModulesObserved: true},
-		{ChatSessionID: "session-a", CharacterIndex: &characterIndex, ChatIndex: &chatIndex, EnabledModulesObserved: false},
 	}
 	for _, scope := range tests {
 		err := ValidateLorebookReferenceSnapshot(&LorebookReferenceSnapshot{
@@ -163,6 +162,14 @@ func TestValidateLorebookReferenceCompleteActiveSnapshotRequiresFullyObservedSco
 		if err != ErrInvalidLorebookReference {
 			t.Fatalf("incomplete scope was accepted: scope=%#v err=%v", scope, err)
 		}
+	}
+	err := ValidateLorebookReferenceSnapshot(&LorebookReferenceSnapshot{
+		SnapshotID: "aggregate", ContractVersion: LorebookReferenceSnapshotContractV1,
+		ConsentState: LorebookConsentActive, ObservationState: LorebookObservationObserved,
+		CompleteSnapshot: true, Scope: LorebookReferenceScope{ChatSessionID: "session-a", CharacterIndex: &characterIndex, ChatIndex: &chatIndex},
+	})
+	if err != nil {
+		t.Fatalf("official aggregate requires unrelated module metadata: %v", err)
 	}
 }
 

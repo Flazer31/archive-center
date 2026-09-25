@@ -23,13 +23,15 @@ let _settingsActiveTab = 'settings';
 const settings = {bridgeUrl:'http://100.64.0.10:28080',memoryDeliveryBudgets:{}};
 const getSettings = () => settings, DEFAULT_SETTINGS = settings;
 const runtimeState = {queuePersistence:{}}, _settingsStorageStatus = {}, _turnHistory = [], _failedQueue = [];
-const _timelineState = {}, lastTurnTrace = null, _prepareTurnEverContacted = false, _turnWorkflowHUDActiveRequestId = '';
+const _timelineState = {}, lastTurnTrace = null, _prepareTurnEverContacted = false;
+let _turnWorkflowHUDActiveRequestId = '', _turnWorkflowHUDPreviousRequestId = '';
 const PANEL_CSS = '', LOG_PREFIX = 'test', VERSION = 'test', BUILD_LABEL = '', BUILD_CHANNEL = '', BUILD_TIME = '', BUILD_NOTES = '';
 const R = {showContainer:async () => { shown++; }};
 const t = x => x, escapeAttr = x => String(x ?? ''), debugLog = () => {};
 const warnLog = (...args) => failures.push(args.join(' '));
 const resolveEffectiveCriticConfig = () => ({}), endpointSummary = () => '';
 const getRequestTimeoutSettingMs = () => 15000, buildDashboardQueueObservations = () => ({});
+const _turnWorkflowHUDHostWarningsByRequestId = new Map();
 const renderDashboardViewModel = vm => vm ? vm.html : 'unavailable';
 const renderEffectiveInputSection = () => '', renderPromptEditorSection = () => '', renderBridgeRuntimeNotice = () => '';
 const formatStateRow = () => '', renderStep17InspectionRolesSection = () => '', renderStep17VisibilitySection = () => '';
@@ -96,6 +98,18 @@ const document = {
   assert.equal(third.querySelector('#mo-bridgeUrl').value, settings.bridgeUrl);
   assert.equal(pending[2].url, settings.bridgeUrl);
   assert.equal(failures.length, 0, failures.join('\n'));
+  _turnWorkflowHUDActiveRequestId = 'current'; _turnWorkflowHUDPreviousRequestId = 'previous';
+  _turnWorkflowHUDHostWarningsByRequestId.set('current',[{code:'HOST_TIMEOUT',message_key:'host.timeout',detail:'synthetic transport detail',details:[{key:'elapsed_ms',value:15000}]}]);
+  _turnWorkflowHUDHostWarningsByRequestId.set('previous',[{code:'RECOVERY_FAILED',message:'synthetic recovery message'}]);
+  _turnWorkflowHUDHostWarningsByRequestId.set('other',[{detail:'FOREIGN_DETAIL'}]);
+  const loading = loadDashboardViewModel(runtimeState,settings,{});
+  pending[3].resolve({status:'ok',cards:[{id:'workflow_errors',rows:[{detail:'backend detail'}]}]});
+  const vm = await loading;
+  assert.equal(vm.cards.length,1,'Host diagnostics should join the existing error card');
+  assert.equal(vm.cards[0].rows.length,3);
+  const diagnosticText=JSON.stringify(vm);
+  for(const text of ['backend detail','HOST_TIMEOUT','synthetic transport detail','elapsed_ms=15000','synthetic recovery message']) assert.ok(diagnosticText.includes(text),text);
+  assert.ok(!diagnosticText.includes('FOREIGN_DETAIL'),'unrelated request diagnostics leaked');
 })().catch(err => { console.error(err); process.exitCode = 1; });
 `
 	nodePath := strings.TrimSpace(os.Getenv("ARCHIVE_CENTER_NODE_BINARY"))

@@ -26,6 +26,41 @@ func priorityMemoryTestContext(maxItems int) map[string]any {
 	}
 }
 
+func Test47PriorityCurrentSceneKeepsOriginalScoresAndShortContinuations(t *testing.T) {
+	current := "Mira visits the northern archive vault."
+	previous := "Rook checks cargo at the southern harbor."
+	out := prepareTurnInjectionAssembly{PriorityFactSeeds: []prepareTurnPriorityFactSeed{
+		{Lane: "world_state", SourceTable: "world_rules", SourceRowID: 1, SourceTurn: 3, Importance: .8, ImportancePresent: true, Fact: prepareTurnPriorityMemoryFact{Text: "Mira keeps a silver key for the northern archive vault."}},
+		{Lane: "world_state", SourceTable: "world_rules", SourceRowID: 2, SourceTurn: 100, Importance: .8, ImportancePresent: true, Fact: prepareTurnPriorityMemoryFact{Text: "Rook checks cargo at the southern harbor."}},
+	}}
+	before := mustCompactJSON(out.PriorityFactSeeds)
+	queries := []string{current, previous}
+	facts, _, _ := prepareTurnBuildPriorityCandidates(&out, current, queries, 120, nil)
+	if len(facts) != 2 || facts[0].SourceRef != "world_rules:1" {
+		t.Fatalf("previous scene displaced the current scene's older key: %+v", facts)
+	}
+	for _, c := range facts {
+		original := prepareTurnPriorityQuerySetRelevance(queries, current, c.CompleteText)
+		if c.OriginalRelevance != original || c.OriginalScore != prepareTurnPriorityScore(original, c.Importance, c.Recency, c.ContinuityBonus, c.StructuredBias) {
+			t.Fatal("current-scene priority overwrote original source evidence")
+		}
+	}
+	if before != mustCompactJSON(out.PriorityFactSeeds) {
+		t.Fatal("current-scene ranking mutated source rows")
+	}
+	base, _, _ := prepareTurnBuildPriorityCandidates(&out, previous, []string{previous}, 120, nil)
+	for _, continuation := range []string{"Proceed.", "확인하고 고개를 끄덕인다."} {
+		t.Run(continuation, func(t *testing.T) {
+			got, _, _ := prepareTurnBuildPriorityCandidates(&out, previous, []string{continuation, previous}, 120, nil)
+			for i := range base {
+				if got[i].CanonicalFactID != base[i].CanonicalFactID || got[i].FinalScore != base[i].FinalScore {
+					t.Fatal("a continuation without new clues weakened established scene relevance")
+				}
+			}
+		})
+	}
+}
+
 func Test42PriorityMemoryProductionAssemblyKeepsStoredScoreThroughPayloadPlan(t *testing.T) {
 	const sessionID = "priority-score-production"
 	memories := []store.Memory{

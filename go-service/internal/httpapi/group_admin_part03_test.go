@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -1340,6 +1342,9 @@ func (f *canonicalRawReplaySessionNormalizeStore) SaveCriticInputSnapshot(
 	if source == nil {
 		return store.ErrNotFound
 	}
+	if source.CriticInputSnapshotHash != "" && source.CriticInputSnapshotHash != snapshotHash {
+		return errors.New("critic input snapshot already exists with different content")
+	}
 	source.CriticInputSnapshotJSON = snapshotJSON
 	source.CriticInputSnapshotHash = snapshotHash
 	return nil
@@ -1680,5 +1685,215 @@ func TestAdminSessionNormalizeCancellationReachesBlockedRawChatQuery(t *testing.
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("session normalize did not stop after caller cancellation")
+	}
+}
+
+// External provider and storage boundaries are synthetic; the normalization,
+// extraction policy, snapshot and retry owners are the production paths.
+func TestAdminSessionNormalizeConfiguredCriticBudgetAndRetry(t *testing.T) {
+	ptrBudget := func(value int) *int { return &value }
+	for _, tc := range []struct {
+		name   string
+		budget *int
+		ledger bool
+		retry  string
+	}{
+		{name: "missing_uses_default"},
+		{name: "zero", budget: ptrBudget(0)},
+		{name: "small", budget: ptrBudget(73)},
+		{name: "custom", budget: ptrBudget(6400)},
+		{name: "large", budget: ptrBudget(128000)},
+		{name: "ledger", budget: ptrBudget(6400), ledger: true},
+		{name: "worker_retry", budget: ptrBudget(6400), retry: "worker"},
+		{name: "normalize_resume", budget: ptrBudget(6400), retry: "normalize"},
+		{name: "normalize_after_prompt_edit", budget: ptrBudget(6400), retry: "normalize_prompt"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const sid = "synthetic-cold-start-budget"
+			fake := &canonicalRawReplaySessionNormalizeStore{
+				memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{
+					Store: store.NewNoopStore(),
+					logs: []store.ChatLog{
+						{ChatSessionID: sid, TurnIndex: 1, Role: "user", Content: "The traveler reaches the gate."},
+						{ChatSessionID: sid, TurnIndex: 1, Role: "assistant", Content: "The guard refuses entry until dawn."},
+					},
+				},
+				sources: map[string]*store.MemorySourceRevision{},
+			}
+			cfg := config.Default()
+			cfg.StoreMode = config.StoreModeMariaDBAuthority
+			cfg.CriticLedgerEnabled = tc.ledger
+			srv := NewServer(cfg)
+			srv.Store, srv.StoreOpenError = fake, nil
+			srv.RuntimeConfig.LLMRetryCount = 0
+			meta := map[string]any{
+				"critic": map[string]any{
+					"api_key": "synthetic-key", "endpoint": "https://example.invalid/v1",
+					"model": "critic-budget-test", "provider": "openai", "timeout_ms": 45000,
+					"temperature": 0.37, "max_tokens": 12345, "max_completion_tokens": 12345,
+				},
+				"episode_interval_turns":    13,
+				"chapter_interval_episodes": 7, "arc_interval_chapters": 9, "saga_interval_arcs": 11,
+			}
+			if tc.budget != nil {
+				meta["critic_input_budget_observation"] = map[string]any{
+					"contract_version":        completeTurnCriticInputBudgetObservationContract,
+					"max_input_context_chars": *tc.budget,
+				}
+			}
+			wantPolicy := srv.completeTurnCriticInputPolicy(meta)
+			oldClient := proxyHTTPClient
+			t.Cleanup(func() { proxyHTTPClient = oldClient })
+			prompts := []string{}
+			providerOutput := criticWireJSONForTest(map[string]any{
+				"turn_summary": "The guard refused entry until dawn.", "importance_score": 6,
+			})
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Host != "example.invalid" {
+					t.Fatalf("unexpected provider: %s", r.URL.Host)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				messages := sliceFromAny(body["messages"])
+				if len(messages) < 2 {
+					t.Fatalf("missing critic input: %v", body)
+				}
+				prompts = append(prompts, stringFromMap(mapFromAny(messages[1]), "content"))
+				if body["model"] != "critic-budget-test" || floatFromMap(body, "temperature", -1) != 0.37 ||
+					intFromAny(body["max_completion_tokens"], intFromAny(body["max_tokens"], 0)) != 12345 {
+					t.Fatalf("configured provider values lost: %v", body)
+				}
+				if tc.retry != "" && len(prompts) == 1 {
+					return &http.Response{StatusCode: 503, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"synthetic unavailable"}}`))}, nil
+				}
+				encoded, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": providerOutput}}}})
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(encoded)))}, nil
+			})}
+			request := adminSessionNormalizeRequest{SkipRepair: true, SkipReindex: true, ClientMeta: meta}
+			result, err := srv.runAdminSessionNormalize(context.Background(), sid, request, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.sources) != 1 || len(prompts) != 1 {
+				t.Fatalf("unexpected normalization: sources=%d calls=%d result=%v", len(fake.sources), len(prompts), result)
+			}
+			var source *store.MemorySourceRevision
+			for _, item := range fake.sources {
+				source = item
+			}
+			var snapshot completeTurnCriticInputSnapshot
+			if err := json.Unmarshal([]byte(source.CriticInputSnapshotJSON), &snapshot); err != nil {
+				t.Fatal(err)
+			}
+			if snapshot.InputPolicy != wantPolicy {
+				t.Fatalf("budget ignored: want=%+v got=%+v", wantPolicy, snapshot.InputPolicy)
+			}
+			rescan := mapFromAny(result["rescan"])
+			episode := mapFromAny(rescan["episode_backfill"])
+			if interval, ok := episode["interval"]; ok && intFromAny(interval, 0) != 13 {
+				t.Fatalf("episode interval ignored: %v", episode)
+			}
+			if tc.retry == "" {
+				if len(fake.admissions) != 1 {
+					t.Fatalf("normalization did not commit: %v", result)
+				}
+				return
+			}
+			if len(fake.admissions) != 0 || len(fake.enqueuedJobs) != 1 {
+				t.Fatalf("failed provider was not queued: admissions=%d queued=%d result=%v", len(fake.admissions), len(fake.enqueuedJobs), result)
+			}
+			originalSnapshot, originalHash := source.CriticInputSnapshotJSON, source.CriticInputSnapshotHash
+			meta["critic_input_budget_observation"] = map[string]any{
+				"contract_version": completeTurnCriticInputBudgetObservationContract, "max_input_context_chars": 9,
+			}
+			if tc.retry == "normalize_prompt" {
+				cfg.PromptDir = t.TempDir()
+				if err := os.WriteFile(filepath.Join(cfg.PromptDir, "critic_system.txt"), []byte("Synthetic edited Critic prompt: preserve evidence and return JSON."), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			restarted := NewServer(cfg)
+			restarted.Store, restarted.StoreOpenError = fake, nil
+			restarted.RuntimeConfig.LLMRetryCount = 0
+			if tc.retry == "normalize" {
+				if _, err := restarted.runAdminSessionNormalize(context.Background(), sid, request, nil); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.retry == "normalize_prompt" {
+				retry := restarted.processAcceptedSourceRevision(context.Background(), source, restarted.completeTurnExtractionConfig(meta), true)
+				if retry.State != "completed" {
+					t.Fatalf("normalization resume=%+v", retry)
+				}
+				traceJSON, _ := json.Marshal(retry.CriticTrace)
+				if !strings.Contains(string(traceJSON), fmt.Sprintf(`"configured_context_chars":%d`, wantPolicy.ConfiguredChars)) {
+					t.Fatalf("normalization resume lost original budget: %s", traceJSON)
+				}
+			} else {
+				retry := restarted.processAcceptedSourceRevision(context.Background(), source, restarted.completeTurnExtractionConfig(meta), false)
+				if retry.State != "completed" {
+					t.Fatalf("retry=%+v", retry)
+				}
+			}
+			if len(prompts) != 2 || prompts[0] != prompts[1] || len(fake.admissions) != 1 {
+				t.Fatalf("retry changed input or did not commit: calls=%d admissions=%d", len(prompts), len(fake.admissions))
+			}
+			if source.CriticInputSnapshotJSON != originalSnapshot || source.CriticInputSnapshotHash != originalHash {
+				t.Fatal("retry replaced the frozen input/budget")
+			}
+		})
+	}
+}
+
+func TestCanonicalLogCriticUsesConfiguredAuxiliaryPolicy(t *testing.T) {
+	srv := NewServer(config.Default())
+	srv.Store = &turnRecordingStore{}
+	oldClient := proxyHTTPClient
+	t.Cleanup(func() { proxyHTTPClient = oldClient })
+	calls := 0
+	output := criticWireJSONForTest(map[string]any{"turn_summary": "The guard opens the gate.", "importance_score": 5})
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if r.URL.Host != "example.invalid" {
+			t.Fatalf("unexpected provider: %s", r.URL.Host)
+		}
+		body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": output}}}})
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	cfg := srv.completeTurnExtractionConfig(map[string]any{
+		"critic":                          map[string]any{"api_key": "synthetic", "endpoint": "https://example.invalid/v1", "provider": "openai", "model": "synthetic", "timeout_ms": 30000},
+		"critic_input_budget_observation": map[string]any{"contract_version": completeTurnCriticInputBudgetObservationContract, "max_input_context_chars": 4700},
+	})
+	_, trace, err := srv.runCompleteTurnCriticFromCanonicalLogs(context.Background(), "canonical-budget", 1, "Open the gate.", "The guard opens the gate.", cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, _ := json.Marshal(trace)
+	if calls != 1 || !strings.Contains(string(encoded), `"configured_context_chars":4700`) || !strings.Contains(string(encoded), `"budget_source":"risu_host_setting_observation"`) {
+		t.Fatalf("canonical critic lost policy: calls=%d trace=%s", calls, encoded)
+	}
+}
+
+func TestAdminSessionNormalizePlanUsesConfiguredEpisodeInterval(t *testing.T) {
+	defaultInterval := normalizedEpisodeInterval(0)
+	for _, tc := range []struct {
+		name     string
+		interval int
+		rawTurns int
+		want     bool
+	}{
+		{"longer_than_default", defaultInterval + 5, defaultInterval, false},
+		{"shorter_than_default", defaultInterval - 1, defaultInterval - 1, true},
+		{"at_configured_boundary", defaultInterval + 5, defaultInterval + 5, true},
+		{"missing_uses_default", 0, defaultInterval, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := adminSessionNormalizeRequest{ClientMeta: map[string]any{"episode_interval_turns": tc.interval}}
+			plan := adminSessionNormalizePlan(req, nil, map[string]any{"raw_turns": tc.rawTurns, "episode_summaries": 0})
+			if boolFromAny(plan["episode_review_needed"]) != tc.want {
+				t.Fatalf("configured interval=%d raw=%d plan=%v", tc.interval, tc.rawTurns, plan)
+			}
+		})
 	}
 }

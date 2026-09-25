@@ -56,6 +56,9 @@ type acceptedSourceDerivationOptions struct {
 // loop. It never starts for shadow/read-only stores and it persists no provider
 // credentials in either queue.
 func (s *Server) StartMemoryWorkers(ctx context.Context) bool {
+	if s != nil && s.indexRecoveryState.Load() != 0 {
+		return false
+	}
 	if s == nil || s.Store == nil ||
 		s.Cfg.StoreMode != config.StoreModeMariaDBAuthority ||
 		ctx == nil {
@@ -460,6 +463,17 @@ func (s *Server) processAcceptedSourceRevisionWithOptions(
 			result.Failure = "critic_config_missing"
 			return result
 		}
+		inputPolicy := extractionCfg.CriticInputPolicy
+		if options.CreateCriticInputSnapshot {
+			// A resumed normalization keeps its original budget without changing
+			// the existing explicit reanalysis/prompt-edit acceptance behavior.
+			var storedInput struct {
+				InputPolicy *completeTurnCriticInputPolicy `json:"input_policy"`
+			}
+			if json.Unmarshal([]byte(source.CriticInputSnapshotJSON), &storedInput) == nil && storedInput.InputPolicy != nil {
+				inputPolicy = *storedInput.InputPolicy
+			}
+		}
 		criticExtraction, criticTrace, err := s.runCompleteTurnCriticWithInputPolicy(
 			processingCtx,
 			source.ChatSessionID,
@@ -470,7 +484,7 @@ func (s *Server) processAcceptedSourceRevisionWithOptions(
 			nil,
 			extractionCfg.Critic,
 			true,
-			s.completeTurnCriticInputPolicy(nil),
+			inputPolicy,
 			completeTurnCriticInputReplay{
 				SourceRevision: source.SourceRevision,
 				SnapshotJSON:   source.CriticInputSnapshotJSON,

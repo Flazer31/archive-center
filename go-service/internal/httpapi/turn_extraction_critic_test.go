@@ -1861,9 +1861,10 @@ func TestCriticPromptJSONExamplesRemainParseableAfterDeduplication(t *testing.T)
 	if source == "fallback_builtin" {
 		t.Fatal("source critic_system.txt was not loaded")
 	}
-	// Keep room for typed examples and ordinary-name continuity guidance without
-	// deleting existing memory surfaces to meet the former text-only limit.
-	if chars := len([]rune(systemPrompt)); chars >= 22_000 {
+	// Keep room for typed examples, name continuity and the recorded state/key
+	// reuse contract without deleting existing memory surfaces. The 4.7 addition
+	// is bounded to 1,000 chars over the prior 22,000-char prompt ceiling.
+	if chars := len([]rune(systemPrompt)); chars >= 23_000 {
 		t.Fatalf("system critic prompt exceeded the compact contract including typed examples: chars=%d", chars)
 	}
 	if strings.Contains(systemPrompt, "Deterministic_Preview_Pass_JSON") {

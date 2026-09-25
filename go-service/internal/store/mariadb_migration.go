@@ -132,18 +132,18 @@ func (m *mariadbStore) GetSessionRoutingBaseline(ctx context.Context, targetSess
 		SELECT sm.id, sm.source_session_id, sm.target_session_id, sm.mode,
 		       COALESCE(MAX(cl.turn_index), 0) AS imported_through_turn
 		FROM session_migrations sm
-		JOIN session_migration_row_map rm
+		LEFT JOIN session_migration_row_map rm
 		  ON rm.migration_id = sm.id
 		 AND rm.table_name = 'chat_logs'
 		 AND rm.target_row_id IS NOT NULL
 		 AND rm.row_status <> 'rolled_back'
-		JOIN chat_logs cl
+		LEFT JOIN chat_logs cl
 		  ON cl.id = rm.target_row_id
 		 AND cl.chat_session_id = sm.target_session_id
 		WHERE sm.target_session_id = ?
 		  AND sm.status NOT IN ('rolled_back', 'rollback_partial')
 		GROUP BY sm.id, sm.source_session_id, sm.target_session_id, sm.mode
-		HAVING imported_through_turn > 0
+		HAVING imported_through_turn > 0 OR sm.mode = 'stitch_keep_sources'
 		ORDER BY sm.id DESC
 		LIMIT 1
 	`, targetID).Scan(
@@ -158,6 +158,21 @@ func (m *mariadbStore) GetSessionRoutingBaseline(ctx context.Context, targetSess
 	}
 	if err != nil {
 		return nil, err
+	}
+	if row.Mode == SessionMigrationModeStitch {
+		var note string
+		if err := m.db.QueryRowContext(ctx, `SELECT COALESCE(operator_note,'') FROM session_migrations WHERE id=?`, row.MigrationID).Scan(&note); err != nil {
+			return nil, err
+		}
+		if offset, ok := sessionStitchCurrentOffset(note); ok {
+			row.ImportedThroughTurn = offset
+			var result SessionStitchResult
+			if json.Unmarshal([]byte(note), &result) == nil && result.CurrentSourceSessionID != "" {
+				row.SourceSessionID = result.CurrentSourceSessionID
+				row.SourceSessionIDs = result.CurrentSourceSessionIDs
+				row.InputGroupAliases = result.CurrentInputGroupAliases
+			}
+		}
 	}
 	return row, nil
 }
@@ -204,10 +219,11 @@ func (m *mariadbStore) CompleteSessionMigration(ctx context.Context, req Session
 		}
 	}()
 	execution, err := completeSessionMigrationManifestTx(ctx, tx, SessionMigrationCompleteRequest{
-		SourceSessionID: sourceID,
-		TargetSessionID: targetID,
-		Mode:            mode,
-		OperatorNote:    strings.TrimSpace(req.OperatorNote),
+		SourceSessionID:         sourceID,
+		TargetSessionID:         targetID,
+		Mode:                    mode,
+		OperatorNote:            strings.TrimSpace(req.OperatorNote),
+		RebuildPublicProjection: req.RebuildPublicProjection,
 	})
 	if err != nil {
 		return nil, err
@@ -389,7 +405,7 @@ func resumeCompletedSessionMigration(ctx context.Context, db *sql.DB, sourceID, 
 		SourceLocked:          lockedAt.Valid,
 		ChromaReindexRequired: status == "copied",
 		ReadyForLive: status == "source_locked" || status == "cleanup_prepared" || status == "source_cleaned" ||
-			(mode == SessionMigrationModeCopyKeepSource && status == "vector_reindexed"),
+			((mode == SessionMigrationModeCopyKeepSource || mode == SessionMigrationModeStitch) && status == "vector_reindexed"),
 	}, nil
 }
 
@@ -546,6 +562,14 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 		}
 		targetRowsBefore[entry.Table] = rows
 	}
+	return completeSessionMigrationSnapshotTx(ctx, tx, req, sourceRows, targetRowsBefore)
+}
+
+// Both ordinary copy and ordered continuation use the same reference remapping,
+// row ledger, parity and vector publication owner. The stitch owner supplies an
+// ordered snapshot; it never inserts an intermediate source session into the DB.
+func completeSessionMigrationSnapshotTx(ctx context.Context, tx *sql.Tx, req SessionMigrationCompleteRequest, sourceRows, targetRowsBefore map[string][]sessionMigrationRow) (*sessionMigrationManifestExecution, error) {
+	manifest := SessionMigrationManifest()
 	targetStarter, err := sessionMigrationValidateManifestSnapshots(manifest, sourceRows, targetRowsBefore)
 	if err != nil {
 		return nil, err
@@ -600,6 +624,74 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 		return nil, err
 	}
 	activeSourceRevisions := sessionMigrationActiveSourceRevisions(sourceRows["memory_source_revisions"])
+	// Older copies omitted outbox receipts, although their canonical extraction
+	// remains intact. Rebuild only absent receipts through the shared projection
+	// policy. Keep the repair and copy atomic, including source receipt rollback.
+	if req.RebuildPublicProjection != nil {
+		currentByTurn := map[int]sessionMigrationRow{}
+		for _, row := range sourceRows["memory_source_revisions"] {
+			if _, active := activeSourceRevisions[row.Values["source_revision"].Text]; active &&
+				row.Values["derived_admission_state"].Text == "committed" && row.Values["derived_index_version"].Text == MemoryPublicProjectionIndex {
+				currentByTurn[sessionMigrationCellInt(row.Values["turn_index"])] = row
+			}
+		}
+		repaired := false
+		for _, memory := range sourceRows["memories"] {
+			memoryID := memory.Values["id"].Text
+			documentID := "memory:" + req.SourceSessionID + ":" + memoryID
+			if _, present := memoryProjectionOps[documentID]; present {
+				continue
+			}
+			source, present := currentByTurn[sessionMigrationCellInt(memory.Values["turn_index"])]
+			if !present {
+				continue // Existing missing-authority handling still owns absent sources.
+			}
+			if err := sessionMigrationValidateAdmissionResult(source); err != nil {
+				return nil, err
+			}
+			revision := source.Values["source_revision"].Text
+			text := strings.TrimSpace(req.RebuildPublicProjection(source.Values["derived_result_json"].Text))
+			item := &MemoryVectorOutboxItem{
+				ContractVersion: MemoryVectorOutboxContract, ChatSessionID: req.SourceSessionID,
+				SourceRevision: revision, DocumentID: documentID, Operation: "delete",
+				OperationKey:        sessionMigrationStringHash("migration_projection_repair", req.SourceSessionID, revision, documentID),
+				RequiredSourceState: "active", Status: "completed",
+			}
+			if text != "" {
+				item.Operation = "upsert"
+				document, err := json.Marshal(map[string]any{
+					"ID": documentID, "Tier": "memory", "ChatSessionID": req.SourceSessionID,
+					"SourceTable": "memories", "SourceRowID": memoryID, "SchemaVersion": "memory.v2",
+					"DocumentText": text,
+					"Metadata":     memoryVectorVerificationMetadata(revision, MemorySourceRevisionContract, MemoryPublicProjectionIndex, text),
+				})
+				if err != nil {
+					return nil, err
+				}
+				item.DocumentJSON = string(document)
+			}
+			if _, err := enqueueMemoryVectorOperation(ctx, tx, item); err != nil {
+				return nil, err
+			}
+			repaired = true
+		}
+		if repaired {
+			for _, entry := range manifest {
+				if entry.Table != "memory_vector_outbox" {
+					continue
+				}
+				plan, _ := SessionMigrationExecutionPlanFor(entry.Table)
+				sourceRows[entry.Table], err = sessionMigrationReadManifestRows(ctx, tx, entry, plan, req.SourceSessionID)
+				if err != nil {
+					return nil, err
+				}
+			}
+			memoryProjectionOps, err = sessionMigrationMemoryProjectionOperations(sourceRows["memory_vector_outbox"], sourceRows["memory_source_revisions"], req.SourceSessionID)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
 	rowMapCount := 0
 	for _, entry := range manifest {
 		if entry.Policy != SessionMigrationPolicyCopy {
@@ -667,6 +759,56 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 			return nil, fmt.Errorf("session migration deferred FK %s.%s updated %d rows", item.Table, item.Column, affected)
 		}
 	}
+	// Public projection decisions are durable input to a later copy. Preserve
+	// only the validated current decisions, not the source's queued work/leases.
+	// Vector materialization still belongs to the existing migration reindex.
+	projectionIDs := make([]string, 0, len(memoryProjectionOps))
+	for id := range memoryProjectionOps {
+		projectionIDs = append(projectionIDs, id)
+	}
+	sort.Strings(projectionIDs)
+	for _, sourceDocumentID := range projectionIDs {
+		projection := memoryProjectionOps[sourceDocumentID]
+		sourceMemoryID := strings.TrimPrefix(sourceDocumentID, "memory:"+req.SourceSessionID+":")
+		targetMemoryID, found := keyMaps.target("memories", "id", sourceMemoryID)
+		if !found { // The decision's canonical memory no longer exists.
+			continue
+		}
+		targetRevision, _ := keyMaps.target("memory_source_revisions", "source_revision", projection.SourceRevision)
+		targetDocumentID := "memory:" + req.TargetSessionID + ":" + targetMemoryID
+		item := &MemoryVectorOutboxItem{
+			ContractVersion: MemoryVectorOutboxContract, ChatSessionID: req.TargetSessionID,
+			SourceRevision: targetRevision, DocumentID: targetDocumentID, Operation: projection.Operation,
+			OperationKey:        sessionMigrationStringHash("migration_public_projection", req.TargetSessionID, targetRevision, targetDocumentID),
+			RequiredSourceState: "active", Status: "completed",
+		}
+		if projection.Operation == "upsert" {
+			document, err := json.Marshal(map[string]any{
+				"ID": targetDocumentID, "Tier": "memory", "ChatSessionID": req.TargetSessionID,
+				"SourceTable": "memories", "SourceRowID": targetMemoryID, "SchemaVersion": "memory.v2",
+				"DocumentText": projection.DocumentText,
+				"Metadata":     memoryVectorVerificationMetadata(targetRevision, MemorySourceRevisionContract, MemoryPublicProjectionIndex, projection.DocumentText),
+			})
+			if err != nil {
+				return nil, err
+			}
+			item.DocumentJSON = string(document)
+		}
+		if _, err := enqueueMemoryVectorOperation(ctx, tx, item); err != nil {
+			return nil, err
+		}
+		var targetOutboxID string
+		if err := tx.QueryRowContext(ctx, `SELECT id FROM memory_vector_outbox WHERE operation_key=?`, item.OperationKey).Scan(&targetOutboxID); err != nil {
+			return nil, err
+		}
+		sourceOutboxID := strconv.FormatInt(projection.OutboxID, 10)
+		if err := keyMaps.put("memory_vector_outbox", "id", sourceOutboxID, targetOutboxID); err != nil {
+			return nil, err
+		}
+		if err := sessionMigrationInsertArtifactKeyMapTx(ctx, tx, migrationID, "memory_vector_outbox", "id", sourceOutboxID, targetOutboxID, "alternate_key"); err != nil {
+			return nil, err
+		}
+	}
 	if err := sessionMigrationVerifyAndPersistRelationalParity(
 		ctx, tx, migrationID, manifest, sourceRows, req.SourceSessionID, req.TargetSessionID, keyMaps,
 	); err != nil {
@@ -721,10 +863,11 @@ func completeSessionMigrationManifestTx(ctx context.Context, tx *sql.Tx, req Ses
 }
 
 type sessionMigrationMemoryProjectionOperation struct {
-	OutboxID     int64
-	Operation    string
-	DocumentText string
-	SourceTurn   int
+	OutboxID       int64
+	Operation      string
+	DocumentText   string
+	SourceTurn     int
+	SourceRevision string
 }
 
 func sessionMigrationActiveSourceRevisions(rows []sessionMigrationRow) map[string]struct{} {
@@ -796,9 +939,10 @@ func sessionMigrationMemoryProjectionOperations(rows, sourceRevisions []sessionM
 		}
 		operation := strings.ToLower(strings.TrimSpace(row.Values["operation"].Text))
 		projection := sessionMigrationMemoryProjectionOperation{
-			OutboxID:   latestID[documentID],
-			Operation:  operation,
-			SourceTurn: activeRevisions[strings.TrimSpace(row.Values["source_revision"].Text)],
+			OutboxID:       latestID[documentID],
+			Operation:      operation,
+			SourceTurn:     activeRevisions[strings.TrimSpace(row.Values["source_revision"].Text)],
+			SourceRevision: strings.TrimSpace(row.Values["source_revision"].Text),
 		}
 		switch operation {
 		case "delete":
@@ -1451,6 +1595,12 @@ func sessionMigrationRemapLorebookScopeIdentity(target *sessionMigrationRow, tar
 }
 
 func sessionMigrationRemappedAdmissionResult(row sessionMigrationRow) (string, string, error) {
+	// Deletion deliberately redacts the result body but retains its historical
+	// fingerprint and admission metadata. Copy that tombstone unchanged instead
+	// of validating or rehashing it as a retained extraction result.
+	if strings.EqualFold(strings.TrimSpace(row.Values["lifecycle_state"].Text), LogicalTurnLifecycleDeleted) {
+		return "", "", nil
+	}
 	committed := strings.EqualFold(strings.TrimSpace(row.Values["derived_admission_state"].Text), "committed")
 	if strings.TrimSpace(row.Values["derived_result_hash"].Text) == "" {
 		if committed {
@@ -1759,7 +1909,9 @@ func sessionMigrationEvaluateArtifactParity(
 		}
 		evaluation.ParityState = "verified_regenerate"
 	case SessionMigrationPolicyDeleteAfterVerified:
-		if len(targetRows) != 0 {
+		// The outbox's source jobs are still cleanup-owned. Its target holds
+		// regenerated projection receipts, whose exact hash is recorded below.
+		if entry.Table != "memory_vector_outbox" && len(targetRows) != 0 {
 			return evaluation, fmt.Errorf("session migration delete-after-verified target %s was mutated", entry.Table)
 		}
 		evaluation.ParityState = "verified_delete_pending"
@@ -2495,7 +2647,7 @@ func sessionMigrationListVectorDocumentsForPlan(
 	}
 	embeddingSelect := "''"
 	if vectorPlan.EmbeddingColumn != "" {
-		embeddingSelect = "t." + sessionMigrationQuoteIdentifier(vectorPlan.EmbeddingColumn)
+		embeddingSelect = "COALESCE(t." + sessionMigrationQuoteIdentifier(vectorPlan.EmbeddingColumn) + ", '')"
 	}
 	query := `
 		SELECT ve.document_id, sm.source_session_id, sm.target_session_id,
@@ -2516,7 +2668,7 @@ func sessionMigrationListVectorDocumentsForPlan(
 		 AND arm.source_key = ve.source_row_id
 		 AND arm.row_status <> 'rolled_back'
 		JOIN ` + sessionMigrationQuoteIdentifier(table) + ` t
-		  ON CAST(t.` + sessionMigrationQuoteIdentifier(vectorPlan.IDColumn) + ` AS CHAR) = arm.target_key
+		  ON CAST(t.` + sessionMigrationQuoteIdentifier(vectorPlan.IDColumn) + ` AS CHAR CHARACTER SET utf8mb4) COLLATE utf8mb4_unicode_ci = arm.target_key
 		WHERE ve.migration_id = ? AND ve.source_table = ?
 		ORDER BY ve.document_id`
 	rows, err := db.QueryContext(ctx, query, vectorPlan.IDColumn, migrationID, table)
@@ -3314,7 +3466,7 @@ func sessionMigrationOwnedTargetRows(
 	keyMaps *sessionMigrationKeyMaps,
 ) []sessionMigrationRow {
 	if entry.Policy != SessionMigrationPolicyCopy &&
-		entry.Policy != SessionMigrationPolicyRetainAudit {
+		entry.Policy != SessionMigrationPolicyRetainAudit && entry.Table != "memory_vector_outbox" {
 		return nil
 	}
 	if len(plan.PrimaryKey) != 1 {
@@ -3368,12 +3520,12 @@ func sessionMigrationRevalidateCurrentRelationalStateTx(
 	phase string,
 	lockRanges bool,
 ) (string, error) {
-	var sourceID, targetID, status string
+	var sourceID, targetID, status, mode string
 	if err := tx.QueryRowContext(ctx, `
-		SELECT source_session_id, target_session_id, status
+		SELECT source_session_id, target_session_id, status, mode
 		FROM session_migrations
 		WHERE id = ?
-	`, migrationID).Scan(&sourceID, &targetID, &status); err != nil {
+	`, migrationID).Scan(&sourceID, &targetID, &status, &mode); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return "", ErrNotFound
 		}
@@ -3422,6 +3574,23 @@ func sessionMigrationRevalidateCurrentRelationalStateTx(
 		plan, ok := SessionMigrationExecutionPlanFor(entry.Table)
 		if !ok {
 			return "", sessionMigrationBlocker("current_manifest_plan_missing", phase, entry.Table)
+		}
+		if mode == SessionMigrationModeStitch {
+			// This operation's source is the ordered snapshot validated in its
+			// creation transaction. The editable original sessions are not that
+			// composite source. Verify the stored target snapshot, including its
+			// remapped reference values, before completing vector materialization.
+			rows, err := sessionMigrationReadManifestRowsMode(ctx, tx, entry, plan, targetID, lockRanges)
+			if err != nil {
+				return "", err
+			}
+			hash := sessionMigrationCanonicalRowsHash(entry, plan, rows, targetID, true, keyMaps)
+			want := stored[entry.Table]
+			if len(rows) != want.TargetCount || hash != want.TargetHash {
+				return "", sessionMigrationBlocker("current_target_snapshot_drift", phase, entry.Table)
+			}
+			fingerprintParts = append(fingerprintParts, entry.Table, strconv.Itoa(want.SourceCount), want.SourceHash, strconv.Itoa(len(rows)), hash)
+			continue
 		}
 		sourceRows, err := sessionMigrationReadManifestRowsMode(ctx, tx, entry, plan, sourceID, lockRanges)
 		if err != nil {
@@ -4328,7 +4497,7 @@ func rollbackSessionMigrationManifestRowsTx(ctx context.Context, tx *sql.Tx, mig
 			return nil, 0, err
 		}
 		entry, ok := sessionMigrationManifestEntryByTable(table)
-		if !ok || entry.Policy != SessionMigrationPolicyCopy {
+		if !ok || (entry.Policy != SessionMigrationPolicyCopy && entry.Table != "memory_vector_outbox") {
 			rows.Close()
 			return nil, 0, fmt.Errorf("session migration rollback blocked: unsupported mapped table %q", table)
 		}

@@ -1,10 +1,183 @@
 package httpapi
 
 import (
+	"fmt"
 	"math"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// Prompt rendering consumes the existing read-only calculation. The structured
+// value remains available to diagnostics and relevance scoring, unchanged.
+func storyTimePromptCoordinate(raw map[string]any) string {
+	raw = storyTimeCoordinate(raw)
+	if len(raw) == 0 || raw["precision"] == "unknown" || raw["observation_kind"] == "unknown" || raw["story_time"] == "unknown" {
+		return "unknown"
+	}
+	if bounds := mapFromAny(raw["range"]); len(bounds) > 0 {
+		return storyTimePromptCoordinate(mapFromAny(bounds["start"])) + " to " + storyTimePromptCoordinate(mapFromAny(bounds["end"]))
+	}
+	parts := []string{}
+	if calendar := mapFromAny(raw["calendar"]); len(calendar) > 0 {
+		parts = append(parts, "calendar "+mustCompactJSON(calendar))
+	}
+	absolute := mapFromAny(raw["absolute"])
+	if len(absolute) == 0 {
+		absolute = raw
+	}
+	if stamp := stringFromMap(absolute, "datetime"); stamp != "" {
+		parts = append(parts, stamp)
+	} else {
+		date, clock := stringFromMap(absolute, "date"), stringFromMap(absolute, "time")
+		if date != "" {
+			if clock == "" {
+				parts = append(parts, date+" (date only)")
+			} else {
+				parts = append(parts, date+" "+clock)
+			}
+		} else if clock != "" {
+			parts = append(parts, clock+" (date unknown)")
+		}
+	}
+	for _, key := range []string{"partial", "relative", "sequence", "duration"} {
+		if value := mapFromAny(raw[key]); len(value) > 0 {
+			parts = append(parts, key+" "+mustCompactJSON(value))
+		}
+	}
+	if len(parts) == 0 {
+		return "unknown"
+	}
+	if scope := stringFromMap(raw, "scene_scope"); scope != "" && scope != "current" {
+		parts = append(parts, "scene="+scope)
+	}
+	if precision := stringFromMap(raw, "precision"); precision != "" && precision != "exact" {
+		parts = append(parts, "precision="+precision)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func storyTimePromptDuration(days float64, dayOnly bool) string {
+	if dayOnly {
+		return strconv.FormatFloat(math.Abs(days), 'f', -1, 64) + " calendar days"
+	}
+	seconds := math.Round(math.Abs(days) * 86400)
+	if seconds < 1 && days != 0 {
+		return "<1s"
+	}
+	parts := []string{}
+	for _, unit := range []struct {
+		seconds float64
+		label   string
+	}{{86400, "d"}, {3600, "h"}, {60, "m"}, {1, "s"}} {
+		count := math.Floor(seconds / unit.seconds)
+		if count > 0 {
+			parts = append(parts, strconv.FormatFloat(count, 'f', 0, 64)+unit.label)
+			seconds -= count * unit.seconds
+		}
+	}
+	if len(parts) == 0 {
+		return "0s"
+	}
+	return strings.Join(parts, " ")
+}
+
+func storyTimePromptRelation(relation map[string]any, coordinates ...map[string]any) string {
+	kind := stringFromMap(relation, "relation")
+	if kind == "same_day" {
+		return "same calendar day; elapsed time unknown"
+	}
+	if kind == "same_instant" {
+		return "same instant as reference"
+	}
+	span := mapFromAny(relation["elapsed_days"])
+	minimum, minOK := storyClockNumeric(span["min"])
+	maximum, maxOK := storyClockNumeric(span["max"])
+	if kind == "unknown" || !minOK || !maxOK {
+		reason := stringFromMap(relation, "reason")
+		if reason == "" || reason == "date_or_source_anchor_unknown" {
+			return "distance unknown"
+		}
+		return "distance unknown (" + reason + ")"
+	}
+	dayOnly := relation["precision"] == "day"
+	for _, coordinate := range coordinates {
+		dayOnly = dayOnly || storyTimeBounds(coordinate).dayBased
+	}
+	// Ranged readings may contain instants or dates. Keep bounds, not a midpoint.
+	if kind == "past" || kind == "future" {
+		lo, hi := minimum, maximum
+		suffix := " before reference"
+		if kind == "future" {
+			lo, hi, suffix = -maximum, -minimum, " after reference"
+		}
+		text := storyTimePromptDuration(lo, dayOnly)
+		if minimum != maximum {
+			text += " to " + storyTimePromptDuration(hi, dayOnly)
+		}
+		return text + suffix
+	}
+	return "overlaps reference (" + storyTimePromptDuration(maximum, dayOnly) + " before to " + storyTimePromptDuration(minimum, dayOnly) + " after)"
+}
+
+func storyTimePromptReading(reading map[string]any) string {
+	parts := []string{"reference=" + storyTimePromptCoordinate(mapFromAny(reading["last_confirmed_story_clock"]))}
+	occurrence := mapFromAny(reading["occurrence_time"])
+	if len(occurrence) == 0 {
+		occurrence = mapFromAny(reading["resolved_occurrence_time"])
+	}
+	label := "event"
+	if kind := stringFromMap(mapFromAny(reading["relative"]), "target_kind"); kind != "" {
+		label += " (" + kind + ")"
+	}
+	clock := mapFromAny(reading["last_confirmed_story_clock"])
+	parts = append(parts, label+"="+storyTimePromptCoordinate(occurrence)+"; "+storyTimePromptRelation(mapFromAny(reading["current_relation"]), occurrence, clock))
+	if observed := mapFromAny(reading["observed_at"]); len(observed) > 0 {
+		label := "recorded scene"
+		if observed["resolution_source"] == "last_confirmed_clock" {
+			label += " (carried clock)"
+		}
+		parts = append(parts, label+"="+storyTimePromptCoordinate(observed)+"; "+storyTimePromptRelation(mapFromAny(reading["observation_relation"]), observed, clock))
+	}
+	if expression := stringFromMap(reading, "relative_expression"); expression != "" {
+		parts = append(parts, "original wording="+strconv.Quote(expression)+" (at source)")
+	}
+	if relative := mapFromAny(reading["relative"]); len(occurrence) == 0 && len(relative) > 0 {
+		parts = append(parts, "unresolved source-relative="+mustCompactJSON(relative))
+	}
+	return "⏳ " + strings.Join(parts, " | ")
+}
+
+func storyTimePromptSchedule(reading map[string]any) string {
+	due := mapFromAny(reading["next_due"])
+	label := "due"
+	if len(due) == 0 {
+		due = mapFromAny(reading["due"])
+	}
+	if len(due) == 0 && len(mapFromAny(reading["next_due_estimate"])) > 0 {
+		due, label = mapFromAny(reading["next_due_estimate"]), "estimated next due"
+	}
+	clock := mapFromAny(reading["last_confirmed_story_clock"])
+	parts := []string{"reference=" + storyTimePromptCoordinate(clock), label + "=" + storyTimePromptCoordinate(due) + "; " + storyTimePromptRelation(mapFromAny(reading["due_relation"]), due, clock)}
+	for _, key := range []string{"kind", "condition", "condition_evaluation", "recurrence", "last_fulfilled", "next_due_basis", "outcome", "lifecycle_transition", "due_cue"} {
+		if value := reading[key]; value != nil {
+			parts = append(parts, key+"="+prepareTurnPriorityScalarText(value))
+		}
+	}
+	return "⏳ schedule | " + strings.Join(parts, " | ")
+}
+
+func storyTimePromptNote(clock map[string]any) string {
+	coordinate := storyTimePromptCoordinate(clock)
+	if coordinate == "unknown" {
+		return ""
+	}
+	turn := ""
+	if n := intFromAny(clock["source_turn"], 0); n > 0 {
+		turn = fmt.Sprintf(" (turn %d)", n)
+	}
+	return "Last confirmed stored story clock (last accepted narration): " + coordinate + turn + ". ⏳ distances use this reference, not PC time or turn count. Recorded scene dates do not date the recalled event. Source yesterday/tomorrow is relative to its original scene. Use just-now/yesterday wording only when supported; unknown dates remain unknown. Explicit new user time movement directs the next scene."
+}
 
 // These readings are request-local calculations over admitted story coordinates.
 // They never advance a clock, infer an event from its mention, or change a status.

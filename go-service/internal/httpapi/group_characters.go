@@ -2184,6 +2184,7 @@ func (s *Server) handleCharacterStatePatch(w http.ResponseWriter, r *http.Reques
 			}
 		}
 	}
+	next.ManualPatch = store.CharacterManualPatch(*current, next)
 	if err := saver.SaveCharacterState(r.Context(), &next); err != nil {
 		if errors.Is(err, store.ErrNotEnabled) {
 			writeShadowGuard(w, r.Method+" "+r.URL.Path)
@@ -2216,7 +2217,7 @@ func (s *Server) handleCharacterStatePatch(w http.ResponseWriter, r *http.Reques
 func preserveTypedVoiceProjectionManualOverrides(currentRaw string, updates map[string]any) map[string]any {
 	current := map[string]any{}
 	if json.Unmarshal([]byte(strings.TrimSpace(currentRaw)), &current) != nil ||
-		extractionStringFromAny(current["contract_version"]) != voiceBehaviorProjectionContractVersion {
+		(extractionStringFromAny(current["contract_version"]) != voiceBehaviorProjectionContractVersion && current["manual_overrides"] == nil) {
 		return updates
 	}
 	nextRaw, exists := updates["speech_style_json"]

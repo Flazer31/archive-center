@@ -2,13 +2,236 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"database/sql"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	archiveStore "github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func TestSessionMigrationAdmittedHistoryLifecycle(t *testing.T) {
+	for _, action := range []string{"unchanged", "reroll", "delete_tail", "delete_all", "reroll_then_delete", "private_projection", "active_missing_result"} {
+		t.Run(action, func(t *testing.T) {
+			db, st := feedback43Database(t)
+			ctx := context.Background()
+			const sid = "admitted-history-source"
+			admit := func(revision string, turn int) {
+				t.Helper()
+				result := fmt.Sprintf(`{"turn_summary":"Synthetic gate event %d."}`, turn)
+				a := &archiveStore.MemoryAdmission{
+					ContractVersion: archiveStore.MemoryAdmissionContract, ChatSessionID: sid, SourceRevision: revision,
+					TurnIndex: turn, DerivationVersion: archiveStore.MemoryAdmissionContract,
+					ExtractorVersion: "critic.synthetic", IndexVersion: archiveStore.MemoryPublicProjectionIndex,
+					ResultJSON: result, CreatedAt: time.Now().UTC(),
+					Memory: &archiveStore.Memory{ChatSessionID: sid, TurnIndex: turn, SummaryJSON: result},
+					Vectors: []archiveStore.MemoryAdmissionVector{{
+						ArtifactType: "memory", Tier: "memory", SourceTable: "memories",
+						SchemaVersion: "memory.v2", DocumentText: fmt.Sprintf("Synthetic gate event %d.", turn),
+						Embedding: []float32{0.3, 0.4}, EmbeddingModel: "synthetic-vector",
+					}},
+				}
+				if action == "private_projection" {
+					a.MemoryPublicProjectionExcluded = true
+					a.Vectors = nil
+				}
+				a.ResultHash = fmt.Sprintf("%x", sha256.Sum256([]byte(strings.Join([]string{
+					a.SourceRevision, a.DerivationVersion, a.ExtractorVersion, a.IndexVersion, a.ResultJSON,
+				}, "\x1f"))))
+				if _, err := st.(archiveStore.MemoryAdmissionWriter).CommitMemoryAdmission(ctx, a); err != nil {
+					t.Fatalf("production admission: %v", err)
+				}
+			}
+			for turn := 1; turn <= 2; turn++ {
+				admit(state46Source(t, db, sid, turn), turn)
+			}
+			if action == "reroll" || action == "reroll_then_delete" {
+				r := &archiveStore.MemorySourceRevision{
+					ContractVersion: "source_acceptance_observation.v1", ChatSessionID: sid,
+					SourceRevision: "rerolled-admitted-revision", LogicalTurnID: "turn-2", TurnIndex: 2,
+					BranchState: "observed", UserContent: "Replacement user", AssistantContent: "The gate is now open.",
+					CombinedContentHash: strings.Repeat("b", 64), HashAlgorithm: "sha256", HostObservedAtMS: 1, LifecycleState: "active",
+				}
+				if err := st.(archiveStore.LogicalTurnReplacementStore).ReplaceLogicalTurn(ctx, archiveStore.LogicalTurnReplacement{
+					ChatSessionID: sid, TurnIndex: 2, UserContent: r.UserContent, AssistantContent: r.AssistantContent, SourceRevision: r,
+				}); err != nil {
+					t.Fatalf("production reroll: %v", err)
+				}
+				admit(r.SourceRevision, 2)
+			}
+			if action == "delete_tail" || action == "delete_all" || action == "reroll_then_delete" {
+				from := 2
+				if action == "delete_all" {
+					from = 1
+				}
+				if err := st.(archiveStore.LogicalTurnReplacementStore).RollbackCanonicalTail(ctx, archiveStore.LogicalTurnRollback{
+					ChatSessionID: sid, TurnIndex: from, LifecycleAction: archiveStore.LogicalTurnLifecycleDeleted,
+				}); err != nil {
+					t.Fatalf("production deletion: %v", err)
+				}
+				var redacted int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM memory_source_revisions WHERE chat_session_id=?
+					AND lifecycle_state='deleted' AND derived_admission_state='committed'
+					AND derived_result_json IS NULL AND derived_result_hash IS NOT NULL`, sid).Scan(&redacted); err != nil || redacted == 0 {
+					t.Fatalf("deletion did not produce the reported history shape: count=%d err=%v", redacted, err)
+				}
+				t.Logf("production deletion retained %d committed fingerprints and cleared their JSON", redacted)
+			}
+			type sourceRecord struct {
+				Revision, State, Admission, User, Assistant string
+				Hash, Result, Superseded                    sql.NullString
+				Updated                                     time.Time
+			}
+			read := func(session string) []sourceRecord {
+				t.Helper()
+				rows, err := db.Query(`SELECT source_revision,lifecycle_state,derived_admission_state,raw_user_content,
+					raw_assistant_content,derived_result_hash,derived_result_json,superseded_by_revision,updated_at
+					FROM memory_source_revisions WHERE chat_session_id=? ORDER BY id`, session)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer rows.Close()
+				var result []sourceRecord
+				for rows.Next() {
+					var r sourceRecord
+					if err := rows.Scan(&r.Revision, &r.State, &r.Admission, &r.User, &r.Assistant, &r.Hash, &r.Result, &r.Superseded, &r.Updated); err != nil {
+						t.Fatal(err)
+					}
+					result = append(result, r)
+				}
+				if err := rows.Err(); err != nil {
+					t.Fatal(err)
+				}
+				return result
+			}
+			if action == "active_missing_result" {
+				if _, err := db.Exec(`UPDATE memory_source_revisions SET derived_result_json=NULL WHERE chat_session_id=? AND turn_index=2`, sid); err != nil {
+					t.Fatal(err)
+				}
+				before := read(sid)
+				_, err := st.(archiveStore.SessionMigrationStore).CompleteSessionMigration(ctx, archiveStore.SessionMigrationCompleteRequest{
+					SourceSessionID: sid, TargetSessionID: "damaged-copy", Mode: archiveStore.SessionMigrationModeCopyKeepSource,
+				})
+				if err == nil || !strings.Contains(err.Error(), "committed derived result is invalid") {
+					t.Fatalf("active invalid result changed behavior: %v", err)
+				}
+				for _, entry := range archiveStore.SessionMigrationManifest() {
+					if entry.Policy != archiveStore.SessionMigrationPolicyCopy || !entry.Direct {
+						continue
+					}
+					var count int
+					if err := db.QueryRow("SELECT COUNT(*) FROM `"+entry.Table+"` WHERE `"+entry.SessionColumn+"`=?", "damaged-copy").Scan(&count); err != nil || count != 0 {
+						t.Fatalf("failed copy left %s rows=%d err=%v", entry.Table, count, err)
+					}
+				}
+				if !reflect.DeepEqual(before, read(sid)) {
+					t.Fatal("failed copy mutated source")
+				}
+				t.Log("active invalid result retains existing error; target rolled back and source preserved")
+				return
+			}
+			before := read(sid)
+			copySession := func(from, to string) int64 {
+				t.Helper()
+				result, err := st.(archiveStore.SessionMigrationStore).CompleteSessionMigration(ctx, archiveStore.SessionMigrationCompleteRequest{
+					SourceSessionID: from, TargetSessionID: to, Mode: archiveStore.SessionMigrationModeCopyKeepSource,
+				})
+				if err != nil {
+					t.Fatalf("copy %s -> %s: %v", from, to, err)
+				}
+				if result.Status != "copied" {
+					t.Fatalf("copy status=%s", result.Status)
+				}
+				for _, entry := range archiveStore.SessionMigrationManifest() {
+					if entry.Policy != archiveStore.SessionMigrationPolicyCopy {
+						continue
+					}
+					var a, b int
+					var ah, bh string
+					if err := db.QueryRow(`SELECT source_row_count,target_row_count,source_content_hash,target_content_hash
+						FROM session_migration_artifact_parity WHERE migration_id=? AND table_name=?`, result.MigrationID, entry.Table).Scan(&a, &b, &ah, &bh); err != nil {
+						t.Fatal(err)
+					}
+					if a != b || ah != bh {
+						t.Fatalf("copy parity differs for %s", entry.Table)
+					}
+				}
+				original, copied := read(from), read(to)
+				if len(original) != len(copied) {
+					t.Fatal("source history rows lost")
+				}
+				for i, r := range original {
+					c := copied[i]
+					if r.Revision == c.Revision {
+						t.Fatal("source revision was not remapped")
+					}
+					if r.State != c.State || r.User != c.User || r.Assistant != c.Assistant || r.Result != c.Result || r.Admission != c.Admission || !r.Updated.Equal(c.Updated) {
+						t.Fatal("copied history or timestamps changed")
+					}
+					if r.State == "deleted" {
+						if r.Hash != c.Hash || c.Result.Valid || c.User != "" || c.Assistant != "" {
+							t.Fatal("deleted history was restored or its fingerprint rewritten")
+						}
+					} else if r.Hash == c.Hash {
+						t.Fatal("retained result was not rehashed for the new revision")
+					}
+				}
+				if !reflect.DeepEqual(before, read(sid)) {
+					t.Fatal("copy modified original source history")
+				}
+				var memories, receipts, pending, public int
+				if err := db.QueryRow(`SELECT COUNT(*) FROM memories WHERE chat_session_id=?`, to).Scan(&memories); err != nil {
+					t.Fatal(err)
+				}
+				if err := db.QueryRow(`SELECT COUNT(*),COALESCE(SUM(status<>'completed'),0),COALESCE(SUM(operation='upsert'),0) FROM memory_vector_outbox WHERE chat_session_id=?`, to).Scan(&receipts, &pending, &public); err != nil {
+					t.Fatal(err)
+				}
+				if receipts != memories || pending != 0 {
+					t.Fatalf("projection receipts=%d memories=%d queued=%d", receipts, memories, pending)
+				}
+				if action == "private_projection" && public != 0 {
+					t.Fatal("excluded private memory became public")
+				}
+				return result.MigrationID
+			}
+			copySession(sid, "admitted-history-copy")
+			copySession(sid, "admitted-history-copy")
+			lastMigration := copySession("admitted-history-copy", "admitted-history-copy-again")
+			// Exercise the relational proof used by reindex with synthetic vector
+			// readback. This is a DB contract test, not a live Chroma assertion.
+			vectors, err := st.(archiveStore.SessionMigrationVectorStore).ListSessionMigrationVectorDocuments(ctx, lastMigration)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var vectorIDs []string
+			for _, doc := range vectors {
+				vectorIDs = append(vectorIDs, doc.ID)
+			}
+			parity, err := st.(archiveStore.SessionMigrationVectorParityStore).VerifySessionMigrationVectorParity(ctx, lastMigration, archiveStore.SessionMigrationProofOperationSourceLock, vectorIDs)
+			if err != nil || !parity.Verified {
+				t.Fatalf("reindex relational proof failed: %v", err)
+			}
+			if _, err := st.(archiveStore.SessionMigrationRecoveryStore).RollbackSessionMigration(ctx, lastMigration, "synthetic rollback"); err != nil {
+				t.Fatalf("rollback copied receipts: %v", err)
+			}
+			for _, table := range []string{"memory_source_revisions", "memories", "memory_vector_outbox"} {
+				var count int
+				if err := db.QueryRow("SELECT COUNT(*) FROM " + table + " WHERE chat_session_id='admitted-history-copy-again'").Scan(&count); err != nil || count != 0 {
+					t.Fatalf("rollback left %s rows=%d err=%v", table, count, err)
+				}
+			}
+			if !reflect.DeepEqual(before, read(sid)) {
+				t.Fatal("rollback modified original source")
+			}
+			t.Log("copy, retry and copy-of-copy passed; all manifest parity, source history and deletion state preserved")
+		})
+	}
+}
 
 func TestSessionMigrationMissingEvidenceAfterReroll(t *testing.T) {
 	db, st := feedback43Database(t)

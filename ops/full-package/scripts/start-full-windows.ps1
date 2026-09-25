@@ -714,12 +714,40 @@ function Wait-BackendMainReady {
     )
 
     $lastError = ""
+    $lastRecovery = ""
     for ($i = 0; $i -lt $TimeoutSeconds; $i++) {
         if ($Process.HasExited) {
             return [pscustomobject]@{ Ready = $false; Detail = "backend exited with code $($Process.ExitCode)" }
         }
         try {
-            $ready = Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:$Port/ready" -TimeoutSec 2
+            $ready = $null
+            try {
+                $ready = Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:$Port/ready" -TimeoutSec 2
+            } catch {
+                # /ready correctly stays HTTP 503 during index recovery. Read
+                # its status without pretending the vector service is ready.
+                $body = [string]$_.ErrorDetails.Message
+                if ([string]::IsNullOrWhiteSpace($body) -and $null -ne $_.Exception.Response -and
+                    $_.Exception.Response.PSObject.Methods['GetResponseStream']) {
+                    $reader = New-Object System.IO.StreamReader($_.Exception.Response.GetResponseStream())
+                    try { $body = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                }
+                try { $ready = $body | ConvertFrom-Json -ErrorAction Stop } catch { }
+                if ($null -eq $ready) { throw }
+            }
+            $recovery = [string]$ready.checks.chromadb_recovery
+            if ($recovery -in @('running', 'waiting')) {
+                if ($recovery -ne $lastRecovery) {
+                    Write-Host "Archive Center index recovery: $recovery. Management is available; update completion is waiting."
+                    $lastRecovery = $recovery
+                }
+                # Recovery is not a failed launch. Retain the pending update
+                # and give ordinary startup errors their original wait window.
+                $i = -1
+                Start-Sleep -Seconds 1
+                continue
+            }
+            $lastRecovery = ""
             # Reference-vector degradation is intentionally not a failure here.
             if ($ready.ready -eq $true) {
                 $version = Invoke-RestMethod -Method GET -Uri "http://127.0.0.1:$Port/version" -TimeoutSec 2

@@ -704,11 +704,17 @@ func (m *mariadbStore) SaveAuditLog(ctx context.Context, a *AuditLog) (resultErr
 	if err := m.ensureDB(); err != nil {
 		return err
 	}
+	// An unresolved turn uses -1 in request diagnostics, not a database row ID.
+	// Keep those diagnostics while representing the absent audit target as NULL.
+	var targetID any = a.TargetID
+	if a.TargetID < 0 {
+		targetID = nil
+	}
 	_, err := m.db.ExecContext(ctx, `
 		INSERT INTO audit_logs (created_at, event_type, chat_session_id, target_type, target_id, summary, details_json, source)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 	`, nonZeroTime(a.CreatedAt), a.EventType, nullableString(a.ChatSessionID), nullableString(a.TargetType),
-		a.TargetID, nullableString(a.Summary), nullableString(a.DetailsJSON), nullableString(a.Source))
+		targetID, nullableString(a.Summary), nullableString(a.DetailsJSON), nullableString(a.Source))
 	return err
 }
 

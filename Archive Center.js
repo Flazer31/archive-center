@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.6.1
+//@display-name Archive Center 4.7.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.6.1
+//@version 4.7.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.6.1";
+  const VERSION = "4.7.0";
   const BUILD_ID = VERSION;
   const BUILD_CHANNEL = "stable";
-  const BUILD_TIME = "2026-09-21 KST";
-  const BUILD_NOTES = "Archive Center 4.6.1";
+  const BUILD_TIME = "2026-09-25 KST";
+  const BUILD_NOTES = "Archive Center 4.7.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -102,6 +102,7 @@
     dbEnabled: true,
     supervisorEnabled: true,
     injectionEnabled: true,
+    referenceInjectionEnabled: true,
     lorebookReferenceMode: "reference_assist",
     debug: false,
     topK: 5,
@@ -112,11 +113,11 @@
     auxiliaryInjectionPlacement: "auto",
     auxiliaryInjectionAnchorMarker: "",
     // ── Context Injection Budget (Sprint 3-B, Phase 2-3 revised) ──
-    maxInjectionChars: 18000,        // 일반 기억 자동 주입 기본 상한
+    maxInjectionChars: 32000,        // 일반 기억 자동 주입 기본 상한
     referenceInjectionMaxChars: 3000, // 원작 DB 참조 전용 상한
     lorebookReferenceMaxChars: 3000,  // 활성 로어북 참조 전용 상한
-    injectionBudgetProfileVersion: "p409_18000_base_v1",
-    injectionBudgetExtraChars: 0,    // 자동 산정 예산 위에 허용할 추가 상한
+    injectionBudgetProfileVersion: "p47_32000_base_v1",
+    injectionBudgetExtraChars: 4000, // 자동 산정 예산 위에 허용할 추가 상한
     memoryDeliveryBudgetMode: "auto",
     memoryTransportMode: "text",
     memoryDeliveryBudgets: Object.freeze({
@@ -221,6 +222,7 @@
     uiLanguage: "ko",                // ko / en / ja — UI 표시 언어
     uiDetailMode: "full",            // full / reduced_info / status_only
     turnWorkflowHUDEnabled: true,    // RisuAI 우측 턴 진행 HUD 표시
+    turnWorkflowHUDMode: "normal",   // 화면 표시만 선택: normal | compact
   });
 
   // ──────────────────────────────────────────────────────────────
@@ -241,6 +243,8 @@
       "settings.tab.extensions": "추가 기능",
       "settings.tab.lorebook": "로어북",
       "settings.tab.reference": "원작 DB",
+      "settings.referenceUsage.enabled": "원작 DB 사용",
+      "settings.referenceUsage.help": "연결된 원작 DB를 응답의 참고 자료로 사용합니다. 꺼도 저장된 자료와 세션 연결은 유지됩니다. 이 탭에서 저장하면 다음 요청부터 적용됩니다.",
       "settings.tab.prompt": "프롬프트",
       "settings.tab.general": "일반",
       "settings.tab.settings": "설정",
@@ -1153,6 +1157,11 @@
       "settings.label.uiLanguage": "UI 언어",
       "settings.label.turnWorkflowHUDEnabled": "플로팅 UI",
       "settings.turnWorkflowHUDEnabled.on": "켜기",
+      "settings.label.turnWorkflowHUDMode": "플로팅 UI 표시 방식",
+      "settings.turnWorkflowHUDMode.normal": "노멀",
+      "settings.turnWorkflowHUDMode.compact": "축약",
+      "settings.hint.turnWorkflowHUDMode": "축약은 작업 이름·시간·실패 여부만 표시합니다. 오류 내용은 대시보드에서 확인하세요.",
+      "dash.workflowErrors": "작업 오류·안내",
       "settings.hint.turnWorkflowHUDEnabled": "현재 턴 진행, LLM 호출 시간, 생성·저장 결과를 화면 오른쪽에 표시합니다. 끄면 플로팅 UI가 나타나지 않습니다.",
       "settings.option.auxiliaryInjectionPlacement.after_anchor_marker": "앵커 마커 뒤",
       "settings.option.auxiliaryInjectionPlacement.after_first_system": "기존 방식: 첫 system 뒤",
@@ -1300,6 +1309,10 @@
       "turn_hud.completed_with_warning": "경고와 함께 저장 완료",
       "turn_hud.invalidated": "작업 중단",
       "turn_hud.failed": "처리 오류",
+      "turn_hud.stopped": "중지",
+      "turn_hud.main_response": "본문 응답",
+      "turn_hud.error.host_generation": "본문 요청 오류가 표시되었습니다.",
+      "turn_hud.error.host_generation_stopped": "출력이 중단되었습니다.",
       "turn_hud.tap_to_dismiss": "눌러서 닫기",
       "turn_hud.retryable": "다시 시도할 수 있음",
       "turn_hud.not_retryable": "자동 재시도 불가",
@@ -1349,6 +1362,10 @@
       "turn_hud.transport.connection_failed": "백엔드에 연결하지 못했습니다.",
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.preprocessing.title": "전처리 담당별 시간",
+      "turn_hud.preprocessing.compact_enabled": "전처리 ON",
+      "turn_hud.preprocessing.compact_disabled": "전처리 OFF",
+      "turn_hud.preprocessing.compact_running": "전처리 중",
+      "turn_hud.preprocessing.compact_unavailable": "전처리 ?",
       "turn_hud.preprocessing.requests": "전처리 요청",
       "turn_hud.preprocessing.running_count": "{running}/{total}개 진행 중",
       "turn_hud.preprocessing.event_recent": "사건·진행",
@@ -1477,7 +1494,7 @@
       "sessionNormalize.completed": "콜드 스타트 완료",
       "sessionNormalize.completedWithErrors": "오류를 포함해 종료됨",
       "sessionNormalize.failed": "콜드 스타트 실패",
-      "sessionNormalize.description": "현재 채팅과 DB를 점검하고 누락된 원문·기억·관계·장기 요약·벡터 색인을 복구합니다. 삭제나 롤백은 수행하지 않습니다.",
+      "sessionNormalize.description": "현재 대화 목록과 DB를 대조해 삭제된 끝부분의 기억을 정리하고, 남아 있는 대화의 누락 원문·기억·관계·장기 요약·벡터 색인을 복구합니다.",
       "sessionNormalize.execute": "세션 정상화 실행",
       "sessionNormalize.normalizing": "정상화 중…",
       "sessionNormalize.stageLabel": "현재 단계",
@@ -1516,6 +1533,23 @@
       "sessionNormalize.error.generic": "이 턴을 처리하지 못했습니다. 기술 정보에서 원문 오류를 확인하세요.",
       "turn_hud.error.raw_turn_persist_failed": "입력 저장에 실패했습니다.",
       "turn_hud.error.critic_llm_failed": "평론가 호출에 실패했습니다.",
+      "turn_hud.error_code.CRITIC_PROVIDER_TIMEOUT": "평론가 응답 시간 초과",
+      "turn_hud.error_code.CRITIC_PROVIDER_CANCELED": "평론가 호출 취소",
+      "turn_hud.error_code.CRITIC_OUTPUT_TOKEN_EXHAUSTED": "평론가 출력 한도 초과",
+      "turn_hud.error_code.CRITIC_EMPTY_RESPONSE": "평론가 응답 없음",
+      "turn_hud.error_code.CRITIC_REQUEST_BUILD_FAILED": "평론가 요청 생성 실패",
+      "turn_hud.error_code.CRITIC_CONFIG_INVALID": "평론가 설정 오류",
+      "turn_hud.error_code.CRITIC_PROVIDER_CALL_FAILED": "평론가 연결 실패",
+      "turn_hud.error_code.CRITIC_PROVIDER_HTTP_ERROR": "평론가 제공자 오류",
+      "turn_hud.error_code.CRITIC_CONFIG_MISSING": "평론가 설정 누락",
+      "turn_hud.error_code.CRITIC_INPUT_EMPTY": "평론가 입력 없음",
+      "turn_hud.error_code.CRITIC_INPUT_SNAPSHOT_INVALID": "평론가 입력 자료 오류",
+      "turn_hud.error_code.CRITIC_JSON_MISSING": "평론가 JSON 응답 없음",
+      "turn_hud.error_code.CRITIC_JSON_PARSE_FAILED": "평론가 JSON 해석 실패",
+      "turn_hud.error_code.CRITIC_JSON_TRUNCATED": "평론가 응답 잘림",
+      "turn_hud.error_code.CRITIC_SCHEMA_INVALID": "평론가 응답 형식 오류",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_REACHED": "평론가 재시도 횟수 소진",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_UNCONFIGURED": "평론가 재시도 설정 오류",
       "turn_hud.error.derived_persist_failed": "요약·근거·관계 저장에 실패했습니다.",
       "turn_hud.recovery.retry_derived_turn": "이 턴 복구 재시도",
       "turn_hud.recovery.confirm_title": "턴 기억 복구",
@@ -1546,6 +1580,8 @@
       "settings.tab.extensions": "Extensions",
       "settings.tab.lorebook": "Lorebook",
       "settings.tab.reference": "Original database",
+      "settings.referenceUsage.enabled": "Use original-work DB",
+      "settings.referenceUsage.help": "Use linked original-work data as response reference material. Turning this off keeps stored data and session links. Save here to apply from the next request.",
       "settings.tab.prompt": "Prompts",
       "settings.tab.general": "General",
       "settings.tab.settings": "Settings",
@@ -1651,6 +1687,11 @@
       "settings.label.uiDetailMode": "UI Detail Level",
       "settings.label.turnWorkflowHUDEnabled": "Floating UI",
       "settings.turnWorkflowHUDEnabled.on": "Enabled",
+      "settings.label.turnWorkflowHUDMode": "Floating UI display",
+      "settings.turnWorkflowHUDMode.normal": "Normal",
+      "settings.turnWorkflowHUDMode.compact": "Compact",
+      "settings.hint.turnWorkflowHUDMode": "Compact shows only the task, duration and failure status. Error details are on the dashboard.",
+      "dash.workflowErrors": "Workflow errors and notices",
       "settings.hint.turnWorkflowHUDEnabled": "Shows turn progress, LLM call time, and generated or saved results on the right. Disable it to hide the floating UI.",
       "settings.uiDetailMode.full": "Full",
       "settings.uiDetailMode.reduced_info": "Reduced",
@@ -2605,6 +2646,10 @@
       "turn_hud.completed_with_warning": "Saved with warnings",
       "turn_hud.invalidated": "Operation stopped",
       "turn_hud.failed": "Processing error",
+      "turn_hud.stopped": "Stopped",
+      "turn_hud.main_response": "Main response",
+      "turn_hud.error.host_generation": "The host reported a response error.",
+      "turn_hud.error.host_generation_stopped": "Response generation stopped.",
       "turn_hud.tap_to_dismiss": "Tap to dismiss",
       "turn_hud.retryable": "Retry is available",
       "turn_hud.not_retryable": "Automatic retry unavailable",
@@ -2654,6 +2699,10 @@
       "turn_hud.transport.connection_failed": "Could not connect to the backend.",
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.preprocessing.title": "Preprocessing call times",
+      "turn_hud.preprocessing.compact_enabled": "Prep ON",
+      "turn_hud.preprocessing.compact_disabled": "Prep OFF",
+      "turn_hud.preprocessing.compact_running": "Prep active",
+      "turn_hud.preprocessing.compact_unavailable": "Prep ?",
       "turn_hud.preprocessing.requests": "Preprocessing requests",
       "turn_hud.preprocessing.running_count": "{running}/{total} running",
       "turn_hud.preprocessing.event_recent": "Events and recent history",
@@ -2782,7 +2831,7 @@
       "sessionNormalize.completed": "Cold start complete",
       "sessionNormalize.completedWithErrors": "Finished with errors",
       "sessionNormalize.failed": "Cold start failed",
-      "sessionNormalize.description": "Checks the current chat against the database and restores missing source turns, memories, relationships, long-range summaries, and vector indexes. It does not delete or roll back data.",
+      "sessionNormalize.description": "Reconciles deleted turns at the end of the current chat, then restores missing sources, memories, relationships, long-range summaries, and vector indexes for the remaining conversation.",
       "sessionNormalize.execute": "Run session normalize",
       "sessionNormalize.normalizing": "Normalizing…",
       "sessionNormalize.stageLabel": "Current stage",
@@ -2821,6 +2870,23 @@
       "sessionNormalize.error.generic": "This turn could not be processed. Open Technical details to inspect the original error.",
       "turn_hud.error.raw_turn_persist_failed": "Failed to save input.",
       "turn_hud.error.critic_llm_failed": "The Critic call failed.",
+      "turn_hud.error_code.CRITIC_PROVIDER_TIMEOUT": "Critic response timed out",
+      "turn_hud.error_code.CRITIC_PROVIDER_CANCELED": "Critic call cancelled",
+      "turn_hud.error_code.CRITIC_OUTPUT_TOKEN_EXHAUSTED": "Critic output limit reached",
+      "turn_hud.error_code.CRITIC_EMPTY_RESPONSE": "Empty Critic response",
+      "turn_hud.error_code.CRITIC_REQUEST_BUILD_FAILED": "Critic request build failed",
+      "turn_hud.error_code.CRITIC_CONFIG_INVALID": "Invalid Critic settings",
+      "turn_hud.error_code.CRITIC_PROVIDER_CALL_FAILED": "Critic connection failed",
+      "turn_hud.error_code.CRITIC_PROVIDER_HTTP_ERROR": "Critic provider error",
+      "turn_hud.error_code.CRITIC_CONFIG_MISSING": "Missing Critic settings",
+      "turn_hud.error_code.CRITIC_INPUT_EMPTY": "Empty Critic input",
+      "turn_hud.error_code.CRITIC_INPUT_SNAPSHOT_INVALID": "Invalid Critic input snapshot",
+      "turn_hud.error_code.CRITIC_JSON_MISSING": "Critic JSON response missing",
+      "turn_hud.error_code.CRITIC_JSON_PARSE_FAILED": "Invalid Critic JSON",
+      "turn_hud.error_code.CRITIC_JSON_TRUNCATED": "Truncated Critic response",
+      "turn_hud.error_code.CRITIC_SCHEMA_INVALID": "Invalid Critic response format",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_REACHED": "Critic retries exhausted",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_UNCONFIGURED": "Invalid Critic retry settings",
       "turn_hud.error.derived_persist_failed": "Failed to save summaries, evidence, or relationships.",
       "turn_hud.recovery.retry_derived_turn": "Retry this turn",
       "turn_hud.recovery.confirm_title": "Recover turn memories",
@@ -2851,6 +2917,8 @@
       "settings.tab.extensions": "追加機能",
       "settings.tab.lorebook": "ロアブック",
       "settings.tab.reference": "原作DB",
+      "settings.referenceUsage.enabled": "原作DBを使用",
+      "settings.referenceUsage.help": "接続した原作DBを応答の参考資料として使用します。オフにしても保存済みの資料とセッションの接続は維持されます。このタブで保存すると次のリクエストから適用されます。",
       "settings.tab.prompt": "プロンプト",
       "settings.tab.general": "一般",
       "settings.tab.settings": "設定",
@@ -2956,6 +3024,11 @@
       "settings.label.uiDetailMode": "UI情報量",
       "settings.label.turnWorkflowHUDEnabled": "フローティングUI",
       "settings.turnWorkflowHUDEnabled.on": "表示する",
+      "settings.label.turnWorkflowHUDMode": "フローティングUIの表示",
+      "settings.turnWorkflowHUDMode.normal": "ノーマル",
+      "settings.turnWorkflowHUDMode.compact": "コンパクト",
+      "settings.hint.turnWorkflowHUDMode": "コンパクト表示は処理名・所要時間・失敗の有無のみ表示します。エラーの詳細はダッシュボードで確認できます。",
+      "dash.workflowErrors": "処理エラー・お知らせ",
       "settings.hint.turnWorkflowHUDEnabled": "現在のターン進行、LLM呼び出し時間、生成・保存結果を右側に表示します。無効にするとフローティングUIは表示されません。",
       "settings.uiDetailMode.full": "全体",
       "settings.uiDetailMode.reduced_info": "要約",
@@ -3908,6 +3981,10 @@
       "turn_hud.completed_with_warning": "警告付きで保存完了",
       "turn_hud.invalidated": "処理中断",
       "turn_hud.failed": "処理エラー",
+      "turn_hud.stopped": "停止",
+      "turn_hud.main_response": "本文応答",
+      "turn_hud.error.host_generation": "本文リクエストのエラーが表示されました。",
+      "turn_hud.error.host_generation_stopped": "応答の生成が中断されました。",
       "turn_hud.tap_to_dismiss": "タップして閉じる",
       "turn_hud.retryable": "再試行できます",
       "turn_hud.not_retryable": "自動再試行はできません",
@@ -3957,6 +4034,10 @@
       "turn_hud.transport.connection_failed": "バックエンドに接続できませんでした。",
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.preprocessing.title": "前処理の担当別呼び出し時間",
+      "turn_hud.preprocessing.compact_enabled": "前処理 ON",
+      "turn_hud.preprocessing.compact_disabled": "前処理 OFF",
+      "turn_hud.preprocessing.compact_running": "前処理中",
+      "turn_hud.preprocessing.compact_unavailable": "前処理 ?",
       "turn_hud.preprocessing.requests": "前処理リクエスト",
       "turn_hud.preprocessing.running_count": "{running}/{total}件実行中",
       "turn_hud.preprocessing.event_recent": "事件・進行履歴",
@@ -4124,6 +4205,23 @@
       "sessionNormalize.error.generic": "このターンを処理できませんでした。技術情報で元のエラーを確認してください。",
       "turn_hud.error.raw_turn_persist_failed": "入力の保存に失敗しました。",
       "turn_hud.error.critic_llm_failed": "批評家の呼び出しに失敗しました。",
+      "turn_hud.error_code.CRITIC_PROVIDER_TIMEOUT": "批評家の応答がタイムアウト",
+      "turn_hud.error_code.CRITIC_PROVIDER_CANCELED": "批評家の呼び出しをキャンセル",
+      "turn_hud.error_code.CRITIC_OUTPUT_TOKEN_EXHAUSTED": "批評家の出力上限に到達",
+      "turn_hud.error_code.CRITIC_EMPTY_RESPONSE": "批評家の応答が空です",
+      "turn_hud.error_code.CRITIC_REQUEST_BUILD_FAILED": "批評家のリクエスト作成に失敗",
+      "turn_hud.error_code.CRITIC_CONFIG_INVALID": "批評家の設定エラー",
+      "turn_hud.error_code.CRITIC_PROVIDER_CALL_FAILED": "批評家への接続に失敗",
+      "turn_hud.error_code.CRITIC_PROVIDER_HTTP_ERROR": "批評家のプロバイダーエラー",
+      "turn_hud.error_code.CRITIC_CONFIG_MISSING": "批評家の設定が未入力",
+      "turn_hud.error_code.CRITIC_INPUT_EMPTY": "批評家への入力が空です",
+      "turn_hud.error_code.CRITIC_INPUT_SNAPSHOT_INVALID": "批評家の入力データエラー",
+      "turn_hud.error_code.CRITIC_JSON_MISSING": "批評家のJSON応答がありません",
+      "turn_hud.error_code.CRITIC_JSON_PARSE_FAILED": "批評家のJSON解析に失敗",
+      "turn_hud.error_code.CRITIC_JSON_TRUNCATED": "批評家の応答が途中で終了",
+      "turn_hud.error_code.CRITIC_SCHEMA_INVALID": "批評家の応答形式エラー",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_REACHED": "批評家の再試行回数を消化",
+      "turn_hud.error_code.CRITIC_RETRY_LIMIT_UNCONFIGURED": "批評家の再試行設定エラー",
       "turn_hud.error.derived_persist_failed": "要約・根拠・関係の保存に失敗しました。",
       "turn_hud.recovery.retry_derived_turn": "このターンを再復旧",
       "turn_hud.recovery.confirm_title": "ターン記憶の復旧",
@@ -7130,13 +7228,13 @@
     }
   }
 
-  function buildSessionNormalizeCompletedTurnPairs(activeChat) {
+  async function buildSessionNormalizeCompletedTurnPairs(activeChat) {
     const result = { available: false, pairs: [] };
     try {
       if (!activeChat || typeof activeChat !== "object" || !Array.isArray(activeChat.message)) return result;
       result.available = true;
       result.pairs = buildCompletedTurnPairsFromActiveChatMessages(
-        extractActiveChatComparableMessages(activeChat),
+        await extractActiveChatOriginalMessages(activeChat),
         { preserveAllUserInputs: true, source: "risu_get_chat_from_index_session_normalize" },
       );
     } catch (err) {
@@ -7585,7 +7683,7 @@
   async function getCurrentActiveChatComparableMessages(sessionId, hostContext = null) {
     try {
       const resolved = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
-      return resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
+      return await extractActiveChatOriginalMessages(resolved.chat);
     } catch (err) {
       debugLog("getCurrentActiveChatComparableMessages failed:", err && err.message);
       return [];
@@ -8016,7 +8114,7 @@
   async function resolveActiveChatCompletedTurnsForRoutingBaseline(sessionId, hostContext = null) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sessionId || "", hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       const latestPair = pairs.length > 0 ? pairs[pairs.length - 1] : { observedPairOrdinal: 0 };
       const resolution = await requestBackendSessionRoutingTurnResolution(sessionId, "visible_completed", latestPair);
@@ -8137,7 +8235,7 @@
       if (!wantedAssistant) return null;
       const wantedUser = normalizeTurnPairCompareText(userContent);
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
@@ -8169,7 +8267,7 @@
       const wantedUser = normalizeTurnPairCompareText(userContent);
       if (!sid || !wantedUser) return null;
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
@@ -8198,7 +8296,7 @@
       const sid = String(sessionId || "").trim();
       if (!sid) return null;
       const resolvedActiveChat = await resolveCurrentActiveChatObject(sid, hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       for (let i = pairs.length - 1; i >= 0; i--) {
         const pair = pairs[i];
@@ -8434,7 +8532,7 @@
       if (marker.hostChatId && chatId && marker.hostChatId !== chatId) {
         return { status: "skipped", reason: "pending_host_chat_not_active" };
       }
-      const comparable = resolved.chat ? extractActiveChatComparableMessages(resolved.chat) : [];
+      const comparable = await extractActiveChatOriginalMessages(resolved.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(comparable, {
         source: "risu_next_host_signal_active_chat",
       });
@@ -8613,7 +8711,7 @@
         .filter(function(msg) {
           if (!msg || (msg.role !== "user" && msg.role !== "assistant")) return false;
           if (msg.role === "user") return true;
-          return !!String(msg.content || "").trim();
+          return msg.translationOriginalUnavailable === true || !!String(msg.content || "").trim();
         });
       let pendingUser = "";
       let pendingAssistantCandidates = [];
@@ -8663,7 +8761,7 @@
         const msg = comparable[i];
         const rawContent = String(msg.content || "");
         const content = rawContent.trim();
-        if (!content && msg.role !== "user") continue;
+        if (!content && msg.role !== "user" && !msg.translationOriginalUnavailable) continue;
         if (msg.role === "user") {
           if (!groupHasUser || groupHasAssistant) {
             if (pendingUser && pendingAssistantCandidates.length > 0) emitPending(i);
@@ -8690,6 +8788,7 @@
         } else if (msg.role === "assistant") {
           if (groupHasUser) groupHasAssistant = true;
           if (!pendingUser) continue; // leading assistant messages are turn 0 starter candidates.
+          if (msg.translationOriginalUnavailable) pendingAssistantCandidates = [];
           const assistantContent = normalizeAssistantPersistenceCandidate(content);
           if (assistantContent) {
             pendingAssistantCandidates.push({
@@ -9119,7 +9218,7 @@
       const resolvedActiveChat = identityPreflight.resolvedActiveChat || { chat: null };
       const rawMessages = Array.isArray(identityPreflight.rawMessages) ? identityPreflight.rawMessages : [];
       const routingContext = String(identityPreflight.routingContext || "");
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       const assistantOnlyCount = buildRollbackAssistantObservations(rawMessages).filter(function(observation) {
         return observation
@@ -9230,7 +9329,7 @@
       identity.messageCount = extractActiveChatMessageCount(activeChat);
       if (Array.isArray(activeChat.message)) {
         identity.completedTurnCount = buildCompletedTurnPairsFromActiveChatMessages(
-          extractActiveChatComparableMessages(activeChat)
+          await extractActiveChatOriginalMessages(activeChat)
         ).length;
         let assistantIndex = -1;
         for (let index = activeChat.message.length - 1; index >= 0; index--) {
@@ -11359,6 +11458,8 @@
       markerBlocks: 0,
       modelSourceBlocks: 0,
       displayFallbackBlocks: 0,
+      unavailableOriginalBlocks: 0,
+      gigaOriginalBlocks: 0,
     };
 
     function collectMarkerIds(messages) {
@@ -11408,7 +11509,8 @@
         if (!message || message.role !== "assistant" || typeof message.content !== "string") return message;
         markerPattern.lastIndex = 0;
         let changed = false;
-        const content = message.content.replace(markerPattern, function(_whole, id, translatedText) {
+        let unavailable = false;
+        let content = message.content.replace(markerPattern, function(_whole, id) {
           changed = true;
           stats.markerBlocks += 1;
           const modelText = modelTextById.get(String(id || ""));
@@ -11416,10 +11518,30 @@
             stats.modelSourceBlocks += 1;
             return modelText;
           }
-          stats.displayFallbackBlocks += 1;
-          return String(translatedText || "");
+          stats.unavailableOriginalBlocks += 1;
+          unavailable = true;
+          return "";
         });
-        return changed ? { ...message, content } : message;
+        if (/<!--\s*yumi-tr:v1:/i.test(content)) {
+          stats.unavailableOriginalBlocks += 1;
+          unavailable = true;
+        }
+        const giga = extractGigaTransCanonicalAssistantText(content);
+        if (giga) {
+          changed = true;
+          if (giga.applied) {
+            content = giga.canonicalText;
+            stats.gigaOriginalBlocks += giga.blockCount;
+          } else {
+            stats.unavailableOriginalBlocks += 1;
+            unavailable = true;
+          }
+        }
+        // A missing source is not permission to store the translated display.
+        // Keep the Host message and return only an Archive-owned read copy.
+        return unavailable
+          ? { ...message, content: "", translationOriginalUnavailable: true }
+          : changed ? { ...message, content } : message;
       });
     }
 
@@ -11428,6 +11550,26 @@
       activeMessages: canonicalizeMessages(activeSource),
       stats,
     };
+  }
+
+  async function extractActiveChatOriginalMessages(activeChat) {
+    const messages = activeChat ? extractActiveChatComparableMessages(activeChat) : [];
+    return (await buildYumiV1ArchiveReadContext([], messages, activeChat)).activeMessages;
+  }
+
+  async function readTranslationOriginalsForArchive(messages, sessionId, hostContext = null) {
+    const needsStoredSource = (messages || []).some(message => message && message.role === "assistant"
+      && /<!--\s*yumi-tr:v1:/i.test(String(message.content || "")));
+    const resolved = needsStoredSource ? await resolveCurrentActiveChatObject(sessionId, hostContext) : null;
+    const result = await buildYumiV1ArchiveReadContext(messages, [], resolved && resolved.chat);
+    if (result.stats.unavailableOriginalBlocks > 0) {
+      updateRuntimeState("lastCompleteTurnStatus", "warn", {
+        reason_code: "translation_original_unavailable",
+        detail: "번역 전 원문을 읽을 수 없어 번역문을 기억으로 저장하지 않았습니다.",
+        sessionId, unavailableOriginalBlocks: result.stats.unavailableOriginalBlocks,
+      });
+    }
+    return result.payloadMessages;
   }
 
   function normalizeSourceSearchLlmProvider(value, defaultVal = DEFAULT_SETTINGS.sourceSearchPlannerProvider) {
@@ -11811,8 +11953,9 @@
     // Sprint 3-B: injection budget
     merged.maxInjectionChars = Math.max(0, Math.floor(Number(merged.maxInjectionChars) || DEFAULT_SETTINGS.maxInjectionChars));
     merged.referenceInjectionMaxChars = sanitizeNumber(merged.referenceInjectionMaxChars, DEFAULT_SETTINGS.referenceInjectionMaxChars, 0, 30000);
+    merged.referenceInjectionEnabled = merged.referenceInjectionEnabled !== false;
     merged.lorebookReferenceMaxChars = sanitizeNumber(merged.lorebookReferenceMaxChars, DEFAULT_SETTINGS.lorebookReferenceMaxChars, 0, 30000);
-    merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, 0, 0, 15000);
+    merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, DEFAULT_SETTINGS.injectionBudgetExtraChars, 0, 15000);
     merged.memoryDeliveryBudgetMode = String(merged.memoryDeliveryBudgetMode || "auto") === "custom" ? "custom" : "auto";
     merged.memoryTransportMode = sanitizeEnumValue(
       merged.memoryTransportMode,
@@ -11947,6 +12090,7 @@
       UI_DETAIL_MODE_OPTIONS,
     );
     merged.turnWorkflowHUDEnabled = merged.turnWorkflowHUDEnabled !== false;
+    merged.turnWorkflowHUDMode = merged.turnWorkflowHUDMode === "compact" ? "compact" : "normal";
     // 입력 개선 ON/OFF는 user-input rewrite 경로만 제어한다.
     // supervisor/context injection 별도 토글 UI는 제거되었으므로 legacy false 저장값은 더 이상 신뢰하지 않는다.
     merged.injectionEnabled = true;
@@ -12230,6 +12374,10 @@
     const criticProvider = getSubLlmProviderSetting(settings.subLlmProvider || mainProvider);
     const criticOverrides = providerRequestOverrideSettingsForProvider(settings, "sub", criticProvider);
     const meta = {
+      critic_input_budget_observation: {
+        contract_version: "critic_input_budget_observation.v1",
+        max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars))),
+      },
       critic: {
         api_key: effectiveCritic.apiKey,
         endpoint: effectiveCritic.endpoint,
@@ -13649,6 +13797,60 @@
       + discoveryPanel;
   }
 
+  function renderReferenceUsageSettingsPanel(kind) {
+    const lorebook = kind === "lorebook";
+    const enabledID = lorebook ? "mo-lorebookReferenceAssistEnabled" : "mo-referenceInjectionEnabled";
+    const enabled = lorebook ? settings.lorebookReferenceMode !== "search_only" : settings.referenceInjectionEnabled !== false;
+    const budgetKey = lorebook ? "lorebookReferenceMaxChars" : "referenceInjectionMaxChars";
+    const budgetRow = (key) => '<div class="mo-row"><label for="mo-' + key + '">' + escapeAttr(t('settings.label.' + key)) + '</label>'
+      + '<input type="number" id="mo-' + key + '" value="' + Number(settings[key] ?? DEFAULT_SETTINGS[key]) + '" min="0" max="30000" step="500">'
+      + '<small>' + escapeAttr(t('settings.hint.' + key)) + '</small></div>';
+    return '<section class="mo-settings-card" id="mo-' + kind + '-usage-settings">'
+      + '<div class="mo-row"><div class="mo-chk"><input type="checkbox" id="' + enabledID + '"' + (enabled ? ' checked' : '') + '>'
+      + '<label for="' + enabledID + '">' + escapeAttr(t(lorebook ? 'settings.label.lorebookReferenceMode' : 'settings.referenceUsage.enabled')) + '</label></div></div>'
+      + '<p class="mo-section-desc">' + escapeAttr(t(lorebook ? 'settings.lorebookReferenceMode.help' : 'settings.referenceUsage.help')) + '</p>'
+      + budgetRow(budgetKey) + (lorebook ? '' : budgetRow('primaryCanonBaseMaxChars'))
+      + '<div class="mo-inline-actions"><button type="button" class="mo-btn mo-btn-primary" id="mo-' + kind + '-usage-save">' + t('settings.btn.save') + '</button>'
+      + '<span id="mo-' + kind + '-usage-status" role="status" aria-live="polite"></span></div></section>';
+  }
+
+  function attachReferenceUsageSettingsEvents(kind) {
+    const root = document.getElementById('mo-' + kind + '-usage-settings');
+    if (!root) return;
+    const lorebook = kind === 'lorebook';
+    const button = root.querySelector('#mo-' + kind + '-usage-save');
+    const status = root.querySelector('#mo-' + kind + '-usage-status');
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      status.textContent = t('explorer.edit.saving');
+      try {
+        const prevMode = settings.lorebookReferenceMode;
+        const patch = lorebook ? {
+          lorebookReferenceMode: root.querySelector('#mo-lorebookReferenceAssistEnabled').checked ? 'reference_assist' : 'search_only',
+          lorebookReferenceMaxChars: root.querySelector('#mo-lorebookReferenceMaxChars').value,
+        } : {
+          referenceInjectionEnabled: root.querySelector('#mo-referenceInjectionEnabled').checked,
+          referenceInjectionMaxChars: root.querySelector('#mo-referenceInjectionMaxChars').value,
+          primaryCanonBaseMaxChars: root.querySelector('#mo-primaryCanonBaseMaxChars').value,
+        };
+        if (!await updateSettings(patch)) throw new Error('save_failed');
+        for (const key of Object.keys(patch)) {
+          const input = root.querySelector('#mo-' + key);
+          if (input && input.type === 'number') input.value = settings[key];
+        }
+        status.textContent = t('settings.status.saved');
+        if (lorebook && prevMode !== settings.lorebookReferenceMode) {
+          await syncCurrentLorebookReference({ force: true });
+          updateLorebookReferenceManagementStatus();
+        }
+      } catch (err) {
+        status.textContent = t('settings.status.saveFailed');
+      } finally {
+        button.disabled = false;
+      }
+    });
+  }
+
   function renderReferenceSearchLlmSettingsPanel() {
     const s = settings;
     return '<div class="mo-section">원작 자료 검색</div>'
@@ -14635,6 +14837,9 @@
       const now = Date.now();
       if (Math.floor(now / 1000) === _turnWorkflowHUDElapsedLastSecond) return;
       _turnWorkflowHUDElapsedLastSecond = Math.floor(now / 1000);
+      if (_turnWorkflowHUDLastView?.host_timing?.main_started_ms) {
+        if (await observeTurnWorkflowHUDHostGeneration()) return;
+      }
       for (const target of targets) {
         const seconds = Math.max(0, Math.floor((now - Date.parse(target.startedAt)) / 1000));
         if (Number.isFinite(seconds)) await target.element.setTextContent(" · " + tf("turn_hud.elapsed_seconds", { n: seconds }));
@@ -14650,6 +14855,53 @@
         if (_turnWorkflowHUDElapsedElement) scheduleTurnWorkflowHUDElapsedFrame();
       });
     }, 250);
+  }
+
+  // Presentation-only Host observation. PocketRisu's DefaultChatScreen replaces
+  // its cancel control when generation ends; AlertComp renders failures in a
+  // dialog. Read these through SafeDocument, never infer a click from coordinates
+  // or change request acceptance/persistence. Reuse the existing HUD timer.
+  async function observeTurnWorkflowHUDHostGeneration() {
+    try {
+      const view = _turnWorkflowHUDLastView;
+      const context = _activeFinalConfirmationRequestContext;
+      if (!view || !context || view.request_id !== context.requestId) return false;
+      if (view.host_generation_end || view.host_timing?.response_received_ms || view.host_generation_finished) return false;
+      if (Number(view.current_stage?.ordinal || 0) > 6 || view.status === "failed") return false;
+      const root = await getTurnWorkflowHUDMainDocument();
+      if (!root) return false;
+      // The visible composer belongs to the selected chat, which may have changed
+      // while this request continues in another chat. This is UI ownership only.
+      const characterIndex = await R.getCurrentCharacterIndex();
+      const chatIndex = await R.getCurrentChatIndex();
+      if (characterIndex !== context.characterIndex || chatIndex !== context.chatIndex) return false;
+      const control = await root.querySelector('button[aria-labelledby="cancel"]');
+      const errorTitle = await root.querySelector('[role="dialog"] h2 .text-draculared');
+      let detail = "";
+      if (errorTitle) {
+        const title = await errorTitle.getParent();
+        const header = title && await title.getParent();
+        const dialog = header && await header.getParent();
+        detail = dialog ? redactHostDiagnostic(await dialog.innerText()).slice(0, 1200) : "";
+      }
+      if (_turnWorkflowHUDLastView !== view) return false;
+      if (errorTitle || (!control && view.host_generation_control_seen)) {
+        const ended = { kind: errorTitle ? "failed" : "stopped", observed_at_ms: Date.now() };
+        _turnWorkflowHUDLastView = Object.assign({}, view, {host_generation_end: ended});
+        rememberTurnWorkflowHUDHostWarning(view.request_id, {
+          code: "HOST_GENERATION_ENDED", path: "risu_visible_generation",
+          message_key: errorTitle ? "turn_hud.error.host_generation" : "turn_hud.error.host_generation_stopped", detail,
+        });
+        clearTurnWorkflowHUDTimer();
+        void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+        return true;
+      }
+      if (control) _turnWorkflowHUDLastView = Object.assign({}, view, {host_generation_control_seen: true});
+      return false;
+    } catch (err) {
+      debugLog("HUD Host generation observation unavailable:", err && err.message);
+      return false;
+    }
   }
 
   function turnWorkflowHUDTurnLabel(view) {
@@ -14753,7 +15005,7 @@
       if (Number.isFinite(timing.started_ms)) metrics.push(["turn_hud.timing.total", timing.response_received_ms - timing.started_ms]);
     }
     if (timing && Number.isFinite(timing.started_ms) && Number.isFinite(timing.main_started_ms)) {
-      metrics.push(["turn_hud.timing.prepare", timing.main_started_ms - timing.started_ms]);
+      metrics.push(["turn_hud.timing.prepare", (timing.preparation_finished_ms ?? timing.main_started_ms) - timing.started_ms]);
     }
     if (timing && Number.isFinite(timing.response_received_ms) && Number.isFinite(timing.main_started_ms)) {
       metrics.push(["turn_hud.timing.main", timing.response_received_ms - timing.main_started_ms]);
@@ -14870,14 +15122,17 @@
     }
     if (event === "main_started" && !Number.isFinite(timing.main_started_ms)) timing.main_started_ms = observedAt;
     if (event === "response_received" && !Number.isFinite(timing.response_received_ms)) timing.response_received_ms = observedAt;
-    _turnWorkflowHUDLastView = Object.assign({}, view, { host_timing: timing });
-    if (event === "response_received") void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+    _turnWorkflowHUDLastView = Object.assign({}, view, { host_timing: timing,
+      host_generation_end: event === "response_received" ? null : view.host_generation_end });
+    if (event === "response_received" || event === "main_started") void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
   }
 
   function retainTurnWorkflowHUDHostTiming(view) {
     return view && _turnWorkflowHUDLastView && view.request_id === _turnWorkflowHUDLastView.request_id
       ? Object.assign({}, view, {host_timing: _turnWorkflowHUDLastView.host_timing || view.host_timing,
-          host_generation_finished: _turnWorkflowHUDLastView.host_generation_finished || view.host_generation_finished})
+          host_generation_finished: _turnWorkflowHUDLastView.host_generation_finished || view.host_generation_finished,
+          host_generation_end: _turnWorkflowHUDLastView.host_generation_end,
+          host_generation_control_seen: _turnWorkflowHUDLastView.host_generation_control_seen})
       : view;
   }
 
@@ -14891,6 +15146,7 @@
     const seen = new Set();
     const warningHTML = warnings.map(function(warning) {
       const item = warning && typeof warning === "object" ? warning : {};
+      if (item.code === "HOST_GENERATION_ENDED") return ""; // Full observation is on the dashboard.
       const message = String(item.message || "").trim()
         || (item.message_key ? t(item.message_key) : String(item.code || ""));
       const detail = String(item.detail || "").trim();
@@ -14917,6 +15173,7 @@
       host_observation: "Host",
       backend_processing: "Backend",
       context_selection: "Context",
+      preprocessing_mode: "Preprocessing",
       payload_delivery: "Payload",
       finality: "Final",
       raw_persistence: "Raw",
@@ -14984,12 +15241,12 @@
       + `<div style="${TURN_WORKFLOW_HUD_LEDGER_STYLE}">${presentation.countHTML}</div></details>`;
   }
 
-  function dismissTurnWorkflowHUD(requestId) {
+  function dismissTurnWorkflowHUD(requestId, currentOnly = false) {
     if (
       requestId
       && (_turnWorkflowHUDActiveRequestId || _turnWorkflowHUDPreviousRequestId)
       && requestId !== _turnWorkflowHUDActiveRequestId
-      && requestId !== _turnWorkflowHUDPreviousRequestId
+      && (currentOnly || requestId !== _turnWorkflowHUDPreviousRequestId)
     ) return;
     const dismissedRequestId = String(requestId || _turnWorkflowHUDActiveRequestId || _turnWorkflowHUDPreviousRequestId || "").trim();
     if (dismissedRequestId) _turnWorkflowHUDHostWarningsByRequestId.delete(dismissedRequestId);
@@ -15003,24 +15260,27 @@
     _turnWorkflowHUDTerminalRequestId = "";
     _turnWorkflowHUDLastView = null;
     _turnWorkflowHUDCurrentFinalizationMode = "immediate_after_response";
-    cancelTurnWorkflowHUDPreviousStream();
-    _turnWorkflowHUDPreviousWatchToken++;
-    _turnWorkflowHUDPreviousWatchRunning = false;
-    _turnWorkflowHUDPreviousRequestId = "";
-    _turnWorkflowHUDPreviousLastRevision = 0;
-    _turnWorkflowHUDPreviousLastView = null;
+    if (!currentOnly) {
+      cancelTurnWorkflowHUDPreviousStream();
+      _turnWorkflowHUDPreviousWatchToken++;
+      _turnWorkflowHUDPreviousWatchRunning = false;
+      _turnWorkflowHUDPreviousRequestId = "";
+      _turnWorkflowHUDPreviousLastRevision = 0;
+      _turnWorkflowHUDPreviousLastView = null;
+    }
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("dismiss", async function() {
       await removeTurnWorkflowHUDDismissListeners(listenerIds);
       const rootDocument = await getTurnWorkflowHUDMainDocument();
       const surface = rootDocument && await rootDocument.querySelector(TURN_WORKFLOW_HUD_SURFACE_SELECTOR);
       if (surface) {
-        await surface.setInnerHTML("");
+        if (currentOnly) await applyTurnWorkflowHUDStack(surface);
+        else await surface.setInnerHTML("");
       }
     });
   }
 
-  async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly, onClick) {
+  async function attachTurnWorkflowHUDDismiss(card, requestId, closeButtonOnly, onClick, anywhere = false) {
     if (_turnWorkflowHUDUnloaded) return;
     if (!card || typeof card.addEventListener !== "function") return;
     const target = closeButtonOnly && typeof card.querySelector === "function"
@@ -15031,8 +15291,12 @@
       || typeof target.addEventListener !== "function"
       || typeof target.getBoundingClientRect !== "function"
     ) return;
-    let openDetails = closeButtonOnly ? 0 : await (await card.querySelectorAll("details[open]")).length();
+    let openDetails = closeButtonOnly || anywhere ? 0 : await (await card.querySelectorAll("details[open]")).length();
     const dismiss = async function(event) {
+      if (anywhere) {
+        await onClick();
+        return;
+      }
       const clientX = Number(event && event.clientX);
       const clientY = Number(event && event.clientY);
       if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
@@ -15065,10 +15329,11 @@
       }
       await dismissTurnWorkflowHUD(requestId);
     };
-    const listenerId = await target.addEventListener("click", dismiss);
+    const options = anywhere ? true : undefined;
+    const listenerId = await target.addEventListener("click", dismiss, options);
     if (listenerId === null || listenerId === undefined) return;
     // SafeElement stores listener IDs per instance, including document events.
-    const listener = { target, type: "click", id: listenerId, options: undefined };
+    const listener = { target, type: "click", id: listenerId, options };
     if (_turnWorkflowHUDUnloaded) {
       await removeTurnWorkflowHUDDismissListeners([listener]);
       return;
@@ -15199,14 +15464,11 @@
     return { html, action: available ? action : null };
   }
 
-  function turnWorkflowHUDErrorDetailsHTML(error) {
-    return (Array.isArray(error && error.details) ? error.details : []).map(function(entry) {
-      const row = entry && typeof entry === "object" ? entry : {};
-      const key = String(row.key || "detail").trim() || "detail";
-      const value = String(row.value == null ? "" : row.value).trim();
-      if (!value) return "";
-      return `<div style="${TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE}">${escapeTurnWorkflowHUDHTML(key + "=" + value)}</div>`;
-    }).filter(Boolean).join("");
+  function turnWorkflowHUDErrorSummaryHTML(error) {
+    const key = "turn_hud.error_code." + String(error && error.code || "");
+    const label = t(key);
+    const message = label && label !== key ? label : t(error && error.message_key || "turn_hud.error.complete_turn_aborted");
+    return `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(message)}</div>`;
   }
 
   function projectTurnWorkflowHUDPhaseView(view, phase) {
@@ -15266,6 +15528,7 @@
       preprocessing: normalizedPhase === "finalization" ? [] : view.preprocessing,
       preprocessing_search: normalizedPhase === "finalization" ? undefined : view.preprocessing_search,
       host_generation_finished: normalizedPhase === "generation" && view.host_generation_finished === true,
+      host_generation_end: normalizedPhase === "generation" ? view.host_generation_end : null,
     });
   }
 
@@ -15287,9 +15550,63 @@
     return true;
   }
 
-  function buildTurnWorkflowHUDPresentation(view, phase = "") {
+  function buildTurnWorkflowHUDPresentation(view, phase = "", displayMode = "normal") {
     view = projectTurnWorkflowHUDPhaseView(view, phase);
+    if (view.host_generation_end) {
+      const ended = view.host_generation_end;
+      const stopped = ended.kind === "stopped";
+      view = Object.assign({}, view, {status: "failed", severity: "error",
+        error: {message_key: stopped ? "turn_hud.error.host_generation_stopped" : "turn_hud.error.host_generation"},
+        current_stage: {key: "awaiting_final_output", label_key: "turn_hud.main_response",
+          status: "failed", duration_ms: ended.observed_at_ms - (view.host_timing?.main_started_ms || view.host_timing?.started_ms || ended.observed_at_ms)},
+        stages: []});
+    }
     const severity = String(view.severity || "normal");
+    const dismissAnywhere = (severity === "normal" || severity === "notice") && (view.status === "completed" || view.host_generation_finished === true);
+    if (displayMode === "compact") {
+      const terminal = view.display_mode === "notice" || view.host_generation_finished === true
+        || ["failed", "completed", "completed_with_warning", "invalidated"].includes(view.status) || severity === "error";
+      const stages = Array.isArray(view.stages) ? view.stages : [];
+      const failedStage = stages.find(item => item && item.status === "failed");
+      const failed = view.status === "failed" || severity === "error" || (terminal && !!failedStage);
+      let stage = view.current_stage || {};
+      if (terminal && failed) stage = stages.find(item => item.key === view.error?.stage_key) || failedStage || stage;
+      else if (terminal && !view.host_generation_finished) stage = stages.find(item => item.key === "critic_llm") || stage;
+      let label = stage.label_key ? t(stage.label_key) : t("turn_hud.completed");
+      let elapsedStartedAt = !terminal && stage.status === "running" ? String(stage.started_at || "") : "";
+      let duration = stage.duration_ms == null ? "—" : turnWorkflowHUDStageDuration(stage);
+      const timing = view.host_timing || {};
+      if (view.host_generation_finished) {
+        label = t("turn_hud.timing.response");
+        duration = Number.isFinite(timing.response_received_ms) && Number.isFinite(timing.main_started_ms)
+          ? turnWorkflowHUDStageDuration({status:"succeeded", duration_ms:timing.response_received_ms - timing.main_started_ms}) : "—";
+      } else if (!terminal && stage.key === "awaiting_final_output" && Number.isFinite(timing.main_started_ms)) {
+        elapsedStartedAt = new Date(timing.main_started_ms).toISOString();
+      }
+      if (view.status === "invalidated") label = t("turn_hud.invalidated");
+      const preprocessingMode = (Array.isArray(view.facts) ? view.facts : []).find(fact => fact?.key === "preprocessing_mode")?.status;
+      let preprocessingBadge = "";
+      if (!terminal && stage.key === "context_assembly" && preprocessingMode) {
+        const running = stage.key === "context_assembly" && (view.preprocessing_search?.status === "running"
+          || (view.preprocessing || []).some(role => (role.calls || []).some(call => call.status === "running")));
+        const badgeStatus = preprocessingMode === "enabled" && running ? "running" : preprocessingMode;
+        preprocessingBadge = `<span data-turn-workflow-preprocessing="${escapeTurnWorkflowHUDHTML(badgeStatus)}" style="flex:none;font-size:9px;color:#9EABD6">${escapeTurnWorkflowHUDHTML(t("turn_hud.preprocessing.compact_" + badgeStatus))}</span>`;
+      }
+      const dismissible = terminal || turnWorkflowHUDCloseButtonOnly(view);
+      const style = TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(failed ? "error" : "normal")
+        + ";width:min(112px,100%);margin-left:auto;min-height:42px;padding:6px 8px;border-radius:7px;display:flex;flex-direction:column;align-items:stretch;gap:2px;overflow:hidden"
+        + (dismissible ? ";padding-right:25px" : "");
+      return {
+        compact: true, terminal, dismissible, dismissAnywhere, closeButtonOnly: true, elapsedStartedAt,
+        html: `<div style="${style}">`
+          + `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px">${escapeTurnWorkflowHUDHTML(label)}</span>`
+          + `<div style="display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0">`
+          + (failed ? `<span style="flex:none;font-size:10px;color:#E158A6">${escapeTurnWorkflowHUDHTML(t(view.host_generation_end?.kind === "stopped" ? "turn_hud.stopped" : "turn_hud.stage_status.failed"))}</span>` : "")
+          + `<time style="${TURN_WORKFLOW_HUD_ELAPSED_STYLE};white-space:nowrap">${escapeTurnWorkflowHUDHTML(elapsedStartedAt ? "" : " · " + duration)}</time>`
+          + preprocessingBadge + `</div>`
+          + (dismissible ? turnWorkflowHUDDismissButtonHTML() : "") + `</div>`,
+      };
+    }
     if (String(view.display_mode || "") === "notice") {
       const failed = view.status === "failed" || severity === "error";
       const attention = String(view.presentation_tone || "") === "attention";
@@ -15306,6 +15623,7 @@
         : TURN_WORKFLOW_HUD_TITLE_STYLE;
       return {
         terminal: true,
+        dismissAnywhere,
         closeButtonOnly: turnWorkflowHUDCloseButtonOnly(view),
         elapsedStartedAt: "",
         html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + noticeStyle}">`
@@ -15321,71 +15639,21 @@
           + `</div>`,
       };
     }
-    if (view.status === "recovering") {
+    if (view.status === "recovering" || view.status === "failed" || severity === "error") {
       const error = view.error && typeof view.error === "object" ? view.error : {};
+      const recovering = view.status === "recovering";
       const recoveryPresentation = turnWorkflowHUDRecoveryPresentation(error);
-      const errorDetailsHTML = turnWorkflowHUDErrorDetailsHTML(error);
-      const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
-      const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
-      const closeButtonOnly = turnWorkflowHUDCloseButtonOnly(view);
-      const meta = [
-        turnWorkflowHUDTurnLabel(view),
-        String(error.code || "CRITIC_REPROCESSING_QUEUED"),
-      ].filter(Boolean).join(" · ");
       return {
-        terminal: false,
-        dismissible: closeButtonOnly,
-        closeButtonOnly,
-        elapsedStartedAt: "",
-        html: `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle("warning")}">`
-          + (closeButtonOnly ? turnWorkflowHUDDismissButtonHTML() : "")
-          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running_title"))}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
-          + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.recovery.running"))}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_STAGE_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
-          + errorDetailsHTML
-          + turnWorkflowHUDTimingHTML(view)
-          + turnWorkflowHUDCountLedgerHTML(countPresentation)
-          + turnWorkflowHUDStageLedgerHTML(view)
-          + turnWorkflowHUDWarningListHTML(view)
-          + recoveryPresentation.html
-          + `</div>`,
-      };
-    }
-    if (view.status === "failed" || severity === "error") {
-      const error = view.error && typeof view.error === "object" ? view.error : {};
-      const recoveryPresentation = turnWorkflowHUDRecoveryPresentation(error);
-      const preservedCounts = Array.isArray(error.preserved_counts) ? error.preserved_counts : view.counts;
-      const countPresentation = turnWorkflowHUDCountPresentation(preservedCounts);
-      const stage = Array.isArray(view.stages)
-        ? view.stages.find(function(item) { return item && item.key === error.stage_key; })
-        : null;
-      const meta = [
-        String(error.code || "TURN_WORKFLOW_FAILED"),
-        stage && stage.label_key ? t(stage.label_key) : "",
-        error.retryable === true ? t("turn_hud.retryable") : t("turn_hud.not_retryable"),
-      ].filter(Boolean).join(" · ");
-      const errorDetailsHTML = turnWorkflowHUDErrorDetailsHTML(error);
-      return {
-        terminal: true,
+        terminal: !recovering,
+        dismissible: recovering && turnWorkflowHUDCloseButtonOnly(view),
         closeButtonOnly: true,
         elapsedStartedAt: "",
         recoveryAction: recoveryPresentation.action,
-        html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
+        html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(recovering ? "warning" : "error")}">`
           + turnWorkflowHUDDismissButtonHTML()
-          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.failed"))}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
-          + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t(error.message_key || "turn_hud.error.complete_turn_aborted"))}</div>`
-          + `<div style="${TURN_WORKFLOW_HUD_ERROR_META_STYLE}">${escapeTurnWorkflowHUDHTML(meta)}</div>`
-          + errorDetailsHTML
-          + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
-          + turnWorkflowHUDTimingHTML(view)
-          + turnWorkflowHUDCountLedgerHTML(countPresentation)
-          + turnWorkflowHUDStageLedgerHTML(view)
-          + turnWorkflowHUDWarningListHTML(view)
-          + recoveryPresentation.html
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t(recovering ? "turn_hud.recovery.running_title" : "turn_hud.failed"))}</div>`
+          + turnWorkflowHUDErrorSummaryHTML(error)
+          + (recoveryPresentation.action ? recoveryPresentation.html : "")
           + `</div>`,
       };
     }
@@ -15397,6 +15665,7 @@
       const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
       return {
         terminal: true,
+        dismissAnywhere,
         closeButtonOnly: severity === "normal" ? turnWorkflowHUDCloseButtonOnly(view) : true,
         elapsedStartedAt: "",
         html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(severity)}">`
@@ -15459,12 +15728,12 @@
       `<div data-turn-workflow-card="${escapeTurnWorkflowHUDHTML(slot)}"`,
     );
     return `<section data-turn-workflow-slot="${escapeTurnWorkflowHUDHTML(slot)}" style="${TURN_WORKFLOW_HUD_SLOT_STYLE}">`
-      + `<div style="${TURN_WORKFLOW_HUD_SLOT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(labelKey))}</div>`
+      + (presentation.compact ? "" : `<div style="${TURN_WORKFLOW_HUD_SLOT_LABEL_STYLE}">${escapeTurnWorkflowHUDHTML(t(labelKey))}</div>`)
       + cardHTML
       + `</section>`;
   }
 
-  function buildTurnWorkflowHUDStackPresentation(currentView, previousView, currentFinalizationMode = "immediate_after_response") {
+  function buildTurnWorkflowHUDStackPresentation(currentView, previousView, currentFinalizationMode = "immediate_after_response", displayMode = "normal") {
     const splitWorkflow = String(currentFinalizationMode || "") === "next_user_input";
     const projectedCurrentView = currentView
       ? projectTurnWorkflowHUDPhaseView(currentView, splitWorkflow ? "generation" : "")
@@ -15473,10 +15742,10 @@
       ? projectTurnWorkflowHUDPhaseView(previousView, "finalization")
       : null;
     const currentPresentation = projectedCurrentView
-      ? buildTurnWorkflowHUDPresentation(projectedCurrentView)
+      ? buildTurnWorkflowHUDPresentation(projectedCurrentView, "", displayMode)
       : null;
     const previousPresentation = projectedPreviousView
-      ? buildTurnWorkflowHUDPresentation(projectedPreviousView)
+      ? buildTurnWorkflowHUDPresentation(projectedPreviousView, "", displayMode)
       : null;
     if (currentPresentation && previousPresentation) {
       return {
@@ -15533,12 +15802,20 @@
       currentView,
       previousView,
       _turnWorkflowHUDCurrentFinalizationMode,
+      settings.turnWorkflowHUDMode,
     );
     clearTurnWorkflowHUDTimer();
     await root.setInnerHTML(stack.html);
     if (stack.currentPresentation && stack.currentPresentation.elapsedStartedAt && stack.elapsedSelector) {
       const element = await root.querySelector(stack.elapsedSelector);
       if (element) _turnWorkflowHUDElapsedElement = [{element, startedAt: stack.currentPresentation.elapsedStartedAt}];
+    }
+    if (stack.previousPresentation && stack.previousPresentation.compact && stack.previousPresentation.elapsedStartedAt && stack.previousCardSelector) {
+      const element = await root.querySelector(stack.previousCardSelector + " time");
+      if (element) {
+        if (!_turnWorkflowHUDElapsedElement) _turnWorkflowHUDElapsedElement = [];
+        _turnWorkflowHUDElapsedElement.push({element, startedAt: stack.previousPresentation.elapsedStartedAt});
+      }
     }
     if (currentView && currentView.preprocessing_search && currentView.preprocessing_search.status === "running") {
       const element = await root.querySelector('[data-turn-workflow-search-time]');
@@ -15557,6 +15834,12 @@
         }
       }
     }
+    if (currentView?.host_timing && !stack.currentPresentation?.terminal) {
+      if (await observeTurnWorkflowHUDHostGeneration()) return;
+      if (currentView.host_timing.main_started_ms && !currentView.host_timing.response_received_ms) {
+        if (!_turnWorkflowHUDElapsedElement) _turnWorkflowHUDElapsedElement = [];
+      }
+    }
     if (_turnWorkflowHUDElapsedElement) {
       await updateTurnWorkflowHUDElapsed();
       scheduleTurnWorkflowHUDElapsedFrame();
@@ -15565,12 +15848,16 @@
       stack.currentPresentation
       && (stack.currentPresentation.terminal || stack.currentPresentation.dismissible)
       && stack.currentCardSelector
+      && !stack.currentPresentation.dismissAnywhere
     ) {
       const currentCard = await root.querySelector(stack.currentCardSelector);
       await attachTurnWorkflowHUDDismiss(
         currentCard,
         String(currentView && currentView.request_id || "").trim(),
         stack.currentPresentation.closeButtonOnly === true,
+        async function() {
+          await dismissTurnWorkflowHUD(String(currentView && currentView.request_id || "").trim(), true);
+        },
       );
       await attachTurnWorkflowHUDRecovery(
         stack.dual ? currentCard : root,
@@ -15580,7 +15867,7 @@
     }
     if (stack.previousPresentation && stack.previousCardSelector) {
       const previousCard = await root.querySelector(stack.previousCardSelector);
-      if (stack.previousPresentation.terminal || stack.previousPresentation.dismissible) {
+      if (!stack.previousPresentation.dismissAnywhere && (stack.previousPresentation.terminal || stack.previousPresentation.dismissible)) {
         const previousRequestId = String(previousView && previousView.request_id || "").trim();
         await attachTurnWorkflowHUDDismiss(
           previousCard,
@@ -15592,6 +15879,16 @@
         );
       }
       await attachTurnWorkflowHUDRecovery(previousCard, previousView, stack.previousPresentation.recoveryAction);
+    }
+    const completedCurrentId = stack.currentPresentation?.dismissAnywhere ? String(currentView.request_id || "") : "";
+    const completedPreviousId = stack.previousPresentation?.dismissAnywhere ? String(previousView.request_id || "") : "";
+    if (completedCurrentId || completedPreviousId) {
+      // RisuAI SafeElement click listeners observe the Host document. Capture also
+      // sees clicks handled by the Host UI; never consume or cancel that click.
+      await attachTurnWorkflowHUDDismiss(root, "", false, async function() {
+        if (completedPreviousId) dismissTurnWorkflowHUDPrevious(completedPreviousId);
+        if (completedCurrentId) await dismissTurnWorkflowHUD(completedCurrentId, true);
+      }, true);
     }
   }
 
@@ -16082,7 +16379,25 @@
   function renderTurnWorkflowHUDSameRequestRetry(requestId, attemptCount) {
     if (_turnWorkflowHUDUnloaded || !turnWorkflowHUDIsEnabled()) return false;
     const normalizedRequestId = String(requestId || "").trim();
-    if (!normalizedRequestId || normalizedRequestId !== _turnWorkflowHUDActiveRequestId) return false;
+    if (!normalizedRequestId || (_turnWorkflowHUDActiveRequestId && normalizedRequestId !== _turnWorkflowHUDActiveRequestId)) return false;
+    // Closing a card clears only its UI owner. beforeRequest has already
+    // identified this as a reused request, so restore its response-wait card
+    // without repeating preparation or inventing discarded measurements.
+    if (!_turnWorkflowHUDLastView || _turnWorkflowHUDLastView.request_id !== normalizedRequestId) {
+      _turnWorkflowHUDCurrentFinalizationMode = settings.turnFinalizationMode === "next_user_input"
+        ? "next_user_input" : "immediate_after_response";
+      _turnWorkflowHUDLastView = {
+        contract_version: TURN_WORKFLOW_HUD_CONTRACT,
+        request_id: normalizedRequestId,
+        revision: 0,
+        status: "awaiting_final_output",
+        severity: "normal",
+        current_stage: {
+          key: "awaiting_final_output", label_key: "turn_hud.stage.awaiting_final_output",
+          status: "running", ordinal: 6, total: 12, llm_call: false,
+        },
+      };
+    }
     const normalizedAttempt = Math.max(2, Math.trunc(Number(attemptCount || 2)));
     rememberTurnWorkflowHUDHostWarning(normalizedRequestId, {
       code: "",
@@ -16095,6 +16410,16 @@
       _turnWorkflowHUDLastView
       && String(_turnWorkflowHUDLastView.request_id || "") === normalizedRequestId
     ) {
+      // A reused memory payload still starts a new main-model attempt. Keep
+      // preparation measurements, but do not continue the failed wait clock.
+      const priorTiming = _turnWorkflowHUDLastView.host_timing || {};
+      const timing = Object.assign({}, priorTiming, {
+        preparation_finished_ms: priorTiming.preparation_finished_ms ?? priorTiming.main_started_ms,
+        main_started_ms: Date.now() });
+      delete timing.response_received_ms;
+      _turnWorkflowHUDTerminalRequestId = "";
+      _turnWorkflowHUDLastView = Object.assign({}, _turnWorkflowHUDLastView, { host_timing: timing,
+        host_generation_end: null, host_generation_control_seen: false });
       renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
     }
     return true;
@@ -16209,7 +16534,23 @@
     _turnWorkflowHUDPreviousWatchRunning = true;
     _turnWorkflowHUDPreviousRequestId = normalizedRequestId;
     _turnWorkflowHUDPreviousLastRevision = 0;
-    _turnWorkflowHUDPreviousLastView = null;
+    // Show the observed completion request while its first backend event is
+    // pending. Do not claim a Critic call or invent backend timing/revisions.
+    renderTurnWorkflowHUDPrevious({
+      contract_version: TURN_WORKFLOW_HUD_CONTRACT,
+      request_id: normalizedRequestId,
+      revision: 0,
+      status: "running",
+      severity: "normal",
+      current_stage: {
+        key: "final_output_accepted",
+        label_key: "turn_hud.stage.final_output_accepted",
+        status: "pending",
+        ordinal: 7,
+        total: 12,
+        llm_call: false,
+      },
+    });
     (async function() {
       const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
       if (!bridgeRoute.url) {
@@ -16754,9 +17095,9 @@
   function currentLorebookReferencePrepareScope(sessionId) {
     const scope = _lorebookReferenceSync.lastScope;
     if (!scope || String(scope.chat_session_id || "") !== String(sessionId || "")) return null;
-    const fullyObserved = scope.character_index != null
-      && scope.chat_index != null
-      && scope.enabled_modules_observed === true;
+    // The official aggregate API already includes active-module entries.
+    // Separate database consent/module metadata is not required to read it.
+    const fullyObserved = scope.character_index != null && scope.chat_index != null;
     return {
       contract_version: "lorebook_reference_scope.v1",
       observation_state: fullyObserved ? "observed" : "partial",
@@ -16839,7 +17180,9 @@
     const scope = await observeLorebookReferenceScope(sessionId, hostContext);
     const scopeKey = lorebookReferenceScopeKey(scope);
     _lorebookReferenceSync.lastScope = scope;
-    const force = options.force === true;
+    // Without module metadata the cached key cannot reveal a module change.
+    // Refresh the official aggregate at this existing sync point instead.
+    const force = options.force === true || !scope.enabled_modules_observed;
     if (!force && (_lorebookReferenceSync.syncedScopeKey === scopeKey || _lorebookReferenceSync.attemptedScopeKey === scopeKey)) {
       return { status: _lorebookReferenceSync.syncedScopeKey === scopeKey ? "current" : "attempted", scope };
     }
@@ -16885,10 +17228,11 @@
         updateRuntimeState("lastLorebookReferenceSync", "warn", { detail: "lorebook_snapshot_shape_unavailable", itemCount: 0 });
         return { status: "unavailable", scope };
       }
+      const scopeObservation = scope.character_index == null || scope.chat_index == null ? "partial" : "observed";
       const result = await postLorebookReferenceSnapshot(scope, {
         consent_state: "active",
-        observation_state: "observed",
-        complete_snapshot: true,
+        observation_state: scopeObservation,
+        complete_snapshot: scopeObservation === "observed",
         entries,
       });
       if (!result) {
@@ -16955,7 +17299,7 @@
           reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),
           lorebook_reference_max_chars: Number(settings.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars),
           reference_recall_limit: sanitizeTopKSetting(settings.topK, DEFAULT_SETTINGS.topK),
-          reference_injection_enabled: settings.injectionEnabled !== false,
+          reference_injection_enabled: settings.referenceInjectionEnabled !== false,
           lorebook_reference_mode: settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode,
           primary_canon_base_max_chars: settings.primaryCanonBaseMaxChars,
           max_input_context_chars: freshFirstTurnLightMode ? 0 : (settings.maxInputContextChars || 800),
@@ -20528,10 +20872,11 @@
   // RisuAI is the only owner that can observe which stored assistant messages
   // still exist in the active chat. Go remains the owner of delete/retain and
   // turn-range policy; this adapter only transports stable host observations.
-  function buildRollbackAssistantObservations(messages) {
+  function buildRollbackAssistantObservations(messages, originalMessages = []) {
     try {
       let activeAssistantOrdinal = 0;
       const list = Array.isArray(messages) ? messages : [];
+      const originals = new Map(originalMessages.map(message => [message.risuMessageIndex, message.content]));
       const activeWindowStart = getRisuActiveMessageWindowStart(list);
       return list
         .map(function(message, index) {
@@ -20565,12 +20910,13 @@
           return {
             message_id: rawMessage && rawMessage.chatId != null ? String(rawMessage.chatId) : "",
             generation_id: generationInfo && generationInfo.generationId != null ? String(generationInfo.generationId) : "",
-            content_hash: computeOrchestrationDirtyHashOr1c(String(comparable.content || "")),
+            content_hash: computeOrchestrationDirtyHashOr1c(String(extractComparableMessageRoleAndContent(rawMessage)?.content || comparable.content || "")),
             message_index: observedIndex,
             risuAssistantMessageIndex: observedIndex,
             risuUserMessageIndex: Number.isInteger(adjacentUserIndex) ? adjacentUserIndex : null,
             observedPairOrdinal: disabled || streaming ? 0 : activeAssistantOrdinal,
-            assistant_content: String(comparable.content || ""),
+            assistant_content: originals.has(observedIndex) ? String(originals.get(observedIndex) || "")
+              : normalizeAssistantPersistenceCandidate(String(comparable.content || "")),
             adjacent_user_present: !!adjacentUser,
             adjacent_user_content: adjacentUser ? String(adjacentUser.comparable.content || "") : "",
             disabled_state: disabled ? "disabled" : "active",
@@ -21725,7 +22071,7 @@
         removed_message_count: Math.max(0, Math.floor(Number(observed.removedMsgCount ?? (tailVerification && tailVerification.removedMessageCount) ?? 0))),
         visible_completed_turns: Math.max(0, Math.floor(Number(observed.visibleCompletedTurnCount ?? observed.activeCompletedTurnCount ?? 0))),
         backend_latest_turn: Math.max(0, Math.floor(Number(backendLatestTurn || 0))),
-        deletion_observed: true,
+        deletion_observed: observed.deletionObserved !== false,
         ledger_verified: !!(tailVerification && tailVerification.status === "verified_tail_delete"),
         incomplete_tail_candidate: !!(tailVerification && tailVerification.status === "incomplete_user_only_tail_candidate"),
         history_trim_guard: false,
@@ -21734,6 +22080,7 @@
         lifecycle_action_observation: String(observed.lifecycleActionObservation || ""),
         allow_manual_candidate: String(requestSource || "auto") === "manual",
         assistant_observation_scope: String(observed.assistantObservationScope || ""),
+        pending_input_observation: observed.pendingInputObservation || undefined,
         assistant_observations: (Array.isArray(observed.currentAssistantObservations)
           ? observed.currentAssistantObservations
           : []).map(function(item) {
@@ -21951,28 +22298,40 @@
     return Math.max(maxTimelineTurnIndex(data.items), Number.isFinite(metaTurn) ? Math.floor(metaTurn) : 0);
   }
 
+  function buildRollbackPendingInputObservation(sessionId, requestContext) {
+    const context = requestContext || _activeFinalConfirmationRequestContext;
+    if (!context || String(context.sessionId || "") !== String(sessionId || "")
+      || !finalConfirmationRequestContextOwnsPendingResponse(context)) return null;
+    return {
+      host_chat_id: String(context.hostChatId || ""),
+      host_chat_id_state: context.hostChatId ? "observed_before_request" : "unobserved",
+      user_message_chat_id: String(context.userMessageChatId || ""),
+      user_message_chat_id_state: context.userMessageChatId ? "observed_before_request" : "unobserved",
+      user_message_index: context.userMessageIndex,
+      user_message_time_ms: Number(context.userMessageTimeMs || 0),
+      user_observed_content_hash: String(context.userObservedContentHash || ""),
+      user_message_refs: context.userMessageRefs || [],
+    };
+  }
+
   async function reconcileActiveChatTailDeletionWithBackend(sessionId, activeChat, options = {}) {
     const sid = String(sessionId || "").trim();
-    if (!settings.enabled || !settings.dbEnabled || !sid || sid === SESSION_FALLBACK || !activeChat) return false;
+    if (!settings.enabled || !settings.dbEnabled || !settings.rollbackAutoEnabled || !sid || sid === SESSION_FALLBACK || !activeChat) return false;
     if (_rollbackTailReconcileInFlightBySession.has(sid)) return false;
     _rollbackTailReconcileInFlightBySession.add(sid);
     try {
       const rawMessages = extractActiveChatMessageList(activeChat);
       if (!Array.isArray(rawMessages)) return false;
       const currentMessages = extractActiveChatRollbackMessages(activeChat);
-      const deletionObservation = options.deletionObservation && typeof options.deletionObservation === "object"
-        ? options.deletionObservation
-        : null;
-      if (!deletionObservation || deletionObservation.deletionDetected !== true) return false;
-      const currentAssistantObservations = buildRollbackAssistantObservations(rawMessages);
+      const currentAssistantObservations = buildRollbackAssistantObservations(rawMessages, await extractActiveChatOriginalMessages(activeChat));
       const hostContext = options.hostContext && typeof options.hostContext === "object"
         ? options.hostContext
         : {};
       const detail = {
         reason: options.reason || "assistant_output_removed_from_active_chat",
         hostContext,
-        firstRemovedTurnIndex: Math.max(0, Number(deletionObservation.firstRemovedTurnIndex || 0)),
-        removedAssistantCount: Math.max(0, Number(deletionObservation.removedAssistantCount || 0)),
+        deletionObserved: false,
+        pendingInputObservation: buildRollbackPendingInputObservation(sid, options.requestContext),
         assistantObservationScope: "full_active_chat",
         currentAssistantObservations,
         hostLifecycleObservation: String(
@@ -21983,12 +22342,13 @@
       };
       const decision = await requestBackendRollbackDecision(
         sid,
-        Math.max(0, Number(deletionObservation.firstRemovedTurnIndex || 0)),
+        0,
         "assistant_output_removed_from_active_chat",
         detail,
         "auto"
       );
       if (!decision || decision.allowed !== true || Number(decision.from_turn || 0) < 1) {
+        if (decision && decision.reason === "assistant_output_not_removed") updateSessionSnapshot(sid, currentMessages);
         return false;
       }
       const rolledBack = await executeAutoRollback(
@@ -22018,25 +22378,17 @@
     const existingPromise = _rollbackHostSignalReconcilePromiseBySession.get(fixedSessionId);
     if (existingPromise) return existingPromise;
     const reconcilePromise = (async function reconcileObservedHostRollback() {
-      const resolvedActiveChat = await resolveCurrentActiveChatObject(fixedSessionId, fixedHostContext);
+      const resolvedActiveChat = options.activeChat !== undefined
+        ? { chat: options.activeChat }
+        : await resolveCurrentActiveChatObject(fixedSessionId, fixedHostContext);
       if (!resolvedActiveChat.chat) return false;
       const currentMessages = extractActiveChatRollbackMessages(resolvedActiveChat.chat);
       if (!Array.isArray(currentMessages)) return false;
-      const previousSnapshot = getSessionSnapshot(fixedSessionId);
-      if (!previousSnapshot) {
-        updateSessionSnapshot(fixedSessionId, currentMessages);
-        return false;
-      }
-      const deletionObservation = buildAssistantOutputDeletionStateOr1f(previousSnapshot, currentMessages);
-      if (!deletionObservation.deletionDetected) {
-        updateSessionSnapshot(fixedSessionId, currentMessages);
-        return false;
-      }
       const reconciled = await reconcileActiveChatTailDeletionWithBackend(fixedSessionId, resolvedActiveChat.chat, {
         reason: String(options.reason || "worldline_refresh_assistant_observation"),
         hostLifecycleObservation: String(options.hostLifecycleObservation || "worldline_refresh_observed"),
         hostContext: fixedHostContext,
-        deletionObservation,
+        requestContext: options.requestContext || null,
       });
       return reconciled === true;
     })();
@@ -28871,9 +29223,10 @@
 
   function canonicalizeAssistantTranslationDisplayForPersistence(text, trace, stage) {
     const raw = String(text == null ? "" : text);
+    if (/<!--\s*yumi-tr:v1:/i.test(raw)) return "";
     const gigaTransDecision = extractGigaTransCanonicalAssistantText(raw);
     if (gigaTransDecision) {
-      const canonicalText = gigaTransDecision.applied ? String(gigaTransDecision.canonicalText || "") : raw;
+      const canonicalText = gigaTransDecision.applied ? String(gigaTransDecision.canonicalText || "") : "";
       attachTranslationDisplayCanonicalizationTrace(trace, gigaTransDecision, stage, raw, canonicalText);
       return canonicalText;
     }
@@ -29101,7 +29454,7 @@
   async function recoverAssistantContentFromActiveChat(chatSessionId, seedRecord, expectedUserContent, hostContext = null) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       if (!Array.isArray(messages) || messages.length === 0) return "";
 
       const expectedUser = normalizeMainTurnCompareText(expectedUserContent);
@@ -29149,7 +29502,7 @@
   async function recoverUserInputFromActiveChatPair(chatSessionId, assistantContent, hostContext = null) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       const pairs = buildCompletedTurnPairsFromActiveChatMessages(messages);
       if (!Array.isArray(pairs) || pairs.length === 0) return "";
 
@@ -29174,7 +29527,7 @@
   async function recoverCurrentUserInputFromActiveChatTail(chatSessionId, hostContext = null) {
     try {
       const resolvedActiveChat = await resolveCurrentActiveChatObject(chatSessionId || "", hostContext);
-      const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+      const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
       if (!Array.isArray(messages) || messages.length === 0) return "";
       for (let i = messages.length - 1; i >= 0; i--) {
         const item = messages[i];
@@ -29735,6 +30088,8 @@
         observation.chat_streaming_state = chat.isStreaming ? "streaming" : "not_streaming";
       }
 
+      const originals = await extractActiveChatOriginalMessages(chat);
+      const sourceByIndex = new Map(originals.map(message => [message.risuMessageIndex, message.content]));
       const wanted = normalizeAssistantPersistenceCandidate(String(assistantContent || ""));
       let selectedIndex = -1;
       for (let index = messages.length - 1; index >= activeWindowStart; index--) {
@@ -29744,7 +30099,7 @@
             || message.disabled === "allBefore"
             || message.role !== "char"
             || typeof message.data !== "string") continue;
-        const observedPersistenceText = normalizeAssistantPersistenceCandidate(message.data);
+        const observedPersistenceText = normalizeAssistantPersistenceCandidate(sourceByIndex.get(index) || "");
         if (wanted && observedPersistenceText && isSameAssistantComparableText(observedPersistenceText, wanted)) {
           selectedIndex = index;
           break;
@@ -29936,6 +30291,13 @@
   async function buildCompleteTurnRequestBody(turnIdx, userInput, assistantContent, contextMessages, chatSessionId, improvementTrace, sourceObservationOptions) {
     try {
       const requestHostContext = sourceObservationOptions && sourceObservationOptions.hostContext || null;
+      const originals = await readTranslationOriginalsForArchive(
+        [{ role: "assistant", content: String(assistantContent || "") }, ...(Array.isArray(contextMessages) ? contextMessages : [])],
+        chatSessionId, requestHostContext,
+      );
+      assistantContent = normalizeAssistantPersistenceCandidate(originals[0].content);
+      if (!assistantContent) return null;
+      contextMessages = originals.slice(1).filter(message => !message.translationOriginalUnavailable);
       const outputLanguageOverride = await resolveRuntimeOutputLanguageOverride(chatSessionId, requestHostContext);
       const languageContext = await buildLanguageContextTrace({
         userInput,
@@ -33630,7 +33992,10 @@
     const replacement = skipRecord && skipRecord.postOutputReplacement;
     const originalUser = String((replacement && replacement.userContent) || "").trim();
     const originalAssistant = normalizeAssistantPersistenceCandidate(String((replacement && replacement.assistantContent) || ""));
-    const finalAssistant = normalizeAssistantPersistenceCandidate(String(responseContent || ""));
+    const originalResponse = await readTranslationOriginalsForArchive(
+      [{ role: "assistant", content: String(responseContent || "") }], sid, skipRecord && skipRecord.hostContext,
+    );
+    const finalAssistant = normalizeAssistantPersistenceCandidate(originalResponse[0].content);
     if (!sid || !originalUser || !originalAssistant || !finalAssistant) {
       return { handled: true, replaced: false, reason: "post_output_replacement_content_missing" };
     }
@@ -33958,7 +34323,7 @@
       try {
         const resolved = await resolveCurrentActiveChatObject(sid, hostContext);
         if (resolved && resolved.chat) {
-          activeMessages = normalizeMessagesForOrchestration(extractActiveChatComparableMessages(resolved.chat), 30);
+          activeMessages = normalizeMessagesForOrchestration(await extractActiveChatOriginalMessages(resolved.chat), 30);
           activeSource = resolved.source || "active_chat";
         }
       } catch {
@@ -34270,6 +34635,12 @@
         mainRequestActiveMessages = [];
         mainRequestActiveChat = null;
       }
+      await reconcileRollbackFromHostSignal(orchSessionId, orchHostContext, {
+        reason: "before_request_full_active_chat_observed",
+        hostLifecycleObservation: "before_request_full_active_chat_observed",
+        activeChat: mainRequestActiveChat,
+        requestContext: finalConfirmationRequestContext,
+      });
       nextInputFinalizationOwnership = beginNextInputFinalizationPipeline(
         orchSessionId,
         finalConfirmationRequestContext,
@@ -34289,7 +34660,7 @@
       if (finalConfirmationRequestContext) {
         finalConfirmationRequestContext.rawInputObservation = rawInputObservation || null;
       }
-      const postOutputReplacement = buildPostOutputSecondaryRequestContext(mainRequestActiveMessages);
+      const postOutputReplacement = buildPostOutputSecondaryRequestContext(archiveReadActiveMessages);
       if (postOutputReplacement && !rawInputObservation) {
         postOutputReplacement.hostContext = orchHostContext;
         const payloadUserText = getLastPayloadUserText(messages);
@@ -34326,8 +34697,8 @@
         orchRequestId,
         type,
         rawInputObservation,
-        mainRequestActiveMessages,
-        messages,
+        archiveReadActiveMessages,
+        archiveReadMessages,
         observedSourcePath,
         !!(extractedMessages && extractedMessages.hasMessageSlot),
         observedChatId,
@@ -34335,7 +34706,7 @@
       const bootstrapObservation = await observePrepareTurnBootstrap(
         orchSessionId,
         orchRequestId,
-        mainRequestActiveMessages,
+        archiveReadActiveMessages,
         observedChatId,
         orchHostContext,
       );
@@ -35266,7 +35637,21 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      {
+      if (/<!--\s*yumi-tr:v1:/i.test(String(displayContent || ""))) {
+        Promise.resolve().then(async function readAfterRequestModelOriginal() {
+          const original = await readTranslationOriginalsForArchive(
+            [{ role: "assistant", content: String(displayContent || "") }], chatSessionId, persistenceHostContext,
+          );
+          recoveredAssistantContent = normalizeAssistantPersistenceCandidate(original[0].content);
+          return finishAfterRequestOriginalRead();
+        }).catch(function(err) {
+          warnLog("afterRequest original-source read failed:", err && err.message);
+        });
+        return responseReturnContent;
+      }
+      return finishAfterRequestOriginalRead();
+
+      function finishAfterRequestOriginalRead() {
         const finalContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
         const finalObservation = acceptRisuAfterRequestFinal(persistenceRequestContext, finalContent);
         if (finalObservation.accepted === true && finalObservation.duplicate === true) {
@@ -36950,6 +37335,10 @@
 
   async function explorerLoadTab(tab, reset = true) {
     _explorer.activeTab = tab;
+    if (reset) await reconcileRollbackFromHostSignal(explorerSessionId(), null, {
+      reason: "memory_refresh_full_active_chat_observed",
+      hostLifecycleObservation: "memory_refresh_observed",
+    });
     if (tab === "chat_logs") await explorerFetchChatLogs(reset);
     else if (tab === "memories") {
       await explorerFetchMemories(reset);
@@ -39024,7 +39413,7 @@
     if (!resolvedActiveChat.chat) {
       return { ok: false, notLive: true, error: t('explorer.activeRescan.notLive') };
     }
-    const messages = resolvedActiveChat.chat ? extractActiveChatComparableMessages(resolvedActiveChat.chat) : [];
+    const messages = await extractActiveChatOriginalMessages(resolvedActiveChat.chat);
     const rawShape = summarizeActiveChatRawMessageShape(resolvedActiveChat.chat, messages);
     const dbResult = await explorerFetchAllChatLogsForSession(sid);
     const dbRows = Array.isArray(dbResult.items) ? dbResult.items : [];
@@ -39036,7 +39425,7 @@
       debugLog("active chat rescan world rule count failed:", err && err.message);
     }
     const dbRawMap = buildActiveChatRescanDbRawMap(dbRows);
-    const canonicalPairResult = buildSessionNormalizeCompletedTurnPairs(resolvedActiveChat.chat);
+    const canonicalPairResult = await buildSessionNormalizeCompletedTurnPairs(resolvedActiveChat.chat);
     let pairSource = canonicalPairResult.available ? "risu_get_chat_from_index" : "active_chat_role_parse";
     let pairs = canonicalPairResult.available
       ? canonicalPairResult.pairs
@@ -39063,7 +39452,10 @@
           turnResolution,
         });
       }).filter(Boolean);
-    } else if (Array.isArray(messages) && messages.length > 0 && dbRawMap.size > 0) {
+    } else if (Array.isArray(messages) && messages.length > 0 && dbRawMap.size > 0
+        && !messages.some(message => message.translationOriginalUnavailable)) {
+      // An unavailable translator source must not be replaced by a previously
+      // saved display translation just because its user input still matches.
       const fallbackPairs = buildActiveChatRescanPairsFromDbRawFallback(messages, dbRawMap);
       if (fallbackPairs.length > 0) {
         pairs = fallbackPairs;
@@ -39073,7 +39465,7 @@
     let assistantResolutionCounts = {};
     let unresolvedAssistantObservations = [];
     const allChatMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
-    const assistantObservations = buildRollbackAssistantObservations(allChatMessages);
+    const assistantObservations = buildRollbackAssistantObservations(allChatMessages, messages);
     if (assistantObservations.length > 0) {
       const assistantSourceResolution = await requestBackendSessionRoutingTurnResolution(
         sid,
@@ -39114,8 +39506,11 @@
             return { role: String(message && message.role || ""), content: String(message && message.content || "") };
           });
         const userContent = String(item.stored_user_content || assistantObservation.adjacent_user_content || "");
-        const observedAssistantContent = String(item.stored_assistant_content || assistantObservation.assistant_content || "");
-        const assistantContent = normalizeAssistantPersistenceCandidate(observedAssistantContent) || observedAssistantContent;
+        const currentOriginal = messages.find(message => message.risuMessageIndex === assistantMessageIndex);
+        const observedAssistantContent = currentOriginal
+          ? String(currentOriginal.content || "")
+          : String(item.stored_assistant_content || assistantObservation.assistant_content || "");
+        const assistantContent = normalizeAssistantPersistenceCandidate(observedAssistantContent);
         if (!assistantContent.trim()) return null;
         return {
           observedPairOrdinal: Number(assistantObservation.observedPairOrdinal || item.turn_index),
@@ -39448,7 +39843,7 @@
       "대상 세션: " + shortId + "\n" +
       "max_items: " + (limit > 0 ? String(limit) : "all") + "\n\n" +
       "현재 챗과 DB를 비교해 누락 원문, 파생 기억, 세계 규칙, 에피소드/계층 요약, 벡터 색인을 순서대로 복구합니다.\n" +
-      "이 작업은 DB 삭제나 rollback을 하지 않으며 /cut, /del, context trim으로 보이는 기록이 줄어도 DB 행을 삭제하지 않습니다.\n\n" +
+      "먼저 실제 대화 목록과 저장 원문을 대조해 삭제된 끝부분의 기억을 정리합니다. 숨김·문맥 제외는 삭제로 보지 않습니다. 이후 남아 있는 대화의 누락 자료를 복구합니다.\n\n" +
       t('common.confirmContinue')
     );
     if (!confirmed) return false;
@@ -39466,6 +39861,10 @@
     let planMeta = {};
     try {
       if (normalizeHostContext) {
+        await reconcileRollbackFromHostSignal(sid, normalizeHostContext, {
+          reason: "cold_start_full_active_chat_observed",
+          hostLifecycleObservation: "cold_start_observed",
+        });
         const plan = await computeActiveChatRescanDryRunPlan(sid, normalizeHostContext);
         if (plan && plan.ok) {
           repairEntries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
@@ -42288,7 +42687,7 @@
 
   function estimateAdaptiveInjectionBudgetParts(currentSettings, runtimeInfo) {
     const configuredBudgetChars = Math.max(0, Number((currentSettings && currentSettings.maxInjectionChars) || DEFAULT_SETTINGS.maxInjectionChars));
-    const userExtraBudgetChars = Math.max(0, Number((currentSettings && currentSettings.injectionBudgetExtraChars) || 0));
+    const userExtraBudgetChars = Math.max(0, Number((currentSettings && currentSettings.injectionBudgetExtraChars) ?? DEFAULT_SETTINGS.injectionBudgetExtraChars));
     const currentChatTokens = Number(runtimeInfo && runtimeInfo.currentChatTokens);
     const contextWindowTokens = Number(runtimeInfo && runtimeInfo.contextWindowTokens);
     const currentChatChars = Number(runtimeInfo && runtimeInfo.currentChatChars);
@@ -44162,7 +44561,7 @@
               : (c.speech_style_json || {});
           } catch (_) { speech = {}; }
           let speechHtml = '';
-          const typedVoice = speech && speech.contract_version === "voice_behavior_projection.v1";
+          const typedVoice = speech && (speech.contract_version === "voice_behavior_projection.v1" || Array.isArray(speech.principles));
           if (typedVoice && Array.isArray(speech.principles) && speech.principles.length > 0) {
             const principleRows = speech.principles.map((principle) => {
               if (!principle || typeof principle !== "object") return '';
@@ -44191,7 +44590,7 @@
               speechHtml = '<div class="mo-ent-speech"><b>' + escapeAttr(t('explorer.entities.voicePrinciples')) + '</b>' + principleRows + '</div>';
             }
           }
-          const manualSpeech = typedVoice && speech.manual_overrides && typeof speech.manual_overrides === "object"
+          const manualSpeech = speech && speech.manual_overrides && typeof speech.manual_overrides === "object"
             ? speech.manual_overrides
             : speech;
           if (manualSpeech && typeof manualSpeech === "object" && (manualSpeech.default_tone || manualSpeech.honorific_style || manualSpeech.speech_notes)) {
@@ -44898,7 +45297,9 @@
             '<span>' + escapeAttr(t("timeline.label.selected")) + ' · ' + escapeAttr(t("timeline.label.sessions")) + '</span>' +
             '<strong title="' + escapeAttr(selectedActionSessionId) + '">' + escapeAttr(getSessionDisplayLabel(selectedActionSessionId, false) || selectedActionSessionId) + '</strong>' +
             selectedMetaHtml +
-          '</div><div class="mo-memory-admin-actions">' + attachBtn + copyBtn + migrateBtn + deleteBtn + '</div></header>' +
+          '</div><div class="mo-memory-admin-actions">' +
+            '<button type="button" class="mo-btn mo-btn-info" id="mo-session-stitch-open"' + (_sessionMigrationUi.running ? ' disabled' : '') + '>이어붙이기</button>' +
+            attachBtn + copyBtn + migrateBtn + deleteBtn + '</div></header>' +
           '<div class="mo-memory-admin-secondary">' + syncIndicator + routingResetHtml +
             (_sessionRoutingResetState.error ? '<span class="mo-ex-routing-reset-error">❌ ' + escapeAttr(_sessionRoutingResetState.error) + '</span>' : '') +
           '</div>' +
@@ -45541,6 +45942,11 @@
           runMemorySessionAction(() => deleteTimelineSessionFromBackend(sid));
         });
       });
+      const stitchOpen = document.getElementById("mo-session-stitch-open");
+      if (stitchOpen) stitchOpen.addEventListener("click", () => openSessionStitchDialog().catch(error => {
+        setSessionMigrationUiStatus("fail", "이어붙이기 창을 열지 못했습니다. " + String(error && error.message || error));
+        refreshExplorerUI();
+      }));
       document.querySelectorAll("[data-timeline-session-attach-id]").forEach((button) => {
         button.addEventListener("click", (event) => {
           event.preventDefault();
@@ -46297,7 +46703,7 @@
               ? JSON.parse(item.speech_style_json)
               : ((item && item.speech_style_json) || {});
           } catch (_) { speech = {}; }
-          const editableSpeech = speech && speech.contract_version === "voice_behavior_projection.v1" && speech.manual_overrides && typeof speech.manual_overrides === "object"
+          const editableSpeech = speech && speech.manual_overrides && typeof speech.manual_overrides === "object"
             ? speech.manual_overrides
             : speech;
           explorerStartEdit("char_speech", name, {
@@ -47122,7 +47528,7 @@ details.mo-it-block[open] .mo-it-expand{display:none}
 .mo-memory-admin-selected>strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#F4F5F7;font-size:18px;font-weight:500;letter-spacing:-.02em}
 .mo-memory-admin-selected-meta{color:#8B909A;font-size:10px;font-variant-numeric:tabular-nums}
 .mo-memory-admin-actions{display:flex;align-items:center;justify-content:flex-end;gap:6px;flex-wrap:wrap}
-.mo-memory-admin-actions .mo-tl-session-attach,.mo-memory-admin-actions .mo-tl-session-copy,.mo-memory-admin-actions .mo-tl-session-migrate,.mo-memory-admin-actions .mo-tl-session-delete{min-height:32px;padding:6px 10px;border-radius:10px;background:transparent;font-size:10px}
+.mo-memory-admin-actions #mo-session-stitch-open,.mo-memory-admin-actions .mo-tl-session-attach,.mo-memory-admin-actions .mo-tl-session-copy,.mo-memory-admin-actions .mo-tl-session-migrate,.mo-memory-admin-actions .mo-tl-session-delete{min-height:32px;padding:6px 10px;border-radius:10px;background:transparent;font-size:10px}
 .mo-memory-admin-secondary{display:flex;align-items:center;justify-content:flex-end;gap:7px;min-height:28px;flex-wrap:wrap}
 .mo-memory-admin-workspace .mo-memory-management-stack{grid-template-columns:1fr;gap:12px}
 .mo-session-normalize-panel.is-attention{border-color:rgba(199,168,105,.34)}
@@ -48213,6 +48619,90 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     if (meta.migrationMode !== undefined) _sessionMigrationUi.migrationMode = String(meta.migrationMode || "");
     if (_settingsActiveTab === "memory_admin") refreshExplorerUI({ reloadPresentation: false });
     else refreshTimelineUI();
+  }
+
+  // Selection order and DOM only. Go owns composition, turns, IDs and persistence.
+  async function openSessionStitchDialog() {
+    if (_sessionMigrationUi.running || document.getElementById("mo-session-stitch-dialog")) return;
+    const coords = await getCurrentSessionRoutingCoordinates();
+    const identity = await getActiveChatSessionIdentity(coords.charIdx, coords.chatIdx);
+    const current = String(await getCurrentChatSessionId() || "");
+    const vm = _explorer.viewModel && Array.isArray(_explorer.viewModel.sessions) ? _explorer.viewModel : _timelineState.viewModel || {};
+    const sessions = Array.isArray(vm.sessions) ? vm.sessions : [];
+    const selected = [];
+    const operationId = 'stitch-' + Date.now() + '-' + Math.random().toString(36).slice(2);
+    let running = false, started = false;
+    const modal = document.createElement("div");
+    modal.id = "mo-session-stitch-dialog";
+    modal.className = "mo-export-overlay";
+    modal.innerHTML = '<div class="mo-export-panel" style="width:min(94%,640px);max-height:90vh;display:flex;flex-direction:column">' +
+      '<div class="mo-export-hdr"><h3>기억 이어붙이기</h3><button type="button" class="mo-close" data-stitch-close>✕</button></div>' +
+      '<p style="padding:0 16px;flex-shrink:0;font-size:13px">이야기를 진행한 순서대로 이전 대화를 선택하세요. 현재 채팅은 마지막에 붙습니다. 원본 기억은 유지됩니다.<br><small>검색 색인을 새로 만들 때 임베딩 사용량이 발생할 수 있습니다.</small></p>' +
+      '<div data-stitch-list style="flex:1;overflow:auto;padding:0 16px;min-height:80px"></div>' +
+      '<div data-stitch-order style="padding:12px 16px;white-space:pre-wrap;overflow:auto;max-height:160px;flex-shrink:0;font-size:13px"></div>' +
+      '<div data-stitch-status role="status" style="padding:0 16px;white-space:pre-wrap;overflow-wrap:anywhere;overflow:auto;max-height:100px;flex-shrink:0"></div>' +
+      '<div class="mo-export-actions"><button type="button" class="mo-btn mo-btn-primary" data-stitch-run>이 순서로 이어붙이기</button></div></div>';
+    document.body.appendChild(modal);
+    const list = modal.querySelector("[data-stitch-list]");
+    const order = modal.querySelector("[data-stitch-order]");
+    const status = modal.querySelector("[data-stitch-status]");
+    const run = modal.querySelector("[data-stitch-run]");
+    const close = modal.querySelector("[data-stitch-close]");
+    modal.querySelector(".mo-export-panel").addEventListener("click", event => event.stopPropagation());
+    const dismiss = () => { if (!running) modal.remove(); };
+    modal.addEventListener("click", dismiss);
+    close.addEventListener("click", dismiss);
+    const render = () => {
+      list.innerHTML = sessions.filter(session => timelineSessionId(session) !== current && !session.deleted).map(session => {
+        const sid = timelineSessionId(session), index = selected.indexOf(sid);
+        const counts = session.counts || {};
+        return '<button type="button" class="mo-memory-admin-session' + (index >= 0 ? ' is-active' : '') + '" style="width:100%;text-align:left;margin:4px 0" data-stitch-id="' + escapeAttr(sid) + '" aria-pressed="' + (index >= 0) + '"' + (started ? ' disabled' : '') + '>' +
+          '<strong>' + (index >= 0 ? (index + 1) + '. ' : '＋ ') + escapeAttr(getSessionDisplayLabel(sid, false) || sid) + '</strong>' +
+          '<small>기억 ' + Number(counts.memories ?? session.memories_count ?? 0) + ' · 대화 기록 ' + Number(counts.chat_logs ?? session.chat_logs_count ?? 0) + (session.last_activity ? ' · ' + escapeAttr(String(session.last_activity)) : '') + '</small></button>';
+      }).join("") || '<p class="mo-note">선택할 이전 대화의 기억이 없습니다.</p>';
+      list.querySelectorAll("[data-stitch-id]").forEach(button => button.addEventListener("click", () => {
+        if (started) return;
+        const sid = button.getAttribute("data-stitch-id"), at = selected.indexOf(sid);
+        if (at >= 0) selected.splice(at, 1); else selected.push(sid);
+        render();
+      }));
+      order.textContent = selected.concat(current).map((sid, index) => (index + 1) + '. ' + (getSessionDisplayLabel(sid, false) || sid) + (sid === current ? ' (현재 채팅)' : '')).join('\n↓\n');
+      run.disabled = running || selected.length === 0;
+      close.disabled = running;
+    };
+    run.addEventListener("click", async () => {
+      if (running || !selected.length) return;
+      running = started = true;
+      _sessionMigrationUi.running = true;
+      render();
+      try {
+        status.textContent = '선택한 순서대로 기억과 근거를 이어붙이는 중…';
+        const result = await bridgeFetchSessionCopyStep('stitch', '/sessions/stitch', {
+          method: 'POST', body: {source_session_ids: selected.slice(), current_session_id: current, operation_id: operationId}, timeoutMs: 0,
+        });
+        status.textContent = '검색 색인을 준비하는 중…';
+        const indexed = await bridgeFetchSessionCopyStep('reindex', '/sessions/migrate-reindex', {method:'POST', body:{migration_id:result.migration_id}, timeoutMs:0});
+        if (indexed.blocked || indexed.verification_status !== 'exact_id_parity_verified') throw new Error(sessionMigrationBlockedReason(indexed, 'reindex_failed', '/sessions/migrate-reindex'));
+        status.textContent = '현재 채팅에 연결하는 중…';
+        const route = await persistAcknowledgedCurrentSessionRoute(result.target_session_id, 'manual_attach', {coords,identity});
+        resetSessionRoutingRuntimeCaches();
+        _sessionCache = {charIdx:coords.charIdx,chatIdx:coords.chatIdx,sessionId:route.canonicalSessionId,stableCharacterId:route.stableCharacterId,observedChatUniqueId:route.hostChatId};
+        _timelineState.currentSessionId = _timelineState.selectedSessionId = _timelineState.sessionId = route.canonicalSessionId;
+        _explorer.activeChatSessionId = _explorer.selectedSessionId = route.canonicalSessionId;
+        setSessionMigrationUiStatus('ok', '이어붙이기 완료 · 원본 대화의 기억은 보존되어 있습니다.', {migrationId:0,sourceSessionId:current,targetSessionId:route.canonicalSessionId,migrationMode:'stitch_keep_sources'});
+        modal.remove();
+        await explorerFetchSessions();
+        await refreshExplorerUI();
+      } catch (error) {
+        status.textContent = '이어붙이기를 마치지 못했습니다. 다시 시도하면 같은 작업을 이어서 처리합니다.\n' + String(error && error.message || error);
+        run.textContent = '다시 시도';
+      } finally {
+        running = false;
+        _sessionMigrationUi.running = false;
+        if (modal.isConnected) render();
+      }
+    });
+    render();
   }
 
   async function attachTimelineSessionToCurrentChat(sourceSessionId) {
@@ -50070,12 +50560,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
 
   async function loadDashboardViewModel(rs, s, guideModeDashboardState) {
     try {
+      const hostWarnings = [...new Set([_turnWorkflowHUDActiveRequestId, _turnWorkflowHUDPreviousRequestId])]
+        .flatMap(id => _turnWorkflowHUDHostWarningsByRequestId.get(id) || []);
       const firstTurnLight = !!(
         lastTurnTrace &&
         lastTurnTrace.firstTurnLightMode &&
         lastTurnTrace.firstTurnLightMode.enabled
       );
-      return await bridgeFetch("/dashboard/view-model", {
+      const vm = await bridgeFetch("/dashboard/view-model", {
         method: "POST",
         timeoutMs: getRequestTimeoutSettingMs(),
         body: {
@@ -50089,12 +50581,23 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           prepare_turn_ever_contacted: !!_prepareTurnEverContacted,
           failed_queue_depth: Array.isArray(_failedQueue) ? _failedQueue.length : 0,
           current_workflow_request_id: String(_turnWorkflowHUDActiveRequestId || ""),
+          previous_workflow_request_id: String(_turnWorkflowHUDPreviousRequestId || ""),
           queue_observations: buildDashboardQueueObservations(rs),
           guide_mode_state: guideModeDashboardState,
           first_turn_light: firstTurnLight,
           first_turn_ended_at: lastTurnTrace && lastTurnTrace.endedAt || "",
         },
       });
+      if (vm?.status === "ok" && Array.isArray(vm.cards) && hostWarnings.length) {
+        let card = vm.cards.find(item => item.id === "workflow_errors");
+        if (!card) { card = {id:"workflow_errors",severity:"warn",rows:[]}; vm.cards.unshift(card); }
+        for (const warning of hostWarnings) card.rows.push({
+          label_key:"lastError",status:"warn",message_key:warning.message_key,
+          detail:[warning.message,warning.code,warning.detail,
+            ...(warning.details || []).map(item => item.key + "=" + item.value)].filter(Boolean).join(" · "),
+        });
+      }
+      return vm;
     } catch (err) {
       warnLog("dashboard ViewModel unavailable:", err?.message || err);
       return null;
@@ -50213,6 +50716,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
   }
 
   function dashboardViewModelLabel(key, dashLabel) {
+    if (String(key || "").startsWith("turn_hud.")) return t(key);
     const labels = {
       plugin: dashLabel.plugin,
       sessionId: dashLabel.sessionId,
@@ -50286,7 +50790,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     }
     function renderRow(row) {
       const status = String(row && row.status || "unknown");
-      const detail = row && row.detail_code ? dashboardSimpleText(row.detail_code) : String(row && row.detail || "");
+      const detail = row && row.message_key
+        ? [t(row.message_key), row.detail_code, row.detail].filter(Boolean).join(" · ")
+        : row && row.detail_code ? dashboardSimpleText(row.detail_code) : String(row && row.detail || "");
       const placement = row && row.placement ? " @ " + formatAuxiliaryPlacementTrace(row.placement) : "";
       const timeText = formatDashboardTimestampLocal(row && row.time);
       const time = timeText ? " (" + timeText + ")" : "";
@@ -50310,7 +50816,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         : "";
       return '<div class="' + cls + '"><div class="mo-dash-card-head">'
         + '<span class="mo-dash-card-icon">' + escapeAttr(card && card.icon || "") + '</span>'
-        + '<span class="mo-dash-card-title">' + escapeAttr(card && card.title || "Dashboard") + '</span>'
+        + '<span class="mo-dash-card-title">' + escapeAttr(card && card.id === "workflow_errors" ? t("dash.workflowErrors") : card && card.title || "Dashboard") + '</span>'
         + '<div class="mo-dash-card-summary">' + (chips || summaryHtml(card && card.summary)) + '</div>'
         + '</div>' + rows + actions + '</div>';
     }).join("");
@@ -52439,8 +52945,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         : _settingsActiveTab === "persona"
         ? '<div id="mo-persona-capsule-root">' + renderPersonaCapsuleSection() + '</div>'
         : (_settingsActiveTab === "lorebook"
-          ? '<div id="mo-lorebook-reference-root">' + renderLorebookReferenceManagementSection() + '</div>'
-          : '<div id="mo-reference-library-root">' + renderReferenceLibrarySection() + '</div>')}
+          ? renderReferenceUsageSettingsPanel("lorebook") + '<div id="mo-lorebook-reference-root">' + renderLorebookReferenceManagementSection() + '</div>'
+          : renderReferenceUsageSettingsPanel("reference") + '<div id="mo-reference-library-root">' + renderReferenceLibrarySection() + '</div>')}
     </div>
     ` : ""}
 
@@ -52893,24 +53399,9 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         </div>
         <div class="mo-row mo-range-row">
           <label>${t('settings.label.injectionBudgetExtraChars')}</label>
-          <input type="number" id="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? 0}" min="0" max="15000" step="500">
-          <input class="mo-range" type="range" id="mo-injectionBudgetExtraCharsRange" data-sync-input="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? 0}" min="0" max="15000" step="500">
+          <input type="number" id="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? DEFAULT_SETTINGS.injectionBudgetExtraChars}" min="0" max="15000" step="500">
+          <input class="mo-range" type="range" id="mo-injectionBudgetExtraCharsRange" data-sync-input="mo-injectionBudgetExtraChars" value="${s.injectionBudgetExtraChars ?? DEFAULT_SETTINGS.injectionBudgetExtraChars}" min="0" max="15000" step="500">
           <small>${t('settings.hint.injectionBudgetExtraChars')}</small>
-        </div>
-        <div class="mo-row mo-range-row">
-          <label>${t('settings.label.referenceInjectionMaxChars')}</label>
-          <input type="number" id="mo-referenceInjectionMaxChars" value="${s.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars}" min="0" max="30000" step="500">
-          <small>${t('settings.hint.referenceInjectionMaxChars')}</small>
-        </div>
-        <div class="mo-row mo-range-row">
-          <label>${t('settings.label.lorebookReferenceMaxChars')}</label>
-          <input type="number" id="mo-lorebookReferenceMaxChars" value="${s.lorebookReferenceMaxChars ?? DEFAULT_SETTINGS.lorebookReferenceMaxChars}" min="0" max="30000" step="500">
-          <small>${t('settings.hint.lorebookReferenceMaxChars')}</small>
-        </div>
-        <div class="mo-row mo-range-row">
-          <label>${t('settings.label.primaryCanonBaseMaxChars')}</label>
-          <input type="number" id="mo-primaryCanonBaseMaxChars" value="${s.primaryCanonBaseMaxChars ?? DEFAULT_SETTINGS.primaryCanonBaseMaxChars}" min="0" max="30000" step="500">
-          <small>${t('settings.hint.primaryCanonBaseMaxChars')}</small>
         </div>
         <div class="mo-row">
           <label>${t('settings.label.auxiliaryInjectionPlacement')}</label>
@@ -52938,19 +53429,20 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           </select>
         </div>
         <div class="mo-row">
-          <label title="${escapeAttr(t('settings.lorebookReferenceMode.help'))}">${t('settings.label.lorebookReferenceMode')}</label>
-          <div class="mo-chk">
-            <input type="checkbox" id="mo-lorebookReferenceAssistEnabled"${s.lorebookReferenceMode !== "search_only" ? " checked" : ""}>
-            <label for="mo-lorebookReferenceAssistEnabled">${t('settings.lorebookReferenceMode.on')}</label>
-          </div>
-        </div>
-        <div class="mo-row">
           <label>${t('settings.label.turnWorkflowHUDEnabled')}</label>
           <div class="mo-chk">
             <input type="checkbox" id="mo-turnWorkflowHUDEnabled"${s.turnWorkflowHUDEnabled !== false ? " checked" : ""}>
             <label for="mo-turnWorkflowHUDEnabled">${t('settings.turnWorkflowHUDEnabled.on')}</label>
           </div>
           <small>${t('settings.hint.turnWorkflowHUDEnabled')}</small>
+        </div>
+        <div class="mo-row">
+          <label for="mo-turnWorkflowHUDMode">${t('settings.label.turnWorkflowHUDMode')}</label>
+          <select id="mo-turnWorkflowHUDMode">
+            <option value="normal"${s.turnWorkflowHUDMode !== "compact" ? " selected" : ""}>${t('settings.turnWorkflowHUDMode.normal')}</option>
+            <option value="compact"${s.turnWorkflowHUDMode === "compact" ? " selected" : ""}>${t('settings.turnWorkflowHUDMode.compact')}</option>
+          </select>
+          <small>${t('settings.hint.turnWorkflowHUDMode')}</small>
         </div>
       </div>
     </div>
@@ -53422,6 +53914,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     try {
       const $ = (id) => document.getElementById(id);
       $("mo-diagnostics-btn")?.addEventListener("click", showDiagnosticReport);
+      attachReferenceUsageSettingsEvents(_settingsActiveTab);
       if (_settingsActiveTab === "reference") {
         attachReferenceLibraryEvents();
         if (_referenceLibraryState.works.length === 0) referenceLibraryLoadWorks().catch(() => {});
@@ -53956,7 +54449,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         try {
           const prevDebug = settings.debug;
           const prevTurnWorkflowHUDEnabled = settings.turnWorkflowHUDEnabled !== false;
-          const prevLorebookReferenceMode = String(settings.lorebookReferenceMode || DEFAULT_SETTINGS.lorebookReferenceMode);
+          const prevTurnWorkflowHUDMode = settings.turnWorkflowHUDMode;
           const rawBridgeUrl = $("mo-bridgeUrl").value;
           if (!isValidBridgeUrlInput(rawBridgeUrl)) {
             throw new Error("bridge_url_invalid");
@@ -53979,13 +54472,8 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             embeddingTimeout: $("mo-embeddingTimeout").value,
             coreObjectiveMemoryMaxItems: $("mo-coreObjectiveMemoryMaxItems").value,
             recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value,
-            lorebookReferenceMode: readChecked("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only")
-              ? "reference_assist"
-              : "search_only",
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
-            referenceInjectionMaxChars: readValue("mo-referenceInjectionMaxChars", settings.referenceInjectionMaxChars),
-            lorebookReferenceMaxChars: readValue("mo-lorebookReferenceMaxChars", settings.lorebookReferenceMaxChars),
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
             memoryTransportMode: readValue("mo-memoryTransportMode", settings.memoryTransportMode, true),
             turnFinalizationMode: readValue("mo-turnFinalizationMode", settings.turnFinalizationMode, true),
@@ -53998,7 +54486,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
               unresolved_goal: readValue("mo-memoryBudgetUnresolvedGoal", settings.memoryDeliveryBudgets.unresolved_goal),
               direct_evidence: readValue("mo-memoryBudgetDirectEvidence", settings.memoryDeliveryBudgets.direct_evidence),
             },
-            primaryCanonBaseMaxChars: $("mo-primaryCanonBaseMaxChars").value,
             auxiliaryInjectionPlacement: readValue("mo-auxiliaryInjectionPlacement", settings.auxiliaryInjectionPlacement, true),
             auxiliaryInjectionAnchorMarker: readValue("mo-auxiliaryInjectionAnchorMarker", settings.auxiliaryInjectionAnchorMarker, true),
             pluginMainApiKey: $("mo-pluginMainApiKey").value,
@@ -54066,15 +54553,16 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             uiLanguage: $("mo-uiLanguage").value,
             uiDetailMode: $("mo-uiDetailMode").value,
             turnWorkflowHUDEnabled: readChecked("mo-turnWorkflowHUDEnabled", true),
+            turnWorkflowHUDMode: readValue("mo-turnWorkflowHUDMode", "normal"),
           };
           // sanitizeSettings가 숫자/URL 검증을 처리
           const updated = await updateSettings(patch);
           if (!updated) throw new Error("save failed");
-          if (prevLorebookReferenceMode !== settings.lorebookReferenceMode) {
-            await syncCurrentLorebookReference({ force: true });
-          }
           if (prevTurnWorkflowHUDEnabled && settings.turnWorkflowHUDEnabled === false) {
             await dismissTurnWorkflowHUD();
+          } else if (prevTurnWorkflowHUDMode !== settings.turnWorkflowHUDMode) {
+            if (_turnWorkflowHUDLastView) await renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+            else if (_turnWorkflowHUDPreviousLastView) await renderTurnWorkflowHUDPrevious(_turnWorkflowHUDPreviousLastView);
           }
           if (prevDebug !== settings.debug) {
             await closeSettingsPanel();
@@ -54119,16 +54607,14 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           setValueIfPresent("mo-subLlmClaudePromptCacheMode", settings.subLlmClaudePromptCacheMode || "off");
           setValueIfPresent("mo-subLlmExtraHeadersJson", settings.subLlmExtraHeadersJson || "");
           setValueIfPresent("mo-subLlmExtraBodyJson", settings.subLlmExtraBodyJson || "");
-          setValueIfPresent("mo-primaryCanonBaseMaxChars", settings.primaryCanonBaseMaxChars);
           for (let i = 0; i < reasoningSyncRunners.length; i++) reasoningSyncRunners[i]();
           $("mo-coreObjectiveMemoryMaxItems").value = settings.coreObjectiveMemoryMaxItems;
           $("mo-recentConversationReferenceCount").value = settings.recentConversationReferenceCount;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
-          $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars || 0;
+          $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars ?? DEFAULT_SETTINGS.injectionBudgetExtraChars;
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
           setValueIfPresent("mo-memoryTransportMode", settings.memoryTransportMode || "text");
           setValueIfPresent("mo-turnFinalizationMode", settings.turnFinalizationMode || "immediate_after_response");
-          setCheckedIfPresent("mo-lorebookReferenceAssistEnabled", settings.lorebookReferenceMode !== "search_only");
           const refreshedMemoryBudgets = settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets;
           setValueIfPresent("mo-memoryBudgetEventRecent", refreshedMemoryBudgets.event_recent);
           setValueIfPresent("mo-memoryBudgetCharacterObjective", refreshedMemoryBudgets.character_objective);
@@ -54146,6 +54632,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           setValueIfPresent("mo-publisherGuidanceFormat", settings.publisherGuidanceFormat || "standard");
           $("mo-uiDetailMode").value = settings.uiDetailMode || "full";
           setCheckedIfPresent("mo-turnWorkflowHUDEnabled", settings.turnWorkflowHUDEnabled !== false);
+          setValueIfPresent("mo-turnWorkflowHUDMode", settings.turnWorkflowHUDMode || "normal");
           syncNarrativeGuideControls();
           syncAllRangesFromInputs();
 

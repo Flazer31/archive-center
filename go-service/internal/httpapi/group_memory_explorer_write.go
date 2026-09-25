@@ -1021,7 +1021,7 @@ func (s *Server) handleRegenerateMemory(w http.ResponseWriter, r *http.Request) 
 		})
 		return
 	}
-	extraction, criticTrace, err := s.runCompleteTurnCriticFromCanonicalLogs(r.Context(), sid, req.TurnIndex, userText, assistantText, extractionCfg.Critic)
+	extraction, criticTrace, err := s.runCompleteTurnCriticFromCanonicalLogs(r.Context(), sid, req.TurnIndex, userText, assistantText, extractionCfg)
 	if err != nil {
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":           "failed",

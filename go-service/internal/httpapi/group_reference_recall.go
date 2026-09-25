@@ -294,9 +294,8 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 		}
 		return result.Selected[i].ChromaRank < result.Selected[j].ChromaRank
 	})
-	if len(result.Selected) > limit {
-		result.Selected = result.Selected[:limit]
-	}
+	// Coverage and whole-source packing own the delivery limit. A covered hit
+	// must not consume a slot before the next Chroma-ranked source is examined.
 	if successfulQueries == 0 {
 		if queryFailures > 0 || len(scopes) == 0 {
 			result.Status = "failed"
@@ -310,6 +309,9 @@ func (s *Server) buildSessionReferenceRecallWithSceneContext(ctx context.Context
 	result.RelationCompanions = buildPrimaryReferenceRelationCompanions(scopes, result.Selected, result.Query, messages, sceneContext, limit)
 	result.CoverageShadow = summarizeReferenceCoverage(result.Selected, result.Excluded, sceneContext, fieldIndex)
 	result.InjectionItems, result.CoverageShadow.Application = buildReferenceCoverageInjectionItems(bindings, scopes, result.Selected, result.RelationCompanions, fieldIndex, limit)
+	if len(result.Selected) > limit {
+		result.Selected = result.Selected[:limit] // Keep the preview payload bounded after packing.
+	}
 	result.CoverageShadow.Mode = "applied"
 	result.CoverageShadow.InjectionFiltered = true
 	result.Mode = "live"
@@ -602,7 +604,7 @@ func formatReferenceRecallInjection(result referenceRecallResult, maxChars int) 
 	for _, item := range result.InjectionItems {
 		line := formatReferenceInjectionItem(item)
 		if utf8.RuneCountInString(builder.String())+utf8.RuneCountInString(line) > maxChars {
-			break
+			continue
 		}
 		builder.WriteString(line)
 		included++

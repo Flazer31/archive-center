@@ -172,7 +172,7 @@ func TestReferenceRecallStatusDistinguishesFailedDegradedEmptyAndReady(t *testin
 		t.Fatalf("partial query status=%q selected=%#v warnings=%#v", degraded.Status, degraded.Selected, degraded.Warnings)
 	}
 
-	empty := newFixture(1, &referenceVectorTestStore{}).buildSessionReferenceRecall(context.Background(), "session-1", "archive", 1, nil)
+	empty := newFixture(1, &referenceVectorTestStore{}).buildSessionReferenceRecall(context.Background(), "session-1", "quiet breakfast", 1, nil)
 	if empty.Status != "empty" || len(empty.Selected) != 0 {
 		t.Fatalf("successful empty query = %#v", empty)
 	}
@@ -320,6 +320,20 @@ func TestPrepareTurnReferenceRecallAppliesWhenSessionIsLinked(t *testing.T) {
 	liveState := live["reference_injection"].(map[string]any)
 	if liveState["applied"] != true || liveState["mode"] != "live" {
 		t.Fatalf("live state = %#v", liveState)
+	}
+	for _, enabled := range []bool{false, true} {
+		response := prepareTurnReferenceSettingsResponse(t, mux, true, 3000, enabled)
+		state := response["reference_injection"].(map[string]any)
+		if state["applied"] != enabled {
+			t.Fatalf("independent original-work toggle %t was not applied: %#v", enabled, state)
+		}
+		pack := response["injection_pack"].(map[string]any)
+		if containsAll(fmt.Sprint(pack["reference_text"]), "The gate opens only at night") != enabled {
+			t.Fatalf("independent original-work toggle leaked or omitted reference: %#v", pack)
+		}
+		if len(fake.bindings) != 1 || len(fake.claims) != 1 {
+			t.Fatal("turning reference off removed stored data or bindings")
+		}
 	}
 	policy := liveState["budget_policy"].(map[string]any)
 	if policy["contract_version"] != referenceInjectionBudgetContractVersion || policy["mode"] != referenceModeSupplement || policy["total_cap_chars"] != float64(3000) || policy["relationship_to_main"] != "independent_additive_non_borrowing" {
@@ -563,6 +577,38 @@ func TestPrepareTurnReferenceCountsSelectedSeparatelyFromCharacterBudgetInclusio
 	if pack["reference_selected_count"] != state["injected_count"] {
 		t.Fatalf("pack included count diverged from formatter count: pack=%#v state=%#v", pack, state)
 	}
+	vectorStore.exactResults = []vector.ExactQueryResult{
+		{Document: referenceRecallVectorDocument("claim", "claim-long"), ChromaRank: 1},
+		{Document: referenceRecallVectorDocument("claim", "claim-short"), ChromaRank: 2},
+	}
+	response = prepareTurnReferenceSettingsResponse(t, mux, true, 650)
+	state = response["reference_injection"].(map[string]any)
+	pack = response["injection_pack"].(map[string]any)
+	if state["selected_count"] != float64(2) || state["injected_count"] != float64(1) || pack["reference_selected_count"] != float64(1) || !strings.Contains(fmt.Sprint(pack["reference_text"]), "A short relevant fact.") {
+		t.Fatalf("later fitting reference did not reach the HTTP injection pack: state=%#v text=%v", state, pack["reference_text"])
+	}
+}
+
+func Test47ReferenceBudgetContinuesAfterOversizedItem(t *testing.T) {
+	long := referenceInjectionItem{WorkTitle: "Synthetic", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, Text: strings.Repeat("Unrelated history. ", 200)}
+	short := referenceInjectionItem{WorkTitle: "Synthetic", ReferenceKind: "claim", ReferenceMode: referenceModePrimary, KnowledgeScope: "narrator_only", Text: "귀환 반지는 등록된 쉼터로 이동시킨다. 봉인 안에서는 사용할 수 없다.", SourceExcerpt: "봉인 안에서는 반지를 사용해도 돌아갈 수 없다."}
+	last := short
+	last.Text, last.SourceExcerpt = "Only the custodian knows the seal's origin.", "The custodian kept the seal's origin private."
+	fit := referenceRecallResult{Status: "ready", InjectionItems: []referenceInjectionItem{short, last}}
+	expected := formatReferenceRecallInjection(fit, 10000)
+	// The formatter trims the final newline from its returned text.
+	capChars := len([]rune(expected.Text)) + 1
+	for _, items := range [][]referenceInjectionItem{{long, short, last}, {short, long, last}} {
+		result := referenceRecallResult{Status: "ready", InjectionItems: items}
+		before := mustCompactJSON(result)
+		got := formatReferenceRecallInjection(result, capChars)
+		if got.Text != expected.Text || got.IncludedCount != expected.IncludedCount {
+			t.Fatalf("oversized reference hid later complete evidence: count=%d text=%q", got.IncludedCount, got.Text)
+		}
+		if len([]rune(got.Text)) > capChars || before != mustCompactJSON(result) {
+			t.Fatal("reference packing exceeded budget or mutated source records")
+		}
+	}
 }
 
 func TestPrepareTurnReferenceCoverageUsesStoreSceneSignals(t *testing.T) {
@@ -651,19 +697,23 @@ func prepareTurnReferenceFirstTurnResponse(t *testing.T, handler http.Handler) m
 	return result
 }
 
-func prepareTurnReferenceSettingsResponse(t *testing.T, handler http.Handler, injectionEnabled bool, maxInjectionChars int) map[string]any {
+func prepareTurnReferenceSettingsResponse(t *testing.T, handler http.Handler, injectionEnabled bool, maxInjectionChars int, referenceEnabled ...bool) map[string]any {
 	t.Helper()
+	settings := map[string]any{
+		"injection_enabled":                      injectionEnabled,
+		"max_injection_chars":                    maxInjectionChars,
+		"reference_injection_budget_basis_chars": maxInjectionChars,
+		"top_k":                                  3,
+	}
+	if len(referenceEnabled) > 0 {
+		settings["reference_injection_enabled"] = referenceEnabled[0]
+	}
 	body, _ := json.Marshal(map[string]any{
 		"chat_session_id": "session-1",
 		"turn_index":      2,
 		"raw_user_input":  "Open the gate",
 		"messages":        []map[string]any{{"role": "user", "content": "Open the gate"}},
-		"settings": map[string]any{
-			"injection_enabled":                      injectionEnabled,
-			"max_injection_chars":                    maxInjectionChars,
-			"reference_injection_budget_basis_chars": maxInjectionChars,
-			"top_k":                                  3,
-		},
+		"settings":        settings,
 	})
 	req := httptest.NewRequest(http.MethodPost, "/prepare-turn", bytes.NewReader(body))
 	rec := httptest.NewRecorder()

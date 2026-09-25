@@ -141,6 +141,29 @@ func Test39TypedVoiceManualPatchPreservesCompiledPrinciples(t *testing.T) {
 	}
 }
 
+func Test47VoiceCompilationContinuesAfterManualOnlyRollback(t *testing.T) {
+	const sid = "voice-manual-rebuild"
+	fake := newCharacterProjectionRecordingStore([]store.CharacterState{{ChatSessionID: sid, CharacterName: "Mira", SpeechStyleJSON: `{"manual_overrides":{"speech_notes":"operator-note"},"principles":[{"principle_key":"operator-principle"}]}`}})
+	srv := &Server{Store: fake}
+	unit := voiceProjectionTestUnit(sid, "new-revision", 2, "new-voice", 912, "entity-mira-new", "Mira", "directness", "new-automatic-principle", "utterance", `"Enough."`, "", "", "", "", "", "", "", `Mira says, "Enough."`, "public")
+	result := artifactSaveResult{}
+	srv.saveCharacterProfileAndVoiceProjectionsFromPreciseMemoryUnits(context.Background(), sid, []*store.PreciseMemoryUnit{unit}, time.Now(), &result)
+	state := fake.mustState(t, sid, "Mira")
+	for _, value := range []string{"operator-note", "operator-principle", "new-automatic-principle", "entity-mira-new"} {
+		if !strings.Contains(state.SpeechStyleJSON, value) {
+			t.Fatalf("manual-only rebuild lost %s: %s result=%+v", value, state.SpeechStyleJSON, result)
+		}
+	}
+}
+
+func Test47ManualOnlySpeechEditKeepsOtherPrinciples(t *testing.T) {
+	updated := preserveTypedVoiceProjectionManualOverrides(`{"manual_overrides":{"speech_notes":"old"},"principles":[{"principle_key":"keep-operator-rule"}]}`, map[string]any{"speech_style_json": `{"speech_notes":"new"}`})
+	value := extractionStringFromAny(updated["speech_style_json"])
+	if !strings.Contains(value, "keep-operator-rule") || !strings.Contains(value, `"speech_notes":"new"`) || strings.Contains(value, `"speech_notes":"old"`) {
+		t.Fatalf("editing surviving setting erased another setting: %s", value)
+	}
+}
+
 func Test39CProfileAccumulatesDurableEvidenceAndReplacesOnlyCurrentSlot(t *testing.T) {
 	fake := newCharacterProjectionRecordingStore(nil)
 	srv := &Server{Store: fake}

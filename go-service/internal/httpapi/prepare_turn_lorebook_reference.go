@@ -506,7 +506,7 @@ func (s *Server) prepareTurnLorebookReferenceSearch(
 	}
 	switch strings.TrimSpace(observation.ObservationState) {
 	case "observed":
-		if observation.CharacterIndex == nil || observation.ChatIndex == nil || !observation.EnabledModulesObserved {
+		if observation.CharacterIndex == nil || observation.ChatIndex == nil {
 			result.Status = "unavailable"
 			result.ReasonCode = "lorebook_scope_observation_incomplete"
 			return result

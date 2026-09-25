@@ -78,7 +78,7 @@ const sandbox = vm.createContext({...external,console,TextEncoder,TextDecoder,
 vm.runInContext([...selected].map(name => functions.get(name)).join('\n'),sandbox);
 (async () => {
   sandbox.fixtureChat = {id:'branch',message:messages};
-  const first = vm.runInContext('buildSessionNormalizeCompletedTurnPairs(fixtureChat)',sandbox);
+  const first = await vm.runInContext('buildSessionNormalizeCompletedTurnPairs(fixtureChat)',sandbox);
   if (variant !== 'assistant_only' && variant !== 'all_inherited') {
     assert.equal(first.pairs.at(-1).assistantContent,original, 'production first pass must clean the translation');
   }

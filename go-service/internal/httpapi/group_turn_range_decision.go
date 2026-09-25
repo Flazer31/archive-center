@@ -27,11 +27,13 @@ const (
 )
 
 type routingTurnBaseline struct {
-	BackendTurnAtRoute int    `json:"backend_turn_at_route"`
-	LocalPairsAtRoute  int    `json:"local_pairs_at_route"`
-	Reason             string `json:"reason"`
-	durableSourceID    string
-	durableVerified    bool
+	BackendTurnAtRoute       int    `json:"backend_turn_at_route"`
+	LocalPairsAtRoute        int    `json:"local_pairs_at_route"`
+	Reason                   string `json:"reason"`
+	durableSourceID          string
+	durableVerified          bool
+	durableSourceIDs         []string
+	durableInputGroupAliases map[string][]string
 }
 
 type rollbackDecisionRequest struct {
@@ -62,6 +64,7 @@ type rollbackDecisionRequest struct {
 	AllowManualCandidate            bool                                     `json:"allow_manual_candidate"`
 	AssistantObservationScope       string                                   `json:"assistant_observation_scope,omitempty"`
 	AssistantObservations           []rollbackAssistantObservation           `json:"assistant_observations,omitempty"`
+	PendingInputObservation         *completeTurnSourceObservation           `json:"pending_input_observation,omitempty"`
 	Baseline                        *routingTurnBaseline                     `json:"baseline,omitempty"`
 	ManualTargetOwnershipObserved   bool                                     `json:"-"`
 	ManualTargetOwned               bool                                     `json:"-"`
@@ -333,6 +336,8 @@ func verifyRollbackAssistantDeletionEvidence(
 	base store.Store,
 	chatSessionID string,
 	observations []rollbackAssistantObservation,
+	pendingInput *completeTurnSourceObservation,
+	stitchBaseline ...*routingTurnBaseline,
 ) (rollbackAssistantDeletionEvidence, error) {
 	lister, ok := base.(store.ActiveSourceRevisionLister)
 	if !ok {
@@ -344,6 +349,9 @@ func verifyRollbackAssistantDeletionEvidence(
 	}
 	filtered := make([]store.MemorySourceRevision, 0, len(sources))
 	for _, source := range sources {
+		if len(stitchBaseline) > 0 && stitchBaseline[0] != nil && stitchBaseline[0].Reason == "timeline_stitch" && source.TurnIndex <= stitchBaseline[0].BackendTurnAtRoute {
+			continue
+		}
 		if source.LifecycleState != "active" || source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
 			continue
 		}
@@ -388,8 +396,35 @@ func verifyRollbackAssistantDeletionEvidence(
 		return rollbackAssistantDeletionEvidence{Verified: true, Reason: "verified_no_assistant_output_removed"}, nil
 	}
 
-	removedCount := len(filtered) - len(orderedObservations)
-	firstRemovedTurn := filtered[len(orderedObservations)].TurnIndex
+	firstMissing := len(orderedObservations)
+	// The current request can be regenerating the same Host user row. Reuse
+	// completion's logical identity instead of turning that replacement into
+	// deletion while its assistant is temporarily absent from the Host.
+	if pendingInput != nil {
+		ids := completeTurnInputGroupLogicalIDs(chatSessionID, *pendingInput)
+		if len(stitchBaseline) > 0 && stitchBaseline[0] != nil && stitchBaseline[0].Reason == "timeline_stitch" {
+			ids = stitchedInputGroupLogicalIDs(ids, *pendingInput, stitchBaseline[0])
+		}
+		candidate := completeTurnSourceAcceptanceState{LogicalTurnID: filtered[firstMissing].LogicalTurnID}
+		matches := completeTurnInputGroupMatches(candidate, ids)
+		if !matches {
+			// Input groups retain member identities in the existing acceptance
+			// journal. Deleting a group's last user row must not turn regeneration
+			// of a surviving member into a different deletion policy.
+			ledger := newCompleteTurnSourceAcceptanceLedger()
+			ledger.loadDurableStateLocked(ctx, base, chatSessionID)
+			candidate = ledger.current[sourceAcceptanceStateKey(chatSessionID, filtered[firstMissing].TurnIndex)]
+			matches = completeTurnInputGroupMatches(candidate, ids)
+		}
+		if matches {
+			firstMissing++
+		}
+	}
+	if firstMissing == len(filtered) {
+		return rollbackAssistantDeletionEvidence{Verified: true, Reason: "pending_same_user_replacement"}, nil
+	}
+	removedCount := len(filtered) - firstMissing
+	firstRemovedTurn := filtered[firstMissing].TurnIndex
 	reason := "verified_no_assistant_output_removed"
 	if removedCount > 0 {
 		reason = "verified_assistant_output_removed"
@@ -506,6 +541,8 @@ func (s *Server) handleRollbackDecision(w http.ResponseWriter, r *http.Request) 
 			s.Store,
 			req.ChatSessionID,
 			req.AssistantObservations,
+			req.PendingInputObservation,
+			req.Baseline,
 		); err != nil {
 			req.AssistantEvidenceReason = evidence.Reason
 		} else {
@@ -960,6 +997,9 @@ func (s *Server) applyAssistantSourceRoutingResolution(
 	}
 	candidateSources := make([]store.MemorySourceRevision, 0, len(sources))
 	for _, source := range sources {
+		if req.Baseline != nil && req.Baseline.Reason == "timeline_stitch" && source.TurnIndex <= req.Baseline.BackendTurnAtRoute {
+			continue
+		}
 		if strings.TrimSpace(source.ChatSessionID) != strings.TrimSpace(req.ChatSessionID) ||
 			source.TurnIndex <= 0 || strings.TrimSpace(source.AssistantContent) == "" {
 			continue
@@ -1864,13 +1904,30 @@ func (s *Server) resolveDurableSessionRoutingBaseline(ctx context.Context, sessi
 	if clientBaseline != nil && routingBaselineReasonSupported(clientBaseline.Reason) {
 		localPairsAtRoute = maxInt(0, clientBaseline.LocalPairsAtRoute)
 	}
-	return &routingTurnBaseline{
-		BackendTurnAtRoute: durable.ImportedThroughTurn,
-		LocalPairsAtRoute:  localPairsAtRoute,
-		Reason:             reason,
-		durableSourceID:    strings.TrimSpace(durable.SourceSessionID),
-		durableVerified:    true,
+	if durable.Mode == store.SessionMigrationModeStitch {
+		reason, localPairsAtRoute = "timeline_stitch", 0
 	}
+	return &routingTurnBaseline{
+		BackendTurnAtRoute:       durable.ImportedThroughTurn,
+		LocalPairsAtRoute:        localPairsAtRoute,
+		Reason:                   reason,
+		durableSourceID:          strings.TrimSpace(durable.SourceSessionID),
+		durableSourceIDs:         durable.SourceSessionIDs,
+		durableInputGroupAliases: durable.InputGroupAliases,
+		durableVerified:          true,
+	}
+}
+
+func stitchedInputGroupLogicalIDs(ids []string, observation completeTurnSourceObservation, baseline *routingTurnBaseline) []string {
+	for _, sid := range append([]string{baseline.durableSourceID}, baseline.durableSourceIDs...) {
+		ids = append(ids, completeTurnInputGroupLogicalIDs(sid, observation)...)
+	}
+	for logicalID, aliases := range baseline.durableInputGroupAliases {
+		if completeTurnInputGroupMatches(completeTurnSourceAcceptanceState{LogicalTurnID: logicalID, UserLogicalTurnIDs: aliases}, ids) {
+			ids = append(ids, logicalID)
+		}
+	}
+	return ids
 }
 
 func calculateSessionRoutingTurnResolution(req sessionRoutingTurnResolutionRequest) sessionRoutingTurnResolutionResponse {
@@ -1970,7 +2027,7 @@ func resolveObservedRisuLocalTurn(risuUserMessageIndex *int, observedPairOrdinal
 
 func routingBaselineReasonSupported(reason string) bool {
 	switch strings.TrimSpace(reason) {
-	case "timeline_copy", "timeline_migrate", "timeline_attach":
+	case "timeline_copy", "timeline_migrate", "timeline_attach", "timeline_stitch":
 		return true
 	}
 	return false

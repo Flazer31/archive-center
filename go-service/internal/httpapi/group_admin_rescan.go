@@ -721,7 +721,7 @@ func (s *Server) runAdminRescanWithProgress(ctx context.Context, sid string, req
 			}
 			continue
 		}
-		extraction, trace, err := s.runCompleteTurnCriticFromCanonicalLogs(ctx, sid, turn, userText, assistantText, extractionCfg.Critic)
+		extraction, trace, err := s.runCompleteTurnCriticFromCanonicalLogs(ctx, sid, turn, userText, assistantText, extractionCfg)
 		if err != nil {
 			failed++
 			failedTurns = append(failedTurns, map[string]any{"turn_index": turn, "reason": "critic_extract_failed: " + err.Error(), "trace": trace})

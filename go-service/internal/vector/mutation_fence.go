@@ -70,6 +70,33 @@ func (s *mutationFencedStore) Rebuild(ctx context.Context, sessionID string) err
 	return s.delegate.Rebuild(ctx, sessionID)
 }
 
+func (s *mutationFencedStore) RecoverIndex(ctx context.Context, path string, rebuild func(VectorStore) error) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if recovery, ok := s.delegate.(IndexRecovery); ok {
+		return recovery.RecoverIndex(ctx, path, rebuild)
+	}
+	return "", ErrNotEnabled
+}
+
+func (s *mutationFencedStore) ResumeIndexRecovery(ctx context.Context, path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if recovery, ok := s.delegate.(IndexRecovery); ok {
+		return recovery.ResumeIndexRecovery(ctx, path)
+	}
+	return nil
+}
+
+func (s *mutationFencedStore) RecoverySnapshot(ctx context.Context, path string) ([]VectorDocument, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if recovery, ok := s.delegate.(IndexRecovery); ok {
+		return recovery.RecoverySnapshot(ctx, path)
+	}
+	return nil, 0, ErrNotEnabled
+}
+
 func (s *mutationFencedStore) Health(ctx context.Context) (HealthSnapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

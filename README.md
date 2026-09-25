@@ -1,6 +1,6 @@
 # Archive Center
 
-**[Archive Center 4.6.1](https://github.com/Flazer31/archive-center/releases/tag/v4.6.1)**
+**[Archive Center 4.7.0](https://github.com/Flazer31/archive-center/releases/tag/v4.7.0)**
 Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존하고, 현재 장면에
 관련된 기억과 원작 근거를 다음 요청에 전달하는 로컬 우선 기억 backend입니다.
 
@@ -10,7 +10,7 @@ Archive Center는 RisuAI 대화의 원문과 파생 기억을 로컬에 보존�
 
 ## 현재 버전
 
-이 소스와 패키지의 버전은 **4.6.1**입니다. JS·백엔드·HUD·설치 패키지를 같은 버전으로 사용하세요.
+이 소스와 패키지의 버전은 **4.7.0**입니다. JS·백엔드·HUD·설치 패키지를 같은 버전으로 사용하세요.
 기본 기억은 전처리·출판사 없이도 사용할 수 있습니다. 기존 기억과 설정은 업데이트할 때 유지됩니다.
 
 ## 서비스 포트 변경

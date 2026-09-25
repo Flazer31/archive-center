@@ -89,6 +89,7 @@ func TestMariaPrepareTurnRangeQueriesBoundHistoryAndKeepExplicitOldRows(t *testi
 	mock.ExpectQuery(`(?s)FROM character_states state.*COALESCE\(state.turn_index, 0\) < \?.*NOT EXISTS.*character_states newer.*COALESCE\(newer.turn_index, 0\) < \?`).
 		WithArgs("range-session", 451, 451, 451, 451).
 		WillReturnRows(characterRows)
+	expectNoCharacterManualEdits(mock, "range-session", "")
 	if _, err := st.ListCharacterStatesCurrentBefore(ctx, "range-session", 451); err != nil {
 		t.Fatalf("ListCharacterStatesCurrentBefore: %v", err)
 	}

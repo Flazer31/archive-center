@@ -53,7 +53,8 @@ function host(messages) {
   vm.createContext(context);
   for(const name of ['computeOrchestrationDirtyHashOr1c','observeActiveChatInputGroup','captureFinalConfirmationRequestContext',
     'extractActiveChatMessageList','pickActiveChatArrayCandidate','scoreActiveChatMessageArrayCandidate','isLikelyRisuMemorySummaryRecord',
-    'buildCompletedTurnPairsFromActiveChatMessages','finalConfirmationRequestContextOwnsPendingResponse',
+    'buildCompletedTurnPairsFromActiveChatMessages','extractActiveChatOriginalMessages','buildYumiV1ArchiveReadContext',
+    'extractGigaTransCanonicalAssistantText','finalConfirmationRequestContextOwnsPendingResponse',
     'finalConfirmationRequestContextRetryIdentityMatches','finalConfirmationRequestContextHasReusablePayloadPlan',
     'installFinalConfirmationRequestContext','serializeAcceptedFinalRecoveryPayload','queueNextInputFinalization','buildNextInputSourceAcceptanceFinality','beginNextInputFinalizationPipeline']) vm.runInContext(extract(name),context);
   return {chat,context,events,capture:()=>context.captureFinalConfirmationRequestContext('audit-session','model','audit-request',{charIdx:0,chatIdx:0})};

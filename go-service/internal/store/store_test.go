@@ -438,6 +438,7 @@ func TestMariaDBStoreSaveCharacterStateAppendsMergedSnapshot(t *testing.T) {
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
 			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 		}).AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{"Hero":{"affection":40}}`, `{"tone":"soft"}`, nil, 8, updated, updated))
+	expectNoCharacterManualEdits(mock, "sess-1", "Chloe")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO character_states")).
 		WithArgs("sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{"Hero":{"affection":70}}`, `{"tone":"dry"}`, sqlmock.AnyArg(), 9, updated, updated).
 		WillReturnResult(sqlmock.NewResult(12, 1))
@@ -475,6 +476,7 @@ func TestMariaDBStoreSaveCharacterStateInsertsWhenNoExistingRow(t *testing.T) {
 			"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json",
 			"relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at",
 		}))
+	expectNoCharacterManualEdits(mock, "sess-1", "Mina")
 	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO character_states")).
 		WithArgs("sess-1", "Mina", nil, nil, `{"emotion":"new"}`, nil, nil, sqlmock.AnyArg(), 1, created, created).
 		WillReturnResult(sqlmock.NewResult(7, 1))
@@ -513,6 +515,7 @@ func TestMariaDBStoreListCharacterStatesReturnsLatestSnapshotPerCharacter(t *tes
 			AddRow(12, "sess-1", "Chloe", `{"hair":"black"}`, `{"kind":"sharp"}`, `{"emotion":"focused"}`, `{}`, `{}`, nil, 9, now, now).
 			AddRow(11, "sess-1", "Chloe", `{"hair":"brown"}`, `{"kind":"sharp"}`, `{"emotion":"calm"}`, `{}`, `{}`, nil, 8, now, now).
 			AddRow(10, "sess-1", "Mina", `{}`, `{}`, `{"emotion":"new"}`, `{}`, `{}`, nil, 1, now, now))
+	expectNoCharacterManualEdits(mock, "sess-1", "")
 
 	items, err := m.ListCharacterStates(context.Background(), "sess-1")
 	if err != nil {
@@ -1102,6 +1105,7 @@ func TestMariaDBStoreReadSessionStateSnapshotUsesSingleReadOnlyTransaction(t *te
 	mock.ExpectQuery("FROM character_states").
 		WithArgs("sess-agg").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "chat_session_id", "character_name", "appearance_json", "personality_json", "status_json", "relationships_json", "speech_style_json", "field_provenance_json", "turn_index", "created_at", "updated_at"}))
+	expectNoCharacterManualEdits(mock, "sess-agg", "")
 	mock.ExpectQuery("FROM world_rules").
 		WithArgs("sess-agg").
 		WillReturnRows(sqlmock.NewRows([]string{"id", "chat_session_id", "scope", "scope_name", "category", "key", "value_json", "genre", "source_turn", "pinned", "suppressed", "user_corrected", "created_at", "updated_at"}))

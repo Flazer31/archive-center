@@ -29,8 +29,10 @@ type chromaStore struct {
 }
 
 type chromaCollection struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Metadata      map[string]any `json:"metadata"`
+	Configuration map[string]any `json:"configuration_json"`
 }
 
 // NewChromaStore creates a VectorStore backed by the ChromaDB HTTP API.

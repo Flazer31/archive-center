@@ -322,7 +322,7 @@ func modelRecentTextForTest(turn map[string]any) string {
 	return text.String()
 }
 
-func Test44RecentContextIsChosenByEachEditorAndPreservedVerbatim(t *testing.T) {
+func Test47RecentContextRemainsCompleteDespiteEditorFocusReferences(t *testing.T) {
 	current := "Mira visits Rowan with the secret still private."
 	limit := 2
 	req := dto.PrepareTurnRequest{RawUserInput: &current, Settings: dto.PrepareTurnSettings{RecentConversationReferenceCount: &limit}, Messages: []map[string]any{
@@ -382,15 +382,13 @@ func Test44RecentContextIsChosenByEachEditorAndPreservedVerbatim(t *testing.T) {
 			answer["search_requests"] = []string{"Find the consequence for " + role}
 			answer["reasons"] = map[string]string{ref: "The prior interpretation for " + role}
 		} else {
-			if strings.Contains(wire, "scenery remains available") || input["recent_context_status"] != "first_round_selected_verbatim_passages" {
-				t.Error("second round resent unselected recent prose")
+			if !strings.Contains(wire, "scenery remains available") || input["recent_context_status"] != "full_configured_recent_context" {
+				t.Error("second round lost the configured full reading")
 			}
-			if role == "subjective_relationship" {
-				if modelRecentTextForTest(mapFromAny(recent[0])) != "user:\nKeep Mira's knowledge private.\nassistant:\nRowan opened the door.\n\nOnly Mira knows the password.\n\n" || modelRecentTextForTest(mapFromAny(recent[1])) != "" {
-					t.Error("private editor's exact context choice changed")
+			for i, raw := range recent {
+				if modelRecentTextForTest(mapFromAny(raw)) != wantRecent[i].Text {
+					t.Error("a focus reference removed original context needed for reconsideration")
 				}
-			} else if modelRecentTextForTest(mapFromAny(recent[1])) != "user:\nRemember the older promise.\nassistant:\nRowan promised tea.\r\n\r\nMira privately feared rejection.\r\n\r\n" || modelRecentTextForTest(mapFromAny(recent[0])) != "" {
-				t.Error("one editor's choice leaked into another editor's recent context")
 			}
 			answer["reuse_previous_reasons"] = true
 		}
@@ -420,9 +418,6 @@ func Test44RecentContextIsChosenByEachEditorAndPreservedVerbatim(t *testing.T) {
 			if !reflect.DeepEqual(call.Input["recent_conversation"], wantRecent) {
 				t.Error("canonical full recent context mutated")
 			}
-		}
-		if role.Calls[1].ModelInputChars >= role.Calls[0].ModelInputChars {
-			t.Error("supplement did not reduce this long recent input")
 		}
 	}
 }
@@ -768,7 +763,9 @@ func Test44SupplementLoreKeepsPriorSelectionsWithoutSpareRefill(t *testing.T) {
 	facts := []prepareTurnPriorityMemoryCandidate{{CanonicalFactID: "fact", Lane: "world_state", CompleteText: "The old gate is open."}}
 	lore := []map[string]any{{"id": "retained", "text": strings.Repeat("A", 18000)}, {"id": "extra", "text": strings.Repeat("B", 5000)}}
 	ctx := map[string]any{"lorebook_candidates": lore, "supplemental_lore_review": true, "retained_ids": map[string]bool{"retained": true, "fact": true}}
-	in := multiAgentInput("world_state", facts, nil, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), 32000, 8, nil, ctx)
+	cfg := defaultMultiAgentSettings()
+	cfg.CandidateChars = 32000 // This fixture exercises a saved allocation, independently of the fresh default.
+	in := multiAgentInput("world_state", facts, nil, dto.PrepareTurnRequest{}, cfg, 32000, 8, nil, ctx)
 	supplied := outputFidelityLineageSlice(in["lorebook_candidates"])
 	if len(supplied) != 1 || mapFromAny(supplied[0])["id"] != "retained" {
 		t.Fatal("prior whole lore selection lost or spare space refilled with another entry")

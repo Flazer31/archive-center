@@ -121,7 +121,7 @@ func TestLifecycleKeyCarriesCompletionAcrossChangedStateWording(t *testing.T) {
 // is not a structured resolution. The DB boundary records the actual writes.
 func TestPendingPromiseCompletionAndLaterMentionContract(t *testing.T) {
 	ctx := context.Background()
-	key := "ainz-minwoo-ale-outing"
+	key := "nero-jiwoo-ale-outing"
 	st := &turnRecordingStore{}
 	srv := &Server{Store: st}
 	result := artifactSaveResult{}
@@ -130,17 +130,17 @@ func TestPendingPromiseCompletionAndLaterMentionContract(t *testing.T) {
 		srv.saveNarrativeStateFromExtraction(ctx, "promise-session", turn, extraction, "", nil, time.Unix(int64(turn), 0), &result)
 		srv.saveCharacterAndStateArtifacts(ctx, "promise-session", turn, extraction, "", completeTurnEmbeddingConfig{}, time.Unix(int64(turn), 0), &result, nil, &cost)
 	}
-	save(46, map[string]any{"pending_threads": []any{map[string]any{"title": "Five casks of ale", "lifecycle_key": key, "description": "Ainz promised Minwoo an ale outing."}}})
+	save(46, map[string]any{"pending_threads": []any{map[string]any{"title": "Five casks of ale", "lifecycle_key": key, "description": "Nero promised Jiwoo an ale outing."}}})
 	if len(st.savedPendingThreads) != 1 || st.savedPendingThreads[0].Status != "open" {
 		t.Fatalf("initial promise not saved: %+v", st.savedPendingThreads)
 	}
 	promise := *st.savedPendingThreads[0]
 	st.returnPendingThreads = []store.PendingThread{promise, {
-		ThreadKey: narrativeLifecycleStorageKey("adventurer-plate"), Description: "Give Minwoo an adventurer plate", Status: "open",
+		ThreadKey: narrativeLifecycleStorageKey("adventurer-plate"), Description: "Give Jiwoo an adventurer plate", Status: "open",
 		HookMetadataJSON: mustCompactJSON(map[string]any{"lifecycle_key": "adventurer-plate"}),
 	}}
 	st.savedPendingThreads = nil
-	completed := "아인즈가 여관을 빌려 민우와의 생맥주 약속을 이행했다."
+	completed := "네로스가 여관을 빌려 지우와의 생맥주 약속을 이행했다."
 	save(47, map[string]any{"turn_summary": completed})
 	if len(st.savedPendingThreads) != 0 {
 		t.Fatal("summary prose alone unexpectedly rewrote pending state")
@@ -152,7 +152,7 @@ func TestPendingPromiseCompletionAndLaterMentionContract(t *testing.T) {
 	// Active-list query after that write returns the still-open plate only.
 	st.returnPendingThreads = st.returnPendingThreads[1:]
 	st.savedPendingThreads = nil
-	save(106, map[string]any{"turn_summary": "Minwoo remembers the ale outing with Ainz."})
+	save(106, map[string]any{"turn_summary": "Jiwoo remembers the ale outing with Nero."})
 	if len(st.savedPendingThreads) != 0 {
 		t.Fatal("a later historical mention reopened a promise")
 	}

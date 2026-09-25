@@ -313,6 +313,7 @@ func TestPrepareTurnCompactOrchestrationProjectionOwnsCountsAndSupervisorStatus(
 		"valid_empty",
 		0,
 		map[string]any{"final_delivered_count": 3},
+		nil,
 	)
 	search := mapFromAny(projection["search_result"])
 	supervisor := mapFromAny(projection["supervisor"])
@@ -333,7 +334,11 @@ func TestPrepareTurnCompactOrchestrationProjectionOwnsCountsAndSupervisorStatus(
 		"failed_open",
 		countPrepareTurnSupervisorDirectiveItems(failedTraceOnly),
 		nil,
+		map[string]any{"attempt_count": 4},
 	)
+	if intFromAny(mapFromAny(mapFromAny(failedProjection["activity"])["llmCalls"])["supervisor"], 0) != 4 {
+		t.Fatalf("retry calls were hidden: %#v", failedProjection)
+	}
 	if boolFromAny(mapFromAny(failedProjection["supervisor"])["hasDirective"]) {
 		t.Fatalf("provider failure trace was presented as an accepted directive: %#v", failedProjection)
 	}

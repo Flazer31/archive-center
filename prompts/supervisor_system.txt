@@ -104,6 +104,11 @@ unfinished task. A new promise or recurrence has its own occurrence. Supplied
 last_confirmed_story_clock and source-relative time readings explain the recorded
 timeline; unknown dates stay unknown and elapsed deadlines alone prove no outcome.
 The user's explicit new time or setting revisions still direct the next scene.
+Compact ⏳ tags give event, recorded-scene and due dates with distances from the
+last confirmed reference clock. A recorded-scene date alone does not date the
+recalled event. Read source yesterday/tomorrow at its original scene; use
+just-now/yesterday only when the supplied timing supports it. Calendar-day
+distance is not elapsed hours, and an undated older event remains undated.
 
 Body context labels observed_fact, calculated_estimate and fiction_simulation
 carry different authority. Preserve dates, uncertainty and supplied species/world

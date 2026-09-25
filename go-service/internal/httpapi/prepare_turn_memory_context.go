@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -17,10 +18,12 @@ import (
 // remain independent. A minimum form is built before either Go or AI selection.
 type prepareTurnMemoryPart struct {
 	Key, Label, Value string
+	DeliveryLabel     string `json:",omitempty"`
 	FactTexts         []string
 }
 type prepareTurnMemoryContext struct {
 	Path, Label string
+	DisplayPath string `json:",omitempty"`
 	Parts       []prepareTurnMemoryPart
 	fingerprint [32]byte
 }
@@ -41,6 +44,8 @@ func (c *prepareTurnMemoryContext) sourceFingerprint() [32]byte {
 type prepareTurnMemoryFormPart struct {
 	Key, Text string
 	Refs      []string
+	// Nil uses the reading text; an empty override omits only typed bookkeeping.
+	DeliveryText *string
 }
 type prepareTurnMemoryForm struct {
 	Group, Heading, Text, Meaning string
@@ -254,18 +259,48 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 		if form == nil {
 			form = &prepareTurnMemoryForm{Group: groupID}
 			heading := strings.TrimSpace(c.Reading.Label)
-			if c.Reading.Path != "" && c.Reading.Path != "/" {
-				heading += " [" + c.Reading.Path + "]"
+			path := c.Reading.Path
+			if c.Reading.DisplayPath != "" {
+				path = c.Reading.DisplayPath
+			}
+			if path != "" && path != "/" {
+				heading += " [" + path + "]"
 			}
 			form.Heading = strings.TrimSpace(heading)
 			values, lines := []string{}, []string{}
 			seenRefs := map[string]bool{}
 			for _, p := range c.Reading.Parts {
+				// Preprocessing reads and budgets the original candidate form.
+				// Final-prompt cleanup must not expand its candidate packet.
+				values = append(values, p.Value)
+				if p.Label == "source_session_id" {
+					continue
+				}
 				text := p.Value
-				if p.Label != "" {
-					text = p.Label + ": " + text
+				switch p.Label {
+				case "source-relative time (last confirmed clock; read only)", "state time (read only)":
+					text = storyTimePromptReading(parseJSONMap(p.Value))
+				case "schedule reading (read only)":
+					text = storyTimePromptSchedule(parseJSONMap(p.Value))
+				default:
+					if p.Label != "" {
+						text = p.Label + ": " + text
+					}
 				}
 				part := prepareTurnMemoryFormPart{Key: p.Key, Text: text}
+				delivery, display := prepareTurnMemoryPartDisplay(p)
+				if !display {
+					part.DeliveryText = &delivery
+				} else if delivery != p.Value || p.DeliveryLabel != "" {
+					label := p.Label
+					if p.DeliveryLabel != "" {
+						label = p.DeliveryLabel
+					}
+					if label != "" {
+						delivery = label + ": " + delivery
+					}
+					part.DeliveryText = &delivery
+				}
 				for _, factText := range p.FactTexts {
 					if ref := refs[key][factText]; ref != "" {
 						part.Refs = append(part.Refs, ref)
@@ -276,7 +311,6 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 					}
 				}
 				form.Parts = append(form.Parts, part)
-				values = append(values, p.Value)
 				lines = append(lines, "  "+text)
 			}
 			form.Meaning = strings.Join(values, "\n")
@@ -299,6 +333,66 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 		if candidates[i].Minimum != nil {
 			candidates[i].ContextGroupScore = groupScores[candidates[i].Minimum.Group]
 		}
+	}
+}
+
+// Render only typed backend additions here. Original facts/quotations and the
+// source reading (including IDs used by selection and diagnostics) stay intact.
+func prepareTurnMemoryPartDisplay(p prepareTurnMemoryPart) (string, bool) {
+	if !strings.HasPrefix(p.Key, "@lifecycle/") && !strings.HasPrefix(p.Key, "@current/") && !strings.HasPrefix(p.Key, "@field_current/") && !strings.HasPrefix(p.Key, "@field/") {
+		return p.Value, true
+	}
+	field := p.Label
+	field = strings.TrimPrefix(strings.TrimPrefix(field, "state "), "current ")
+	field = strings.TrimPrefix(field, "restoration audit ")
+	switch field {
+	case "source_revision", "direct_evidence_ids", "evidence_refs", "repair_source_revision", "progression source":
+		return "", false
+	case "observed_at":
+		if value := parseJSONMap(p.Value); len(value) > 0 {
+			return storyTimePromptCoordinate(value), true
+		}
+	case "progression details", "occurrence_time", "effective_time", "validity", "learned_time":
+		if value := parseJSONMap(p.Value); len(value) > 0 {
+			return prepareTurnMemoryDisplayFields(value), true
+		}
+	}
+	return p.Value, true
+}
+
+// Keep every supplied story field, including unfamiliar nested conditions.
+// Strings are never parsed or rewritten, even when they contain literal JSON.
+func prepareTurnMemoryDisplayFields(value any) string {
+	switch v := value.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		parts := make([]string, 0, len(keys))
+		for _, key := range keys {
+			text := prepareTurnMemoryDisplayFields(v[key])
+			if _, nested := v[key].(map[string]any); nested {
+				text = "(" + text + ")"
+			}
+			parts = append(parts, key+": "+text)
+		}
+		return strings.Join(parts, "; ")
+	case []any:
+		parts := make([]string, 0, len(v))
+		for _, item := range v {
+			parts = append(parts, prepareTurnMemoryDisplayFields(item))
+		}
+		return "[" + strings.Join(parts, " | ") + "]"
+	case []string:
+		return "[" + strings.Join(v, " | ") + "]"
+	case string:
+		return v
+	case nil:
+		return "null"
+	default:
+		return prepareTurnPriorityScalarText(v)
 	}
 }
 
@@ -352,6 +446,7 @@ func prepareTurnLifecycleReadings(values []store.StatusCurrentValue, clocks ...m
 			observation = fmt.Sprintf("source turn %d", origin.SourceTurn)
 		}
 		label := fmt.Sprintf("current progression [lifecycle %s; %s; status_current_values:%d]", key, observation, view.Value.ID)
+		deliveryLabel := fmt.Sprintf("current progression [lifecycle %s; %s]", key, observation)
 		text := view.Current
 		if view.Subject != "" {
 			text = view.Subject + ": " + text
@@ -359,7 +454,7 @@ func prepareTurnLifecycleReadings(values []store.StatusCurrentValue, clocks ...m
 		if transition := stringFromMap(view.Payload, "transition"); transition != "" {
 			text += " (" + transition + ")"
 		}
-		parts := []prepareTurnMemoryPart{{Key: prefix, Label: label, Value: text}}
+		parts := []prepareTurnMemoryPart{{Key: prefix, Label: label, DeliveryLabel: deliveryLabel, Value: text}}
 		if details := mapFromAny(view.Payload["lifecycle_details"]); len(details) > 0 {
 			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/details", Label: "progression details", Value: prepareTurnPriorityScalarText(details)})
 			scheduleSource := make(map[string]any, len(details)+1)
@@ -416,6 +511,92 @@ func prepareTurnAttachLifecycleContext(out *prepareTurnInjectionAssembly, values
 	}
 }
 
+// Recalled descriptions keep the stored state of the named subject beside them,
+// even when the input describes the subject indirectly. This is reading context:
+// source identity, observation time and the canonical state owner stay unchanged.
+func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, values []store.StatusCurrentValue, clock map[string]any) {
+	// Compile only original source text once. Attached readings cannot recursively
+	// introduce another subject, and large state registries do not re-tokenize it.
+	sourceTerms := make([][]string, len(out.PriorityFactSeeds))
+	sourcePhrases := make([]string, len(out.PriorityFactSeeds))
+	wordBreak := func(r rune) bool { return !unicode.IsLetter(r) && !unicode.IsNumber(r) && r != '_' && r != '-' }
+	for i, seed := range out.PriorityFactSeeds {
+		text := seed.Fact.Text
+		if seed.Fact.Reading != nil {
+			for _, part := range seed.Fact.Reading.Parts {
+				if !strings.HasPrefix(part.Key, "@") {
+					text += "\n" + part.Value
+				}
+			}
+		}
+		sourceTerms[i] = prepareTurnRecallTerms(text)
+		sourcePhrases[i] = " " + strings.Join(strings.FieldsFunc(strings.ToLower(text), wordBreak), " ") + " "
+	}
+	for _, view := range narrativeCurrentStateViews(values) {
+		switch view.Scope {
+		case "belief", "rumor", "secret":
+			continue // Same public-current projection boundary as lifecycle readings.
+		}
+		if view.Slot == "goal_status" {
+			continue // Commitments retain their explicit lifecycle-key owner.
+		}
+		subjectKey := prepareTurnPriorityEntityKey(view.Subject, out.PriorityEntityAliases)
+		subjectWords := strings.FieldsFunc(strings.ToLower(view.Subject), wordBreak)
+		subjectPhrase := " " + strings.Join(subjectWords, " ") + " "
+		origin, evidence := prepareTurnCurrentStateReadingOrigin(view.Value)
+		prefix := fmt.Sprintf("@current/%s/%s/%s", view.Value.OwnerScope, view.Value.OwnerID, view.Slot)
+		observation := "source turn unknown"
+		if origin.SourceTurn > 0 {
+			observation = fmt.Sprintf("source turn %d", origin.SourceTurn)
+		}
+		parts := []prepareTurnMemoryPart{{Key: prefix, Label: fmt.Sprintf("linked stored state [%s; status_current_values:%d]", observation, view.Value.ID), DeliveryLabel: fmt.Sprintf("linked stored state [%s]", observation), Value: view.Subject + " · " + view.Slot + ": " + view.Current}}
+		if excerpt := stringFromMap(evidence, "evidence_excerpt"); excerpt != "" {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/evidence", Label: "state evidence", Value: excerpt})
+		}
+		for _, field := range []string{"observed_at", "occurrence_time", "effective_time", "validity"} {
+			if value, exists := view.Payload[field]; exists {
+				evidence[field] = value
+			}
+		}
+		for _, field := range []string{"source_revision", "direct_evidence_ids", "observed_at", "occurrence_time", "effective_time", "validity", "repair_source_revision", "repair_recorded_turn"} {
+			if value := evidence[field]; value != nil {
+				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/" + field, Label: "state " + field, Value: prepareTurnPriorityScalarText(value)})
+			}
+		}
+		if temporal := prepareTurnSourceTemporalContext(evidence, view.Payload); len(temporal) > 0 {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/time", Label: "state time (read only)", Value: mustCompactJSON(buildStoryTimeReading(temporal, clock))})
+		}
+		for i := range out.PriorityFactSeeds {
+			if out.PriorityFactSeeds[i].SourceTable == "character_states" {
+				continue // Field-linked current readings already own these projections.
+			}
+			fact := &out.PriorityFactSeeds[i].Fact
+			mentioned := subjectKey != "" && prepareTurnPriorityEntityKey(fact.EntitySurface, out.PriorityEntityAliases) == subjectKey
+			// Whole source tokens preserve Latin name boundaries and the existing
+			// Korean inflection handling. Similar spelling never creates an alias.
+			for _, token := range sourceTerms[i] {
+				if strings.EqualFold(token, view.Subject) || prepareTurnPriorityInflectedNonASCIIMatch(token, view.Subject) {
+					mentioned = true
+				}
+			}
+			if len(subjectWords) > 1 && strings.Contains(sourcePhrases[i], subjectPhrase) {
+				mentioned = true
+			}
+			if !mentioned {
+				continue
+			}
+			reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+			if fact.Reading != nil {
+				reading = *fact.Reading
+				reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+			}
+			reading.fingerprint = [32]byte{}
+			reading.Parts = append(reading.Parts, parts...)
+			fact.Reading = &reading
+		}
+	}
+}
+
 func prepareTurnSourceTemporalContext(base, item map[string]any) map[string]any {
 	var out map[string]any
 	for _, source := range []map[string]any{base, mapFromAny(item["temporal_context"]), item} {
@@ -453,19 +634,11 @@ func prepareTurnAttachTemporalContext(out *prepareTurnInjectionAssembly, clock m
 }
 
 func prepareTurnAttachLastConfirmedClock(out *prepareTurnInjectionAssembly, clock map[string]any) {
-	projection := storyClockPromptProjection(clock)
-	hasTime := false
-	for _, key := range []string{"absolute", "partial", "relative", "range", "sequence", "calendar"} {
-		if len(mapFromAny(projection[key])) > 0 {
-			hasTime = true
-			break
-		}
-	}
-	if !hasTime {
+	note := storyTimePromptNote(clock)
+	if note == "" {
 		return
 	}
-	line := "- Last confirmed stored story clock (last accepted narration): " + mustCompactJSON(projection)
-	out.ContinuityCorrectionText = strings.TrimSpace(out.ContinuityCorrectionText + "\n" + line)
+	out.ContinuityCorrectionText = strings.TrimSpace(out.ContinuityCorrectionText + "\n- " + note)
 }
 
 func prepareTurnCharacterFieldPath(path string) string {
@@ -488,7 +661,7 @@ func prepareTurnCharacterFieldCurrentReadings(narrative, reversible []store.Stat
 			if current.SourceTurn > 0 {
 				observation = fmt.Sprintf("source turn %d", current.SourceTurn)
 			}
-			parts := []prepareTurnMemoryPart{{Key: prefix, Label: fmt.Sprintf("linked current state [%s; status_current_values:%d]", observation, current.ID), Value: value}}
+			parts := []prepareTurnMemoryPart{{Key: prefix, Label: fmt.Sprintf("linked current state [%s; status_current_values:%d]", observation, current.ID), DeliveryLabel: fmt.Sprintf("linked current state [%s]", observation), Value: value}}
 			if transition != "" {
 				parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/transition", Label: "current transition", Value: transition})
 			}
@@ -694,12 +867,12 @@ func prepareTurnMemoryModelCandidate(c prepareTurnPriorityMemoryCandidate, refs 
 			}
 		}
 		item["context_refs"] = contextRefs
-		item["minimum_chars"] = utf8.RuneCountInString("- " + prepareTurnMemorySourceHeading(c) + " " + c.Minimum.Text)
+		item["minimum_chars"] = utf8.RuneCountInString("- " + prepareTurnMemorySourceHeading(c, false) + " " + c.Minimum.Text)
 	}
 	return item
 }
 
-func prepareTurnMemorySourceHeading(c prepareTurnPriorityMemoryCandidate) string {
+func prepareTurnMemorySourceHeading(c prepareTurnPriorityMemoryCandidate, delivery bool) string {
 	parts := []string{}
 	if c.SourceTable == "character_states" && strings.HasSuffix(c.ProjectionSource, ":field_provenance") && c.SourceTurn > 0 {
 		parts = append(parts, fmt.Sprintf("field observation turn %d", c.SourceTurn))
@@ -708,7 +881,11 @@ func prepareTurnMemorySourceHeading(c prepareTurnPriorityMemoryCandidate) string
 	} else if c.SourceTurn > 0 {
 		parts = append(parts, fmt.Sprintf("source turn %d", c.SourceTurn))
 	}
-	parts = append(parts, c.SourceRef)
+	if !delivery {
+		parts = append(parts, c.SourceRef)
+	} else if len(parts) == 0 {
+		parts = append(parts, "source turn unknown")
+	}
 	if c.PerspectiveOwner != "" {
 		parts = append(parts, "owner "+c.PerspectiveOwner)
 	}
@@ -733,8 +910,9 @@ type prepareTurnMemoryPartIdentity struct {
 }
 
 type prepareTurnMemoryReadingLayout struct {
-	rows   []*prepareTurnMemoryReadingRow
-	groups map[string]*prepareTurnMemoryReadingRow
+	rows         []*prepareTurnMemoryReadingRow
+	groups       map[string]*prepareTurnMemoryReadingRow
+	currentParts map[prepareTurnMemoryPartIdentity]bool
 }
 type prepareTurnMemoryReadingEdit struct {
 	delta    int
@@ -768,6 +946,9 @@ func (l *prepareTurnMemoryReadingLayout) preview(row prepareTurnMemoryReadingRow
 		}
 		for _, part := range incoming {
 			key := prepareTurnMemoryPartIdentity{part.Key, part.Text}
+			if strings.HasPrefix(part.Key, "@current/") && l.currentParts[key] {
+				continue // Same canonical state, already present in this final input.
+			}
 			if !seen[key] {
 				row.Parts = append(row.Parts, part)
 				seen[key] = true
@@ -823,6 +1004,11 @@ func (l *prepareTurnMemoryReadingLayout) apply(edit prepareTurnMemoryReadingEdit
 		}
 		l.groups[row.Group] = row
 	}
+	for _, part := range row.Parts {
+		if strings.HasPrefix(part.Key, "@current/") && l.currentParts != nil {
+			l.currentParts[prepareTurnMemoryPartIdentity{part.Key, part.Text}] = true
+		}
+	}
 	return row.rendered
 }
 func (l *prepareTurnMemoryReadingLayout) texts() []string {
@@ -837,7 +1023,23 @@ func (l *prepareTurnMemoryReadingLayout) texts() []string {
 func prepareTurnMemoryCandidateRow(c prepareTurnPriorityMemoryCandidate, order int, ref string) prepareTurnMemoryReadingRow {
 	row := prepareTurnMemoryReadingRow{Order: order, FactID: c.CanonicalFactID, Plain: "- " + c.RenderedText}
 	if c.Minimum != nil {
-		row.Group, row.Header, row.Parts, row.Ref = c.Minimum.Group, strings.TrimSpace(prepareTurnMemorySourceHeading(c)+" "+c.Minimum.Heading), c.Minimum.Parts, ref
+		row.Group, row.Header, row.Parts, row.Ref = c.Minimum.Group, strings.TrimSpace(prepareTurnMemorySourceHeading(c, true)+" "+c.Minimum.Heading), prepareTurnMemoryDeliveryParts(c.Minimum.Parts), ref
 	}
 	return row
+}
+
+// Project only at final assembly, before layout merging and char accounting.
+// Summary forms copy these same parts, preserving their delivery overrides.
+func prepareTurnMemoryDeliveryParts(parts []prepareTurnMemoryFormPart) []prepareTurnMemoryFormPart {
+	out := make([]prepareTurnMemoryFormPart, 0, len(parts))
+	for _, part := range parts {
+		if part.DeliveryText != nil {
+			part.Text = *part.DeliveryText
+			if part.Text == "" {
+				continue
+			}
+		}
+		out = append(out, part)
+	}
+	return out
 }

@@ -90,14 +90,22 @@ func TestChapterDryRunRequestDefaultInterval(t *testing.T) {
 func TestPrepareTurnSettingsDefaultMemoryInjectionBudget(t *testing.T) {
 	settings := PrepareTurnSettings{}
 	settings.ApplyDefaults()
-	if settings.MaxInjectionChars == nil || *settings.MaxInjectionChars != 18000 {
-		t.Fatalf("expected default memory injection budget 18000, got %v", settings.MaxInjectionChars)
+	if settings.MaxInjectionChars == nil || *settings.MaxInjectionChars != 32000 {
+		t.Fatalf("expected default memory injection budget 32000, got %v", settings.MaxInjectionChars)
 	}
 	if settings.MemoryTransportMode == nil || *settings.MemoryTransportMode != "text" {
 		t.Fatalf("expected default memory transport mode text, got %v", settings.MemoryTransportMode)
 	}
 	if settings.RecentConversationReferenceCount == nil || *settings.RecentConversationReferenceCount != 5 {
 		t.Fatalf("expected default recent conversation reference count 5, got %v", settings.RecentConversationReferenceCount)
+	}
+	for _, configured := range []int{0, 16000, 18000, 32000} {
+		value := configured
+		explicit := PrepareTurnSettings{MaxInjectionChars: &value}
+		explicit.ApplyDefaults()
+		if *explicit.MaxInjectionChars != configured {
+			t.Fatalf("explicit memory budget %d was replaced with %d", configured, *explicit.MaxInjectionChars)
+		}
 	}
 }
 

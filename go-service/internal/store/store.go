@@ -352,6 +352,10 @@ type SessionMigrationCompleteRequest struct {
 	TargetSessionID string
 	Mode            string
 	OperatorNote    string
+	// RebuildPublicProjection reuses the canonical Go projection policy for
+	// receipts omitted by older copies. Empty text means public exclusion.
+	// It runs on retained extraction JSON inside the copy transaction, without I/O.
+	RebuildPublicProjection func(extractionJSON string) string
 }
 
 // SessionMigrationCompleteResult reports the durable copy ledger written by
@@ -417,6 +421,8 @@ type SessionRoutingBaseline struct {
 	TargetSessionID     string
 	Mode                string
 	ImportedThroughTurn int
+	SourceSessionIDs    []string
+	InputGroupAliases   map[string][]string
 }
 
 // SessionRoutingBaselineStore resolves the imported-turn boundary from the
@@ -1421,6 +1427,10 @@ type CharacterState struct {
 	TurnIndex           int       `json:"turn_index"`
 	CreatedAt           time.Time `json:"created_at"`
 	UpdatedAt           time.Time `json:"updated_at"`
+	// ManualPatch is supplied only by an explicit editor save. The durable
+	// edits live in character_events, independently of derived turn snapshots.
+	ManualPatch []CharacterManualFieldEdit `json:"-"`
+	manualEdits []CharacterManualFieldEdit
 }
 
 // PendingThread is a continuity hook.

@@ -2,14 +2,14 @@ name: Release Native Linux Install
 
 on:
   push:
-    branches: [release/4.6.1]
+    branches: [release/4.7.0]
     paths: [.github/workflows/release-install-verification.yml]
   workflow_dispatch:
     inputs:
       tag:
         description: Release version to verify
         required: true
-        default: v4.6.1
+        default: v4.7.0
       transport:
         description: Candidate builds reviewed source; public downloads real latest
         type: choice
@@ -31,7 +31,7 @@ jobs:
           cache-dependency-path: go-service/go.sum
       - name: Build reviewed source with the production package builder
         env:
-          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.6.1' }}
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.7.0' }}
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -39,7 +39,7 @@ jobs:
           ./ops/build-posix-managed-packages.ps1 -PackageVersion $env:AC_RELEASE_TAG.Substring(1) -TargetFilter linux-amd64,linux-arm64 -OutputRoot ./_release-builds/native-install-proof -Zip
       - name: Prepare asset names and checksums
         env:
-          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.6.1' }}
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.7.0' }}
         shell: bash
         run: |
           python - <<'PY'
@@ -86,7 +86,7 @@ jobs:
         if: ${{ inputs.transport == 'public' }}
         env:
           GH_TOKEN: ${{ github.token }}
-          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.6.1' }}
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.7.0' }}
           AC_RELEASE_ARCH: ${{ matrix.arch }}
         shell: bash
         run: |
@@ -114,7 +114,7 @@ jobs:
           printf '%s\n' "$GITHUB_SHA" > "$RUNNER_TEMP/ac-install-proof/build-source-commit.txt"
       - name: Production entrypoint, real dependencies and systemd readiness
         env:
-          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.6.1' }}
+          AC_RELEASE_TAG: ${{ inputs.tag || 'v4.7.0' }}
           AC_RELEASE_TRANSPORT: ${{ inputs.transport || 'candidate' }}
           AC_RELEASE_INPUT: ${{ runner.temp }}/ac-release-input
           AC_INSTALL_PROOF: ${{ runner.temp }}/ac-install-proof

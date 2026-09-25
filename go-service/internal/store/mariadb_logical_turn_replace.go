@@ -176,6 +176,7 @@ type canonicalTailDeleteCommand struct {
 
 func canonicalTailDeleteCommands(sid string, t int, legacyPhysicalCleanup, deleteTailChat bool) []canonicalTailDeleteCommand {
 	commands := []canonicalTailDeleteCommand{
+		{preserveLegacyCharacterManualEditsSQL, []any{sid, t}},
 		{`DELETE FROM effective_input_logs WHERE chat_session_id = ? AND turn_index >= ?`, []any{sid, t}},
 	}
 	if legacyPhysicalCleanup {

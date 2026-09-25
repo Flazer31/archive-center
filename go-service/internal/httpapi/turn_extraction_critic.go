@@ -311,8 +311,8 @@ func (s *Server) runCompleteTurnCritic(ctx context.Context, sid string, turnInde
 	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, contextMessages, outputLanguageOverride, cfg, false, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{}, languageContextArg...)
 }
 
-func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, cfg completeTurnLLMConfig) (map[string]any, map[string]any, error) {
-	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg, true, s.completeTurnCriticInputPolicy(nil), completeTurnCriticInputReplay{})
+func (s *Server) runCompleteTurnCriticFromCanonicalLogs(ctx context.Context, sid string, turnIndex int, userInput string, assistantContent string, cfg completeTurnExtractionConfig) (map[string]any, map[string]any, error) {
+	return s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userInput, assistantContent, nil, nil, cfg.Critic, true, cfg.CriticInputPolicy, completeTurnCriticInputReplay{})
 }
 
 func completeTurnCriticLanguageContextFromAssistantOutput(raw map[string]any, assistantContent ...string) map[string]any {
@@ -1154,10 +1154,34 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 				contextMessages = append(contextMessages, pair...)
 				selectedTurns[memory.TurnIndex] = true
 			}
-			relevantMemories = append(relevantMemories, map[string]any{
+			support := map[string]any{
 				"source": "mariadb_memory", "id": memory.ID, "turn_index": memory.TurnIndex,
 				"summary": prepareTurnMemorySummary(memory), "support_only": true,
-			})
+			}
+			// Reuse identities from this already selected public projection. The
+			// Critic cannot reuse a slot/key that was discarded by summary-only
+			// rendering. These are historical support, not a current-state claim;
+			// the existing auxiliary budget measures the complete support item.
+			extraction := parseJSONMap(memory.SummaryJSON)
+			for _, lane := range []string{"state_claims", "pending_threads"} {
+				refs := []any{}
+				for _, raw := range sliceFromAny(extraction[lane]) {
+					item := mapFromAny(raw)
+					ref := map[string]any{}
+					for _, key := range []string{"subject", "state_slot", "lifecycle_key", "value", "transition", "title", "status", "description"} {
+						if value, exists := item[key]; exists {
+							ref[key] = value
+						}
+					}
+					if len(ref) > 0 {
+						refs = append(refs, ref)
+					}
+				}
+				if len(refs) > 0 {
+					support["recorded_"+lane] = refs
+				}
+			}
+			relevantMemories = append(relevantMemories, support)
 		}
 	}
 	trace := map[string]any{

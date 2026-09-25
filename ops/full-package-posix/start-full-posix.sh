@@ -396,6 +396,7 @@ stop_candidate_backend() {
 wait_candidate_backend_ready() {
 	pid=$1
 	target=$2
+	last_recovery=
 	port=$(printf '%s' "$AC_BIND_ADDR" | sed -n 's/.*:\([0-9][0-9]*\)$/\1/p')
 	[ -n "$port" ] || port=28080
 	if readiness_polling_enabled; then
@@ -408,7 +409,23 @@ wait_candidate_backend_ready() {
 			return 1
 		fi
 		[ -n "${REQUEST_TIMEOUT_SECONDS:-}" ] || die "pending update health verification requires --request-timeout-seconds or AC_REQUEST_TIMEOUT_SECONDS"
-		ready_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+		# Preserve the HTTP 503 body: recovery is pending, not a failed launch.
+		ready_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -sS "http://127.0.0.1:$port/ready" 2>/dev/null || true)
+		recovery=$(json_string_field chromadb_recovery "$ready_body")
+		case "$recovery" in
+			running|waiting)
+				if [ "$recovery" != "$last_recovery" ]; then
+					log "Archive Center index recovery: $recovery. Management is available; update completion is waiting."
+					last_recovery=$recovery
+				fi
+				if readiness_polling_enabled; then
+					readiness_deadline=$(( $(date +%s) + READINESS_TIMEOUT_SECONDS ))
+				fi
+				sleep "${READINESS_POLL_INTERVAL_SECONDS:-1}"
+				continue
+				;;
+		esac
+		last_recovery=
 		version_body=$(curl --connect-timeout "$REQUEST_TIMEOUT_SECONDS" --max-time "$REQUEST_TIMEOUT_SECONDS" -fsS "http://127.0.0.1:$port/version" 2>/dev/null || true)
 		ready_status=$(json_bool_field ready "$ready_body")
 		observed_version=$(json_string_field version "$version_body")

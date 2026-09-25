@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 	"github.com/risulongmemory/archive-center-go/internal/vector"
@@ -16,19 +17,21 @@ import (
 const dashboardViewModelContractVersion = "dashboard.viewmodel.v2"
 
 type dashboardViewModelRequest struct {
-	RuntimeState             map[string]any              `json:"runtime_state"`
-	PluginEnabled            bool                        `json:"plugin_enabled"`
-	CurrentSessionID         string                      `json:"current_session_id"`
-	SessionCandidates        map[string]any              `json:"session_candidates"`
-	PrepareTurnEverContacted bool                        `json:"prepare_turn_ever_contacted"`
-	FailedQueueDepth         int                         `json:"failed_queue_depth"`
-	CurrentWorkflowRequestID string                      `json:"current_workflow_request_id,omitempty"`
-	QueueObservations        []dashboardQueueObservation `json:"queue_observations,omitempty"`
-	GuideModeState           map[string]any              `json:"guide_mode_state"`
-	FirstTurnLight           bool                        `json:"first_turn_light"`
-	FirstTurnEndedAt         string                      `json:"first_turn_ended_at"`
-	ReferenceCard            *dashboardCard              `json:"-"`
-	WorkflowSnapshot         *turnWorkflowHUDViewModel   `json:"-"`
+	RuntimeState              map[string]any              `json:"runtime_state"`
+	PluginEnabled             bool                        `json:"plugin_enabled"`
+	CurrentSessionID          string                      `json:"current_session_id"`
+	SessionCandidates         map[string]any              `json:"session_candidates"`
+	PrepareTurnEverContacted  bool                        `json:"prepare_turn_ever_contacted"`
+	FailedQueueDepth          int                         `json:"failed_queue_depth"`
+	PreviousWorkflowRequestID string                      `json:"previous_workflow_request_id,omitempty"`
+	CurrentWorkflowRequestID  string                      `json:"current_workflow_request_id,omitempty"`
+	QueueObservations         []dashboardQueueObservation `json:"queue_observations,omitempty"`
+	GuideModeState            map[string]any              `json:"guide_mode_state"`
+	FirstTurnLight            bool                        `json:"first_turn_light"`
+	FirstTurnEndedAt          string                      `json:"first_turn_ended_at"`
+	ReferenceCard             *dashboardCard              `json:"-"`
+	WorkflowSnapshot          *turnWorkflowHUDViewModel   `json:"-"`
+	WorkflowDiagnostics       []turnWorkflowHUDViewModel  `json:"-"`
 }
 
 type dashboardQueueObservation struct {
@@ -74,6 +77,7 @@ type dashboardRow struct {
 	LabelKey   string `json:"label_key"`
 	Status     string `json:"status"`
 	DetailCode string `json:"detail_code,omitempty"`
+	MessageKey string `json:"message_key,omitempty"`
 	Detail     string `json:"detail,omitempty"`
 	Time       string `json:"time,omitempty"`
 	TurnIndex  any    `json:"turn_index,omitempty"`
@@ -106,6 +110,15 @@ func (s *Server) handleDashboardViewModel(w http.ResponseWriter, r *http.Request
 			if snapshot, ok := s.TurnWorkflows.snapshot(requestID); ok && snapshot.ChatSessionID == sessionID {
 				req.WorkflowSnapshot = &snapshot
 			}
+		}
+		for _, id := range []string{requestID, req.PreviousWorkflowRequestID} {
+			if snapshot, ok := s.TurnWorkflows.snapshot(id); ok && snapshot.ChatSessionID == sessionID {
+				req.WorkflowDiagnostics = append(req.WorkflowDiagnostics, snapshot)
+			}
+		}
+		// Closing the small HUD does not delete the backend's latest observation.
+		if snapshot, ok := s.TurnWorkflows.latestSnapshotForSession(sessionID); ok {
+			req.WorkflowDiagnostics = append(req.WorkflowDiagnostics, snapshot)
 		}
 	}
 	writeJSON(w, http.StatusOK, buildDashboardViewModel(req))
@@ -217,6 +230,9 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 			}),
 		}),
 	}
+	if issues := buildWorkflowErrorDashboardCard(req.WorkflowDiagnostics); issues != nil {
+		cards = append([]dashboardCard{*issues}, cards...)
+	}
 	if req.WorkflowSnapshot != nil {
 		cards = append(cards, buildCurrentWorkflowDashboardCard(*req.WorkflowSnapshot))
 	}
@@ -299,6 +315,57 @@ func buildDashboardViewModel(req dashboardViewModelRequest) dashboardViewModel {
 		summary.Unknown += card.Summary.Unknown
 	}
 	return dashboardViewModel{ContractVersion: dashboardViewModelContractVersion, Status: "ok", Summary: summary, Cards: cards}
+}
+
+func buildWorkflowErrorDashboardCard(views []turnWorkflowHUDViewModel) *dashboardCard {
+	rows := []dashboardRow{}
+	seenRequests := map[string]bool{}
+	for _, view := range views {
+		if seenRequests[view.RequestID] {
+			continue
+		}
+		seenRequests[view.RequestID] = true
+		seenIssues := map[string]bool{}
+		appendIssue := func(stage, code, message, status, detail string) {
+			key := stage + "/" + code
+			if seenIssues[key] {
+				return
+			}
+			seenIssues[key] = true
+			label := "turn_hud.failed"
+			if stage != "" {
+				label = "turn_hud.stage." + stage
+			}
+			rows = append(rows, dashboardRow{LabelKey: label, Status: status, DetailCode: code,
+				MessageKey: message, Detail: detail, TurnIndex: view.LogicalTurn, Time: view.UpdatedAt.Format(time.RFC3339)})
+		}
+		if issue := view.Error; issue != nil {
+			details := []string{}
+			for _, entry := range issue.Details {
+				if strings.TrimSpace(entry.Value) != "" {
+					details = append(details, entry.Key+"="+entry.Value)
+				}
+			}
+			status := "fail"
+			if view.Status == "recovering" {
+				status = "warn"
+			}
+			appendIssue(issue.StageKey, issue.Code, issue.MessageKey, status, strings.Join(details, " · "))
+		}
+		for _, stage := range view.Stages {
+			if stage.Status == "failed" {
+				appendIssue(stage.Key, stage.ReasonCode, "turn_hud.failed", "fail", "")
+			}
+		}
+		for _, warning := range view.Warnings {
+			appendIssue(warning.StageKey, warning.Code, warning.MessageKey, "warn", "")
+		}
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+	card := newDashboardCard("workflow_errors", "⚠", "Workflow errors and notices", rows)
+	return &card
 }
 
 func buildCurrentWorkflowDashboardCard(view turnWorkflowHUDViewModel) dashboardCard {
