@@ -1,0 +1,76 @@
+name: Docker Image
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Version tag to build (for example v4.6.1). Leave empty for a commit-only build without release tags.
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/flazer31/archive-center
+
+jobs:
+  build-push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${RELEASE_TAG:-$INPUT_TAG}"
+          clean=""
+          if [ -n "$tag" ]; then
+            if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "Tag must match vX.Y.Z, got: $tag" >&2
+              exit 1
+            fi
+            clean="${tag#v}"
+            echo "clean=$clean" >> "$GITHUB_OUTPUT"
+          fi
+          echo "semver_available=$([ -n "$clean" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+
+      - uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}},value=${{ github.event.release.tag_name || inputs.tag }},enable=${{ steps.version.outputs.semver_available == 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ github.event.release.tag_name || inputs.tag }},enable=${{ steps.version.outputs.semver_available == 'true' }}
+            type=raw,value=latest,enable=${{ github.event_name == 'release' }}
+            type=sha
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            AC_BUILD_VERSION=${{ steps.version.outputs.clean }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
