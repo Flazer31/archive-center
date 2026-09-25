@@ -1,5 +1,6 @@
 """Disposable CI fixtures only; never publishes images or accesses host databases."""
 import json
+import http.client
 import os
 from pathlib import Path
 import subprocess
@@ -19,10 +20,10 @@ compose = ['docker', 'compose', '-p', 'archive-center-pr12-' + arch, '-f', 'comp
 def dc(*args, capture=False):
     result = subprocess.run(compose + list(args), check=True, text=True, capture_output=capture)
     return result.stdout.strip() if capture else None
-def request(path, body=None, port=28080):
+def request(path, body=None, port=28080, method=None):
     req = urllib.request.Request(f'http://127.0.0.1:{port}' + path,
         data=None if body is None else json.dumps(body).encode(),
-        headers={'Content-Type': 'application/json'})
+        headers={'Content-Type': 'application/json'}, method=method)
     with urllib.request.urlopen(req, timeout=5) as response:
         data = response.read()
     return json.loads(data) if data else None
@@ -33,7 +34,7 @@ def ready():
             value = request('/ready')
             if value.get('ready') and value.get('store_ready') and value.get('vector_ready'):
                 return
-        except (urllib.error.URLError, TimeoutError):
+        except (urllib.error.URLError, TimeoutError, ConnectionResetError, http.client.RemoteDisconnected):
             pass
         time.sleep(2)
     raise RuntimeError('Compose backend did not become ready')
@@ -45,6 +46,8 @@ try:
     dc('up', '-d', '--no-build')
     ready()
     assert request('/version')['version'] == '4.7.0'
+    request('/config/memory-preprocessing',
+            {'enabled': False, 'shared_prompt': 'synthetic-persisted-setting'}, method='PUT')
     sql("CREATE TABLE docker_pr12_probe (id INT PRIMARY KEY, value VARCHAR(64)); INSERT INTO docker_pr12_probe VALUES (1,'synthetic-preserved');")
     cid = request(collection, {'name': 'docker_pr12_probe'}, 8000)['id']
     request(collection + '/' + cid + '/add', {'ids': ['one'], 'documents': ['synthetic-preserved'], 'embeddings': [[0.1, 0.2, 0.3]]}, 8000)
@@ -61,7 +64,12 @@ try:
         data = request(collection + '/' + cid + '/get', {'ids': ['one'], 'include': ['documents', 'embeddings']}, 8000)
         assert data['documents'] == ['synthetic-preserved'] and len(data['embeddings'][0]) == 3
         assert dc('exec', '-T', 'backend', 'cat', '/data/docker-pr12-probe', capture=True) == 'synthetic-settings'
-        print('PASS', arch, phase, 'SQL row, vector and backend volume preserved', flush=True)
+        settings = request('/config/memory-preprocessing')['settings']
+        assert settings['shared_prompt'] == 'synthetic-persisted-setting' and settings['enabled'] is False
+        print('PASS', arch, phase, 'SQL row, vector, backend volume and saved application setting preserved', flush=True)
+except Exception:
+    dc('logs', '--no-color', '--tail', '60', 'backend', 'migrate')
+    raise
 finally:
     dc('ps', '-a')
     # This unique CI project owns only synthetic disposable volumes.
