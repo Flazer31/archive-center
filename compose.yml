@@ -1,0 +1,75 @@
+# Local Docker deployment for Archive Center.
+#
+# Quick start:
+#   docker compose up -d --build
+#
+# The stack runs MariaDB, ChromaDB, a one-shot schema migration, and the Go
+# backend. Override the database password via a local .env file (MARIADB_PASSWORD).
+name: archive-center
+
+x-mariadb-password: &mariadb-password ${MARIADB_PASSWORD:-archive-center-local-pass}
+x-backend-dsn: &backend-dsn archive_center:${MARIADB_PASSWORD:-archive-center-local-pass}@tcp(mariadb:3306)/archive_center?parseTime=true
+
+services:
+  mariadb:
+    image: mariadb:11.8
+    restart: unless-stopped
+    environment:
+      MARIADB_DATABASE: archive_center
+      MARIADB_USER: archive_center
+      MARIADB_PASSWORD: *mariadb-password
+      MARIADB_RANDOM_ROOT_PASSWORD: "yes"
+    volumes:
+      - mariadb-data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3307:3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+
+  chromadb:
+    image: chromadb/chroma:1.5.9
+    restart: unless-stopped
+    volumes:
+      - chroma-data:/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    # The chroma image ships no curl/wget/python client, so a container
+    # healthcheck is not possible here. The backend's restart policy covers
+    # the startup race: its chroma preflight exits and compose restarts it
+    # until the heartbeat responds.
+
+  # One-shot job: applies migrations/*.sql against MariaDB, then exits.
+  migrate:
+    image: ghcr.io/flazer31/archive-center:latest
+    build: .
+    depends_on:
+      mariadb:
+        condition: service_healthy
+    entrypoint: ["/usr/local/bin/mariadb-schema"]
+    command: ["-dsn", *backend-dsn, "-schema", "/app/migrations", "-execute=true"]
+    restart: "no"
+
+  backend:
+    image: ghcr.io/flazer31/archive-center:latest
+    build: .
+    restart: unless-stopped
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      chromadb:
+        condition: service_started
+    environment:
+      AC_MARIADB_DSN: *backend-dsn
+      AC_CHROMA_ENDPOINT: http://chromadb:8000
+    volumes:
+      - backend-data:/data
+    ports:
+      - "127.0.0.1:28080:28080"
+
+volumes:
+  mariadb-data:
+  chroma-data:
+  backend-data:
