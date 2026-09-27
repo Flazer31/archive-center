@@ -39,7 +39,7 @@
   const LOG_PREFIX = "[MemOrch]";
   const VERSION = "4.8.0";
   const BUILD_ID = VERSION;
-  const BUILD_CHANNEL = "release";
+  const BUILD_CHANNEL = "stable";
   const BUILD_TIME = "2026-09-27 KST";
   const BUILD_NOTES = "Archive Center 4.8.0";
   const BUILD_LABEL = VERSION;
