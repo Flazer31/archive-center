@@ -458,6 +458,8 @@ func Test44ReasonReusePreservesCompleteSelectionAndExplicitChanges(t *testing.T)
 		{"cleared", `{"selected_ids":["F1"],"reuse_previous_reasons":true,"reasons":{"F1":""}}`, []string{"first"}, map[string]string{"first": ""}},
 		{"empty", `{"selected_ids":[],"reuse_previous_reasons":true}`, []string{}, map[string]string{}},
 		{"legacy", `{"selected_ids":["F1"],"reasons":{}}`, []string{"first"}, map[string]string{}},
+		{"omitted list", `{"reasons":{"F1":"updated interpretation"}}`, []string{"first", "second"}, map[string]string{"first": "updated interpretation", "second": "second reason"}},
+		{"omitted list with reason reuse", `{"reuse_previous_reasons":true}`, []string{"first", "second"}, map[string]string{"first": "first reason", "second": "second reason"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -493,6 +495,32 @@ func Test44ReasonReusePreservesCompleteSelectionAndExplicitChanges(t *testing.T)
 			}
 			if call.ModelInputSectionsChars["previous_result"] == 0 {
 				t.Fatal("input cost sections were not recorded")
+			}
+		})
+	}
+}
+
+func Test48SecondReviewRetainsOnlyOmittedSelectionFields(t *testing.T) {
+	for _, tc := range []struct {
+		name, response         string
+		facts, summaries, lore []string
+	}{
+		{"omitted", `{}`, []string{"fact"}, []string{"summary"}, []string{"lore"}},
+		{"clear facts", `{"selected_ids":[]}`, []string{}, []string{"summary"}, []string{"lore"}},
+		{"clear summaries", `{"selected_summary_ids":[]}`, []string{"fact"}, []string{}, []string{"lore"}},
+		{"clear lore", `{"selected_lorebook_refs":[]}`, []string{"fact"}, []string{"summary"}, []string{}},
+		{"replace facts", `{"selected_ids":["new"]}`, []string{"new"}, []string{"summary"}, []string{"lore"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lore := []string{"lore"}
+			input := map[string]any{"previous_result": multiAgentRecommendation{SelectedIDs: []string{"fact"}, SelectedSummaryIDs: []string{"summary"}, SelectedLorebookRefs: &lore, Reasons: map[string]string{"fact": "original", "summary": "summary interpretation", "lore": "lore interpretation"}}}
+			call := finishMultiAgentCall(multiAgentCall{Round: 2, Raw: tc.response, Input: input}, 200, nil, "")
+			if call.Error != "" || !reflect.DeepEqual(call.Result.SelectedIDs, tc.facts) || !reflect.DeepEqual(call.Result.SelectedSummaryIDs, tc.summaries) || call.Result.SelectedLorebookRefs == nil || !reflect.DeepEqual(*call.Result.SelectedLorebookRefs, tc.lore) {
+				t.Fatalf("omission and explicit empty were conflated: %+v", call)
+			}
+			first := finishMultiAgentCall(multiAgentCall{Round: 1, Raw: tc.response, Input: input}, 200, nil, "")
+			if tc.name == "omitted" && multiAgentHasSelection(first.Result) {
+				t.Fatal("first round invented a choice")
 			}
 		})
 	}

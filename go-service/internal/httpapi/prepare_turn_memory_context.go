@@ -612,6 +612,57 @@ func prepareTurnSourceTemporalContext(base, item map[string]any) map[string]any 
 	return out
 }
 
+// Read only the supplied commitment's roles and qualifications. This does not
+// resolve names into identities or turn a passed deadline into completion.
+// The existing form allocator charges these parts in either selection mode.
+func prepareTurnAttachCommitmentRelation(fact *prepareTurnPriorityMemoryFact, record memoryRelationRecord, clock map[string]any) {
+	frame := record.Frames[0]
+	thread := record.SourceRow.(store.PendingThread)
+	prefix := fmt.Sprintf("@commitment/%d/%s", record.Ref.RowID, thread.ThreadKey)
+	parts := []prepareTurnMemoryPart{}
+	for _, link := range frame.Links {
+		parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/" + link.Role, Label: "commitment " + link.Role, Value: link.From.Text})
+	}
+	// Preserve the stored conditions alongside roles: a date or target alone
+	// must not strip the qualification from the obligation.
+	for _, key := range []string{"condition", "conditions", "exception", "exceptions", "restriction", "restrictions", "when", "unless", "outcome", "evidence_excerpt"} {
+		if value, exists := frame.Fields[key]; exists {
+			parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/" + key, Label: "commitment " + key, Value: prepareTurnPriorityScalarText(value)})
+		}
+	}
+	scheduleSource := frame.Fields
+	if details := mapFromAny(frame.Fields["lifecycle_details"]); len(details) > 0 {
+		scheduleSource = details
+	}
+	// Copy before adding the current row's lifecycle, so a retained old schedule
+	// cannot report an already resolved thread as having an unknown outcome.
+	scheduleCopy := make(map[string]any, len(scheduleSource)+1)
+	for key, value := range scheduleSource {
+		scheduleCopy[key] = value
+	}
+	scheduleSource = scheduleCopy
+	if strings.EqualFold(thread.Status, "resolved") {
+		scheduleSource["lifecycle_transition"] = "resolve"
+	}
+	if schedule := buildCommitmentScheduleReading(scheduleSource, clock); len(schedule) > 0 {
+		parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/schedule", Label: "schedule reading (read only)", Value: mustCompactJSON(schedule)})
+	}
+	if thread.ResolutionNote != "" {
+		parts = append(parts, prepareTurnMemoryPart{Key: prefix + "/resolution", Label: "recorded resolution", Value: thread.ResolutionNote})
+	}
+	if len(parts) == 0 {
+		return
+	}
+	reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+	if fact.Reading != nil {
+		reading = *fact.Reading
+		reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+	}
+	reading.fingerprint = [32]byte{}
+	reading.Parts = append(reading.Parts, parts...)
+	fact.Reading = &reading
+}
+
 // Interpret only source-linked metadata already admitted to this request. The
 // helper neither reads additional records nor rewrites the historical text.
 func prepareTurnAttachTemporalContext(out *prepareTurnInjectionAssembly, clock map[string]any) {

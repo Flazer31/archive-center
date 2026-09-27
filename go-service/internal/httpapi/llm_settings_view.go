@@ -146,7 +146,8 @@ func resolveLLMSettingsControls(provider, preset, model, endpoint string) llmRea
 		}
 		return makeControls("ollama", []string{"none", "low", "medium", "high"})
 	}
-	if (slices.Contains([]string{"llmgateway", "openrouter", "vercel", "neuralwatt"}, transport) && family != "none") || (slices.Contains([]string{"custom", "opencode", "opencode-go"}, transport) && family == "deepseek_v4") {
+	if (slices.Contains([]string{"llmgateway", "openrouter", "vercel", "neuralwatt"}, transport) && family != "none") || (slices.Contains([]string{"custom", "opencode", "opencode-go"}, transport) && family == "deepseek_v4") ||
+		(transport == "opencode-go" && family == "glm" && glmRequired) {
 		var options []string
 		switch family {
 		case "deepseek_v4":

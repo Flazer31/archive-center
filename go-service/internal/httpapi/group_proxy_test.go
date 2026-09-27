@@ -2148,6 +2148,11 @@ func TestProxyReasoningWireUsesProviderAndEndpointTransport(t *testing.T) {
 		{name: "NeuralWatt DeepSeek Flash low aliases high", provider: "neuralwatt", endpoint: "https://api.neuralwatt.com/v1", model: "deepseek-v4-flash-flex", effort: "low", wantEffort: "high"},
 		{name: "Vercel GPT", provider: "vercel", endpoint: "https://ai-gateway.vercel.sh/v1", model: "openai/gpt-5.6", effort: "medium", wantReasoning: "medium", wantNoTemperature: true},
 		{name: "custom OpenAI-compatible DeepSeek low", provider: "custom", endpoint: "https://opencode.ai/zen/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low"},
+		{name: "OpenCode Go GLM 5.3 low", provider: "opencode-go", model: "glm-5.3-flash", effort: "low", wantEffort: "low"},
+		{name: "OpenCode Go GLM 5.3 default", provider: "opencode-go", model: "glm-5.3-flash"},
+		{name: "OpenCode Go GLM 5.2 unchanged", provider: "opencode-go", model: "glm-5.2", effort: "high", wantEffort: "high", wantNativeThinking: true},
+		{name: "OpenCode Zen GLM unchanged", provider: "opencode", model: "glm-5.3-flash", effort: "low", wantEffort: "low", wantNativeThinking: true},
+		{name: "native GLM 5.3 low unchanged", provider: "custom", endpoint: "https://api.z.ai/api/paas/v4", model: "glm-5.3-flash", effort: "low", wantEffort: "low", wantNativeThinking: true},
 		{name: "custom exact DeepSeek endpoint low", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "low", wantEffort: "low", wantNativeThinking: true},
 		{name: "custom exact DeepSeek endpoint medium compatibility", provider: "custom", endpoint: "https://api.deepseek.com/v1", model: "deepseek-v4-pro", effort: "medium", wantEffort: "high", wantNativeThinking: true},
 	}

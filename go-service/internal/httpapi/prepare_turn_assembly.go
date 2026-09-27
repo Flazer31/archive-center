@@ -88,10 +88,14 @@ type prepareTurnAssemblyCommon struct {
 	BlockedEvidence map[int64]bool
 	KnownNames      []string
 	RecallMemories  map[store.Memory]prepareTurnRecallMemory `json:"-"`
+	ThreadRelations []memoryRelationRecord                   `json:"-"`
+	KGRelations     []memoryRelationRecord                   `json:"-"`
 }
 
 func prepareTurnCommonAssemblySources(input prepareTurnAssemblyInput) *prepareTurnAssemblyCommon {
 	c := &prepareTurnAssemblyCommon{RecallMemories: map[store.Memory]prepareTurnRecallMemory{}}
+	c.ThreadRelations = readMemoryRelations(memoryRelationInput{Threads: input.PendingThreads}).Records
+	c.KGRelations = readMemoryRelations(memoryRelationInput{Triples: input.Triples}).Records
 	c.GeneralMemories, c.PublicTrace = projectPrepareTurnGeneralMemories(input.Memories)
 	c.Evidence, c.BlockedEvidence = filterPrepareTurnPerspectiveScopedEvidence(input.Evidence, input.Memories)
 	for _, state := range input.CharacterStates {
@@ -418,7 +422,8 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	kgIrrelevantDropped := 0
 	kgSingleEndpointDropped := 0
 	kgReferenceTurn := prepareTurnMaxObservedTurn(chatLogs, nil)
-	for _, t := range kgTriples {
+	for _, record := range common.KGRelations {
+		t := record.SourceRow.(store.KGTriple)
 		if len(kgLines) >= recallLimit {
 			break
 		}
@@ -426,7 +431,8 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 			kgClosedDropped++
 			continue
 		}
-		relation := strings.TrimSpace(fmt.Sprintf("%s --%s--> %s", t.Subject, t.Predicate, t.Object))
+		link := record.Frames[0].Links[0]
+		relation := strings.TrimSpace(fmt.Sprintf("%s --%s--> %s", link.From.Text, link.Predicate, link.To.Text))
 		if relation == "-->" {
 			continue
 		}
@@ -862,7 +868,8 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		// scoring. Otherwise an implicit "continue" loses the named ongoing goal
 		// before either ordinary selection or the optional specialist can see it.
 		pendingQuery := strings.TrimSpace(goalQuery + "\n" + strings.Join(selectionContext.QuerySet, "\n"))
-		for _, pt := range pendingThreads {
+		for _, record := range common.ThreadRelations {
+			pt := record.SourceRow.(store.PendingThread)
 			if len(pendingLines) >= recallLimit {
 				break
 			}
@@ -899,6 +906,11 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 				lifecycleKey := normalizeNarrativeLifecycleKey(stringFromMap(parseJSONMap(pt.HookMetadataJSON), "lifecycle_key"))
 				for i := seedStart; i < len(out.PriorityFactSeeds); i++ {
 					out.PriorityFactSeeds[i].Fact.LifecycleKey = lifecycleKey
+					var clock map[string]any
+					if perspectiveInput != nil {
+						clock = perspectiveInput.StoryClock
+					}
+					prepareTurnAttachCommitmentRelation(&out.PriorityFactSeeds[i].Fact, record, clock)
 				}
 				if pinnedActive {
 					pendingPinnedActiveSelected++

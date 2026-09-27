@@ -33,12 +33,22 @@ func bodyTrackingCycleSpec(character bodyCharacterConfig, current store.StatusCu
 	return spec
 }
 
-func bodyTrackingCharacter(cfg bodyTrackingConfig, event map[string]any) (bodyCharacterConfig, bool) {
+func (s *Server) bodyTrackingCharacter(ctx context.Context, sid string, cfg bodyTrackingConfig, event map[string]any) (bodyCharacterConfig, bool) {
 	id := strings.TrimSpace(stringFromMap(event, "character_id"))
 	name := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(event, "subject_name"), stringFromMap(event, "character_name")))
 	for _, character := range cfg.Characters {
 		if id != "" && id == character.EntityID || id == "" && name != "" && name == character.CharacterName {
 			return character, true
+		}
+	}
+	// A reviewed canonical ID may address a model whose original storage owner
+	// is retained. Resolve only established identity links, never name similarity.
+	if id != "" {
+		root := s.characterIdentityRoot(ctx, sid, id)
+		for _, character := range cfg.Characters {
+			if s.characterIdentityRoot(ctx, sid, character.EntityID) == root {
+				return character, true
+			}
 		}
 	}
 	return bodyCharacterConfig{}, false
@@ -535,7 +545,7 @@ func (s *Server) saveBodyTrackingFromExtraction(ctx context.Context, sid string,
 		default:
 			continue // Other observations remain in the admitted source memory.
 		}
-		character, found := bodyTrackingCharacter(cfg, observation)
+		character, found := s.bodyTrackingCharacter(ctx, sid, cfg, observation)
 		if !found {
 			result.addSkipReason("body_events", "character_not_configured", map[string]any{"index": index})
 			continue
@@ -716,7 +726,7 @@ func (s *Server) planBodyTrackingState(ctx context.Context, sid string, request 
 	if err != nil {
 		return plan, err
 	}
-	character, found := bodyTrackingCharacter(cfg, map[string]any{"character_id": request.CharacterID})
+	character, found := s.bodyTrackingCharacter(ctx, sid, cfg, map[string]any{"character_id": request.CharacterID})
 	if !found {
 		return plan, errors.New("select a configured character for this body state correction")
 	}

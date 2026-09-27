@@ -517,7 +517,7 @@ func Test43PreprocessingNotesFollowAcceptedRoundAndScope(t *testing.T) {
 		{"object_question_supplement", `{"selected_ids":["F1"],"reasons":{"F1":"SECOND_NOTE"},"search_requests":[{"query":"source time still unknown"}]}`, "SECOND_NOTE", "FIRST_NOTE", false, []string{"fact-a"}},
 		{"failed_supplement", "", "FIRST_NOTE", "SECOND_NOTE", true, []string{"fact-b", "fact-a"}},
 		{"partial_supplement_retains_first", `{"selected_ids":["F1"],"reasons":{"F1":"SECOND_NOTE"},"related_requests":false}`, "FIRST_NOTE", "SECOND_NOTE", false, []string{"fact-b", "fact-a"}},
-		{"empty_final_go_selection", `{}`, "", "FIRST_NOTE", false, []string{"fact-a"}},
+		{"empty_final_go_selection", `{"selected_ids":[],"selected_summary_ids":[]}`, "", "FIRST_NOTE", false, []string{"fact-a"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			calls := 0

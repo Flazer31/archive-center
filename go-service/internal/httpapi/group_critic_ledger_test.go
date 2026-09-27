@@ -1,7 +1,9 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +14,49 @@ import (
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func Test48CriticLedgerDoesNotStarveExistingCommitmentKeys(t *testing.T) {
+	dir := t.TempDir()
+	for i := 1; i <= 4; i++ {
+		writeLedgerFixture(t, dir, "direct_evidence_records", map[string]any{"id": i, "chat_session_id": "fair-ledger", "evidence_text": fmt.Sprintf("Evidence %d", i), "source_turn_start": i, "source_turn_end": i, "archive_state": "committed"})
+		writeLedgerFixture(t, dir, "memories", map[string]any{"id": i, "chat_session_id": "fair-ledger", "turn_index": i, "summary_json": fmt.Sprintf(`{"summary":"Episode %d"}`, i)})
+		writeLedgerFixture(t, dir, "active_states", map[string]any{"id": i, "chat_session_id": "fair-ledger", "state_type": "condition", "content": fmt.Sprintf("Current state %d", i), "turn_index": i})
+		writeLedgerFixture(t, dir, "pending_threads", map[string]any{"id": i, "chat_session_id": "fair-ledger", "title": fmt.Sprintf("Delivery %d", i), "description": "Deliver both crates, not only the first crate.", "status": "open", "source_turn": i, "details_json": fmt.Sprintf(`{"lifecycle_key":"delivery-%d"}`, i)})
+		writeLedgerFixture(t, dir, "audit_logs", map[string]any{"id": i, "chat_session_id": "fair-ledger", "event_type": "memory_semantic_dedup", "summary": fmt.Sprintf("Resolved duplicate %d", i)})
+	}
+	st, err := store.NewFixtureStoreFromExportDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := NewServer(config.Default())
+	srv.Store = st
+	got := srv.buildCriticArchiveLedgerPreviewWithContext(context.Background(), criticArchiveLedgerPreviewRequest{ChatSessionID: "fair-ledger", TurnIndex: 5})
+	chars := 0
+	for _, item := range got.Items {
+		chars += runeLen(item.Summary)
+		if item.Lane == "unresolved_pending_thread" && item.SourceRef["lifecycle_key"] == nil {
+			t.Fatalf("completion matching lost terms/key: %+v", item)
+		}
+	}
+	for _, lane := range criticArchiveLedgerLaneOrder {
+		if got.Counts[lane] == 0 {
+			t.Fatalf("populated lane starved: %s counts=%v", lane, got.Counts)
+		}
+	}
+	if len(got.Items) > got.Limits.MaxItemsTotal || chars > got.Limits.MaxCharsTotal {
+		t.Fatal("ledger exceeded configured ceilings")
+	}
+	// The export fixture adapter intentionally flattens description to title;
+	// exercise the runtime store's independent terms through its recording I/O.
+	srv.Store = &turnRecordingStore{returnPendingThreads: []store.PendingThread{{ID: 1, Title: "Workshop handover", Description: "Deliver both crates, not only the first crate.", Status: "open", HookMetadataJSON: `{"lifecycle_key":"delivery-crates-1"}`}}}
+	terms := srv.buildCriticArchiveLedgerPreviewWithContext(context.Background(), criticArchiveLedgerPreviewRequest{ChatSessionID: "fair-ledger", TurnIndex: 5})
+	for _, item := range terms.Items {
+		if item.Lane == "unresolved_pending_thread" && strings.Contains(item.Summary, "Workshop handover") && strings.Contains(item.Summary, "both crates") {
+			return
+		}
+	}
+	t.Fatal("pending title hid independent fulfillment terms")
+}
 
 func TestCriticArchiveLedgerPreviewBuildsReadOnlyLedgerFromFixtureStore(t *testing.T) {
 	dir := t.TempDir()

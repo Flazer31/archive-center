@@ -51,6 +51,8 @@ Each role has at most one search query and one supplemental analysis. When searc
 // Transport vocabulary also accompanies saved editorial prompts. Stored user
 // prompts stay intact; this describes how their results reach the second call.
 const multiAgentReviewTransport = `Response transport for the current analysis_round:
+Selection fields use only the matching arrays in YOUR selectable_refs. candidates, turn_summaries and lorebook_candidates are selectable; search_evidence and related_evidence are reading support. Example: if selected_ids allows F1 but search_evidence supplies F9, choose F1 when useful and explain the change supported by F9 in its reason; do not return F9 as your selection. If no assigned candidate benefits, omit it. S refs are selected_summary_ids only for event_recent; world_state alone selects L refs. This is a reference directory, not a quota. An omitted second-round list preserves the corresponding first-round list; explicit [] clears it. Always return complete lists for the surfaces you actually reassessed.
+Reconcile open commitments with later observed outcomes even when their titles or stored keys differ. A completed earlier appointment can explain history but is not still an unresolved task. Keep genuinely remaining duties and distinct recurrences separate. Do not infer completion from a deadline alone. When stored status and observed outcome disagree, attribute the discrepancy in a useful selected reason rather than asserting both as current. Selection does not delete or rewrite the stored record.
 Recent context: recent_context_policy=full_configured keeps the configured recent conversations verbatim in both rounds, including older assistant responses. Current input is separate. Source turns identify stored records; story time comes from their text. If the supplied packet uses stored summaries, their labels and source refs distinguish them from original dialogue.
 Time reading: story_time_note and ⏳ tags use the last confirmed story clock. event dates describe occurrence; recorded scene dates only date the record. before/after reference is a supplied calculation, not time since the latest mention. Retain that distinction in reasons and handoffs. Source yesterday/tomorrow remains anchored to its original scene. A date-only record supplies calendar-day distance, not elapsed hours. Use just-now/yesterday only when supported; an old but undated episode stays undated. Current user time movement directs the next scene; elapsed deadlines alone establish no outcome.
 Round 1: read all supplied recent context. recent_context_refs may mark the C passages supporting your conclusions. Under full_configured these are focus references, not a request to remove other passages from round two. Reconsider the full reading context when supplemental evidence changes the interpretation.
@@ -733,6 +735,38 @@ func finishMultiAgentCall(call multiAgentCall, status int, err error, apiKey str
 	var parseErr error
 	call.Result, parseErr = parseMultiAgentRecommendation(call.Raw)
 	resolveMultiAgentReferences(&call.Result, call.Input)
+	if call.Round == 2 && parseErr == nil {
+		// An omitted list is not an instruction to clear the first review.
+		// Preserve each unreviewed surface independently; explicit [] still wins.
+		b, _ := json.Marshal(call.Input["previous_result"])
+		var previous multiAgentRecommendation
+		_ = json.Unmarshal(b, &previous)
+		retained := []string{}
+		if call.Result.SelectedIDs == nil {
+			call.Result.SelectedIDs = previous.SelectedIDs
+			retained = append(retained, previous.SelectedIDs...)
+		}
+		if call.Result.SelectedSummaryIDs == nil {
+			call.Result.SelectedSummaryIDs = previous.SelectedSummaryIDs
+			retained = append(retained, previous.SelectedSummaryIDs...)
+		}
+		if call.Result.SelectedLorebookRefs == nil {
+			call.Result.SelectedLorebookRefs = previous.SelectedLorebookRefs
+			if previous.SelectedLorebookRefs != nil {
+				retained = append(retained, (*previous.SelectedLorebookRefs)...)
+			}
+		}
+		for _, id := range retained {
+			if _, replaced := call.Result.Reasons[id]; !replaced {
+				if reason, exists := previous.Reasons[id]; exists {
+					if call.Result.Reasons == nil {
+						call.Result.Reasons = map[string]string{}
+					}
+					call.Result.Reasons[id] = reason
+				}
+			}
+		}
+	}
 	if call.Round == 2 && call.Result.ReusePreviousReasons {
 		// Explicit model instruction, restricted to its complete final selection.
 		// Empty final selections remain empty; fresh reasons (even "") win.
@@ -1463,7 +1497,7 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 	if cfg.Enabled {
 		input["reference_format"].(map[string]any)["selection_budget"] = "candidate_chars is the reading allocation. go_baseline_* describes ordinary Go delivery for comparison, not a cap on LLM editor selections. Preserve sufficient whole evidence, conditions and source-linked changes in your chosen order. Reasons are additional attributed interpretation. Independent lorebook/body allocations still apply."
 	}
-	input["reference_format"].(map[string]any)["minimum_context"] = "Candidate text includes its minimum source context before selection. context_refs are facts read with it, not additional AI choices. minimum_chars includes its source heading; shared context is counted once when contiguous. Independent supplements remain separately selectable. Keep scope, direction, negation and conditions together; old recollections are not present-world facts."
+	input["reference_format"].(map[string]any)["minimum_context"] = "Candidate text includes its minimum source context before selection. context_refs are facts read with it, not additional AI choices. minimum_chars includes its source heading; shared context is counted once when contiguous. An independent supplement is selectable only when listed in the matching selectable_refs array for this role; search_evidence and related_evidence remain reading support. Keep scope, direction, negation and conditions together; old recollections are not present-world facts."
 	// Describe existing provenance independently of editable task prompts. A
 	// character-state row is a merged snapshot, not a per-field event timestamp.
 	input["reference_format"].(map[string]any)["source_turn"] = "Conversation turn of the source observation; story/event time is stated in its text when available. Character field readings identify their observation separately from the containing cumulative snapshot update. A snapshot update does not date each field. Linked current state and evidence qualify the retained historical value. Zero means the source observation turn is unknown."

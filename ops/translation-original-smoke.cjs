@@ -27,6 +27,7 @@ const names = [
   'computeActiveChatRescanDryRunPlan','buildActiveChatRescanDbRawMap','buildActiveChatRescanDerivedMap',
   'buildActiveChatRescanDryRunRows','buildActiveChatRescanPairsFromDbRawFallback',
   'normalizeActiveChatRescanCompareText','summarizeActiveChatRawMessageShape',
+  'buildSessionNormalizeRepairEntriesFromDryRunPlan','sanitizeChatLogRepairEntry','runActiveChatRescanDryRun','escapeAttr','extractActiveChatMessageCount',
 ];
 for(const name of names) {
   const found = new RegExp('^  (?:async )?function '+name+'\\(', 'm').exec(source);
@@ -145,5 +146,81 @@ async function flush(){await new Promise(resolve=>setImmediate(resolve));}
   for(const broken of ['<GigaTrans>'+translated,marker('unknown',translated)]) {
     assert.equal(normalizeAssistantPersistenceCandidate(broken),'');
   }
-  console.log(JSON.stringify({status:'passed',cases,missingOriginalCases:3,hostUnchanged:true}));
+  // A first assistant-only greeting must survive content normalization and reach
+  // the same repair entries used by cold start. External routing only assigns
+  // the ordinal observed in the Host fixture; it never filters the source.
+  const greetingCases=[];
+  const greetingFixtures=[
+    ...['inner_monologue','character_thoughts','reasons_for_visit','cotton','mascot','filtercomplete_scene'].map(tag=>({
+      name:tag, text:'<'+tag+'>The traveler remembered her promise.</'+tag+'>',
+    })),
+    {name:'plain',text:'The traveler remembered her promise.'},
+    {name:'html',text:'<div><p>The traveler remembered her promise.</p></div>'},
+    {name:'macro',text:'{{char}} arrived. {{img::welcome}}'},
+    {name:'reasoning_then_story',text:'<think>private plan</think>The traveler arrived.',expected:'The traveler arrived.'},
+    {name:'reasoning_only',text:'<analysis>private plan</analysis>',reason:'assistant_content_empty_after_normalization'},
+    {name:'yumi_missing',text:marker('intro',translated),reason:'translation_original_unavailable'},
+    {name:'giga_missing',text:'<GigaTrans></GigaTrans>'+translated,reason:'translation_original_unavailable'},
+    {name:'yumi_original',text:marker('intro',translated),original:'The traveler arrived.',expected:'The traveler arrived.'},
+    {name:'giga_original',text:'<GigaTrans>The traveler arrived.</GigaTrans>'+translated,expected:'The traveler arrived.'},
+  ];
+  Object.assign(globalThis,{
+    captureSessionHostContextFromCache:sid=>{assert.equal(sid,'translation-fixture');return {hostChatId:'chat-1'};},
+    refreshExplorerUI:()=>{},
+    explorerFetchAllChatLogsForSession:async()=>({items:[{turn_index:2,role:'assistant',content:'The traveler met the village elder.'}]}),
+    requestBackendSessionRoutingTurnResolution:async(sid,mode,observations)=>{
+      assert.equal(sid,'translation-fixture'); assert.equal(mode,'batch');
+      return {status:'normal',resolvedObservations:observations.map((item,index)=>{
+        const messageIndex=item.message_index ?? item.risuAssistantMessageIndex;
+        assert(Number.isInteger(messageIndex));
+        const turn=activeChat.message.slice(0,messageIndex+1).filter(message=>message.role==='char').length;
+        return {observation_index:index,turn_index:turn,local_turn_index:turn,resolution:'normal',turn_identity_state:'resolved'};
+      })};
+    },
+    formatTurnIndexPreview:turns=>turns.join(', '),
+  });
+  const renderStart=source.indexOf("    let activeChatRescanDryRunPanel = '';");
+  const renderEnd=source.indexOf("      let recentRebuildResultHtml = '';",renderStart);
+  assert(renderStart>0 && renderEnd>renderStart,'production dry-run panel missing');
+  const render='(function(){ const selectedSid="translation-fixture", debugToolsVisible=true;\n'+
+    source.slice(renderStart,renderEnd)+'\nreturn dryRunResultHtml; } return ""; })()';
+  const labels={};
+  for(const match of source.matchAll(/"(explorer\.activeRescan\.[^"]+)": "([^"]*)"/g)) (labels[match[1]]??=[]).push(match[2]);
+  for(const fixture of greetingFixtures) for(const paired of [false,true]) {
+    activeChat={id:'chat-1',scriptstate:{},message:[
+      ...(paired?[{role:'user',data:'Begin the story.',chatId:'user-start'}]:[]),
+      {role:'char',data:fixture.text,chatId:'greeting'},
+      {role:'user',data:'Continue to the village square.',chatId:'user-next'},
+      {role:'char',data:'The traveler met the village elder.',chatId:'assistant-next'},
+      {role:'user',data:'What happens next?',chatId:'user-tail'},
+    ]};
+    if(fixture.original) activeChat.scriptstate['$__yumi_tr.intro']=JSON.stringify({v:1,model:fixture.original,status:'done'});
+    const before=JSON.stringify(activeChat);
+    const plan=await computeActiveChatRescanDryRunPlan('translation-fixture',{hostChatId:'chat-1'});
+    const expectedTurns=activeChat.message.filter(message=>message.role==='char').map((_message,index)=>index+1).filter(turn=>!fixture.reason || turn!==1);
+    assert.equal(plan.assistantObservationCount,2);
+    assert.deepEqual(plan.pairs.map(pair=>pair.turnIndex),expectedTurns,fixture.name+' plan');
+    assert.deepEqual(buildSessionNormalizeRepairEntriesFromDryRunPlan(plan).map(entry=>entry.turn_index),expectedTurns,fixture.name+' repair');
+    if(!fixture.reason) assert.equal(plan.pairs[0].assistantContent,fixture.expected||fixture.text,'greeting body changed');
+    assert.deepEqual(plan.assistantContentIssues,fixture.reason?[{
+      turn_index:1,message_index:paired?1:0,reason:fixture.reason,
+    }]:[],'missing or misleading content diagnostic');
+    globalThis._activeChatRescanDryRunState={loading:false,error:null,result:null};
+    assert(await runActiveChatRescanDryRun('translation-fixture'),_activeChatRescanDryRunState.error);
+    const report=_activeChatRescanDryRunState.result;
+    assert.equal(report.assistant_content_issue_count,fixture.reason?1:0);
+    assert.deepEqual(report.assistant_content_issues,plan.assistantContentIssues);
+    assert.equal(report.write_attempted,false); assert.equal(report.llm_call_attempted,false);
+    for(const languageIndex of [0,1,2]) {
+      globalThis.t=key=>{assert(labels[key]?.[languageIndex], 'missing localized scan label '+key);return labels[key][languageIndex];};
+      const html=vm.runInThisContext(render,{filename:sourcePath});
+      if(fixture.reason) {
+        assert(html.includes('#1 · '+labels['explorer.activeRescan.'+fixture.reason][languageIndex]),'omitted first turn is invisible');
+        assert(html.includes(labels['explorer.activeRescan.contentIssues'][languageIndex]));
+      } else assert(!html.includes(labels['explorer.activeRescan.contentIssues'][languageIndex]),'false content warning');
+    }
+    assert.equal(JSON.stringify(activeChat),before,'scan or repair changed Host data');
+    greetingCases.push({name:fixture.name,paired,turns:expectedTurns,issues:plan.assistantContentIssues});
+  }
+  console.log(JSON.stringify({status:'passed',cases,missingOriginalCases:3,greetingCases,hostUnchanged:true}));
 })().catch(err=>{console.error(err);process.exitCode=1;});

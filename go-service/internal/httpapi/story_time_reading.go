@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 // Prompt rendering consumes the existing read-only calculation. The structured
@@ -148,11 +149,75 @@ func storyTimePromptReading(reading map[string]any) string {
 	return "⏳ " + strings.Join(parts, " | ")
 }
 
+// Stored schedule strings can include an explicit clock or a partial daypart.
+// Adapt the supplied precision for calculation and display without rewriting it.
+func storyTimeScheduleDate(value any) map[string]any {
+	if raw, ok := value.(string); ok {
+		raw = strings.TrimSpace(raw)
+		date := map[string]any{"date": raw}
+		if _, _, valid := parseStoryClockAbsolute(date); valid {
+			return date
+		}
+		stamp := map[string]any{"datetime": raw}
+		if _, _, valid := parseStoryClockAbsolute(stamp); valid {
+			return stamp
+		}
+		// Read a leading ISO date only at its actual boundary. Relative wording
+		// and incomplete/invalid dates retain their existing unknown treatment.
+		if len(raw) <= len("2006-01-02") {
+			return nil
+		}
+		remainder := []rune(raw[len("2006-01-02"):])
+		if remainder[0] != 'T' && !unicode.IsSpace(remainder[0]) {
+			return nil
+		}
+		date["date"] = raw[:len("2006-01-02")]
+		if _, _, valid := parseStoryClockAbsolute(date); !valid {
+			return nil
+		}
+		wording := strings.TrimSpace(string(remainder[1:]))
+		clock := strings.Join(strings.Fields(wording), " ")
+		switch strings.ToLower(clock) {
+		case "정오", "正午", "noon", "midday":
+			date["time"] = "12:00"
+			return date
+		case "자정", "midnight":
+			date["time"] = "00:00"
+			return date
+		}
+		// AM/PM changes only a supplied clock; an afternoon without a clock
+		// stays a partial daypart, not a fabricated hour.
+		for _, period := range []struct{ prefix, suffix string }{{"오전", "AM"}, {"오후", "PM"}, {"午前", "AM"}, {"午後", "PM"}} {
+			if strings.HasPrefix(clock, period.prefix) {
+				clock = strings.TrimSpace(strings.TrimPrefix(clock, period.prefix)) + " " + period.suffix
+				break
+			}
+		}
+		for _, layout := range []string{"15:04:05", "15:04", "3:04:05 PM", "3:04 PM", "3:04PM", "3 PM", "3PM"} {
+			if parsed, err := time.Parse(layout, strings.ToUpper(clock)); err == nil {
+				format := "15:04"
+				if strings.Count(clock, ":") == 2 {
+					format = "15:04:05"
+				}
+				date["time"] = parsed.Format(format)
+				return date
+			}
+		}
+		// Preserve the known day and the original uncertain/unsupported time.
+		// The shared relation calculator keeps day precision in this case.
+		if wording != "" {
+			date["partial"] = map[string]any{"daypart": wording}
+		}
+		return date
+	}
+	return mapFromAny(value)
+}
+
 func storyTimePromptSchedule(reading map[string]any) string {
-	due := mapFromAny(reading["next_due"])
+	due := storyTimeScheduleDate(reading["next_due"])
 	label := "due"
 	if len(due) == 0 {
-		due = mapFromAny(reading["due"])
+		due = storyTimeScheduleDate(reading["due"])
 	}
 	if len(due) == 0 && len(mapFromAny(reading["next_due_estimate"])) > 0 {
 		due, label = mapFromAny(reading["next_due_estimate"]), "estimated next due"
@@ -228,9 +293,9 @@ func buildCommitmentScheduleReading(lifecycleDetails, currentClock map[string]an
 	if transition != "" {
 		out["lifecycle_transition"] = transition
 	}
-	due := mapFromAny(schedule["next_due"])
+	due := storyTimeScheduleDate(schedule["next_due"])
 	if len(due) == 0 {
-		due = mapFromAny(schedule["due"])
+		due = storyTimeScheduleDate(schedule["due"])
 	}
 	if kind == "recurring" && len(due) == 0 {
 		recurrence := mapFromAny(schedule["recurrence"])

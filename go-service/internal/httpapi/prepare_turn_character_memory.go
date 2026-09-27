@@ -436,22 +436,25 @@ func prepareTurnRelationshipStateItems(
 	trace map[string]any,
 ) []map[string]any {
 	items := []map[string]any{}
-	for _, value := range values {
+	for _, record := range readMemoryRelations(memoryRelationInput{CurrentStates: values}).Records {
+		value := record.SourceRow.(store.StatusCurrentValue)
 		trace["candidate_count"] = intFromAny(trace["candidate_count"], 0) + 1
 		if value.ChatSessionID != sid || value.OwnerScope != relationshipStateOwnerScope ||
 			value.StatusKey != relationshipStateStatusKey || value.WriteState != "current" {
 			prepareTurnCharacterMemoryDrop(dropped, "relationship_current_contract_mismatch")
 			continue
 		}
-		projection := map[string]any{}
-		if json.Unmarshal([]byte(value.ValueJSON), &projection) != nil || extractionStringFromAny(projection["version"]) != relationshipStateContractVersion {
+		frame := record.Frames[0]
+		projection := frame.Fields
+		if extractionStringFromAny(projection["version"]) != relationshipStateContractVersion {
 			prepareTurnCharacterMemoryDrop(dropped, "relationship_value_invalid")
 			continue
 		}
-		sourceID := strings.TrimSpace(extractionStringFromAny(projection["source_entity_id"]))
-		sourceLabel := strings.TrimSpace(extractionStringFromAny(projection["source_label"]))
-		targetID := strings.TrimSpace(extractionStringFromAny(projection["target_entity_id"]))
-		targetLabel := strings.TrimSpace(extractionStringFromAny(projection["target_label"]))
+		link := frame.Links[0]
+		sourceID := strings.TrimSpace(link.From.EntityID)
+		sourceLabel := strings.TrimSpace(link.From.Text)
+		targetID := strings.TrimSpace(link.To.EntityID)
+		targetLabel := strings.TrimSpace(link.To.Text)
 		if sourceID == "" || targetID == "" || sourceID == targetID ||
 			!prepareTurnCharacterMemoryEntityInScope(sourceID, sourceLabel, scope) ||
 			!prepareTurnCharacterMemoryEntityInScope(targetID, targetLabel, scope) {

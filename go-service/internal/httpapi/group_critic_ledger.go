@@ -245,9 +245,14 @@ func (s *Server) buildCriticArchiveLedgerPreview(r *http.Request, req criticArch
 func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context, req criticArchiveLedgerPreviewRequest) criticArchiveLedgerPreviewResponse {
 	limits := criticArchiveLedgerDefaultLimits(s.Cfg.RuntimeProfile)
 	limits.applyOverride(req.LimitsOverride)
+	// Collect the existing bounded lanes before applying their shared ceiling.
+	// Filling that ceiling in database-read order starved pending identities.
+	collectionLimits := limits
+	collectionLimits.MaxItemsTotal = limits.MaxItemsPerLane * len(criticArchiveLedgerLaneOrder)
+	collectionLimits.MaxCharsTotal = collectionLimits.MaxItemsTotal * limits.MaxCharsPerItem
 	builder := &criticArchiveLedgerBuilder{
-		limits:       limits,
-		remaining:    limits.MaxCharsTotal,
+		limits:       collectionLimits,
+		remaining:    collectionLimits.MaxCharsTotal,
 		counts:       map[string]int{},
 		sourceCounts: map[string]int{},
 		skipped:      []map[string]any{},
@@ -409,6 +414,9 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 				continue
 			}
 			text := firstNonEmptyLedgerString(item.Title, item.Description, item.ThreadKey, item.HookMetadataJSON)
+			if description := strings.TrimSpace(item.Description); description != "" && description != strings.TrimSpace(text) {
+				text += "\n" + description
+			}
 			sourceRef := map[string]any{
 				"type":        "pending_thread",
 				"id":          item.ID,
@@ -462,6 +470,25 @@ func (s *Server) buildCriticArchiveLedgerPreviewWithContext(ctx context.Context,
 		}
 	}
 
+	lanes := map[string][]criticArchiveLedgerItem{}
+	for _, item := range builder.items {
+		lanes[item.Lane] = append(lanes[item.Lane], item)
+	}
+	bounded := &criticArchiveLedgerBuilder{limits: limits, remaining: limits.MaxCharsTotal, counts: map[string]int{}}
+	for index := 0; index < limits.MaxItemsPerLane; index++ {
+		for _, lane := range criticArchiveLedgerLaneOrder {
+			if index >= len(lanes[lane]) {
+				continue
+			}
+			item := lanes[lane][index]
+			bounded.add(item.Lane, item.ID, item.Authority, item.Status, item.Summary, time.Time{}, item.SourceRef)
+			if len(bounded.items) > 0 && bounded.items[len(bounded.items)-1].ID == item.ID {
+				bounded.items[len(bounded.items)-1].UpdatedAt = item.UpdatedAt
+			}
+		}
+	}
+	builder.items, builder.counts = bounded.items, bounded.counts
+	builder.skipped = append(builder.skipped, bounded.skipped...)
 	status := "ok"
 	degraded := len(builder.warnings) > 0
 	if degraded {

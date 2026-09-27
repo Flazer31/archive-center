@@ -110,6 +110,19 @@ recalled event. Read source yesterday/tomorrow at its original scene; use
 just-now/yesterday only when the supplied timing supports it. Calendar-day
 distance is not elapsed hours, and an undated older event remains undated.
 
+For example, a last confirmed clock of June 4 at 09:30 describes that recorded
+scene. A later undated awakening does not establish June 4, June 5 or a current
+hour. Keep the present date unspecified unless the current input or later
+observed scene establishes it. A noon appointment is a due time, not a clock
+update. If a return to the inn is timestamped 12:40 after the ceremony,
+the ceremony is already complete by that scene; its exact completion time is
+unspecified. Describe it as completed history even when an older plan remains
+listed as open under a differently worded title. Explain that discrepancy from
+the supplied completion evidence and keep that ceremony in established history. If only
+12:40 is known and no outcome is observed, say the appointment was scheduled
+for noon and its outcome is unknown. Keep recording time and event time
+distinct, with an unknown overnight interval remaining unspecified.
+
 Body context labels observed_fact, calculated_estimate and fiction_simulation
 carry different authority. Preserve dates, uncertainty and supplied species/world
 settings. modeled_birth_completed means childbirth is complete in the fiction

@@ -2588,8 +2588,27 @@ func criticObjectiveItemConflictsWithPerspectiveClaim(item map[string]any, claim
 	text := strings.TrimSpace(string(encoded))
 	for _, protected := range claims {
 		if protected.claim != "" &&
-			criticProtectedClaimSupported(protected.claim, text, protected.owner) {
+			criticProtectedClaimSupported(protected.claim, text) {
 			return true
+		}
+		// A split KG assertion can copy the complete private claim without
+		// containing it in any single JSON value. Keep its original word order;
+		// shared nouns in a reaction's explanation are not the same assertion.
+		if predicate := stringFromMap(item, "predicate"); predicate != "" &&
+			criticProtectedClaimSupported(protected.claim, strings.Join([]string{
+				stringFromMap(item, "subject"), predicate, extractionStringFromAny(item["object"]),
+			}, " ")) {
+			return true
+		}
+		if protected.kind == "belief" {
+			// Preserve the existing subject/value form of a copied belief, e.g.
+			// "the proposal is not trustworthy" -> proposal / not trustworthy.
+			// Compare the whole value, not two words from a different or opposite value.
+			subject := extractionFirstNonEmpty(stringFromMap(item, "subject"), stringFromMap(item, "entity_name"))
+			value := extractionFirstNonEmpty(extractionStringFromAny(item["value"]), extractionStringFromAny(item["object"]))
+			if criticProtectedClaimSupported(subject, protected.claim) && criticProtectedClaimSupported(value, protected.claim) {
+				return true
+			}
 		}
 		if evidence == "" && criticObjectiveItemCarriesPerspectiveClaimSignal(item, protected) {
 			return true
@@ -2625,32 +2644,15 @@ func criticObjectiveItemCarriesPerspectiveClaimSignal(item map[string]any, claim
 		return false
 	}
 
-	itemJSON, _ := json.Marshal(item)
-	itemTokens := criticSubstantiveTokens(string(itemJSON))
-	claimTokens := criticSubstantiveTokens(claim.claim)
-	for token := range criticSubstantiveTokens(claim.owner + " " + claim.subject) {
-		delete(claimTokens, token)
+	if claim.kind == "belief" {
+		value := extractionFirstNonEmpty(extractionStringFromAny(item["value"]), extractionStringFromAny(item["state_value"]), extractionStringFromAny(item["object"]))
+		return criticProtectedClaimSupported(value, claim.claim)
 	}
-	overlap := 0
-	for token := range claimTokens {
-		if _, matched := itemTokens[token]; matched {
-			overlap++
-		}
-	}
-	if overlap >= 2 || (claim.kind == "belief" && overlap >= 1) {
-		return true
-	}
-	if overlap == 0 {
-		return false
-	}
-	predicateTokens := map[string]struct{}{}
+	// For the existing evidence-less private assertion path, an anchored
+	// predicate must itself occur in the claim. Two arbitrary shared tokens
+	// (including JSON keys or grammatical words) cannot establish a duplicate.
 	for _, key := range []string{"predicate", "relation", "relationship_type", "state_slot", "slot", "state_key"} {
-		for token := range criticSubstantiveTokens(extractionStringFromAny(item[key])) {
-			predicateTokens[token] = struct{}{}
-		}
-	}
-	for token := range claimTokens {
-		if _, matched := predicateTokens[token]; matched {
+		if criticProtectedClaimSupported(extractionStringFromAny(item[key]), claim.claim) {
 			return true
 		}
 	}
@@ -2715,31 +2717,20 @@ func criticTextContainsDistinctIdentityPair(text, surface, trueName string) bool
 	return true
 }
 
-func criticProtectedClaimSupported(claim, evidence, owner string) bool {
-	claim = strings.ToLower(strings.TrimSpace(claim))
-	evidence = strings.ToLower(strings.TrimSpace(evidence))
+func criticProtectedClaimSupported(claim, evidence string) bool {
+	// Normalize punctuation/case while retaining every word and its order.
+	// In particular, do not remove negation or count an unordered overlap.
+	normalize := func(value string) string {
+		return strings.Join(strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+			return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		}), " ")
+	}
+	claim = normalize(claim)
+	evidence = normalize(evidence)
 	if claim == "" || evidence == "" {
 		return false
 	}
-	if strings.Contains(claim, evidence) || strings.Contains(evidence, claim) {
-		return true
-	}
-	ownerTokens := criticSubstantiveTokens(owner)
-	claimTokens := criticSubstantiveTokens(claim)
-	evidenceTokens := criticSubstantiveTokens(evidence)
-	overlap := 0
-	for token := range claimTokens {
-		if _, ownerToken := ownerTokens[token]; ownerToken {
-			continue
-		}
-		if _, supported := evidenceTokens[token]; supported {
-			overlap++
-			if overlap >= 2 {
-				return true
-			}
-		}
-	}
-	return false
+	return strings.Contains(" "+evidence+" ", " "+claim+" ")
 }
 
 func criticSubstantiveTokens(value string) map[string]struct{} {

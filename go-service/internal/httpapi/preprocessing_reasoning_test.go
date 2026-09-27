@@ -29,6 +29,13 @@ func TestPreprocessingReasoningSavedBothRoundsWire(t *testing.T) {
 		{"glm53-low", "custom", "https://api.z.ai/api/paas/v4", "glm-5.3", "low", nil, map[string]any{"thinking": map[string]any{"type": "enabled"}, "reasoning_effort": "low"}, false},
 		{"glm53-old-none", "custom", "https://api.z.ai/api/paas/v4", "glm-5.3-flash", "none", nil, map[string]any{"thinking": map[string]any{"type": "enabled"}, "reasoning_effort": "low"}, false},
 		{"glm53-gateway-max", "llmgateway", "", "glm-5.3", "max", nil, map[string]any{"reasoning_effort": "max"}, false},
+		{"glm53-opencode-go-low", "opencode-go", "", "glm-5.3-flash", "low", nil, map[string]any{"reasoning_effort": "low"}, false},
+		{"glm53-opencode-go-high", "opencode-go", "", "glm-5.3-flash", "high", nil, map[string]any{"reasoning_effort": "high"}, false},
+		{"glm53-opencode-go-max", "opencode-go", "", "glm-5.3-flash", "max", nil, map[string]any{"reasoning_effort": "max"}, false},
+		{"glm53-opencode-go-default", "opencode-go", "", "glm-5.3-flash", "", nil, map[string]any{}, false},
+		{"glm53-opencode-go-old-none", "opencode-go", "", "glm-5.3-flash", "none", nil, map[string]any{"reasoning_effort": "low"}, false},
+		{"glm53-opencode-go-base", "opencode-go", "", "glm-5.3", "high", nil, map[string]any{"reasoning_effort": "high"}, false},
+		{"deepseek41-opencode-go", "opencode-go", "", "deepseek-v4.1-flash", "low", nil, map[string]any{"reasoning_effort": "low"}, false},
 		{"glm52-router-max", "openrouter", "", "z-ai/glm-5.2", "max", nil, map[string]any{"reasoning": map[string]any{"effort": "max"}}, false},
 		{"glm53-router-low", "openrouter", "", "z-ai/glm-5.3-flash", "low", nil, map[string]any{"reasoning": map[string]any{"effort": "low"}}, false},
 		{"kimi25-off", "custom", "https://api.moonshot.ai/v1", "kimi-k2.5", "disable", nil, map[string]any{"thinking": map[string]any{"type": "disabled"}}, true},
@@ -156,6 +163,77 @@ func TestPreprocessingReasoningPublisherInheritanceAndOverrides(t *testing.T) {
 	}
 }
 
+func TestPreprocessingOpenCodeGLMGroupedInheritedReasoning(t *testing.T) {
+	for _, tc := range []struct{ name, inherited, override, want string }{
+		{"default", "", "", ""},
+		{"inherit", "high", "", "high"},
+		{"override-low", "max", "low", "low"},
+		{"override-max", "low", "max", "max"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &Server{Cfg: config.Default(), RuntimeConfig: RuntimeConfig{
+				SupervisorProvider: "opencode-go", SupervisorModel: "glm-5.3-flash",
+				SupervisorAPIKey: "synthetic", SupervisorReasoningEffort: tc.inherited,
+			}}
+			cfg := defaultMultiAgentSettings()
+			roles := []string{"character_objective", "world_state"}
+			var expectedTokens int64
+			for i, name := range roles {
+				c := cfg.Roles[name]
+				c.UsePublisher, c.ReasoningEffort = true, tc.override
+				c.MaxTokens = int64(1024 * (i + 1))
+				expectedTokens += c.MaxTokens
+				cfg.Roles[name] = c
+			}
+			view := httptest.NewRecorder()
+			draft, _ := json.Marshal(llmSettingsDraft{Purpose: "memory_preprocessing", UsePublisher: true, CurrentEffort: tc.override})
+			s.handleConfigViewModel(view, httptest.NewRequest("POST", "/config/view-model", bytes.NewReader(draft)))
+			var decoded llmSettingsView
+			if err := json.Unmarshal(view.Body.Bytes(), &decoded); err != nil {
+				t.Fatal(err)
+			}
+			if decoded.NextEffort != tc.override || decoded.Controls.Mode != "gateway_reasoning_effort" || strings.Contains(decoded.GuideText, "thinking enabled") {
+				t.Fatalf("settings do not describe inherited/override wire: %s", view.Body)
+			}
+			old := proxyHTTPClient
+			defer func() { proxyHTTPClient = old }()
+			requests := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				requests++
+				if r.URL.String() != "https://opencode.ai/zen/go/v1/chat/completions" {
+					t.Fatalf("unexpected endpoint: %s", r.URL)
+				}
+				var body map[string]any
+				if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+					t.Fatal(err)
+				}
+				if _, present := body["thinking"]; present {
+					t.Error("OpenCode Go request contains unsupported thinking")
+					return &http.Response{StatusCode: 400, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"error":{"message":"json: unknown field \"thinking\""}}`))}, nil
+				}
+				if extractionStringFromAny(body["reasoning_effort"]) != tc.want || body["max_tokens"] != float64(expectedTokens) {
+					t.Fatalf("effort/output ceiling changed: %v", body)
+				}
+				if _, present := body["reasoning_effort"]; tc.want == "" && present {
+					t.Fatal("unspecified effort must be omitted")
+				}
+				return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"content":"{\"roles\":{\"character_objective\":{\"selected_ids\":[]},\"world_state\":{\"selected_ids\":[]}}}"}}]}`))}, nil
+			})}
+			for round := 1; round <= 2; round++ {
+				calls := s.callMultiAgentGroup(context.Background(), cfg, round, roles, []map[string]any{{}, {}}, "synthetic-session")
+				if len(calls) != len(roles) || requests != round {
+					t.Fatalf("group changed: results=%d requests=%d round=%d", len(calls), requests, round)
+				}
+				for _, call := range calls {
+					if call.Error != "" || call.SharedRequestID == "" || !reflect.DeepEqual(call.SharedRoles, roles) {
+						t.Fatalf("group failed: %+v", call)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestPreprocessingReasoningViewModelVersions(t *testing.T) {
 	for _, model := range []string{"glm-5.3", "kimi-k3"} {
 		v := resolveLLMSettingsView(llmSettingsDraft{Purpose: "memory_preprocessing", Provider: "ollama", Model: model, CurrentEffort: "max", IsFirstSync: true})
@@ -171,6 +249,7 @@ func TestPreprocessingReasoningViewModelVersions(t *testing.T) {
 		{"llmgateway", "glm-5.2", []string{"", "none", "high", "max"}},
 		{"llmgateway", "glm-5.3", []string{"", "low", "high", "max"}},
 		{"openrouter", "z-ai/glm-5.3-flash", []string{"", "low", "high", "max"}},
+		{"opencode-go", "glm-5.3-flash", []string{"", "low", "high", "max"}},
 		{"custom", "kimi-k2.6", []string{"", "enable", "disable"}},
 		{"opencode-go", "kimi-k2.7-code", []string{}},
 		{"custom", "kimi-k3", []string{"", "low", "high", "max"}},

@@ -1,11 +1,191 @@
 package httpapi
 
 import (
+	"fmt"
+	"math"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/risulongmemory/archive-center-go/internal/dto"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
+
+func TestScheduleDateTimeStringsKeepKnownPrecision(t *testing.T) {
+	const date = "2900-09-06"
+	current := map[string]any{"absolute": map[string]any{"date": date, "time": "13:15"}}
+	for _, tc := range []struct{ text, clock string }{
+		{date + " 정오", "12:00"},
+		{date + " noon", "12:00"},
+		{date + " 正午", "12:00"},
+		{date + " 자정", "00:00"},
+		{date + " midnight", "00:00"},
+		{date + " 12:00", "12:00"},
+		{date + "T12:00:30", "12:00:30"},
+		{date + " 12:00 PM", "12:00"},
+		{date + " 12 AM", "00:00"},
+		{date + " 오후 2:30", "14:30"},
+		{date + " 午前 9:30", "09:30"},
+		{"  " + date + "\t정오  ", "12:00"},
+	} {
+		for _, key := range []string{"due", "next_due"} {
+			t.Run(key+"/"+tc.text, func(t *testing.T) {
+				schedule := map[string]any{"kind": "recurring", key: tc.text, "last_fulfilled": map[string]any{"date": "2900-09-01"}, "recurrence": map[string]any{"unit": "day", "interval": 1}}
+				if key == "next_due" {
+					schedule["due"] = "2900-08-01"
+				}
+				before := mustCompactJSON(schedule)
+				reading := buildCommitmentScheduleReading(map[string]any{"schedule": schedule}, current)
+				expected := storyTimeRelation(map[string]any{"date": date, "time": tc.clock}, current)
+				relation := mapFromAny(reading["due_relation"])
+				if relation["relation"] != expected["relation"] || relation["precision"] != "instant" {
+					t.Fatalf("stored time was not read at its explicit precision: %#v", reading)
+				}
+				for _, bound := range []string{"min", "max"} {
+					got, ok := storyClockNumeric(mapFromAny(relation["elapsed_days"])[bound])
+					want, _ := storyClockNumeric(mapFromAny(expected["elapsed_days"])[bound])
+					if !ok || math.Abs(got-want) > 1e-9 {
+						t.Fatalf("wrong elapsed time: got=%#v want=%#v", relation, expected)
+					}
+				}
+				text := storyTimePromptSchedule(parseJSONMap(mustCompactJSON(reading)))
+				if !strings.Contains(text, "due="+date+" "+tc.clock) {
+					t.Fatalf("calculation and displayed date disagree: %s", text)
+				}
+				if mustCompactJSON(schedule) != before || reading[key] != tc.text || reading["next_due_estimate"] != nil || reading["outcome"] != nil || reading["status"] != nil {
+					t.Fatalf("source changed or outcome/recurrence invented: %#v", reading)
+				}
+			})
+		}
+	}
+}
+
+func TestScheduleDateWithUncertainTimeKeepsDateAndWording(t *testing.T) {
+	for _, suffix := range []string{"정오 무렵", "오후", "early morning", "正午ごろ", "25:90", "12:00 or 14:00"} {
+		t.Run(suffix, func(t *testing.T) {
+			raw := "2900-09-06 " + suffix
+			reading := buildCommitmentScheduleReading(map[string]any{"due": raw}, map[string]any{"date": "2900-09-07", "time": "13:15"})
+			relation := mapFromAny(reading["due_relation"])
+			text := storyTimePromptSchedule(reading)
+			if relation["precision"] != "day" || mapFromAny(relation["elapsed_days"])["min"] != float64(1) || !containsAll(text, "due=2900-09-06 (date only)", suffix) {
+				t.Fatalf("lost known date/unknown-time wording: %s", text)
+			}
+			if reading["due"] != raw || reading["outcome"] != nil || strings.Contains(text, "due=2900-09-06 12:00") {
+				t.Fatalf("invented exact time or outcome: %#v", reading)
+			}
+		})
+	}
+	for _, raw := range []string{"2900-02-30 정오", "내일 정오", "2900-09 정오", "2900-09-060 정오"} {
+		if got := storyTimeScheduleDate(raw); len(got) != 0 {
+			t.Errorf("invented date for %q: %#v", raw, got)
+		}
+	}
+	stamp := "2900-09-06T12:00:00+09:00"
+	reading := buildCommitmentScheduleReading(map[string]any{"due": stamp}, map[string]any{"datetime": "2900-09-06T04:15:00Z"})
+	if !containsAll(storyTimePromptSchedule(reading), stamp, "1h 15m before reference") || reading["due"] != stamp {
+		t.Fatalf("explicit timezone not preserved: %#v", reading)
+	}
+}
+
+func TestScheduleDateStringReadingAndRendering(t *testing.T) {
+	dueDate, referenceDate := "2900-08-19", "2900-08-22"
+	dueTime, _ := time.Parse("2006-01-02", dueDate)
+	referenceTime, _ := time.Parse("2006-01-02", referenceDate)
+	wantDays := referenceTime.Sub(dueTime).Hours() / 24
+	current := map[string]any{"absolute": map[string]any{"date": referenceDate, "time": "17:40"}}
+	for _, field := range []string{"due", "next_due"} {
+		for _, value := range []any{dueDate, " " + dueDate + " ", map[string]any{"date": dueDate}, map[string]any{"absolute": map[string]any{"date": dueDate}}} {
+			t.Run(field+"/"+mustCompactJSON(value), func(t *testing.T) {
+				schedule := map[string]any{"kind": "recurring", field: value,
+					"last_fulfilled": map[string]any{"date": "2900-08-01"},
+					"recurrence":     map[string]any{"unit": "day", "interval": 1}}
+				if field == "next_due" {
+					schedule["due"] = map[string]any{"date": "2900-07-01"}
+				}
+				source := map[string]any{"schedule": schedule, "lifecycle_transition": "set"}
+				before := mustCompactJSON(source)
+				reading := buildCommitmentScheduleReading(source, current)
+				relation := mapFromAny(reading["due_relation"])
+				span := mapFromAny(relation["elapsed_days"])
+				if relation["relation"] != "past" || relation["precision"] != "day" || span["min"] != wantDays || span["max"] != wantDays {
+					t.Fatalf("explicit date not read at its supplied precision: %#v", reading)
+				}
+				// Exercise the JSON handoff used by shared memory parts, not just date math.
+				text := storyTimePromptSchedule(parseJSONMap(mustCompactJSON(reading)))
+				if !strings.Contains(text, "due="+dueDate+" (date only)") || !strings.Contains(text, fmt.Sprintf("%g calendar days before reference", wantDays)) {
+					t.Fatalf("date missing from rendered reading: %s", text)
+				}
+				if reading["next_due_estimate"] != nil || reading["outcome"] != nil || reading["status"] != nil || reading["lifecycle_transition"] != "set" || reading["due_cue"] != "due_passed_outcome_unknown" {
+					t.Fatalf("explicit date triggered rescheduling or outcome inference: %#v", reading)
+				}
+				if mustCompactJSON(source) != before || mustCompactJSON(reading[field]) != mustCompactJSON(value) {
+					t.Fatal("read-only projection rewrote retained source date")
+				}
+			})
+		}
+	}
+}
+
+func TestScheduleDateStringReachesGoAndPreprocessing(t *testing.T) {
+	memory, current := lifecycle46Fixture("schedule-date-reading")
+	_, clock := temporal46Fixture()
+	payload := parseJSONMap(current.ValueJSON)
+	payload["lifecycle_details"] = map[string]any{"schedule": map[string]any{"kind": "one_off", "due": "2026-03-08"}}
+	current.ValueJSON = mustCompactJSON(payload)
+	before := current.ValueJSON
+	input := temporal46AssemblyInput(memory, clock)
+	input.UserInput = "Mira remembers the compass voyage promise."
+	input.Perspective.Selection.Query = input.UserInput
+	input.Perspective.NarrativeValues = []store.StatusCurrentValue{current}
+	out := buildPrepareTurnInjectionAssemblyWithBudget(input)
+	facts, summaries := multiAgentCandidatePool(&out)
+	if len(summaries) != 1 || summaries[0].Minimum == nil {
+		t.Fatal("schedule-bearing source disappeared")
+	}
+	for name, text := range map[string]string{
+		"summary":       summaries[0].Minimum.Text,
+		"go":            extractionStringFromAny(out.MemoryDeliveryPlan["final_text"]),
+		"preprocessing": mustCompactJSON(multiAgentInput("event_recent", facts, summaries, dto.PrepareTurnRequest{}, defaultMultiAgentSettings(), input.MaxChars, 1, nil)),
+	} {
+		for _, want := range []string{"due=2026-03-08 (date only)", "7 calendar days before reference", "due_passed_with_explicit_outcome"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s omitted schedule reading %q", name, want)
+			}
+		}
+	}
+	if current.ValueJSON != before {
+		t.Fatal("delivery rewrote lifecycle storage")
+	}
+	assert45Budget(t, out.MemoryDeliveryPlan, input.MaxChars)
+}
+
+func TestScheduleDateRemainsOptionalAndUncertain(t *testing.T) {
+	for _, schedule := range []map[string]any{
+		{"kind": "standing", "condition": "protect the companion"},
+		{"kind": "conditional", "condition": "when the ship returns"},
+		{"kind": "one_off", "due": ""},
+		{"kind": "one_off", "due": "tomorrow"},
+		{"kind": "one_off", "due": "2900-08"},
+		{"kind": "one_off", "due": "2900-02-30"},
+		{"kind": "one_off", "due": map[string]any{"absolute": map[string]any{"date": "2900-08-19"}, "calendar": map[string]any{"id": "lunar"}}},
+	} {
+		t.Run(mustCompactJSON(schedule), func(t *testing.T) {
+			before := mustCompactJSON(schedule)
+			reading := buildCommitmentScheduleReading(schedule, map[string]any{"date": "2900-08-22"})
+			if mapFromAny(reading["due_relation"])["relation"] != "unknown" || reading["due_cue"] != nil || reading["outcome"] != nil || reading["status"] != nil {
+				t.Fatalf("missing date/calendar basis became a date or outcome: %#v", reading)
+			}
+			if !strings.Contains(storyTimePromptSchedule(reading), "distance unknown") || mustCompactJSON(schedule) != before {
+				t.Fatal("uncertainty or original source lost")
+			}
+			if _, supplied := schedule["due"]; !supplied {
+				if _, added := reading["due"]; added {
+					t.Fatal("optional due was fabricated")
+				}
+			}
+		})
+	}
+}
 
 func Test46StoryTimeReadingSourceRelativeAndLongRecall(t *testing.T) {
 	observed := map[string]any{"story_clock": map[string]any{"absolute": map[string]any{"date": "2020-02-28"}}}

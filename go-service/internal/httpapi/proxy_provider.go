@@ -237,7 +237,9 @@ func proxyCallOpenAILike(ctx context.Context, req dto.ProxyPluginMainRequest, en
 				body["max_tokens"] = outputTokens + reasoningBudget
 			}
 		}
-	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || ((reasoningTransport == "custom" || reasoningTransport == "opencode" || reasoningTransport == "opencode-go") && reasoningFamily == "deepseek_v4") {
+	} else if reasoningTransport == "llmgateway" || reasoningTransport == "neuralwatt" || ((reasoningTransport == "custom" || reasoningTransport == "opencode" || reasoningTransport == "opencode-go") && reasoningFamily == "deepseek_v4") ||
+		(reasoningTransport == "opencode-go" && reasoningFamily == "glm" && proxyGLMRequiresThinking(model)) {
+		// OpenCode Go's GLM 5.3 transport accepts effort, not native thinking.
 		if effort := proxyGatewayReasoningEffort(reasoningTransport, reasoningFamily, model, stringPtrValue(req.ReasoningEffort, ""), stringPtrValue(req.GlmThinkingType, "")); effort != "" {
 			body["reasoning_effort"] = effort
 			body["max_tokens"] = maxInt64(requestedTokens, firstPositiveInt64(configuredMax, requestedTokens))

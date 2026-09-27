@@ -168,6 +168,15 @@ func TestSanitizeCriticStorageTextRemovesThoughtAndFilterTags(t *testing.T) {
 	}
 }
 
+func TestCriticInputPreservesCreatorTaggedGreeting(t *testing.T) {
+	for _, tag := range []string{"inner_monologue", "character_thoughts", "reasons_for_visit", "cotton", "mascot", "filtercomplete_scene"} {
+		text := "<" + tag + ">The traveler remembered her promise.</" + tag + ">"
+		if got := sanitizeTextForCriticInput(text); got != text {
+			t.Errorf("creator-tagged Critic input changed: got %q want %q", got, text)
+		}
+	}
+}
+
 // ---------------------------------------------------------------------------
 // EA-1h / P280: canonical conflict resolution state machine
 // ---------------------------------------------------------------------------

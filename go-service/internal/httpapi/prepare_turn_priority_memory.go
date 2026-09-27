@@ -976,7 +976,8 @@ func prepareTurnPrioritySemanticFactFromPreciseUnit(unit store.PreciseMemoryUnit
 		return prepareTurnPrioritySemanticFact{}, false
 	}
 	sourceKey, lane := prepareTurnPriorityPreciseSourceAndLane(unit.Kind, unit.Subtype)
-	payload := parseJSONMap(unit.PayloadJSON)
+	record := readMemoryRelations(memoryRelationInput{PreciseUnits: []store.PreciseMemoryUnit{unit}}).Records[0]
+	payload := record.Frames[0].Fields
 	facts := prepareTurnPriorityStructuredMemoryItemFacts(sourceKey, payload)
 	if len(facts) == 0 {
 		semanticText := strings.TrimSpace(store.PreciseMemorySemanticText(&unit))
@@ -998,6 +999,7 @@ func prepareTurnPrioritySemanticFactFromPreciseUnit(unit store.PreciseMemoryUnit
 		fact.ValueKey = collapseTextKey(fact.Text)
 	}
 	fact.Visibility = strings.TrimSpace(unit.Visibility)
+	fact.TemporalContext = prepareTurnSourceTemporalContext(nil, payload)
 	return prepareTurnPrioritySemanticFact{
 		UnitID: unitID, ChatSessionID: strings.TrimSpace(unit.ChatSessionID),
 		SourceRevision: strings.TrimSpace(unit.SourceRevision), SourceTurn: maxInt(unit.SourceTurnStart, unit.SourceTurnEnd),
@@ -1608,7 +1610,24 @@ func prepareTurnPrioritySummaryID(sourceRef, text string) string {
 	return fmt.Sprintf("pms_%x", digest[:16])
 }
 
-func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryCandidate) []prepareTurnPriorityTurnSummaryCandidate {
+func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryCandidate, currentQuery ...func(string) float64) []prepareTurnPriorityTurnSummaryCandidate {
+	// Whole-source vector recall must use the same current/context weighting as
+	// atomic readings. Otherwise a broad old-context hit bypasses that weighting
+	// merely by being rendered as a summary. Retain the observed vector unchanged.
+	currentScores := map[string]float64{}
+	low, high := 1.0, 0.0
+	if len(currentQuery) > 0 {
+		for _, candidate := range resolved {
+			if candidate.SourceTable != "memories" || strings.TrimSpace(candidate.ParentLineText) == "" {
+				continue
+			}
+			if _, exists := currentScores[candidate.ParentLineText]; !exists {
+				score := currentQuery[0](candidate.ParentLineText)
+				currentScores[candidate.ParentLineText] = score
+				low, high = math.Min(low, score), math.Max(high, score)
+			}
+		}
+	}
 	bySource := map[string]*prepareTurnPriorityTurnSummaryCandidate{}
 	linkedBySource := map[string][]prepareTurnPriorityMemoryCandidate{}
 	order := []string{}
@@ -1651,11 +1670,18 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 		if candidate.SourceSelectionScoreIsVector {
 			summary.SourceVectorSimilarityObserved = true
 			summary.SourceVectorSimilarity = candidate.SourceSelectionScore
-			vectorScore := prepareTurnPriorityScore(candidate.SourceSelectionScore, candidate.Importance, candidate.Recency, candidate.ContinuityBonus, candidate.StructuredBias)
+			vectorRelevance := candidate.SourceSelectionScore
+			if high > low {
+				vectorRelevance = (2*currentScores[candidate.ParentLineText] + vectorRelevance) / 3
+			}
+			vectorScore := prepareTurnPriorityScore(vectorRelevance, candidate.Importance, candidate.Recency, candidate.ContinuityBonus, candidate.StructuredBias)
 			if vectorScore > summary.FinalScore {
 				summary.FinalScore = vectorScore
 				summary.RepresentativeFactID = candidate.CanonicalFactID
 				summary.ScoreSource = "aggregate_memory_vector_similarity"
+				if high > low {
+					summary.ScoreSource = "aggregate_memory_vector_similarity_current_query"
+				}
 			}
 		}
 		if candidate.SourceTurn > summary.SourceTurn {
@@ -2150,7 +2176,15 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 
 func prepareTurnResolvePrioritySourcePool(out *prepareTurnInjectionAssembly, query string, querySet []string, currentTurn int, semanticFacts []prepareTurnPrioritySemanticFact) ([]prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityTurnSummaryCandidate, []prepareTurnPriorityMemoryCandidate, []prepareTurnPriorityIdentityMetadata) {
 	resolved, superseded, identityMetadata := prepareTurnBuildPriorityCandidates(out, query, querySet, currentTurn, semanticFacts)
-	turnSummaries := prepareTurnBuildPriorityTurnSummaries(resolved)
+	var currentQuery []func(string) float64
+	if len(querySet) > 1 {
+		scorer := prepareTurnPriorityRelevanceScorer(nil, querySet[0])
+		if out.preparation != nil {
+			scorer = out.preparation.relevanceScorer(querySet[:1], querySet[0])
+		}
+		currentQuery = append(currentQuery, scorer)
+	}
+	turnSummaries := prepareTurnBuildPriorityTurnSummaries(resolved, currentQuery...)
 	// Source snapshots precede both AI ordering and final delivery rendering.
 	out.priorityCandidates, out.priorityTurnSummaries = clonePrepareTurnPriorityCandidatePool(resolved, turnSummaries)
 	out.prioritySuperseded, _ = clonePrepareTurnPriorityCandidatePool(superseded, nil)

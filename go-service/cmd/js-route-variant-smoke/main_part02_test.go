@@ -525,6 +525,14 @@ assertEqual(sanitizeNarrativeOutputForDisplay("<Thoughts\nprivate plan only"), "
 assertEqual(sanitizeNarrativeOutputForDisplay("<scene>I need the user to see this ordinary narrative.</scene>"), "<scene>I need the user to see this ordinary narrative.</scene>", "ordinary creator output is not prose-classified");
 assertEqual(sanitizeNarrativeOutputForDisplay("I need to decide what happens next in this scene."), "I need to decide what happens next in this scene.", "ordinary prose remains output");
 assertEqual(sanitizeForCritic("<reasoning>private</reasoning>Final text"), "Final text", "critic receives the same structured output boundary");
+for (const tag of ["inner_monologue", "character_thoughts", "reasons_for_visit", "cotton", "mascot", "filtercomplete_scene"]) {
+  const story = "<" + tag + ">The traveler remembered her promise.</" + tag + ">";
+  assertEqual(sanitizeNarrativeOutputForDisplay(story), story, "creator tag is not a reasoning substring: " + tag);
+  assertEqual(sanitizeForCritic(story), story, "critic preserves creator-tagged narrative: " + tag);
+}
+for (const tag of ["think", "thinking", "thought", "thoughts", "analysis", "reasoning", "scratchpad", "internal-deliberation", "hidden_reasoning", "private-analysis"]) {
+  assertEqual(sanitizeNarrativeOutputForDisplay("<"+tag+">private plan</"+tag+">Visible narrative."), "Visible narrative.", "explicit reasoning envelope: " + tag);
+}
 `
 	cmd := exec.Command(nodePath, "-e", script)
 	if output, err := cmd.CombinedOutput(); err != nil {

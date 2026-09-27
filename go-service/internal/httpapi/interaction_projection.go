@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -207,8 +206,10 @@ func normalizePrepareTurnInteractionCandidate(unit store.PreciseMemoryUnit) (pre
 	if strings.TrimSpace(unit.SourceRevision) == "" {
 		return candidate, "source_revision_missing"
 	}
-	payload := map[string]any{}
-	if err := json.Unmarshal([]byte(unit.PayloadJSON), &payload); err != nil {
+	record := readMemoryRelations(memoryRelationInput{PreciseUnits: []store.PreciseMemoryUnit{unit}}).Records[0]
+	frame := record.Frames[0]
+	payload := frame.Fields
+	if !record.Documents[0].Parsed || (record.Documents[0].Value != nil && payload == nil) {
 		return candidate, "invalid_payload"
 	}
 	actorID := strings.TrimSpace(unit.ActorEntityID)

@@ -953,10 +953,7 @@ func narrativeCurrentStateViews(values []store.StatusCurrentValue) []narrativeCu
 		if value.StatusKey != narrativeStateStatusKey || value.WriteState != "current" {
 			continue
 		}
-		payload := map[string]any{}
-		if json.Unmarshal([]byte(strings.TrimSpace(value.ValueJSON)), &payload) != nil {
-			continue
-		}
+		payload, _ := readMemoryRelationDocument("value_json", value.ValueJSON).Value.(map[string]any)
 		view := narrativeCurrentStateView{Value: value, Payload: payload, Subject: strings.TrimSpace(extractionStringFromAny(payload["subject"])), Slot: strings.TrimSpace(extractionStringFromAny(payload["state_slot"])), Current: strings.TrimSpace(extractionStringFromAny(payload["value"])), Previous: strings.TrimSpace(extractionStringFromAny(payload["previous_value"])), Scope: normalizeNarrativeClaimScope(extractionStringFromAny(payload["claim_scope"])), Perspective: strings.TrimSpace(extractionStringFromAny(payload["perspective_owner"]))}
 		if (view.Subject == "" && normalizeNarrativeLifecycleKey(stringFromMap(payload, "lifecycle_key")) == "") || view.Slot == "" || view.Current == "" {
 			continue

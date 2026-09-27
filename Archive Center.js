@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.7.0
+//@display-name Archive Center 4.8.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.7.0
+//@version 4.8.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.7.0";
+  const VERSION = "4.8.0";
   const BUILD_ID = VERSION;
-  const BUILD_CHANNEL = "stable";
-  const BUILD_TIME = "2026-09-25 KST";
-  const BUILD_NOTES = "Archive Center 4.7.0";
+  const BUILD_CHANNEL = "release";
+  const BUILD_TIME = "2026-09-27 KST";
+  const BUILD_NOTES = "Archive Center 4.8.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -587,6 +587,7 @@
       "dash.preview.verification.ready": "사용자 입력과 보조 입력이 Archive Center의 요청 직전 관측과 일치합니다. 최종 제공자 요청까지 확인한 것은 아닙니다.",
       "dash.preview.verification.mismatch": "백엔드 조립 내용과 요청 직전 관측이 일치하지 않습니다. 아래 조립본은 확인용이며 검증된 최종 입력으로 저장되지 않습니다.",
       "dash.preview.verification.unobserved": "요청 직전 반영은 아직 확인되지 않았습니다. 아래는 백엔드 조립본입니다.",
+      "dash.preview.verification.partial": "사용자 입력 문구가 더 큰 메시지 안에 포함된 것을 확인했습니다. 독립된 사용자 입력과 전체 조립본의 일치까지 확인한 것은 아닙니다.",
       "dash.preview.verification.userObserved": "요청에서 확인한 사용자 입력",
       "dash.preview.verification.userPlanned": "백엔드가 참조한 사용자 입력",
       "dash.preview.verification.detail": "확인 결과",
@@ -724,6 +725,9 @@
       "explorer.activeRescan.loading": "⏳ 검사 중...",
       "explorer.activeRescan.runBtn": "검사만 실행",
       "explorer.activeRescan.done": "검사 완료",
+      "explorer.activeRescan.contentIssues": "복구 본문 확인 필요",
+      "explorer.activeRescan.translation_original_unavailable": "번역 전 원문을 읽을 수 없음",
+      "explorer.activeRescan.assistant_content_empty_after_normalization": "본문 정리 후 저장할 내용이 남지 않음",
       "explorer.activeRescan.notLive": "선택 세션이 현재 활성 챗과 다릅니다.",
       "explorer.activeRebuild.runBtn": "▶ 최근 누락 턴 재생성",
       "explorer.activeRebuild.loading": "⏳ 재생성 중...",
@@ -1310,6 +1314,7 @@
       "turn_hud.invalidated": "작업 중단",
       "turn_hud.failed": "처리 오류",
       "turn_hud.stopped": "중지",
+      "turn_hud.result_unconfirmed": "결과 확인 필요",
       "turn_hud.main_response": "본문 응답",
       "turn_hud.error.host_generation": "본문 요청 오류가 표시되었습니다.",
       "turn_hud.error.host_generation_stopped": "출력이 중단되었습니다.",
@@ -1354,12 +1359,13 @@
       "turn_hud.reason.duplicate_turn_conflict": "같은 턴의 저장값 충돌",
       "turn_hud.reason.duplicate_turn_replay": "이미 처리된 턴",
       "turn_hud.reason.duplicate_pair_replay": "다른 턴과 동일한 입력·응답",
+      "turn_hud.warning.generic": "주의 사항 있음",
       "turn_hud.transport_unavailable": "진행 상태 연결이 끊겼습니다.",
-      "turn_hud.transport.bridge_url_invalid": "백엔드 주소가 유효하지 않습니다.",
-      "turn_hud.transport.timeout": "설정된 Plugin Timeout을 초과했습니다.",
-      "turn_hud.transport.http_error": "백엔드가 HTTP 오류를 반환했습니다.",
-      "turn_hud.transport.response_decode_failed": "백엔드 응답을 JSON으로 읽지 못했습니다.",
-      "turn_hud.transport.connection_failed": "백엔드에 연결하지 못했습니다.",
+      "turn_hud.transport.bridge_url_invalid": "백엔드 주소 오류",
+      "turn_hud.transport.timeout": "백엔드 응답 시간 초과",
+      "turn_hud.transport.http_error": "백엔드 HTTP 오류",
+      "turn_hud.transport.response_decode_failed": "백엔드 응답 해석 실패",
+      "turn_hud.transport.connection_failed": "백엔드 연결 실패",
       "turn_hud.stage.prepare_source": "현재 입력과 요청 확인",
       "turn_hud.preprocessing.title": "전처리 담당별 시간",
       "turn_hud.preprocessing.compact_enabled": "전처리 ON",
@@ -2136,6 +2142,7 @@
       "dash.preview.verification.ready": "User and auxiliary input match Archive Center's observation before returning the request. This does not verify the final provider request.",
       "dash.preview.verification.mismatch": "The backend assembly and pre-request observation do not match. The assembly below is for inspection and will not be stored as verified effective input.",
       "dash.preview.verification.unobserved": "Pre-request application has not been observed yet. The backend assembly is shown below.",
+      "dash.preview.verification.partial": "The user text was observed inside a larger message. This does not verify a standalone user message or full assembly parity.",
       "dash.preview.verification.userObserved": "User input observed in request",
       "dash.preview.verification.userPlanned": "User input used by backend",
       "dash.preview.verification.detail": "Observation result",
@@ -2273,6 +2280,9 @@
       "explorer.activeRescan.loading": "⏳ Scanning...",
       "explorer.activeRescan.runBtn": "Scan Only",
       "explorer.activeRescan.done": "Scan Complete",
+      "explorer.activeRescan.contentIssues": "Recovery content needs review",
+      "explorer.activeRescan.translation_original_unavailable": "The original text before translation is unavailable",
+      "explorer.activeRescan.assistant_content_empty_after_normalization": "No content remains after normalization",
       "explorer.activeRescan.notLive": "The selected session is not the current active chat.",
       "explorer.activeRebuild.runBtn": "▶ Rebuild Recent Missing Turns",
       "explorer.activeRebuild.loading": "⏳ Rebuilding...",
@@ -2647,6 +2657,7 @@
       "turn_hud.invalidated": "Operation stopped",
       "turn_hud.failed": "Processing error",
       "turn_hud.stopped": "Stopped",
+      "turn_hud.result_unconfirmed": "Result unconfirmed",
       "turn_hud.main_response": "Main response",
       "turn_hud.error.host_generation": "The host reported a response error.",
       "turn_hud.error.host_generation_stopped": "Response generation stopped.",
@@ -2691,12 +2702,13 @@
       "turn_hud.reason.duplicate_turn_conflict": "Conflicting values already exist for this turn",
       "turn_hud.reason.duplicate_turn_replay": "Turn already processed",
       "turn_hud.reason.duplicate_pair_replay": "Same input and response exist on another turn",
+      "turn_hud.warning.generic": "Attention needed",
       "turn_hud.transport_unavailable": "The progress connection was lost.",
-      "turn_hud.transport.bridge_url_invalid": "The backend URL is invalid.",
-      "turn_hud.transport.timeout": "The configured Plugin Timeout was exceeded.",
-      "turn_hud.transport.http_error": "The backend returned an HTTP error.",
-      "turn_hud.transport.response_decode_failed": "The backend response could not be decoded as JSON.",
-      "turn_hud.transport.connection_failed": "Could not connect to the backend.",
+      "turn_hud.transport.bridge_url_invalid": "Invalid backend URL",
+      "turn_hud.transport.timeout": "Backend response timed out",
+      "turn_hud.transport.http_error": "Backend HTTP error",
+      "turn_hud.transport.response_decode_failed": "Backend response decode failed",
+      "turn_hud.transport.connection_failed": "Backend connection failed",
       "turn_hud.stage.prepare_source": "Confirming current input and request",
       "turn_hud.preprocessing.title": "Preprocessing call times",
       "turn_hud.preprocessing.compact_enabled": "Prep ON",
@@ -3433,6 +3445,7 @@
       "dash.preview.verification.ready": "ユーザー入力と補助入力がリクエスト直前の観測と一致しました。最終プロバイダーリクエストの確認ではありません。",
       "dash.preview.verification.mismatch": "バックエンドの組立内容とリクエスト直前の観測が一致しません。以下は確認用の組立内容で、検証済み最終入力として保存されません。",
       "dash.preview.verification.unobserved": "リクエスト直前の反映はまだ確認されていません。以下はバックエンドの組立内容です。",
+      "dash.preview.verification.partial": "ユーザー入力の文面が、より大きなメッセージ内で確認されました。独立したユーザー入力や組立内容全体の一致を確認したものではありません。",
       "dash.preview.verification.userObserved": "リクエストで確認したユーザー入力",
       "dash.preview.verification.userPlanned": "バックエンドが参照したユーザー入力",
       "dash.preview.verification.detail": "確認結果",
@@ -3570,6 +3583,9 @@
       "explorer.activeRescan.loading": "⏳ 検査中...",
       "explorer.activeRescan.runBtn": "検査のみ実行",
       "explorer.activeRescan.done": "検査完了",
+      "explorer.activeRescan.contentIssues": "復元対象の本文を確認してください",
+      "explorer.activeRescan.translation_original_unavailable": "翻訳前の原文を読み取れません",
+      "explorer.activeRescan.assistant_content_empty_after_normalization": "本文の整形後に保存できる内容が残っていません",
       "explorer.activeRescan.notLive": "選択セッションが現在のアクティブチャットと異なります。",
       "explorer.activeRebuild.runBtn": "▶ 最近の欠落ターンをRebuild",
       "explorer.activeRebuild.loading": "⏳ Rebuild中...",
@@ -3982,6 +3998,7 @@
       "turn_hud.invalidated": "処理中断",
       "turn_hud.failed": "処理エラー",
       "turn_hud.stopped": "停止",
+      "turn_hud.result_unconfirmed": "結果の確認が必要",
       "turn_hud.main_response": "本文応答",
       "turn_hud.error.host_generation": "本文リクエストのエラーが表示されました。",
       "turn_hud.error.host_generation_stopped": "応答の生成が中断されました。",
@@ -4026,12 +4043,13 @@
       "turn_hud.reason.duplicate_turn_conflict": "同じターンの保存値が競合",
       "turn_hud.reason.duplicate_turn_replay": "処理済みのターン",
       "turn_hud.reason.duplicate_pair_replay": "別ターンと同じ入力・応答",
+      "turn_hud.warning.generic": "要確認",
       "turn_hud.transport_unavailable": "進行状況への接続が切れました。",
-      "turn_hud.transport.bridge_url_invalid": "バックエンドURLが無効です。",
-      "turn_hud.transport.timeout": "設定されたPlugin Timeoutを超過しました。",
-      "turn_hud.transport.http_error": "バックエンドがHTTPエラーを返しました。",
-      "turn_hud.transport.response_decode_failed": "バックエンド応答をJSONとして読み取れませんでした。",
-      "turn_hud.transport.connection_failed": "バックエンドに接続できませんでした。",
+      "turn_hud.transport.bridge_url_invalid": "バックエンドURLエラー",
+      "turn_hud.transport.timeout": "バックエンド応答タイムアウト",
+      "turn_hud.transport.http_error": "バックエンドHTTPエラー",
+      "turn_hud.transport.response_decode_failed": "バックエンド応答の解析失敗",
+      "turn_hud.transport.connection_failed": "バックエンド接続失敗",
       "turn_hud.stage.prepare_source": "現在の入力とリクエストを確認",
       "turn_hud.preprocessing.title": "前処理の担当別呼び出し時間",
       "turn_hud.preprocessing.compact_enabled": "前処理 ON",
@@ -14858,15 +14876,16 @@
   }
 
   // Presentation-only Host observation. PocketRisu's DefaultChatScreen replaces
-  // its cancel control when generation ends; AlertComp renders failures in a
-  // dialog. Read these through SafeDocument, never infer a click from coordinates
+  // its cancel control with a send control when idle; settings removes both.
+  // AlertComp renders failures in a dialog. Read these through SafeDocument,
+  // never infer a click from coordinates
   // or change request acceptance/persistence. Reuse the existing HUD timer.
   async function observeTurnWorkflowHUDHostGeneration() {
     try {
       const view = _turnWorkflowHUDLastView;
       const context = _activeFinalConfirmationRequestContext;
       if (!view || !context || view.request_id !== context.requestId) return false;
-      if (view.host_generation_end || view.host_timing?.response_received_ms || view.host_generation_finished) return false;
+      if ((view.host_generation_end && view.host_generation_end.kind !== "idle") || view.host_timing?.response_received_ms || view.host_generation_finished) return false;
       if (Number(view.current_stage?.ordinal || 0) > 6 || view.status === "failed") return false;
       const root = await getTurnWorkflowHUDMainDocument();
       if (!root) return false;
@@ -14876,6 +14895,7 @@
       const chatIndex = await R.getCurrentChatIndex();
       if (characterIndex !== context.characterIndex || chatIndex !== context.chatIndex) return false;
       const control = await root.querySelector('button[aria-labelledby="cancel"]');
+      const idleControl = !control && await root.querySelector("button.button-icon-send");
       const errorTitle = await root.querySelector('[role="dialog"] h2 .text-draculared');
       let detail = "";
       if (errorTitle) {
@@ -14885,18 +14905,32 @@
         detail = dialog ? redactHostDiagnostic(await dialog.innerText()).slice(0, 1200) : "";
       }
       if (_turnWorkflowHUDLastView !== view) return false;
-      if (errorTitle || (!control && view.host_generation_control_seen)) {
-        const ended = { kind: errorTitle ? "failed" : "stopped", observed_at_ms: Date.now() };
+      if (errorTitle) {
+        const ended = { kind: "failed", observed_at_ms: Date.now() };
         _turnWorkflowHUDLastView = Object.assign({}, view, {host_generation_end: ended});
         rememberTurnWorkflowHUDHostWarning(view.request_id, {
           code: "HOST_GENERATION_ENDED", path: "risu_visible_generation",
-          message_key: errorTitle ? "turn_hud.error.host_generation" : "turn_hud.error.host_generation_stopped", detail,
+          message_key: "turn_hud.error.host_generation", detail,
         });
         clearTurnWorkflowHUDTimer();
         void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
         return true;
       }
-      if (control) _turnWorkflowHUDLastView = Object.assign({}, view, {host_generation_control_seen: true});
+      if (control) {
+        _turnWorkflowHUDLastView = Object.assign({}, view, {host_generation_control_seen: true,
+          host_generation_end: view.host_generation_end?.kind === "idle" ? null : view.host_generation_end});
+        if (view.host_generation_end?.kind === "idle") {
+          void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+          return true;
+        }
+      } else if (idleControl && view.host_generation_control_seen && !view.host_generation_end) {
+        // Host is idle, but the reason is not exposed. Freeze the displayed wait
+        // duration without claiming failure/success, and keep observing normally.
+        _turnWorkflowHUDLastView = Object.assign({}, view, {
+          host_generation_end: {kind: "idle", observed_at_ms: Date.now()}});
+        void renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+        return true;
+      }
       return false;
     } catch (err) {
       debugLog("HUD Host generation observation unavailable:", err && err.message);
@@ -14972,7 +15006,7 @@
     if (!code) return "";
     const key = "turn_hud.reason." + code;
     const localized = String(t(key) || "");
-    return localized && localized !== key ? localized : code;
+    return localized && localized !== key ? localized : "";
   }
 
   function turnWorkflowHUDStageLedgerHTML(view) {
@@ -15147,23 +15181,11 @@
     const warningHTML = warnings.map(function(warning) {
       const item = warning && typeof warning === "object" ? warning : {};
       if (item.code === "HOST_GENERATION_ENDED") return ""; // Full observation is on the dashboard.
-      const message = String(item.message || "").trim()
-        || (item.message_key ? t(item.message_key) : String(item.code || ""));
-      const detail = String(item.detail || "").trim();
-      const details = Array.isArray(item.details) ? item.details : [];
-      const code = String(item.code || "").trim();
-      const signature = [message, detail, code, JSON.stringify(details)].join("\n");
-      if (seen.has(signature)) return "";
-      seen.add(signature);
-      const text = [message, code].filter(Boolean).join(" · ");
-      const detailHTML = (detail ? [{ key: "detail", value: detail }] : []).concat(details).map(function(entry) {
-        const row = entry && typeof entry === "object" ? entry : {};
-        const key = String(row.key || "detail").trim() || "detail";
-        const value = String(row.value == null ? "" : row.value).trim();
-        if (!value) return "";
-        return `<div style="${TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE}">${escapeTurnWorkflowHUDHTML(key + "=" + value)}</div>`;
-      }).filter(Boolean).join("");
-      return `<div style="${TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE}">${escapeTurnWorkflowHUDHTML(text)}${detailHTML}</div>`;
+      const label = item.message_key ? t(item.message_key) : "";
+      const message = label && label !== item.message_key ? label : t("turn_hud.warning.generic");
+      if (seen.has(message)) return "";
+      seen.add(message);
+      return `<div style="${TURN_WORKFLOW_HUD_WARNING_ITEM_STYLE}">${escapeTurnWorkflowHUDHTML(message)}</div>`;
     }).filter(Boolean).join("");
     return `<div style="${TURN_WORKFLOW_HUD_WARNING_LIST_STYLE}">${warningHTML}</div>`;
   }
@@ -15467,7 +15489,10 @@
   function turnWorkflowHUDErrorSummaryHTML(error) {
     const key = "turn_hud.error_code." + String(error && error.code || "");
     const label = t(key);
-    const message = label && label !== key ? label : t(error && error.message_key || "turn_hud.error.complete_turn_aborted");
+    const messageKey = error && error.message_key;
+    const summary = messageKey ? t(messageKey) : "";
+    const message = label && label !== key ? label
+      : summary && summary !== messageKey ? summary : t("turn_hud.error.complete_turn_aborted");
     return `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(message)}</div>`;
   }
 
@@ -15552,13 +15577,14 @@
 
   function buildTurnWorkflowHUDPresentation(view, phase = "", displayMode = "normal") {
     view = projectTurnWorkflowHUDPhaseView(view, phase);
+    const hostIdle = view.host_generation_end?.kind === "idle";
     if (view.host_generation_end) {
       const ended = view.host_generation_end;
       const stopped = ended.kind === "stopped";
-      view = Object.assign({}, view, {status: "failed", severity: "error",
-        error: {message_key: stopped ? "turn_hud.error.host_generation_stopped" : "turn_hud.error.host_generation"},
-        current_stage: {key: "awaiting_final_output", label_key: "turn_hud.main_response",
-          status: "failed", duration_ms: ended.observed_at_ms - (view.host_timing?.main_started_ms || view.host_timing?.started_ms || ended.observed_at_ms)},
+      view = Object.assign({}, view, {status: hostIdle ? "awaiting_final_output" : "failed", severity: hostIdle ? "notice" : "error",
+        error: hostIdle ? null : {message_key: stopped ? "turn_hud.error.host_generation_stopped" : "turn_hud.error.host_generation"},
+        current_stage: {key: "awaiting_final_output", label_key: hostIdle ? "turn_hud.result_unconfirmed" : "turn_hud.main_response",
+          status: hostIdle ? "pending" : "failed", duration_ms: ended.observed_at_ms - (view.host_timing?.main_started_ms || view.host_timing?.started_ms || ended.observed_at_ms)},
         stages: []});
     }
     const severity = String(view.severity || "normal");
@@ -15574,13 +15600,13 @@
       else if (terminal && !view.host_generation_finished) stage = stages.find(item => item.key === "critic_llm") || stage;
       let label = stage.label_key ? t(stage.label_key) : t("turn_hud.completed");
       let elapsedStartedAt = !terminal && stage.status === "running" ? String(stage.started_at || "") : "";
-      let duration = stage.duration_ms == null ? "—" : turnWorkflowHUDStageDuration(stage);
+      let duration = stage.duration_ms == null ? "—" : turnWorkflowHUDStageDuration(hostIdle ? Object.assign({}, stage, {status: "partial"}) : stage);
       const timing = view.host_timing || {};
       if (view.host_generation_finished) {
         label = t("turn_hud.timing.response");
         duration = Number.isFinite(timing.response_received_ms) && Number.isFinite(timing.main_started_ms)
           ? turnWorkflowHUDStageDuration({status:"succeeded", duration_ms:timing.response_received_ms - timing.main_started_ms}) : "—";
-      } else if (!terminal && stage.key === "awaiting_final_output" && Number.isFinite(timing.main_started_ms)) {
+      } else if (!terminal && !hostIdle && stage.key === "awaiting_final_output" && Number.isFinite(timing.main_started_ms)) {
         elapsedStartedAt = new Date(timing.main_started_ms).toISOString();
       }
       if (view.status === "invalidated") label = t("turn_hud.invalidated");
@@ -15592,7 +15618,7 @@
         const badgeStatus = preprocessingMode === "enabled" && running ? "running" : preprocessingMode;
         preprocessingBadge = `<span data-turn-workflow-preprocessing="${escapeTurnWorkflowHUDHTML(badgeStatus)}" style="flex:none;font-size:9px;color:#9EABD6">${escapeTurnWorkflowHUDHTML(t("turn_hud.preprocessing.compact_" + badgeStatus))}</span>`;
       }
-      const dismissible = terminal || turnWorkflowHUDCloseButtonOnly(view);
+      const dismissible = terminal || hostIdle || turnWorkflowHUDCloseButtonOnly(view);
       const style = TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle(failed ? "error" : "normal")
         + ";width:min(112px,100%);margin-left:auto;min-height:42px;padding:6px 8px;border-radius:7px;display:flex;flex-direction:column;align-items:stretch;gap:2px;overflow:hidden"
         + (dismissible ? ";padding-right:25px" : "");
@@ -15607,14 +15633,23 @@
           + (dismissible ? turnWorkflowHUDDismissButtonHTML() : "") + `</div>`,
       };
     }
+    if (hostIdle) {
+      return {
+        terminal: false, dismissible: true, dismissAnywhere: false, closeButtonOnly: true, elapsedStartedAt: "",
+        html: `<div style="${TURN_WORKFLOW_HUD_CARD_STYLE + turnWorkflowHUDSeverityStyle("notice")}">`
+          + turnWorkflowHUDDismissButtonHTML()
+          + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
+          + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(turnWorkflowHUDTurnLabel(view) + " · " + t("turn_hud.result_unconfirmed"))}</div>`
+          + `<time style="${TURN_WORKFLOW_HUD_ELAPSED_STYLE}"> · ${escapeTurnWorkflowHUDHTML(turnWorkflowHUDStageDuration(Object.assign({}, view.current_stage, {status: "partial"})))}</time></div>`,
+      };
+    }
     if (String(view.display_mode || "") === "notice") {
       const failed = view.status === "failed" || severity === "error";
       const attention = String(view.presentation_tone || "") === "attention";
       const titleKey = String(view.title_key || (failed ? "turn_hud.failed" : "turn_hud.completed"));
       const messageKey = String(view.message_key || (failed ? "turn_hud.error.complete_turn_aborted" : ""));
-      const noticeCode = String(view.notice_code || (view.error && view.error.code) || "").trim();
       const countPresentation = turnWorkflowHUDCountPresentation(view.counts);
-      const meta = [turnWorkflowHUDTurnLabel(view), noticeCode].filter(Boolean).join(" · ");
+      const meta = turnWorkflowHUDTurnLabel(view);
       const noticeStyle = failed
         ? TURN_WORKFLOW_HUD_ERROR_STYLE
         : (attention ? TURN_WORKFLOW_HUD_ATTENTION_STYLE : turnWorkflowHUDSeverityStyle(severity));
@@ -15795,8 +15830,7 @@
     return { html: "", currentPresentation: null, previousPresentation: null, dual: false };
   }
 
-  async function applyTurnWorkflowHUDStack(root) {
-    const currentView = _turnWorkflowHUDLastView;
+  async function applyTurnWorkflowHUDStack(root, currentView = _turnWorkflowHUDLastView) {
     const previousView = _turnWorkflowHUDPreviousLastView;
     const stack = buildTurnWorkflowHUDStackPresentation(
       currentView,
@@ -15974,6 +16008,7 @@
     return {
       code: reasonPrefix + "_" + suffix,
       message: t(messageKey),
+      message_key: messageKey,
       details,
       path: normalizedPath,
       status,
@@ -16014,35 +16049,24 @@
     // false terminal transport error.
     if (warning.code === "prepare_turn_timeout" && !preparationEnded) return;
     rememberTurnWorkflowHUDHostWarning(requestId, warning);
-    const transportFactHTML = turnWorkflowHUDFactLedgerHTML({
-      facts: [{
-        key: "backend_transport",
-        owner: "risu_host",
-        scope: "current_request",
-        status: "unavailable",
-        disposition: "failed",
-        reason_code: warning.code,
-        severity: "error",
-      }],
-    });
     clearTurnWorkflowHUDTimer();
     return queueTurnWorkflowHUDOperation("transport error render", async function() {
       if (requestId !== _turnWorkflowHUDActiveRequestId) return;
       await removeTurnWorkflowHUDDismissListeners();
       const root = await ensureTurnWorkflowHUDRoot();
       if (!root || requestId !== _turnWorkflowHUDActiveRequestId) return;
-      await root.setInnerHTML(
-        `<div role="button" tabindex="0" style="${TURN_WORKFLOW_HUD_CARD_STYLE + TURN_WORKFLOW_HUD_ERROR_STYLE}">`
-        + turnWorkflowHUDDismissButtonHTML()
-        + `<div style="${TURN_WORKFLOW_HUD_EYEBROW_STYLE}">ARCHIVE CENTER · ${BUILD_ID}</div>`
-        + `<div style="${TURN_WORKFLOW_HUD_TITLE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.failed"))}</div>`
-        + `<div style="${TURN_WORKFLOW_HUD_DIVIDER_STYLE}"></div>`
-        + `<div style="${TURN_WORKFLOW_HUD_ERROR_MESSAGE_STYLE}">${escapeTurnWorkflowHUDHTML(t("turn_hud.transport_unavailable"))}</div>`
-        + transportFactHTML
-        + turnWorkflowHUDWarningListHTML({ request_id: requestId })
-        + `</div>`
-      );
-      await attachTurnWorkflowHUDDismiss(await root.querySelector("div"), requestId, true);
+      const observed = _turnWorkflowHUDLastView || {};
+      const stage = observed.current_stage || {};
+      // Presentation only: retain the full warning for the dashboard and leave
+      // backend status/revisions available for subsequent workflow events.
+      const transportView = Object.assign({}, observed, {
+        request_id: requestId, status: "failed", severity: "error", display_mode: "",
+        host_generation_end: null, host_generation_finished: false,
+        error: {code: warning.code, message_key: warning.message_key},
+        current_stage: Object.assign({}, stage, {status: "failed"}),
+        stages: [], preprocessing: [], preprocessing_search: null,
+      });
+      await applyTurnWorkflowHUDStack(root, transportView);
     });
   }
 
@@ -24449,12 +24473,23 @@
             }))
       );
       let observedFinalUserInput = "";
+      let effectiveUserInputObservation = "not_observed";
+      const expectedUserText = effectiveUserInput.replace(/\r\n?/g, "\n").trim();
       for (let i = normalizedOutboundMessages.length - 1; i >= 0; i--) {
         const message = normalizedOutboundMessages[i];
         if (message.role === "user" && message.content === effectiveUserInput) {
           observedFinalUserInput = message.content;
+          effectiveUserInputObservation = "exact";
           break;
         }
+        if (message.role !== "user" || !expectedUserText) continue;
+        const observedText = message.content.replace(/\r\n?/g, "\n").trim();
+        if (observedText === expectedUserText) {
+          observedFinalUserInput = effectiveUserInput;
+          effectiveUserInputObservation = "formatting_equivalent";
+          break;
+        }
+        if (observedText.includes(expectedUserText)) effectiveUserInputObservation = "embedded";
       }
       const payloadContentMatch = !!(
         payloadApplicationMatch
@@ -24463,15 +24498,16 @@
       );
       const effectiveUserInputMatch = !!effectiveUserInput && observedFinalUserInput === effectiveUserInput;
       return {
-		status: payloadContentMatch ? "ready" : "mismatch",
+		status: payloadContentMatch ? "ready" : (payloadApplicationMatch && effectiveUserInputObservation === "embedded" ? "partial" : "mismatch"),
         source: "js_host_adapter",
 		reasonCode: !payloadApplicationMatch
           ? (applicationObservation && applicationObservation.status === "ready"
             ? "payload_plan_observation_mismatch"
             : String(applicationObservation && applicationObservation.reason_code || "payload_application_not_verified"))
-          : (!effectiveUserInputMatch ? "effective_user_text_not_observed" : "pre_request_components_observed"),
+          : (!effectiveUserInputMatch ? (effectiveUserInputObservation === "embedded" ? "effective_user_text_embedded" : "effective_user_text_not_observed") : "pre_request_components_observed"),
 		payloadApplicationMatch,
 		effectiveUserInputMatch,
+		effectiveUserInputObservation,
 		finalProviderPayloadState: "not_exposed",
 		captureStage: "before_request_return",
 		capturedBeforeRequestReturn: true,
@@ -24607,7 +24643,7 @@
 
       const parts = [];
       const payloadVerified = !!(fp && fp.capturedBeforeRequestReturn === true && !payloadVerificationMismatch);
-      parts.push('<div class="mo-note">' + escapeAttr(t('dash.preview.verification.' + (payloadVerified ? 'ready' : payloadVerificationMismatch ? 'mismatch' : 'unobserved'))) + '</div>');
+      parts.push('<div class="mo-note">' + escapeAttr(t('dash.preview.verification.' + (payloadVerified ? 'ready' : fp && fp.status === 'partial' ? 'partial' : payloadVerificationMismatch ? 'mismatch' : 'unobserved'))) + '</div>');
       if (payloadVerificationMismatch) {
         const reason = fp.payloadContentMatch === true ? "effective_input_preview_hash_mismatch" : fp.reasonCode || "payload_application_not_verified";
         parts.push(renderItBlock(t('dash.preview.verification.detail'), reason, false));
@@ -28861,10 +28897,8 @@
     try {
       var normalized = normalizeReasoningEnvelopeName(tagName);
       if (!normalized) return false;
-      if (normalized === "filter" || normalized === "__filter_complete__" || normalized.indexOf("filtercomplete") >= 0) {
-        return true;
-      }
-      return /(thought|think|reason|analysis|scratch|reflect|deliberat|monologue|rationale|chainofthought|cot)/.test(normalized);
+      if (normalized === "filter" || normalized === "filtercomplete") return true;
+      return /^(?:(?:internal|hidden|private|model|assistant))?(?:thoughts?|thinking|think|reasoning|reason|analysis|scratchpad|scratch|reflection|reflect|deliberation|rationale|chainofthought|cot)$/.test(normalized);
     } catch {
       return false;
     }
@@ -39464,6 +39498,7 @@
     }
     let assistantResolutionCounts = {};
     let unresolvedAssistantObservations = [];
+    const assistantContentIssues = [];
     const allChatMessages = resolvedActiveChat.chat ? extractActiveChatMessageList(resolvedActiveChat.chat) : [];
     const assistantObservations = buildRollbackAssistantObservations(allChatMessages, messages);
     if (assistantObservations.length > 0) {
@@ -39511,7 +39546,16 @@
           ? String(currentOriginal.content || "")
           : String(item.stored_assistant_content || assistantObservation.assistant_content || "");
         const assistantContent = normalizeAssistantPersistenceCandidate(observedAssistantContent);
-        if (!assistantContent.trim()) return null;
+        if (!assistantContent.trim()) {
+          assistantContentIssues.push({
+            turn_index: Number(item.turn_index),
+            message_index: assistantMessageIndex,
+            reason: currentOriginal && currentOriginal.translationOriginalUnavailable
+              ? "translation_original_unavailable"
+              : "assistant_content_empty_after_normalization",
+          });
+          return null;
+        }
         return {
           observedPairOrdinal: Number(assistantObservation.observedPairOrdinal || item.turn_index),
           userContent,
@@ -39592,6 +39636,7 @@
       assistantObservationCount: assistantObservations.length,
       assistantResolutionCounts,
       unresolvedAssistantObservations,
+      assistantContentIssues,
       rows,
       rawMissingTurns,
       rawMismatchTurns,
@@ -39650,6 +39695,8 @@
         db_input_recovered_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.stored_pair_recovered || 0),
         assistant_only_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.assistant_only || 0),
         unresolved_output_count: Number(plan.assistantResolutionCounts && plan.assistantResolutionCounts.unresolved || 0),
+        assistant_content_issue_count: plan.assistantContentIssues.length,
+        assistant_content_issues: plan.assistantContentIssues,
         db_chat_log_rows_checked: plan.dbRows.length,
         db_raw_turns_checked: plan.dbRawMap.size,
         timeline_items_checked: plan.timelineResult.items.length,
@@ -45462,6 +45509,15 @@
       if (_activeChatRescanDryRunState.result) {
         const r = _activeChatRescanDryRunState.result;
         const rowPreview = Array.isArray(r.rows_preview) ? r.rows_preview : [];
+        const contentIssues = Array.isArray(r.assistant_content_issues) ? r.assistant_content_issues : [];
+        const contentIssuesHtml = contentIssues.length > 0
+          ? '<div class="mo-reindex-row" style="font-size:11px;color:#f59e0b">' +
+              escapeAttr(t('explorer.activeRescan.contentIssues')) + ': ' + contentIssues.length + '<br>' +
+              contentIssues.map(function(issue) {
+                return '#' + escapeAttr(String(issue.turn_index)) + ' · ' +
+                  escapeAttr(t('explorer.activeRescan.' + issue.reason));
+              }).join('<br>') + '</div>'
+          : '';
         const previewHtml = rowPreview.length > 0
           ? '<div class="mo-reindex-row" style="font-size:11px;color:#aaa">' +
               rowPreview.map(function(row) {
@@ -45529,7 +45585,7 @@
           '<br><span style="font-size:11px;color:#888">dry_run_only=' + escapeAttr(String(!!r.dry_run_only)) +
           ' / write_attempted=' + escapeAttr(String(!!r.write_attempted)) +
           ' / llm_call_attempted=' + escapeAttr(String(!!r.llm_call_attempted)) + '</span>' +
-          previewHtml +
+          previewHtml + contentIssuesHtml +
           '</div>';
       }
       if (_activeChatRescanDryRunState.error) {

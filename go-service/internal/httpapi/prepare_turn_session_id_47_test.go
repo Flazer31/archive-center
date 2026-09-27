@@ -35,6 +35,9 @@ func Test47FinalPresentationDoesNotChangePreprocessingPacket(t *testing.T) {
 	cfg := defaultMultiAgentSettings()
 	cfg.CandidateChars = 32000
 	packet := multiAgentInput("event_recent", facts, summaries, dto.PrepareTurnRequest{RawUserInput: &query}, cfg, 36000, 100, map[string]int{"event_recent": 36000})
+	// Keep the historical data snapshot independent of the test.5 clarification
+	// of selection instructions. Candidate text, refs and budgets stay covered.
+	packet["reference_format"].(map[string]any)["minimum_context"] = "Candidate text includes its minimum source context before selection. context_refs are facts read with it, not additional AI choices. minimum_chars includes its source heading; shared context is counted once when contiguous. Independent supplements remain separately selectable. Keep scope, direction, negation and conditions together; old recollections are not present-world facts."
 	for _, check := range []struct{ name, text, sha string }{
 		{"test16 preprocessing", multiAgentModelInput(packet, 1), "1df8abda0cb40b513839854a9fbeb12c15e06cdb6391827af12c36b3e9004593"},
 		{"test17 final delivery", stringFromMap(out.MemoryDeliveryPlan, "final_text"), "a0016cc1e1cf0ff7c96729aa63c607cfb25414323c97953b787cf942d605b7e6"},

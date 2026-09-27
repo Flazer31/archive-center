@@ -64,6 +64,65 @@ func bodyTracking46Female(t *testing.T, st archiveStore.Store, sid string) {
 	}
 }
 
+func TestBodyTrackingHTTPMariaDBMergedTargetsPreserveModelsAndFacts(t *testing.T) {
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+	_, st := feedback43Database(t)
+	routes, provider, endpoint := storyTime46Server(t, st)
+	const sid = "body-merged-roster"
+	settingsPath := "/config/body-tracking/" + sid
+	storyTime46Request(t, routes, http.MethodPut, settingsPath, map[string]any{"cycle_tracking_enabled": true})
+	text := "On 1423-01-15, Mina and Vera are women visiting the garden."
+	extraction := map[string]any{
+		"turn_summary": text, "importance_score": 5, "evidence_excerpts": []any{text},
+		"story_clock":      map[string]any{"version": "story_clock.v1", "observation_kind": "absolute", "precision": "exact", "scene_scope": "current", "absolute": map[string]any{"date": "1423-01-15"}, "evidence_excerpt": text},
+		"entities":         map[string]any{"characters": []any{map[string]any{"name": "Mina"}, map[string]any{"name": "Vera"}}},
+		"character_deltas": []any{map[string]any{"name": "Mina", "appearance": map[string]any{"gender": "female"}}, map[string]any{"name": "Vera", "appearance": map[string]any{"gender": "female"}}},
+	}
+	bodyTracking46Complete(t, routes, provider, endpoint, sid, 1, 1000, []string{"initial"}, []string{"Introduce the characters."}, text, extraction)
+	before := storyTime46Map(storyTime46Request(t, routes, http.MethodGet, settingsPath, nil)["settings"])
+	characters := before["characters"].([]any)
+	if len(characters) != 2 {
+		t.Fatalf("expected two initial models: %#v", characters)
+	}
+	root, alias := storyTime46Map(characters[0])["entity_id"].(string), storyTime46Map(characters[1])["entity_id"].(string)
+	storyTime46Request(t, routes, http.MethodPut, settingsPath+"/state", map[string]any{
+		"operation_id": "existing-pregnancy", "character_id": root,
+		"event": map[string]any{"kind": "pregnancy_confirmed", "occurred_at": map[string]any{"date": "1423-01-15"}, "paternity": map[string]any{"status": "confirmed", "candidates": []any{map[string]any{"character_name": "Father"}}}},
+	})
+	currentBefore := storyTime46Current(t, st, sid, "body_tracking")
+	merge := map[string]any{"target_entity_id": root, "source_entity_ids": []string{alias}}
+	storyTime46Request(t, routes, http.MethodPost, "/characters/"+sid+"/identity-merge", merge)
+	for i := 0; i < 3; i++ {
+		view := storyTime46Request(t, routes, http.MethodGet, settingsPath, nil)
+		settings := storyTime46Map(view["settings"])
+		got := settings["characters"].([]any)
+		if len(got) != 1 || !reflect.DeepEqual(got[0], characters[0]) {
+			t.Fatalf("merged target duplicated or changed model: %#v", got)
+		}
+		if len(storyTime46Map(view["data_management"])["characters"].([]any)) != len(characters) {
+			t.Fatal("historical model owner disappeared from data management")
+		}
+		storyTime46Request(t, routes, http.MethodPut, settingsPath, settings)
+	}
+	currentAfter := storyTime46Current(t, st, sid, "body_tracking")
+	if currentBefore.ValueJSON != currentAfter.ValueJSON || currentBefore.EvidenceJSON != currentAfter.EvidenceJSON {
+		t.Fatal("roster deduplication changed stored pregnancy/paternity evidence")
+	}
+	// A record arriving under a reviewed alias still reaches the retained owner.
+	storyTime46Request(t, routes, http.MethodPut, settingsPath+"/state", map[string]any{
+		"operation_id": "alias-period", "character_id": alias,
+		"event": map[string]any{"kind": "period_start", "occurred_at": map[string]any{"date": "1423-01-16"}},
+	})
+	if got := storyTime46Current(t, st, sid, "body_tracking"); got.OwnerID != root {
+		t.Fatalf("alias record changed the model owner: %s", got.OwnerID)
+	}
+	storyTime46Request(t, routes, http.MethodPost, "/characters/"+sid+"/identity-merge/unmerge", merge)
+	after := storyTime46Map(storyTime46Request(t, routes, http.MethodGet, settingsPath, nil)["settings"])
+	if !reflect.DeepEqual(before, after) {
+		t.Fatal("unmerge lost either original model setting")
+	}
+}
+
 func TestBodyTracking46HTTPMariaDBAutomaticWomenAndInitialPhases(t *testing.T) {
 	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
 	_, st := feedback43Database(t)

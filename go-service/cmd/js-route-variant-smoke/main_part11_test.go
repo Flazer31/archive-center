@@ -172,6 +172,18 @@ const changedPlan = buildFinalPayloadParityTrace(payload, matchedPayload, {
   injectionResult:{payloadApplicationPlan:{...auxPlan,auxiliary_observation_hash:"or1c_different_plan"},payloadApplicationObservation:{...appliedObservation,reason_code:"exact_injected_blocks_observed"}}
 });
 if (changedPlan.payloadContentMatch !== false || changedPlan.reasonCode !== "payload_plan_observation_mismatch") throw new Error("plan/observation mismatch inherited a successful observation reason: "+JSON.stringify(changedPlan));
+for (const [content,kind,complete] of [
+  ["actual user\n", "formatting_equivalent", true],
+  ["<user_input>actual user</user_input>", "embedded", false],
+  ["actual user\nContinue the scene.", "embedded", false],
+  ["a different instruction", "not_observed", false]
+]) {
+  const messages=[{role:"user",content}]; const before=JSON.stringify(messages);
+  const observed=buildFinalPayloadParityTrace(messages,messages,{effectiveInputText:"actual user",effectiveUserInput:"actual user",injectionResult:{payloadApplicationPlan:emptyPlan,payloadApplicationObservation:emptyObservation}});
+  if (observed.effectiveUserInputObservation !== kind || observed.payloadContentMatch !== complete) throw new Error("observation kind is wrong: "+JSON.stringify(observed));
+  if (kind === "embedded" && (observed.status !== "partial" || observed.reasonCode !== "effective_user_text_embedded")) throw new Error("embedded content was reported as missing or exact");
+  if (JSON.stringify(messages) !== before || observed.finalProviderPayloadState !== "not_exposed") throw new Error("observation rewrote input or claimed provider payload");
+}
 `
 	cmd := exec.Command(nodePath, "-")
 	cmd.Stdin = strings.NewReader(script)
@@ -1037,7 +1049,7 @@ const TURN_WORKFLOW_HUD_WARNING_LIST_STYLE = "warning-list";
 const TURN_WORKFLOW_HUD_WARNING_DETAIL_STYLE = "warning-detail";
 const _turnWorkflowHUDUnloaded = false;
 let _turnWorkflowHUDActiveRequestId = "request-timeout";
-function t(key) { return key; }
+function t(key) { return key === "turn_hud.transport.http_error" ? "Backend HTTP error" : key === "turn_hud.warning.generic" ? "Attention needed" : key; }
 function escapeTurnWorkflowHUDHTML(value) { return String(value == null ? "" : value); }
 function turnWorkflowHUDIsEnabled() { return true; }
 function dismissTurnWorkflowHUD() { throw new Error("timeout warning dismissed the active workflow"); }
@@ -1080,8 +1092,11 @@ const html = turnWorkflowHUDWarningListHTML({
   request_id:"request-a",
   warnings:[{code:"backend_warning",message:"backend warning"}],
 });
-assert(html.includes("backend warning · backend_warning"), "backend warning was lost");
-assert(html.includes("prepare_turn_http_error"), "typed transport code was not shown");
+assert(html.includes("Attention needed"), "unclassified warning must retain a short generic label");
+assert(html.includes("Backend HTTP error"), "transport kind summary missing");
+for (const raw of ["backend warning", "backend_warning", "prepare_turn_http_error"]) assert(!html.includes(raw), "HUD leaked raw warning: "+raw);
+const retained = _turnWorkflowHUDHostWarningsByRequestId.get("request-a")[0];
+const diagnostic = retained.details.map(item => item.key+"="+item.value).join("\n");
 for (const expected of [
   "failure_kind=http_error", "request_path=/prepare-turn", "method=POST",
   "configured_url=http://100.64.0.10:28080", "target_url=http://100.64.0.10:28080/prepare-turn",
@@ -1091,7 +1106,10 @@ for (const expected of [
   "error_cause=socket closed", "response_read_error=body already read",
   'backend_response={"code":"UPSTREAM_UNAVAILABLE"}', "detail=service unavailable",
   "recorded_at=2024-08-01T12:00:00.000Z",
-]) assert(html.includes(expected), "missing transport diagnostic: " + expected);
+]) {
+ assert(!html.includes(expected), "HUD leaked transport diagnostic: " + expected);
+ assert(diagnostic.includes(expected), "dashboard transport diagnostic was discarded: " + expected);
+}
 process.stdout.write("ok");
 `
 	scriptPath := t.TempDir() + "/turn-workflow-hud-transport-runtime.js"
@@ -1539,7 +1557,8 @@ function assert(condition, message) {
   assert(surface.innerHTML.includes("전체 작동 확인"), "completed HUD omitted the full stage ledger heading");
   assert(surface.innerHTML.includes("건너뜀 · 0초"), "completed HUD omitted skipped stage status or duration");
   assert(surface.innerHTML.includes("지원 근거 없음"), "completed HUD omitted the visible stage reason");
-  assert(surface.innerHTML.includes("감독관 호출을 건너뜀 · PUBLISHER_SKIPPED"), "completed HUD omitted warning details");
+  assert(surface.innerHTML.includes("감독관 호출을 건너뜀"), "completed HUD omitted its short warning label");
+  assert(!surface.innerHTML.includes("PUBLISHER_SKIPPED"), "completed HUD exposed a diagnostic warning code");
   assert(surface.innerHTML.includes("Host 56 / Backend 55"), "completed HUD omitted host/backend turn mismatch");
   assert(!surface.innerHTML.includes("WORKFLOW FACTS"), "completed HUD still exposes internal workflow facts");
   assert(!surface.innerHTML.includes("eligible · accepted"), "completed HUD still exposes internal host disposition");
@@ -1782,7 +1801,7 @@ function assert(condition, message) {
   for (let index = 0; index < 6; index++) await Promise.resolve();
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("평론가 재처리 완료"), "worker completion did not replace the recovering HUD");
-  assert(surface.innerHTML.includes("CRITIC_REPROCESSING_COMPLETED"), "recovery completion notice code was hidden");
+  assert(!surface.innerHTML.includes("CRITIC_REPROCESSING_COMPLETED"), "recovery completion exposed an internal notice code");
   await dispatchRisuEvent("click", {clientX:120, clientY:20});
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML === "", "recovery status HUD close button did not dismiss HUD");
@@ -1837,7 +1856,7 @@ function assert(condition, message) {
   await _turnWorkflowHUDRenderChain;
   assert(surface.innerHTML.includes("작업 중단"), "invalidated HUD omitted terminal title: " + surface.innerHTML);
   assert(surface.innerHTML.includes("중단 · 0.64초"), "invalidated HUD omitted stage status or duration");
-  assert(surface.innerHTML.includes("superseded_by_new_attempt"), "invalidated HUD omitted visible reason");
+  assert(!surface.innerHTML.includes("superseded_by_new_attempt"), "invalidated HUD exposed an untranslated diagnostic code");
   assert(surface.card.attributes.style.includes("background:#1C1828"), "invalidated HUD does not use warning styling");
   assert(!surface.card.attributes.style.includes("background:#2A151D"), "invalidated HUD was incorrectly rendered as a red error");
   assert(surface.button, "invalidated HUD has no visible close button");

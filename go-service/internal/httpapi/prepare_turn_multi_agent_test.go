@@ -230,6 +230,14 @@ func Test43MultiAgentSelectionReachesDeliveryWithoutScoreOrBudgetReplacement(t *
 	if intFromAny(plan["budget_overrun_chars"], 0) == 0 {
 		t.Fatal("overrun was hidden")
 	}
+	// A successful second review that only comments on the evidence must not
+	// erase the first selection before the real delivery allocator runs.
+	review := finishMultiAgentCall(multiAgentCall{Round: 2, Raw: `{"unresolved":[]}`, Input: map[string]any{"previous_result": selection.Roles[0].Selection}}, 200, nil, "")
+	selection.Roles[0].Selection = review.Result
+	afterReview := buildPrepareTurnPriorityMemoryDeliveryPlan(&out, 1, 1, "auto", nil, testPrepareTurnMemorySelectionContext(perspective))
+	if afterReview["final_text"] != plan["final_text"] {
+		t.Fatal("omitted review fields changed final memory delivery")
+	}
 	lane := prepareTurnPayloadLane("long_term_memory", "Long-term Memory Context", text, 1, true, nil)
 	if lane["text"] != text {
 		t.Fatalf("payload changed AI memory: %+v", lane)

@@ -239,7 +239,7 @@ func Test44OwnSearchCompletionEvidenceReachesRequestingRole(t *testing.T) {
 								answer.SelectedIDs = []string{"F2", "F1"}
 								answer.Reasons = map[string]string{"F1": "S1 records fulfillment at turn 47; this is a past promise. The plate is a separate question."}
 								if reply == "empty" {
-									answer = multiAgentRecommendation{}
+									answer = multiAgentRecommendation{SelectedIDs: []string{}, SelectedSummaryIDs: []string{}}
 								}
 								failed = reply == "failure"
 							}

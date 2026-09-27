@@ -256,7 +256,8 @@ const originalNow=Date.now;Date.now=()=>Date.parse('2026-09-07T00:00:09.000Z');
    assert.ok(result.html.includes('data-turn-workflow-recovery-action'),'available retry must remain usable');
    for(const text of ['PRIVATE_ERROR_DETAIL','PRIVATE_WARNING','CRITIC_PROVIDER_TIMEOUT','<details','<table','총 생성·저장','단계별']) assert.ok(!result.html.includes(text),text);
  }
- assert.ok(buildTurnWorkflowHUDPresentation(failedCritic,'','normal').html.includes('private_provider_error'),'unknown code must retain message-key summary');
+ assert.ok(!buildTurnWorkflowHUDPresentation(failedCritic,'','normal').html.includes('private_provider_error'),'unknown provider keys belong only in dashboard diagnostics');
+ assert.ok(buildTurnWorkflowHUDPresentation(failedCritic,'','normal').html.includes(t('turn_hud.error.complete_turn_aborted')),'unknown errors still need a short failure summary');
  const runningCritic={...failedCritic,status:'running',severity:'normal',error:null,current_stage:{...compactCritic,status:'running',started_at:'2026-09-07T00:00:05.000Z'},stages:[]};
  const runningCompact=buildTurnWorkflowHUDStackPresentation(view,runningCritic,'next_user_input','compact');
  assert.equal(runningCompact.previousPresentation.elapsedStartedAt,runningCritic.current_stage.started_at);
@@ -365,7 +366,7 @@ let _turnWorkflowHUDPreviousWatchToken=0,_turnWorkflowHUDPreviousWatchRunning=tr
 const TURN_WORKFLOW_HUD_SURFACE_SELECTOR='#fixture-hud';
 let _activeFinalConfirmationRequestContext={requestId:'current',characterIndex:3,chatIndex:2};
 const _turnWorkflowHUDHostWarningsByRequestId=new Map(),timers=new Map(),operations=[];
-let clock=10000,serial=0,control=true,error='',selectedChat=2,readError=null,unavailable=false;
+let clock=10000,serial=0,control=true,composerAvailable=true,error='',selectedChat=2,readError=null,unavailable=false;
 Date.now=()=>clock;
 const setTimeout=fn=>{const id=++serial;timers.set(id,fn);return id;};
 const clearTimeout=id=>timers.delete(id);
@@ -373,7 +374,8 @@ const R={getCurrentCharacterIndex:async()=>3,getCurrentChatIndex:async()=>select
 const hostDocument={querySelector:async selector=>{
  if(unavailable)throw Error('Host DOM temporarily unavailable');
  if(selector===TURN_WORKFLOW_HUD_SURFACE_SELECTOR)return root;
- if(selector==='button[aria-labelledby="cancel"]')return control?{}:null;
+ if(selector==='button[aria-labelledby="cancel"]')return composerAvailable&&control?{}:null;
+ if(selector==='button.button-icon-send')return composerAvailable&&!control?{}:null;
  assert.equal(selector,'[role="dialog"] h2 .text-draculared');
  if(readError)await readError();
  return error?{getParent:async()=>({getParent:async()=>({getParent:async()=>({innerText:async()=>error})})})}:null;
@@ -390,11 +392,11 @@ const root={html:'',setInnerHTML:async function(html){this.html=html;},querySele
 async function ensureTurnWorkflowHUDRoot(){return root;}
 function queueTurnWorkflowHUDOperation(label,fn){operations.push(fn);return Promise.resolve();}
 async function removeTurnWorkflowHUDDismissListeners(){}
+function takeTurnWorkflowHUDDismissListenerIds(){return [];}
 async function attachTurnWorkflowHUDDismiss(){}
 async function attachTurnWorkflowHUDRecovery(root,view,action){assert.ok(!action);}
 function cancelTurnWorkflowHUDStream(){}
 function cancelTurnWorkflowHUDPreviousStream(){}
-function takeTurnWorkflowHUDDismissListenerIds(){return [];}
 function debugLog(){} // Optional DOM transport failures do not change outcomes.
 function bridgeFetch(){throw Error('HUD observation must never mutate backend state');}
 async function flush(){while(operations.length)await operations.shift()();}
@@ -404,7 +406,7 @@ function view(){return {contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'
 const previous={contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'previous',status:'running',severity:'normal',
  current_stage:{key:'critic_llm',label_key:'turn_hud.stage.critic_llm',ordinal:9,total:12,status:'running',llm_call:true,started_at:new Date(3000).toISOString()},stages:[]};
 async function mount(){
- clearTurnWorkflowHUDTimer();control=true;error='';selectedChat=2;unavailable=false;readError=null;
+ clearTurnWorkflowHUDTimer();control=true;composerAvailable=true;error='';selectedChat=2;unavailable=false;readError=null;
  _turnWorkflowHUDActiveRequestId='current';_turnWorkflowHUDCurrentFinalizationMode='next_user_input';
  _turnWorkflowHUDPreviousRequestId='previous';
  _turnWorkflowHUDLastView=view();_turnWorkflowHUDPreviousLastView=previous;
@@ -422,21 +424,54 @@ async function tick(){
 (async()=>{
  for(const mode of ['normal','compact']){
   settings.turnWorkflowHUDMode=mode;
+  // Settings replaces the composer without changing the selected chat or request.
+  await mount();composerAvailable=false;await tick();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end,undefined,'settings navigation falsely ended generation');
+  assert.equal(_turnWorkflowHUDHostWarningsByRequestId.size,0,'settings navigation recorded a failure');
+  assert.equal(timers.size,1);assert.equal(_turnWorkflowHUDPreviousLastView,previous);
+  composerAvailable=true;await tick();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end,undefined,'returning to active composer stayed interrupted');
+  // Completion while settings is open still uses the real response owner.
+  composerAvailable=false;observeTurnWorkflowHUDTiming('current','response_received',clock);await flush();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end,null);
+  assert.equal(_turnWorkflowHUDLastView.host_timing.response_received_ms,clock);
+  // Idle without an observed reason freezes only the display, not the request.
+  await mount();control=false;await tick();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end.kind,'idle');
+  let pending=buildTurnWorkflowHUDStackPresentation(_turnWorkflowHUDLastView,previous,'next_user_input',mode).currentPresentation;
+  assert.equal(pending.terminal,false);assert.equal(pending.dismissible,true);assert.equal(pending.dismissAnywhere,false);
+  assert.equal(pending.elapsedStartedAt,'');assert.ok(pending.html.includes('turn_hud.result_unconfirmed'));
+  assert.ok(!pending.html.includes('turn_hud.failed'));assert.ok(!pending.html.includes('turn_hud.error.host_generation'));
+  const idleAt=_turnWorkflowHUDLastView.host_generation_end.observed_at_ms;
+  const idleDuration=turnWorkflowHUDStageDuration({status:'partial',duration_ms:idleAt-5000});
+  assert.ok(pending.html.includes(escapeTurnWorkflowHUDHTML(idleDuration)),'idle display lost the observed wait duration');
+  await tick();assert.equal(_turnWorkflowHUDLastView.host_generation_end.observed_at_ms,idleAt,'idle duration kept growing');
+  assert.equal(timers.size,1,'idle lost the existing observation timer');
+  control=true;await tick();assert.equal(_turnWorkflowHUDLastView.host_generation_end,null,'active composer did not resume');
+  assert.equal(_turnWorkflowHUDLastView.host_timing.main_started_ms,5000,'observation invented a retry');
+  control=false;await tick();observeTurnWorkflowHUDTiming('current','response_received',clock);await flush();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end,null,'late actual response stayed unconfirmed');
+  await mount();control=false;await tick();error='HTTP 500 after idle';await tick();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end.kind,'failed','idle hid a later explicit failure');
+  // Stop is represented by Host returning to idle; the public API does not
+  // expose an element-specific click or cancellation reason. Do not guess it.
+  await mount();control=false;await tick();
+  assert.equal(_turnWorkflowHUDLastView.host_generation_end.kind,'idle');
   for(const failure of ['HTTP 400 bad request','HTTP 429 rate limit','HTTP 500 server error','API connection failed','Model not found','Stream disconnected','']){
    await mount();control=failure==='HTTP 429 rate limit';error=failure ? failure+' Bearer synthetic-private-value' : '';
    await tick();
    const ended=_turnWorkflowHUDLastView.host_generation_end;
-   assert.equal(ended?.kind,failure?'failed':'stopped',mode+': failed or cancelled Host kept waiting');
+   assert.equal(ended?.kind,failure?'failed':'idle',mode+': failed or cancelled Host kept waiting');
    assert.equal(_turnWorkflowHUDLastView.status,'awaiting_final_output','UI observation overwrote backend state');
    const stack=buildTurnWorkflowHUDStackPresentation(_turnWorkflowHUDLastView,previous,'next_user_input',mode);
-   assert.equal(stack.currentPresentation.terminal,true);
+   assert.equal(stack.currentPresentation.terminal,!!failure);
    assert.equal(stack.currentPresentation.elapsedStartedAt,'');
    assert.equal(stack.previousPresentation.terminal,false,'main failure stopped previous Critic');
    assert.ok(root.html.includes('turn_hud.stage.critic_llm'));
    assert.ok(!root.html.includes('synthetic-private-value'));
-   const warning=_turnWorkflowHUDHostWarningsByRequestId.get('current')[0];
-   assert.ok(!warning.detail.includes('synthetic-private-value'),'dashboard error leaked a credential');
-   if(failure)assert.ok(warning.detail.includes(failure),'dashboard lost the full error');
+   const warning=(_turnWorkflowHUDHostWarningsByRequestId.get('current')||[])[0];
+   if(failure){assert.ok(!warning.detail.includes('synthetic-private-value'),'dashboard error leaked a credential');assert.ok(warning.detail.includes(failure),'dashboard lost the full error');}
+   else assert.equal(warning,undefined,'unknown idle became a failure warning');
    const frozen=JSON.stringify(ended);clock+=10000;
    await applyTurnWorkflowHUDStack(root);assert.equal(JSON.stringify(_turnWorkflowHUDLastView.host_generation_end),frozen);
    // A late backend preparation replay cannot restart the failed wait.
@@ -474,7 +509,7 @@ async function tick(){
    if(currentOnly)assert.equal(_turnWorkflowHUDPreviousLastView,previous,'retry discarded previous Critic');
    for(let attempt=3;attempt<=4;attempt++){
     control=false;error=attempt===3?'HTTP 429':'';await tick();
-    assert.equal(_turnWorkflowHUDLastView.host_generation_end.kind,error?'failed':'stopped');
+    assert.equal(_turnWorkflowHUDLastView.host_generation_end.kind,error?'failed':'idle');
     control=true;error='';clock+=2000;
     assert.equal(renderTurnWorkflowHUDSameRequestRetry('current',attempt),true);await flush();
     assert.equal(_turnWorkflowHUDLastView.host_generation_end,null);
@@ -535,6 +570,145 @@ async function tick(){
 	cmd.Stdin = strings.NewReader(script)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("Host failure/stop/retry HUD: %v\n%s", err, output)
+	}
+}
+
+func TestHUDTransportErrorsStayShortAndDashboardRetainsDetails(t *testing.T) {
+	src := readArchiveCenterJS(t)
+	var production []string
+	for _, name := range []string{"escapeTurnWorkflowHUDHTML", "turnWorkflowHUDDismissButtonHTML", "turnWorkflowHUDStageStatus", "turnWorkflowHUDStageStatusColor", "turnWorkflowHUDStageDuration", "turnWorkflowHUDStageReason", "turnWorkflowHUDStageLedgerHTML", "turnWorkflowHUDCountPresentation", "turnWorkflowHUDCountLedgerHTML", "turnWorkflowHUDTimingHTML", "projectTurnWorkflowHUDPhaseView", "buildTurnWorkflowHUDPresentation", "turnWorkflowHUDSlotHTML", "buildTurnWorkflowHUDStackPresentation", "turnWorkflowHUDRecoveryPresentation", "turnWorkflowHUDErrorSummaryHTML", "turnWorkflowHUDTurnLabel", "turnWorkflowHUDCloseButtonOnly", "turnWorkflowHUDSeverityStyle", "turnWorkflowHUDWarningListHTML", "retainTurnWorkflowHUDHostTiming", "renderTurnWorkflowHUD", "rememberTurnWorkflowHUDHostWarning", "observeTurnWorkflowHUDTiming", "renderTurnWorkflowHUDSameRequestRetry", "finishTurnWorkflowHUDCurrentGeneration", "clearTurnWorkflowHUDTimer", "scheduleTurnWorkflowHUDElapsedFrame", "redactHostDiagnostic", "classifyTurnWorkflowHUDTransportFailure", "renderTurnWorkflowHUDTransportError", "renderTurnWorkflowHUDPreviousTransportError", "renderTurnWorkflowHUDPrevious"} {
+		production = append(production, extractArchiveCenterJSFunction(t, src, name))
+	}
+	production = append(production, extractArchiveCenterJSFunction(t, src, "dismissTurnWorkflowHUD"), extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDIsEnabled"))
+	for _, name := range []string{"observeTurnWorkflowHUDHostGeneration", "updateTurnWorkflowHUDElapsed", "applyTurnWorkflowHUDStack", "loadDashboardViewModel"} {
+		production = append(production, extractArchiveCenterJSAsyncFunction(t, src, name))
+	}
+	production = append(production, regexp.MustCompile(`(?m)^  const TURN_WORKFLOW_HUD_[A-Z_]+_STYLE = [^\r\n]+`).FindAllString(src, -1)...)
+	script := strings.Join(production, "\n") + `
+const assert=require('node:assert/strict');
+const t=key=>key==='unknown.key'||key.startsWith('turn_hud.error_code.')?key:'Label '+key,tf=(key,args)=>key+JSON.stringify(args),BUILD_ID='fixture';
+const TURN_WORKFLOW_HUD_CONTRACT='turn_workflow_hud.v3';
+let settings={turnWorkflowHUDMode:'normal',turnFinalizationMode:'next_user_input',apiKey:'synthetic-private-value'};
+let _turnWorkflowHUDUnloaded=false,_turnWorkflowHUDActiveRequestId='current',_turnWorkflowHUDLastRevision=0,_turnWorkflowHUDTerminalRequestId='';
+let _turnWorkflowHUDLastView=null,_turnWorkflowHUDPreviousLastView=null,_turnWorkflowHUDCurrentFinalizationMode='next_user_input';
+let _turnWorkflowHUDElapsedElement=null,_turnWorkflowHUDElapsedLastSecond=-1,_turnWorkflowHUDElapsedTimer=null;
+let _turnWorkflowHUDWatchToken=0,_turnWorkflowHUDWatchRunning=true;
+let _turnWorkflowHUDPreviousWatchToken=0,_turnWorkflowHUDPreviousWatchRunning=true,_turnWorkflowHUDPreviousRequestId='previous',_turnWorkflowHUDPreviousLastRevision=0;
+const TURN_WORKFLOW_HUD_SURFACE_SELECTOR='#fixture-hud';
+let _activeFinalConfirmationRequestContext={requestId:'current',characterIndex:3,chatIndex:2};
+const _turnWorkflowHUDHostWarningsByRequestId=new Map(),timers=new Map(),operations=[];
+let clock=10000,serial=0,control=true,composerAvailable=true,error='',selectedChat=2,readError=null,unavailable=false;
+Date.now=()=>clock;
+const setTimeout=fn=>{const id=++serial;timers.set(id,fn);return id;};
+const clearTimeout=id=>timers.delete(id);
+const R={getCurrentCharacterIndex:async()=>3,getCurrentChatIndex:async()=>selectedChat};
+const hostDocument={querySelector:async selector=>{
+ if(unavailable)throw Error('Host DOM temporarily unavailable');
+ if(selector===TURN_WORKFLOW_HUD_SURFACE_SELECTOR)return root;
+ if(selector==='button[aria-labelledby="cancel"]')return composerAvailable&&control?{}:null;
+ if(selector==='button.button-icon-send')return composerAvailable&&!control?{}:null;
+ assert.equal(selector,'[role="dialog"] h2 .text-draculared');
+ if(readError)await readError();
+ return error?{getParent:async()=>({getParent:async()=>({getParent:async()=>({innerText:async()=>error})})})}:null;
+}};
+async function getTurnWorkflowHUDMainDocument(){return hostDocument;}
+const timeElements=new Map();
+const root={html:'',setInnerHTML:async function(html){this.html=html;},querySelector:async selector=>{
+ if(selector.endsWith(' time')||selector==='time'){
+  if(!timeElements.has(selector))timeElements.set(selector,{text:'',setTextContent:async function(text){this.text=text;}});
+  return timeElements.get(selector);
+ }
+ return {};
+}};
+async function ensureTurnWorkflowHUDRoot(){return root;}
+function queueTurnWorkflowHUDOperation(label,fn){operations.push(fn);return Promise.resolve();}
+async function removeTurnWorkflowHUDDismissListeners(){}
+function takeTurnWorkflowHUDDismissListenerIds(){return [];}
+async function attachTurnWorkflowHUDDismiss(){}
+async function attachTurnWorkflowHUDRecovery(root,view,action){assert.ok(!action);}
+function cancelTurnWorkflowHUDStream(){}
+function cancelTurnWorkflowHUDPreviousStream(){}
+function debugLog(){} // Optional DOM transport failures do not change outcomes.
+const _lastBridgeFailureByPath=new Map();
+const runtimeState={},_timelineState={},_failedQueue=[];let lastTurnTrace=null,_prepareTurnEverContacted=true;
+function buildDashboardQueueObservations(){return [];}
+function getRequestTimeoutSettingMs(){return 15000;}
+async function bridgeFetch(path,options){assert.equal(path,'/dashboard/view-model');assert.equal(options.method,'POST');return {status:'ok',cards:[]};}
+function warnLog(){throw Error('dashboard unexpectedly failed');}
+async function flush(){while(operations.length)await operations.shift()();}
+function view(){return {contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'current',revision:6,status:'awaiting_final_output',severity:'normal',
+ host_timing:{started_ms:1000,main_started_ms:5000,backend_timing:{total_ms:4000}},
+ current_stage:{key:'awaiting_final_output',label_key:'turn_hud.stage.awaiting_final_output',ordinal:6,total:12,status:'running',llm_call:false},stages:[]};}
+const previous={contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'previous',status:'running',severity:'normal',
+ current_stage:{key:'critic_llm',label_key:'turn_hud.stage.critic_llm',ordinal:9,total:12,status:'running',llm_call:true,started_at:new Date(3000).toISOString()},stages:[]};
+async function mount(){
+ clearTurnWorkflowHUDTimer();control=true;composerAvailable=true;error='';selectedChat=2;unavailable=false;readError=null;
+ _turnWorkflowHUDActiveRequestId='current';_turnWorkflowHUDCurrentFinalizationMode='next_user_input';
+ _turnWorkflowHUDPreviousRequestId='previous';
+ _turnWorkflowHUDLastView=view();_turnWorkflowHUDPreviousLastView=previous;
+ _turnWorkflowHUDHostWarningsByRequestId.clear();_turnWorkflowHUDTerminalRequestId='';
+ await applyTurnWorkflowHUDStack(root);
+ assert.equal(_turnWorkflowHUDLastView.host_generation_control_seen,true);
+ assert.equal(timers.size,1,'normal and compact must share exactly one running HUD timer');
+}
+async function tick(){
+ clock+=2000;
+ const [id,fn]=[...timers][0];timers.delete(id);fn();
+ await new Promise(setImmediate);await flush();
+ assert.ok(timers.size<=1,'Host observation started a second timer');
+}
+(async()=>{
+ for(const mode of ['normal','compact']){
+  settings.turnWorkflowHUDMode=mode;
+  for(const kind of ['timeout','http_error','connection_failed','bridge_url_invalid','response_decode_failed']){
+   await mount();
+   const observed=_turnWorkflowHUDLastView;
+   _lastBridgeFailureByPath.set('/prepare-turn',{kind,method:'POST',status:kind==='http_error'?503:0,
+    configured_url:'http://100.64.0.10:28080',target_url:'http://100.64.0.10:28080/prepare-turn',
+    timeout_ms:15000,elapsed_ms:15657,error_name:'Error',error_message:'PRIVATE_LONG_ERROR',
+    detail:'PRIVATE_LONG_ERROR',at:Date.parse('2026-09-27T12:34:04.187Z')});
+   await renderTurnWorkflowHUDTransportError('current','/prepare-turn','current_user_input_backend_unavailable',true);await flush();
+   for(const raw of ['PRIVATE_LONG_ERROR','100.64.0.10','current_user_input_backend_unavailable','timeout_ms','elapsed_ms','request_path']) assert.ok(!root.html.includes(raw),'HUD leaked '+raw);
+   assert.ok(root.html.includes('data-turn-workflow-card="previous"'),'transport failure erased previous Critic');
+   if(mode==='compact'){
+    assert.ok(root.html.includes('width:min(112px,100%)'),'transport renderer bypassed compact mode');
+    assert.ok(root.html.includes('turn_hud.stage_status.failed'),'compact failure status missing');
+    assert.ok(!root.html.includes('turn_hud.transport.'),'compact leaked error prose');
+   }else assert.ok(root.html.includes('turn_hud.transport.'+kind),'normal short kind missing');
+   assert.equal(_turnWorkflowHUDLastView.status,observed.status,'presentation changed backend status');
+   assert.equal(_turnWorkflowHUDLastView.revision,observed.revision,'presentation changed backend revision');
+   assert.equal(_turnWorkflowHUDLastView.error,observed.error,'presentation changed backend error');
+   assert.equal(_turnWorkflowHUDTerminalRequestId,'','transport presentation terminalized backend');
+   const vm=await loadDashboardViewModel({},settings,{}),full=JSON.stringify(vm);
+   for(const raw of ['PRIVATE_LONG_ERROR','100.64.0.10','current_user_input_backend_unavailable','timeout_ms=15000','elapsed_ms=15657','request_path=/prepare-turn']) assert.ok(full.includes(raw),'dashboard lost '+raw);
+   // A later authoritative workflow update is still accepted after the transport card.
+   renderTurnWorkflowHUD({...view(),revision:7});await flush();
+   assert.equal(_turnWorkflowHUDLastRevision,7);assert.equal(_turnWorkflowHUDLastView.status,'awaiting_final_output');
+   assert.ok(!root.html.includes('PRIVATE_LONG_ERROR'));
+   // Warnings also appear in ongoing, completed and notice render paths.
+   for(const status of ['running','completed','notice']){
+    const v={...view(),status:status==='notice'?'completed':status,display_mode:status==='notice'?'notice':'',notice_code:'PRIVATE_NOTICE_CODE',
+      warnings:[{code:'RAW_CODE',message:'PRIVATE_LONG_ERROR',message_key:'unknown.key',detail:'PRIVATE_DETAIL'}]};
+    const html=buildTurnWorkflowHUDPresentation(v,'',mode).html;
+    for(const raw of ['PRIVATE_NOTICE_CODE','RAW_CODE','PRIVATE_LONG_ERROR','PRIVATE_DETAIL','unknown.key']) assert.ok(!html.includes(raw),'warning renderer leaked '+raw);
+   }
+   _lastBridgeFailureByPath.set('/previous-stream',{kind,detail:'PREVIOUS_PRIVATE_ERROR'});
+   renderTurnWorkflowHUDPreviousTransportError('previous','/previous-stream','stream_transport_unavailable');await flush();
+   assert.ok(!root.html.includes('PREVIOUS_PRIVATE_ERROR'));
+   assert.ok(JSON.stringify(await loadDashboardViewModel({},settings,{})).includes('PREVIOUS_PRIVATE_ERROR'));
+  }
+ }
+ clearTurnWorkflowHUDTimer();
+})().catch(err=>{console.error(err);process.exitCode=1;});
+`
+	node := os.Getenv("ARCHIVE_CENTER_NODE_BINARY")
+	if node == "" {
+		node = "node"
+	}
+	cmd := exec.Command(node, "-")
+	cmd.Stdin = strings.NewReader(script)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("Transport HUD and dashboard: %v\n%s", err, output)
 	}
 }
 

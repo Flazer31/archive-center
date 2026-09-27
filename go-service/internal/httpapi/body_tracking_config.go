@@ -347,13 +347,24 @@ func (s *Server) bodyTrackingRoster(ctx context.Context, sid string, config body
 			}
 		}
 	}
+	// Apply the same reviewed identity mapping to saved settings. Retain the
+	// existing model's storage owner:
+	// changing it would disconnect body history and deterministic cycle draws.
+	configuredOwners := map[string]string{}
 	for _, item := range config.Characters {
-		if _, exists := byID[item.EntityID]; !exists {
-			byID[item.EntityID] = map[string]any{"entity_id": item.EntityID, "character_name": item.CharacterName}
+		root := s.characterIdentityRoot(ctx, sid, item.EntityID)
+		if _, exists := configuredOwners[root]; !exists || item.EntityID == root {
+			configuredOwners[root] = item.EntityID
+		}
+		if _, exists := byID[root]; !exists {
+			byID[root] = map[string]any{"entity_id": root, "character_name": item.CharacterName}
 		}
 	}
 	items := make([]map[string]any, 0, len(byID))
-	for _, item := range byID {
+	for root, item := range byID {
+		if owner := configuredOwners[root]; owner != "" {
+			item["entity_id"] = owner
+		}
 		items = append(items, item)
 	}
 	sort.Slice(items, func(i, j int) bool {

@@ -18,7 +18,7 @@ func (s *Server) planBodyTrackingDelete(ctx context.Context, sid string, request
 	if err != nil {
 		return plan, err
 	}
-	character, found := bodyTrackingCharacter(cfg, map[string]any{"character_id": request.CharacterID})
+	character, found := s.bodyTrackingCharacter(ctx, sid, cfg, map[string]any{"character_id": request.CharacterID})
 	if !found {
 		for _, person := range s.bodyTrackingRoster(ctx, sid, cfg) {
 			if stringFromMap(person, "entity_id") == request.CharacterID {
@@ -166,8 +166,21 @@ func (s *Server) bodyTrackingDataView(ctx context.Context, sid string, cfg bodyT
 	for _, value := range values {
 		byID[value.OwnerID] = value
 	}
+	people := s.bodyTrackingRoster(ctx, sid, cfg)
+	seen := map[string]bool{}
+	for _, person := range people {
+		seen[stringFromMap(person, "entity_id")] = true
+	}
+	// Inactive/merged settings remain available to explicit data management,
+	// without adding them back to the automatic simulation target list.
+	for _, character := range cfg.Characters {
+		if !seen[character.EntityID] {
+			people = append(people, map[string]any{"entity_id": character.EntityID, "character_name": character.CharacterName})
+			seen[character.EntityID] = true
+		}
+	}
 	characters := []map[string]any{}
-	for _, person := range s.bodyTrackingRoster(ctx, sid, cfg) {
+	for _, person := range people {
 		id := stringFromMap(person, "entity_id")
 		person["deleted"] = parseJSONMap(byID[id].ValueJSON)["deleted"] == true
 		characters = append(characters, person)
