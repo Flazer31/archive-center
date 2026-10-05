@@ -43,10 +43,13 @@ func TestBodyTracking46ExportSettingsRestoreAndMissingDefault(t *testing.T) {
 	character := defaultBodyCharacterConfig()
 	character.EntityID, character.OriginEntityID, character.CharacterName = "character-one", "character-origin", "Mina"
 	config := bodyTrackingConfig{CycleTrackingEnabled: true, Characters: []bodyCharacterConfig{character}, SimulationSeed: "stable-import-seed"}
+	if _, err := server.saveBodyTrackingConfig("original", bodyTrackingConfig{CycleTrackingEnabled: config.CycleTrackingEnabled, AutomaticPregnancyEnabled: config.AutomaticPregnancyEnabled}); err != nil {
+		t.Fatal(err)
+	}
 	if err := server.restoreBodyTrackingConfig("original", config); err != nil {
 		t.Fatal(err)
 	}
-	unrelated := bodyTrackingConfig{AutomaticPregnancyEnabled: false, Characters: []bodyCharacterConfig{}, SimulationSeed: "unrelated-seed"}
+	unrelated := bodyTrackingConfig{CycleTrackingEnabled: true, AutomaticPregnancyEnabled: false, Characters: []bodyCharacterConfig{}, SimulationSeed: "unrelated-seed"}
 	if err := server.restoreBodyTrackingConfig("unrelated", unrelated); err != nil {
 		t.Fatal(err)
 	}
@@ -63,8 +66,8 @@ func TestBodyTracking46ExportSettingsRestoreAndMissingDefault(t *testing.T) {
 		}
 	}
 	missing, err := server.loadBodyTrackingConfig("still-missing")
-	if err != nil || missing.CycleTrackingEnabled || missing.AutomaticPregnancyEnabled || missing.SimulationSeed != "" {
-		t.Fatalf("missing config did not stay OFF: %+v err=%v", missing, err)
+	if err != nil || !missing.CycleTrackingEnabled || missing.AutomaticPregnancyEnabled || missing.SimulationSeed != "" {
+		t.Fatalf("new session did not inherit common controls with an empty model: %+v err=%v", missing, err)
 	}
 }
 
@@ -74,6 +77,9 @@ func TestBodyTracking46BranchCopiesMappedConfigOnceAndReportsOptionalFailure(t *
 	character := defaultBodyCharacterConfig()
 	character.EntityID, character.OriginEntityID = "old-character", "original-character"
 	config := bodyTrackingConfig{CycleTrackingEnabled: true, Characters: []bodyCharacterConfig{character}, SimulationSeed: "branch-seed"}
+	if _, err := server.saveBodyTrackingConfig("source", bodyTrackingConfig{CycleTrackingEnabled: config.CycleTrackingEnabled, AutomaticPregnancyEnabled: config.AutomaticPregnancyEnabled}); err != nil {
+		t.Fatal(err)
+	}
 	if err := server.restoreBodyTrackingConfig("source", config); err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +95,7 @@ func TestBodyTracking46BranchCopiesMappedConfigOnceAndReportsOptionalFailure(t *
 		t.Fatalf("branch setting identity/seed mismatch: %+v found=%v err=%v", got, found, err)
 	}
 	got.CycleTrackingEnabled = false
-	if err := server.restoreBodyTrackingConfig("target", got); err != nil {
+	if _, err := server.saveBodyTrackingConfig("target", got); err != nil {
 		t.Fatal(err)
 	}
 	st.resumeContext = &store.SessionMigrationResumeContext{MigrationID: 46, Status: "copied", SourceSessionID: "source", TargetSessionID: "target"}

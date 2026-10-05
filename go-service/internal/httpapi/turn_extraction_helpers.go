@@ -451,7 +451,7 @@ func worldRuleItemsForSave(extraction map[string]any) []any {
 	out := make([]any, 0)
 	seen := map[string]bool{}
 	add := func(raw any, fromWorldState bool) {
-		rule := mapFromAny(raw)
+		rule := cloneMapAny(mapFromAny(raw))
 		if len(rule) == 0 {
 			text := strings.TrimSpace(extractionStringFromAny(raw))
 			if text == "" {

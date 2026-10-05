@@ -1,8 +1,8 @@
 //@name Archive Center
-//@display-name Archive Center 4.8.0
+//@display-name Archive Center 4.9.0
 //@author memory-scaffold
 //@api 3.0
-//@version 4.8.0
+//@version 4.9.0
 //@update-url https://raw.githubusercontent.com/Flazer31/archive-center/main/Archive%20Center.js
 
 // ════════════════════════════════════════════════════════════════
@@ -37,11 +37,11 @@
   const PLUGIN_ID = "risu_memory_orchestrator";
   const SETTINGS_KEY = `${PLUGIN_ID}_settings`;
   const LOG_PREFIX = "[MemOrch]";
-  const VERSION = "4.8.0";
+  const VERSION = "4.9.0";
   const BUILD_ID = VERSION;
   const BUILD_CHANNEL = "stable";
   const BUILD_TIME = "2026-09-27 KST";
-  const BUILD_NOTES = "Archive Center 4.8.0";
+  const BUILD_NOTES = "Archive Center 4.9.0";
   const BUILD_LABEL = VERSION;
   // Sprint 3-C-1: 실패 큐 영속화
   const FAILED_QUEUE_STORAGE_KEY = `${PLUGIN_ID}_failedQueue`;
@@ -118,6 +118,7 @@
     lorebookReferenceMaxChars: 3000,  // 활성 로어북 참조 전용 상한
     injectionBudgetProfileVersion: "p47_32000_base_v1",
     injectionBudgetExtraChars: 4000, // 자동 산정 예산 위에 허용할 추가 상한
+    protectedSecretBudgetChars: 4000,
     memoryDeliveryBudgetMode: "auto",
     memoryTransportMode: "text",
     memoryDeliveryBudgets: Object.freeze({
@@ -125,7 +126,6 @@
       character_objective: 2500,
       subjective_relationship: 3000,
       world_state: 2500,
-      protected_secret: 1200,
       unresolved_goal: 1800,
       direct_evidence: 3500,
     }),
@@ -163,6 +163,7 @@
     subLlmReasoningEffort: "none",
     subLlmReasoningBudgetTokens: 0,
     subLlmMaxCompletionTokens: 30000,
+    criticReferenceMaxChars: 4000,
     subLlmVertexFlexMode: "off",
     subLlmLlmGatewayServiceTier: "standard",
     subLlmClaudePromptCacheMode: "off",
@@ -344,6 +345,8 @@
       "settings.label.arcIntervalChapters": "아크 생성 간격 (챕터 수)",
       "settings.label.sagaIntervalArcs": "사가 생성 간격 (아크 수)",
       "settings.label.maxInputContextChars": "입력 앞 맥락 길이 한도 (추가)",
+      "settings.label.criticReferenceMaxChars": "평론가 참고자료 예산 (문자)",
+      "settings.hint.criticReferenceMaxChars": "이전 기억·약속 등 참고 카드의 기본 문자 상한입니다. 서버의 archive ledger가 활성화되면 그 예산이 더해집니다. 인물 식별표는 별도로 같은 합산 상한을 사용할 수 있어 참고 카드와 식별표의 합계는 한 배정보다 커질 수 있습니다. 0은 기본 몫만 끄며, ledger가 활성 상태면 추가 참고자료가 남을 수 있습니다. 현재·직전 턴 원문과 출력 토큰 한도는 별개이며, 이 설정은 전체 요청의 상한이 아닙니다.",
       "settings.hint.maxInputContextChars": "사용자 입력 바로 앞에 붙는 짧은 맥락 요약 길이를 제한합니다.",
       "settings.label.failedQueueMaxSize": "실패 큐 최대 크기",
       "settings.label.failedQueueMaxAgeDays": "실패 큐 보관 일수",
@@ -600,6 +603,7 @@
       "dash.preview.payloadBudget.excluded": "제외",
       "dash.preview.payloadBudget.lane.long_term_memory": "일반 기억",
       "dash.preview.payloadBudget.lane.body_tracking": "신체 상태 · 추가 예산",
+      "dash.preview.payloadBudget.lane.protected_secret": "비밀 · 별도 예산",
       "dash.preview.payloadBudget.lane.original_work": "원작 DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "로어북",
       "dash.preview.payloadBudget.lane.output_guidance": "출판사 안내",
@@ -930,6 +934,7 @@
       "explorer.allLoaded": "전체 {n}건 표시 완료",
       "explorer.edit.saving": "저장 중...",
       "explorer.edit.success": "✅ 수정 완료",
+      "explorer.edit.userCorrected": "사용자에 의해 수정됨.",
       "explorer.edit.validJsonHint": "유효한 JSON이어야 합니다",
       "explorer.edit.saveBtn": "💾 저장",
       "explorer.edit.cancelBtn": "취소",
@@ -1122,6 +1127,8 @@
       "settings.label.debugContinuityTest": "Continuity 디버그 테스트",
       "settings.label.embeddingTimeout": "임베딩 Timeout (초)",
       "settings.label.injectionBudgetExtraChars": "추가 기억 예산 상한 (chars)",
+      "settings.label.protectedSecretBudgetChars": "비밀 예산 (문자)",
+      "settings.hint.protectedSecretBudgetChars": "일반 기억·신체 추적과 별도인 비밀 전달 상한입니다. 0 또는 빈값은 기본 4,000자를 사용하며 비밀을 끄지 않습니다. 관련 비밀만 선택하고 남은 공간을 채우지 않으며 자동 확장하지 않습니다.",
       "settings.label.primaryCanonBaseMaxChars": "단독 모드 Canon Base 예산 (chars)",
       "settings.label.llmRetryCount": "LLM 재시도 횟수",
       "settings.label.llmRetryCount.hint": "0 = 재시도 없음(1회만 시도), 3 = 실패 시 3회 추가 시도",
@@ -1154,7 +1161,7 @@
       "settings.label.topK": "ChromaDB 의미 기억 검색 수",
       "settings.label.topK.hint": "ChromaDB가 현재 입력과 의미적으로 가까운 기억을 몇 개 찾을지 정합니다. MariaDB는 선택된 벡터 결과를 정본 기억 row로 확인합니다.",
       "settings.label.coreObjectiveMemoryMaxItems": "분류별 핵심 기억 우선 수",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "턴 요약과 각 기억 분류에서 먼저 담을 핵심 항목 수입니다. 남은 공간에는 관련 기억을 추가합니다.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "턴 요약과 각 기억 분류의 우선 선택 개수이며, 최종 항목 수 상한은 아닙니다. 우선 선택 뒤에도 나머지 후보를 검토하고 기존 문자 상한 안에서 추가할 수 있습니다. 후보 읽기 범위를 제한하지 않습니다.",
       "settings.label.recentConversationReferenceCount": "최근 대화 참고 수",
       "settings.label.recentConversationReferenceCount.hint": "기억을 찾을 때 참고할 최근 완결 대화 수입니다.",
       "settings.label.uiDetailMode": "UI 상세 수준",
@@ -1315,6 +1322,9 @@
       "turn_hud.failed": "처리 오류",
       "turn_hud.stopped": "중지",
       "turn_hud.result_unconfirmed": "결과 확인 필요",
+      "turn_hud.translation.reading": "번역 플러그인 인식됨 · 원문 확인 중",
+      "turn_hud.translation.unavailable": "번역 원문을 아직 읽지 못함 · 다음 입력 때 저장",
+      "turn_hud.translation.backfilled": "이전 턴 저장 완료(백필)",
       "turn_hud.main_response": "본문 응답",
       "turn_hud.error.host_generation": "본문 요청 오류가 표시되었습니다.",
       "turn_hud.error.host_generation_stopped": "출력이 중단되었습니다.",
@@ -1647,7 +1657,7 @@
       "settings.label.topK": "ChromaDB Semantic Memories",
       "settings.label.topK.hint": "How many semantically relevant memories ChromaDB should retrieve for the current input. MariaDB hydrates selected vector hits as canonical rows.",
       "settings.label.coreObjectiveMemoryMaxItems": "Core Memory Priority per Category",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "Prioritizes this many core items per summary group and memory category. Related memories use the remaining space.",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "Prioritizes this many core items per summary group and memory category; it is not a final item maximum. Remaining candidates are still considered within the existing character ceilings. It does not limit candidate reading.",
       "settings.label.recentConversationReferenceCount": "Recent Conversation Reference Count",
       "settings.label.recentConversationReferenceCount.hint": "How many recent completed conversations are referenced when finding memory.",
       "settings.label.llmRetryCount": "LLM Retry Count",
@@ -1668,6 +1678,8 @@
       "settings.label.lorebookReferenceMaxChars": "Lorebook Budget (chars)",
       "settings.hint.lorebookReferenceMaxChars": "Independent active-lorebook reference limit. It does not borrow unused memory or original-work capacity.",
       "settings.label.injectionBudgetExtraChars": "Additional Memory Budget Ceiling (chars)",
+      "settings.label.protectedSecretBudgetChars": "Secret Budget (characters)",
+      "settings.hint.protectedSecretBudgetChars": "Independent ceiling for secret delivery. Zero or blank uses the 4,000-character default, not off. Only relevant secrets are selected; unused space is left empty and the ceiling never expands automatically.",
       "settings.hint.injectionBudgetExtraChars": "Extra characters allowed above the automatic injection budget. This is a character limit, not a token limit. A higher ceiling is not filled unless relevant memory exists.",
       "settings.label.primaryCanonBaseMaxChars": "Primary-mode Canon Base budget (chars)",
       "settings.hint.primaryCanonBaseMaxChars": "Set to 0 to disable. In primary original-work mode, this is a Canon Base sub-cap within the resolved reference total.",
@@ -1902,6 +1914,8 @@
       "settings.label.arcIntervalChapters": "Arc Generation Interval (chapters)",
       "settings.label.sagaIntervalArcs": "Saga Generation Interval (arcs)",
       "settings.label.maxInputContextChars": "Pre-Input Context Length Limit (extra)",
+      "settings.label.criticReferenceMaxChars": "Critic Reference Budget (characters)",
+      "settings.hint.criticReferenceMaxChars": "Base character ceiling for reference cards such as prior memories and promises. An enabled server archive ledger adds its budget. The character identity index has a separate allocation with the same combined ceiling, so combined cards and index can exceed one allocation. 0 disables only the base share; references may remain when the ledger is enabled. Current/previous turn originals and output token limits are separate. This is not a total request limit.",
       "settings.hint.maxInputContextChars": "Limits the short context summary inserted right before the user input.",
       "settings.label.failedQueueMaxSize": "Failed Queue Max Size",
       "settings.label.failedQueueMaxAgeDays": "Failed Queue Retention (days)",
@@ -2155,6 +2169,7 @@
       "dash.preview.payloadBudget.excluded": "Excluded",
       "dash.preview.payloadBudget.lane.long_term_memory": "Memory",
       "dash.preview.payloadBudget.lane.body_tracking": "Body state · additional budget",
+      "dash.preview.payloadBudget.lane.protected_secret": "Secrets · separate budget",
       "dash.preview.payloadBudget.lane.original_work": "Original-work DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "Lorebook",
       "dash.preview.payloadBudget.lane.output_guidance": "Publisher guidance",
@@ -2485,6 +2500,7 @@
       "explorer.allLoaded": "All {n} items loaded",
       "explorer.edit.saving": "Saving...",
       "explorer.edit.success": "✅ Edit Saved",
+      "explorer.edit.userCorrected": "Edited by user.",
       "explorer.edit.validJsonHint": "Must be valid JSON",
       "explorer.edit.saveBtn": "💾 Save",
       "explorer.edit.cancelBtn": "Cancel",
@@ -2658,6 +2674,9 @@
       "turn_hud.failed": "Processing error",
       "turn_hud.stopped": "Stopped",
       "turn_hud.result_unconfirmed": "Result unconfirmed",
+      "turn_hud.translation.reading": "Translation plugin detected · Checking original text",
+      "turn_hud.translation.unavailable": "Original text not yet available · Save on next input",
+      "turn_hud.translation.backfilled": "Previous turn saved (backfill)",
       "turn_hud.main_response": "Main response",
       "turn_hud.error.host_generation": "The host reported a response error.",
       "turn_hud.error.host_generation_stopped": "Response generation stopped.",
@@ -2990,7 +3009,7 @@
       "settings.label.topK": "ChromaDB意味記憶検索数",
       "settings.label.topK.hint": "現在の入力に意味的に近い記憶をChromaDBで何件取得するかを指定します。MariaDBは選ばれたベクトル結果を正本rowとして確認します。",
       "settings.label.coreObjectiveMemoryMaxItems": "分類ごとの核心記憶の優先数",
-      "settings.label.coreObjectiveMemoryMaxItems.hint": "ターン要約と各記憶分類で先に入れる核心項目数です。残りの領域には関連する記憶を追加します。",
+      "settings.label.coreObjectiveMemoryMaxItems.hint": "ターン要約と各記憶分類の優先選択数で、最終項目数の上限ではありません。優先選択後も残りの候補を検討し、既存の文字数上限内で追加できます。候補の読み取り範囲は制限しません。",
       "settings.label.recentConversationReferenceCount": "最近の会話参照数",
       "settings.label.recentConversationReferenceCount.hint": "記憶検索で参照する最近の完結会話数です。",
       "settings.label.llmRetryCount": "LLMリトライ回数",
@@ -3011,6 +3030,8 @@
       "settings.label.lorebookReferenceMaxChars": "ロアブック予算（chars）",
       "settings.hint.lorebookReferenceMaxChars": "有効なロアブック参照専用の独立上限です。記憶や原作DBの未使用分を借用しません。",
       "settings.label.injectionBudgetExtraChars": "追加記憶予算の上限（chars）",
+      "settings.label.protectedSecretBudgetChars": "秘密予算（文字）",
+      "settings.hint.protectedSecretBudgetChars": "通常の記憶・身体追跡とは別の秘密配信上限です。0または空欄は無効化ではなく既定の4,000文字です。関連する秘密のみを選び、空きを埋めず、自動拡張しません。",
       "settings.hint.injectionBudgetExtraChars": "自動注入予算の上に許可する追加文字数です。トークン数ではなく文字数です。関連する記憶がなければ無理に埋めません。",
       "settings.label.primaryCanonBaseMaxChars": "単独モード Canon Base 予算（chars）",
       "settings.hint.primaryCanonBaseMaxChars": "0で無効化します。単独（primary）原作モードで、原作参照の総予算内にある Canon Base の下位上限です。",
@@ -3204,6 +3225,8 @@
       "settings.label.arcIntervalChapters": "アーク生成間隔（チャプター数）",
       "settings.label.sagaIntervalArcs": "サーガ生成間隔（アーク数）",
       "settings.label.maxInputContextChars": "入力直前コンテキスト上限（追加）",
+      "settings.label.criticReferenceMaxChars": "評論家の参考資料予算（文字数）",
+      "settings.hint.criticReferenceMaxChars": "過去の記憶・約束など参考カードの基本文字数上限です。サーバーのarchive ledgerが有効なら、その予算が加算されます。人物識別表は別枠で同じ合算上限を使えるため、カードと識別表の合計は一枠の上限を超える場合があります。0は基本枠だけを無効にし、ledgerが有効なら参考資料が残る場合があります。現在・直前ターンの原文や出力トークン上限は別で、この設定はリクエスト全体の上限ではありません。",
       "settings.hint.maxInputContextChars": "ユーザー入力の直前に挿入する短い要約コンテキストの長さを制限します。",
       "settings.label.failedQueueMaxSize": "失敗キュー最大サイズ",
       "settings.label.failedQueueMaxAgeDays": "失敗キュー保持日数",
@@ -3458,6 +3481,7 @@
       "dash.preview.payloadBudget.excluded": "除外",
       "dash.preview.payloadBudget.lane.long_term_memory": "一般記憶",
       "dash.preview.payloadBudget.lane.body_tracking": "身体状態 · 追加予算",
+      "dash.preview.payloadBudget.lane.protected_secret": "秘密 · 別枠予算",
       "dash.preview.payloadBudget.lane.original_work": "原作DB",
       "dash.preview.payloadBudget.lane.lorebook_reference": "ロアブック",
       "dash.preview.payloadBudget.lane.output_guidance": "パブリッシャー案内",
@@ -3788,6 +3812,7 @@
       "explorer.allLoaded": "全{n}件表示完了",
       "explorer.edit.saving": "保存中...",
       "explorer.edit.success": "✅ 編集完了",
+      "explorer.edit.userCorrected": "ユーザーにより編集済み。",
       "explorer.edit.validJsonHint": "有効なJSONである必要があります",
       "explorer.edit.saveBtn": "💾 保存",
       "explorer.edit.cancelBtn": "キャンセル",
@@ -3999,6 +4024,9 @@
       "turn_hud.failed": "処理エラー",
       "turn_hud.stopped": "停止",
       "turn_hud.result_unconfirmed": "結果の確認が必要",
+      "turn_hud.translation.reading": "翻訳プラグインを検出 · 原文を確認中",
+      "turn_hud.translation.unavailable": "翻訳前の原文をまだ読み取れません · 次の入力時に保存",
+      "turn_hud.translation.backfilled": "前のターンを保存しました（補完）",
       "turn_hud.main_response": "本文応答",
       "turn_hud.error.host_generation": "本文リクエストのエラーが表示されました。",
       "turn_hud.error.host_generation_stopped": "応答の生成が中断されました。",
@@ -9183,7 +9211,7 @@
     let routingContext = "";
     if (worldlineObservation) {
       const hostChatId = String(resolvedActiveChat.chat && resolvedActiveChat.chat.id || "").trim();
-      const worldlineRouting = await requestBackendSessionRoutingTurnResolution(sid, "identity", {
+      const routingObservation = {
         hostChatId,
         hostChatIdState: hostChatId ? "observed" : "unobserved",
         worldlineObservation,
@@ -9194,7 +9222,8 @@
             message_chat_id: String(message && message.chatId || ""), disabled: !!(message && message.disabled),
           })),
         },
-      });
+      };
+      const worldlineRouting = await requestBackendSessionRoutingTurnResolution(sid, "recover_inherited", routingObservation);
       if (!worldlineRouting || !worldlineRouting.worldline || worldlineRouting.worldline.state !== "confirmed") {
         const reason = String(
           worldlineRouting && worldlineRouting.worldline && worldlineRouting.worldline.reason
@@ -9208,6 +9237,23 @@
         return { status: "skipped", reason: "worldline_ownership_unresolved", detail: reason };
       }
       routingContext = "automatic_active_chat_full_sweep";
+      const reads = worldlineRouting.backendDecision && worldlineRouting.backendDecision.inherited_recovery || [];
+      if (reads.some(item => item.status === "read_original")) {
+        const originalPairs = await buildSessionNormalizeCompletedTurnPairs(resolvedActiveChat.chat);
+        const inheritedRecovery = reads.filter(item => item.status === "read_original").map(item => {
+          const pair = originalPairs.pairs.find(candidate => candidate.risuAssistantMessageIndex === item.message_index);
+          return pair ? { message_index: item.message_index, user_content: pair.userContent, assistant_content: pair.assistantContent } : null;
+        }).filter(Boolean);
+        if (inheritedRecovery.length) {
+          const recovery = await requestBackendSessionRoutingTurnResolution(sid, "recover_inherited", {
+            ...routingObservation, inheritedRecovery, recoveryClientMeta: buildAdminRuntimeClientMeta(),
+          });
+          updateRuntimeState("lastWorldlineSourceRecovery", recovery.backendDecision && recovery.backendDecision.status || "error", {
+            detail: recovery.backendDecision && recovery.backendDecision.code || "",
+            items: recovery.backendDecision && recovery.backendDecision.inherited_recovery || [],
+          });
+        }
+      }
     }
     return { status: "ok", resolvedActiveChat, rawMessages, routingContext };
   }
@@ -9286,7 +9332,8 @@
         else if (result.status === "skipped") skipped++;
       }
       const status = queued > 0 ? "warn" : saved > 0 ? "ok" : "skipped";
-      const detail = "active chat backfill " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued / " + String(skipped) + " skipped";
+      const detail = (saved > 0 ? t("turn_hud.translation.backfilled") + " · " : "")
+        + "active chat backfill " + String(saved) + " saved / " + String(exists) + " existing / " + String(queued) + " queued / " + String(skipped) + " skipped";
       updateRuntimeState("lastActiveChatBackfill", status, {
         detail,
         turnIndex: lastTurn,
@@ -9300,6 +9347,7 @@
       });
       if (saved > 0) {
         updateRuntimeState("lastSaveStatus", "ok", { turnIndex: lastTurn, detail });
+        void refreshOpenArchiveCenterUI();
       }
       return { status, saved, exists, queued, skipped, totalPairs: pairs.length, assistantOnlyCount };
     } catch (err) {
@@ -11575,11 +11623,38 @@
     return (await buildYumiV1ArchiveReadContext([], messages, activeChat)).activeMessages;
   }
 
-  async function readTranslationOriginalsForArchive(messages, sessionId, hostContext = null) {
+  async function readTranslationOriginalsForArchive(messages, sessionId, hostContext = null, waitForOriginal = false) {
     const needsStoredSource = (messages || []).some(message => message && message.role === "assistant"
       && /<!--\s*yumi-tr:v1:/i.test(String(message.content || "")));
-    const resolved = needsStoredSource ? await resolveCurrentActiveChatObject(sessionId, hostContext) : null;
-    const result = await buildYumiV1ArchiveReadContext(messages, [], resolved && resolved.chat);
+    let result;
+    if (needsStoredSource && waitForOriginal) {
+      // Yumi writes Host scriptstate only after the returned marker is committed.
+      // Bound this request-local Host read; display has already returned to Risu.
+      result = await buildYumiV1ArchiveReadContext(messages, [], null);
+      let expired = false;
+      let deadlineTimer;
+      try {
+        await Promise.race([
+          (async function readDelayedHostOriginal() {
+            while (!expired) {
+              const resolved = await resolveCurrentActiveChatObject(sessionId, hostContext);
+              const read = await buildYumiV1ArchiveReadContext(messages, [], resolved && resolved.chat);
+              if (expired) return;
+              result = read;
+              if (!result.stats.unavailableOriginalBlocks) return;
+              await new Promise(resolve => setTimeout(resolve, 500));
+            }
+          })(),
+          new Promise(resolve => { deadlineTimer = setTimeout(resolve, 10000); }),
+        ]);
+      } finally {
+        expired = true;
+        clearTimeout(deadlineTimer);
+      }
+    } else {
+      const resolved = needsStoredSource ? await resolveCurrentActiveChatObject(sessionId, hostContext) : null;
+      result = await buildYumiV1ArchiveReadContext(messages, [], resolved && resolved.chat);
+    }
     if (result.stats.unavailableOriginalBlocks > 0) {
       updateRuntimeState("lastCompleteTurnStatus", "warn", {
         reason_code: "translation_original_unavailable",
@@ -11974,6 +12049,7 @@
     merged.referenceInjectionEnabled = merged.referenceInjectionEnabled !== false;
     merged.lorebookReferenceMaxChars = sanitizeNumber(merged.lorebookReferenceMaxChars, DEFAULT_SETTINGS.lorebookReferenceMaxChars, 0, 30000);
     merged.injectionBudgetExtraChars = sanitizeNumber(merged.injectionBudgetExtraChars, DEFAULT_SETTINGS.injectionBudgetExtraChars, 0, 15000);
+    merged.protectedSecretBudgetChars = Math.max(0, Math.floor(Number(merged.protectedSecretBudgetChars) || 0));
     merged.memoryDeliveryBudgetMode = String(merged.memoryDeliveryBudgetMode || "auto") === "custom" ? "custom" : "auto";
     merged.memoryTransportMode = sanitizeEnumValue(
       merged.memoryTransportMode,
@@ -12015,6 +12091,9 @@
     merged.subLlmTimeoutMs = getSubLlmTimeoutSettingMs(merged.subLlmTimeoutMs);
     merged.subLlmTemperature = getSubLlmTemperatureSetting(merged.subLlmTemperature);
     merged.subLlmMaxCompletionTokens = getSubLlmMaxCompletionTokensSetting(merged.subLlmMaxCompletionTokens);
+    const criticReferenceChars = Number(merged.criticReferenceMaxChars);
+    merged.criticReferenceMaxChars = Number.isFinite(criticReferenceChars)
+      ? Math.max(0, Math.floor(criticReferenceChars)) : DEFAULT_SETTINGS.criticReferenceMaxChars;
     merged.subLlmReasoningPreset = normalizeReasoningPreset(
       getSubLlmReasoningPresetSetting(merged.subLlmReasoningPreset),
       DEFAULT_SETTINGS.subLlmReasoningPreset,
@@ -12394,6 +12473,7 @@
     const meta = {
       critic_input_budget_observation: {
         contract_version: "critic_input_budget_observation.v1",
+        critic_reference_max_chars: settings.criticReferenceMaxChars,
         max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars))),
       },
       critic: {
@@ -14616,6 +14696,20 @@
   // ──────────────────────────────────────────────────────────────
 
   async function bridgeFetchWithRetry(path, options = {}, retries) {
+    // Every complete-turn producer (foreground, failed queue, pending final)
+    // needs current role settings even before runtime binding after restart.
+    // Keep credentials on the outgoing clone, never on retained queue bodies.
+    if (path === "/complete-turn") {
+      const runtimeMeta = buildAdminRuntimeClientMeta();
+      options = Object.assign({}, options, {
+        body: Object.assign({}, options.body, {
+          client_meta: Object.assign({}, options.body && options.body.client_meta, {
+            critic: runtimeMeta.critic,
+            embedding: runtimeMeta.embedding,
+          }),
+        }),
+      });
+    }
     if (retries === undefined) retries = Math.max(1, (settings.llmRetryCount || 0) + 1);
     for (let attempt = 1; attempt <= retries; attempt++) {
       const result = await bridgeFetch(path, options);
@@ -15577,6 +15671,11 @@
 
   function buildTurnWorkflowHUDPresentation(view, phase = "", displayMode = "normal") {
     view = projectTurnWorkflowHUDPhaseView(view, phase);
+    if ((_turnWorkflowHUDHostWarningsByRequestId.get(String(view.request_id || "")) || [])
+        .some(item => item.code === "translation_original_pending")) {
+      view = Object.assign({}, view, {host_generation_end: null,
+        current_stage: {key: "awaiting_final_output", label_key: "turn_hud.translation.reading", status: "running"}});
+    }
     const hostIdle = view.host_generation_end?.kind === "idle";
     if (view.host_generation_end) {
       const ended = view.host_generation_end;
@@ -15625,7 +15724,7 @@
       return {
         compact: true, terminal, dismissible, dismissAnywhere, closeButtonOnly: true, elapsedStartedAt,
         html: `<div style="${style}">`
-          + `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px">${escapeTurnWorkflowHUDHTML(label)}</span>`
+          + `<span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:${String(stage.label_key || "").startsWith("turn_hud.translation.") ? "normal" : "nowrap"};font-size:10px">${escapeTurnWorkflowHUDHTML(label)}</span>`
           + `<div style="display:flex;align-items:center;justify-content:space-between;gap:4px;min-width:0">`
           + (failed ? `<span style="flex:none;font-size:10px;color:#E158A6">${escapeTurnWorkflowHUDHTML(t(view.host_generation_end?.kind === "stopped" ? "turn_hud.stopped" : "turn_hud.stage_status.failed"))}</span>` : "")
           + `<time style="${TURN_WORKFLOW_HUD_ELAPSED_STYLE};white-space:nowrap">${escapeTurnWorkflowHUDHTML(elapsedStartedAt ? "" : " · " + duration)}</time>`
@@ -16033,6 +16132,23 @@
     return Array.isArray(warnings) && warnings.length > 0;
   }
 
+  function observeTurnWorkflowHUDTranslation(requestId, state) {
+    const warnings = (_turnWorkflowHUDHostWarningsByRequestId.get(requestId) || [])
+      .filter(item => item.code !== "translation_original_pending");
+    if (state === "reading") warnings.push({code: "translation_original_pending", message_key: "turn_hud.translation.reading"});
+    if (warnings.length) _turnWorkflowHUDHostWarningsByRequestId.set(requestId, warnings);
+    else _turnWorkflowHUDHostWarningsByRequestId.delete(requestId);
+    if (requestId !== _turnWorkflowHUDActiveRequestId) return;
+    if (state === "unavailable") {
+      consumeTurnWorkflowHUDNotice({contract_version: TURN_WORKFLOW_HUD_CONTRACT, request_id: requestId,
+        display_mode: "notice", status: "completed_with_warning", severity: "notice", presentation_tone: "attention",
+        notice_code: "translation_original_unavailable", title_key: "turn_hud.translation.unavailable",
+        current_stage: {key: "awaiting_final_output", label_key: "turn_hud.translation.unavailable", status: "partial"}});
+    } else if (_turnWorkflowHUDLastView) {
+      renderTurnWorkflowHUD(_turnWorkflowHUDLastView);
+    }
+  }
+
   // The backend cannot classify its own unreachability. This host-owned
   // observation stays attached to the same workflow while later save stages run.
   function renderTurnWorkflowHUDTransportError(requestId, path, fallbackReasonCode, preparationEnded = false) {
@@ -16239,6 +16355,9 @@
     });
     const status = response && Number(response.status || 0);
     if (!response || !(response.ok === true || (status >= 200 && status < 300))) {
+      try {
+        if (response && response.body) await response.body.cancel();
+      } catch { /* no-op */ }
       throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "stream request failed");
     }
     if (!response.body || typeof response.body.getReader !== "function") {
@@ -16471,24 +16590,24 @@
     _turnWorkflowHUDWatchRunning = true;
     _turnWorkflowHUDActiveRequestId = normalizedRequestId;
     clearTurnWorkflowHUDTimer();
+    let controller = null;
+    let reader = null;
     (async function() {
       const bridgeRoute = resolveBridgeRuntimeRoute(settings.bridgeUrl);
       if (!bridgeRoute.url) {
         throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "bridge URL is unavailable");
       }
-      const controller = new AbortController();
+      controller = new AbortController();
       _turnWorkflowHUDStreamAbortController = controller;
       const revision = _turnWorkflowHUDLastRevision;
       const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
         + "&after_revision=" + encodeURIComponent(String(revision));
-      const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
+      reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
       if (token !== _turnWorkflowHUDWatchToken || _turnWorkflowHUDActiveRequestId !== normalizedRequestId) {
-        try { await reader.cancel(); } catch { /* no-op */ }
         return;
       }
       _turnWorkflowHUDStreamReader = reader;
       const terminal = await consumeTurnWorkflowHUDStream(reader, token, normalizedRequestId);
-      _turnWorkflowHUDStreamReader = null;
       if (!terminal) {
         throw turnWorkflowHUDStreamFailure(
           "hud_transport_nonterminal_eof",
@@ -16534,6 +16653,10 @@
         _turnWorkflowHUDStreamReader = null;
         _turnWorkflowHUDWatchRunning = false;
       }
+      // The Host can detach AbortSignal after response headers. Always close
+      // this watcher's local reader; an older watcher never owns the new one.
+      try { if (controller) controller.abort(); } catch { /* no-op */ }
+      try { if (reader) reader.cancel().catch(function() {}); } catch { /* no-op */ }
     });
   }
 
@@ -16558,6 +16681,8 @@
     _turnWorkflowHUDPreviousWatchRunning = true;
     _turnWorkflowHUDPreviousRequestId = normalizedRequestId;
     _turnWorkflowHUDPreviousLastRevision = 0;
+    let controller = null;
+    let reader = null;
     // Show the observed completion request while its first backend event is
     // pending. Do not claim a Critic call or invent backend timing/revisions.
     renderTurnWorkflowHUDPrevious({
@@ -16580,21 +16705,19 @@
       if (!bridgeRoute.url) {
         throw turnWorkflowHUDStreamFailure("hud_transport_unavailable", "bridge URL is unavailable");
       }
-      const controller = new AbortController();
+      controller = new AbortController();
       _turnWorkflowHUDPreviousStreamAbortController = controller;
       const path = "/turn-workflow/events?request_id=" + encodeURIComponent(normalizedRequestId)
         + "&after_revision=0";
-      const reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
+      reader = await openTurnWorkflowHUDStream(bridgeRoute.url + path, controller.signal);
       if (
         token !== _turnWorkflowHUDPreviousWatchToken
         || _turnWorkflowHUDPreviousRequestId !== normalizedRequestId
       ) {
-        try { await reader.cancel(); } catch { /* no-op */ }
         return;
       }
       _turnWorkflowHUDPreviousStreamReader = reader;
       const terminal = await consumeTurnWorkflowHUDPreviousStream(reader, token, normalizedRequestId);
-      _turnWorkflowHUDPreviousStreamReader = null;
       if (!terminal) {
         throw turnWorkflowHUDStreamFailure(
           "hud_transport_nonterminal_eof",
@@ -16609,6 +16732,8 @@
         _turnWorkflowHUDPreviousStreamReader = null;
         _turnWorkflowHUDPreviousWatchRunning = false;
       }
+      try { if (controller) controller.abort(); } catch { /* no-op */ }
+      try { if (reader) reader.cancel().catch(function() {}); } catch { /* no-op */ }
     });
   }
 
@@ -17318,6 +17443,7 @@
           max_injection_chars: freshFirstTurnLightMode ? 0 : prepareInjectionBudget.configuredBudgetChars,
           memory_transport_mode: settings.memoryTransportMode || DEFAULT_SETTINGS.memoryTransportMode,
           turn_finalization_mode: settings.turnFinalizationMode || DEFAULT_SETTINGS.turnFinalizationMode,
+          protected_secret_budget_chars: settings.protectedSecretBudgetChars,
           memory_delivery_budget_mode: settings.memoryDeliveryBudgetMode || "auto",
           memory_delivery_budgets: { ...(settings.memoryDeliveryBudgets || DEFAULT_SETTINGS.memoryDeliveryBudgets) },
           reference_injection_budget_basis_chars: Number(settings.referenceInjectionMaxChars ?? DEFAULT_SETTINGS.referenceInjectionMaxChars),
@@ -18731,7 +18857,8 @@
             terminalSourceRejection = !!(
               res
               && !pendingSourceConfirmation
-              && (res.queue_action === "discard" || res.retryable === false)
+              && (res.queue_action === "discard"
+                || (res.retryable === false && !(res.status === "ok" && res.save_ok === true)))
             );
             terminalResultCode = String(res && res.code || "");
             rawSavedTerminalResult = terminalSourceRejection && !!(res && (res.save_ok === true || res.raw_committed === true));
@@ -21426,7 +21553,8 @@
         }
         return;
       }
-      if (result && (result.queue_action === "discard" || result.retryable === false)) {
+      if (result && (result.queue_action === "discard"
+        || (result.retryable === false && !(result.status === "ok" && result.save_ok === true)))) {
         await removePendingFinalConfirmationRecovery(payload, pending.recoveryKey);
         updateRuntimeState("lastCompleteTurnStatus", result.status === "rejected" ? "skipped" : "fail", {
           turnIndex: payload.turn_index,
@@ -21944,6 +22072,10 @@
       body: {
         chat_session_id: String(sessionId || ""),
         mode: String(mode || "pair"),
+        ...(Array.isArray(observed.inheritedRecovery) ? {
+          inherited_recovery: observed.inheritedRecovery,
+          recovery_client_meta: observed.recoveryClientMeta || {},
+        } : {}),
         stable_character_id: stableCharacterId,
         stable_character_id_state: String(
           observed.stableCharacterIdState
@@ -24710,18 +24842,21 @@
 		  const classTextLines = String(deliveryClass && deliveryClass.text || "").trim().split("\n");
 		  if (classTextLines.length && /^\[[^\]]+\]$/.test(classTextLines[0].trim())) classTextLines.shift();
 		  const classText = classTextLines.join("\n").trim();
-		  if (!classText) return;
+		  if (!classText) {
+		    if (deliveryClass.budget_summary) parts.push(renderItBlock(String(deliveryClass.title || deliveryClass.key), String(deliveryClass.budget_summary), false));
+		    return;
+		  }
 		  const classTitle = String(deliveryClass.title || deliveryClass.key || "Memory Delivery");
 		  const classUsed = Number(deliveryClass.used_chars || 0);
 		  const classReserved = Number(deliveryClass.reserved_chars || 0);
 		  const classBorrowed = Number(deliveryClass.borrowed_chars || Math.max(0, classUsed - classReserved));
-		  const classUsage = "사용 " + classUsed + " chars · 기본 배정 " + classReserved + " chars"
+		  const classUsage = deliveryClass.budget_summary || "사용 " + classUsed + " chars · 기본 배정 " + classReserved + " chars"
 		    + (classBorrowed > 0 ? " · 공유 예산 " + classBorrowed + " chars" : "");
 		  parts.push(renderItBlock(classTitle + " · " + classUsage, classText, false));
 		});
       }
       appliedPlanLanes.forEach(function(lane) {
-		if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes) && ["long_term_memory", "body_tracking"].includes(String(lane.key || ""))) return;
+		if (memoryDeliveryPlan && Array.isArray(memoryDeliveryPlan.classes) && ["long_term_memory", "body_tracking", "protected_secret"].includes(String(lane.key || ""))) return;
         const title = lane.key === "preprocessing_notes" ? t('dash.preview.payloadBudget.lane.preprocessing_notes') : String(lane.title || lane.key || "Auxiliary Context");
         parts.push(renderItBlock(title, String(lane.text || ""), false));
       });
@@ -30407,6 +30542,7 @@
           source_acceptance_observation: sourceAcceptanceObservation,
           critic_input_budget_observation: {
             contract_version: "critic_input_budget_observation.v1",
+            critic_reference_max_chars: settings.criticReferenceMaxChars,
             max_input_context_chars: Math.max(0, Math.floor(Number(settings.maxInputContextChars))),
           },
           archive_center_request_correlation_id: sourceAcceptanceObservation.archive_center_request_correlation_id || null,
@@ -35671,19 +35807,38 @@
         ? normalizeAssistantPersistenceCandidate(displayContent)
         : "";
       responseReturnContent = typeof displayContent === "string" ? displayContent : content;
-      if (/<!--\s*yumi-tr:v1:/i.test(String(displayContent || ""))) {
+      if (/<!--\s*yumi-tr:v1:|<GigaTrans\b/i.test(String(displayContent || ""))) {
+        observeTurnWorkflowHUDTiming(persistenceRequestContext.requestId, "response_received", responseReceivedAt);
+        observeTurnWorkflowHUDTranslation(persistenceRequestContext.requestId, "reading");
         Promise.resolve().then(async function readAfterRequestModelOriginal() {
           const original = await readTranslationOriginalsForArchive(
-            [{ role: "assistant", content: String(displayContent || "") }], chatSessionId, persistenceHostContext,
+            [{ role: "assistant", content: String(displayContent || "") }], chatSessionId, persistenceHostContext, true,
           );
+          if (original[0].translationOriginalUnavailable) {
+            finishUnavailableTranslationOriginal();
+            return;
+          }
+          observeTurnWorkflowHUDTranslation(persistenceRequestContext.requestId, "ready");
           recoveredAssistantContent = normalizeAssistantPersistenceCandidate(original[0].content);
           return finishAfterRequestOriginalRead();
         }).catch(function(err) {
           warnLog("afterRequest original-source read failed:", err && err.message);
+          finishUnavailableTranslationOriginal();
         });
         return responseReturnContent;
       }
       return finishAfterRequestOriginalRead();
+
+      function finishUnavailableTranslationOriginal() {
+        acceptRisuAfterRequestFinal(persistenceRequestContext, "");
+        const reason = "translation_original_unavailable";
+        const detail = t("turn_hud.translation.unavailable");
+        updateRuntimeState("lastCompleteTurnStatus", "warn", {reason_code: reason, detail, sessionId: chatSessionId});
+        updateRuntimeState("lastStreamingAfterRequest", "warn", {reason_code: reason, detail, sessionId: chatSessionId});
+        recordHostDiagnostic({stage: "after_request", request_id: persistenceRequestContext.requestId, kind: "warning", error: reason});
+        observeTurnWorkflowHUDTranslation(persistenceRequestContext.requestId, "unavailable");
+        void refreshOpenArchiveCenterUI();
+      }
 
       function finishAfterRequestOriginalRead() {
         const finalContent = recoveredAssistantContent || normalizeAssistantPersistenceCandidate(String(displayContent || ""));
@@ -37758,9 +37913,9 @@
       const arr = _explorer.trust[listKey];
       const idx = arr.findIndex(x => x.id === id);
       if (idx >= 0) {
-        arr[idx].pinned         = !!result.pinned;
-        arr[idx].suppressed     = !!result.suppressed;
-        arr[idx].user_corrected = !!result.user_corrected;
+        for (const key of ["pinned", "suppressed", "user_corrected"]) {
+          if (Object.prototype.hasOwnProperty.call(result, key)) arr[idx][key] = !!result[key];
+        }
       }
       _explorer.trust.patchStatus[key] = "ok";
     } else {
@@ -39912,6 +40067,7 @@
           reason: "cold_start_full_active_chat_observed",
           hostLifecycleObservation: "cold_start_observed",
         });
+        await preflightActiveChatBackfillIdentity(sid, { hostContext: normalizeHostContext });
         const plan = await computeActiveChatRescanDryRunPlan(sid, normalizeHostContext);
         if (plan && plan.ok) {
           repairEntries = buildSessionNormalizeRepairEntriesFromDryRunPlan(plan);
@@ -44297,7 +44453,7 @@
       const statusIcon = st === "saving" ? ' ⏳' : st === "ok" ? ' ✔' : st === "error" ? ' ❌' : '';
       return btn("pinned",         !!item.pinned,         "📌", "Pinned — injection 우선순위 상향") +
              btn("suppressed",     !!item.suppressed,     "🚫", "Suppressed — injection에서 제외") +
-             btn("user_corrected", !!item.user_corrected, "✎",  "User Corrected — AI 자동 덧쓰기 차단") +
+             btn("user_corrected", !!item.user_corrected, "✎",  escapeAttr(t('explorer.edit.userCorrected'))) +
              (statusIcon ? '<span class="mo-trust-status">' + statusIcon + '</span>' : '');
     }
 
@@ -44374,6 +44530,7 @@
         const pinIcon = item.pinned ? ' 📌' : '';
         const name = escapeAttr((item[nameField] || item.title || item.key || '#' + item.id) + pinIcon);
         const badge = badgeField ? ('<span class="mo-trust-badge">' + escapeAttr(item[badgeField] || '') + '</span>') : '';
+        const editedMark = item.user_corrected ? '<span class="mo-trust-badge">' + escapeAttr(t('explorer.edit.userCorrected')) + '</span>' : '';
         const batchCheck = renderExplorerBatchDeleteCheckbox('trust', explorerBuildBatchDeleteKey(model, item.id), model + ' #' + item.id + ' 선택');
         const manageBtns = !isEditing
           ? (
@@ -44384,7 +44541,7 @@
         return '<div class="mo-trust-row' + suppCls + (isEditing ? ' mo-ed-editing' : '') + '">' +
                '<div class="mo-trust-row-main">' +
                batchCheck +
-               '<div class="mo-trust-name">' + name + badge + '</div>' +
+               '<div class="mo-trust-name">' + name + badge + editedMark + '</div>' +
                '<div class="mo-trust-actions">' + (isEditing ? '' : trustBtns(model, item)) + manageBtns + '</div>' +
                '</div>' +
                (isEditing ? renderTrustEditForm(model, item) : '') +
@@ -44715,7 +44872,7 @@
           }
 
           return '<div class="mo-ent-card">' +
-            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + displayName + '</span>' + turn + mergeBtn + aliasManageBtn + editCharacterBtn + editSpeechBtn + delBtn + '</div>' +
+            '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + displayName + '</span>' + (c.user_corrected ? '<span class="mo-trust-badge">' + escapeAttr(t('explorer.edit.userCorrected')) + '</span>' : '') + turn + mergeBtn + aliasManageBtn + editCharacterBtn + editSpeechBtn + delBtn + '</div>' +
             bodyHtml +
             '</div>';
         }).join('');
@@ -44760,6 +44917,7 @@
             : '';
           return '<div class="mo-ent-card">' +
             '<div class="mo-ent-card-header">' + batchCheck + '<span class="mo-ent-name">' + name + '</span>' +
+            (r.user_corrected ? '<span class="mo-trust-badge">' + escapeAttr(t('explorer.edit.userCorrected')) + '</span>' : '') +
             '<span class="mo-ent-scope">' + escapeAttr(r.scope || '') + '</span>' + editBtn + delBtn + '</div>' +
             (note ? '<div class="mo-ent-detail">' + note + '</div>' : '') +
             editForm +
@@ -45147,7 +45305,7 @@
       }
 
       return '<div class="mo-world-rule-row' + suppCls + (isEditing ? ' mo-ed-editing' : '') + '">' +
-        '<div class="mo-world-rule-name">' + batchCheck + (group.icon || '') + ' ' + escapeAttr(r.key + pinIcon) + '</div>' +
+        '<div class="mo-world-rule-name">' + batchCheck + (group.icon || '') + ' ' + escapeAttr(r.key + pinIcon) + (r.user_corrected ? '<span class="mo-trust-badge">' + escapeAttr(t('explorer.edit.userCorrected')) + '</span>' : '') + '</div>' +
         '<div class="mo-world-rule-meta">' + scopeTag + appliedTag + (r.category ? ' <span class="mo-world-rule-cat">' + escapeAttr(r.category) + '</span>' : '') + '</div>' +
         '<div class="mo-world-rule-actions">' + actionBtns + '</div>' +
         editFormHtml +
@@ -52583,7 +52741,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
       + renderPersonaCapsuleSessionSelect('mo-body-session', '대화', sid, sid, '대화를 선택하세요')
       + '<div class="mo-body-toggles">' + check('global', 'cycle', '주기 추적 사용', config.cycle_tracking_enabled)
       + check('global', 'pregnancy', '자동 임신 사용', config.automatic_pregnancy_enabled) + '</div>'
-      + '<p class="mo-note">두 기능은 따로 저장됩니다. 임신 모델 결과는 확인된 사실과 별도로 표시합니다.</p>'
+      + '<p class="mo-note">두 기능의 사용 여부는 모든 대화에 공통으로 저장됩니다. 인물별 모형과 신체 기록은 선택한 대화에 저장됩니다. 임신 모델 결과는 확인된 사실과 별도로 표시합니다.</p>'
       + '<p class="mo-note">마지막으로 확정된 이야기 날짜: <strong>' + escapeAttr(coordinate(view.last_confirmed_story_clock)) + '</strong></p>'
       + (entries.length ? '<h4>자동 적용 대상</h4>' : '<p class="mo-note">아직 여성으로 기록된 캐릭터가 없습니다. 기능을 켜 두면 대화에서 확인된 여성 인물이 자동으로 추가됩니다.</p>')
       + entries.map((c, i) => {
@@ -52609,7 +52767,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           + '<h4>최근 관계 인식·확률</h4><div id="mo-body-' + i + '-exposure">' + exposureHTML(c) + '</div>'
           + '<h4>임신 모델 결과</h4><div id="mo-body-' + i + '-model">' + modelHTML(c) + '</div><h4>임신의 상대·친부</h4><div id="mo-body-' + i + '-paternity">' + paternityHTML(c) + '</div>' + factHTML(c, i) + '</div></div></details>';
       }).join('') + '<p class="mo-note">주기 추적 또는 자동 임신을 켜면 기존 기억 예산과 별도로 신체 상태에 총 3,000 chars를 추가합니다. 둘 다 켜도 3,000 chars이며, 필요한 인물의 현재 상태만 이 안에 전달합니다.</p><div class="mo-body-save"><p id="mo-body-status" role="status" aria-live="polite">전체 토글을 켜고 저장하면 여성 인물에 자동 적용됩니다. 초기 주기는 인물마다 다르며, 작중 날짜가 미상이면 날짜 확인 후 초기화합니다.</p>'
-      + '<button type="button" class="mo-btn mo-btn-primary" id="mo-body-save">이 대화의 설정 저장</button></div>'
+      + '<button type="button" class="mo-btn mo-btn-primary" id="mo-body-save">설정 저장</button></div>'
       + '<details class="mo-body-advanced"><summary>신체 데이터 삭제·복원</summary><p class="mo-note">주기·임신·회복·판정 이력을 사용 대상에서 제거하고 백업합니다. 관련 일반 기억도 아래에서 확인하여 함께 정리할 수 있습니다. 대화 원문은 유지합니다. 복원 전에는 해당 인물에게 신체 기능이 자동 적용되지 않습니다.</p>'
       + '<select id="mo-body-delete-character">' + managed.characters.filter(c => !c.deleted).map(c => '<option value="' + escapeAttr(c.entity_id) + '">' + escapeAttr(c.character_name || c.entity_id) + '</option>').join('') + '</select> '
       + '<button type="button" class="mo-btn" id="mo-body-delete-preview">삭제할 데이터 확인</button><div id="mo-body-delete-list"></div>'
@@ -52721,7 +52879,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         const result = await bridgeFetch('/config/body-tracking/' + encodeURIComponent(sid), { method: 'PUT', body: next });
         if (document.getElementById('mo-body-tracking-root') !== root || root.bodyTrackingSessionID !== sid) return;
         renderBodyTrackingPanel(root, result);
-        root.querySelector('#mo-body-status').textContent = '이 대화의 설정을 저장했습니다.';
+        root.querySelector('#mo-body-status').textContent = '전체 공통 사용 여부와 이 대화의 인물 설정을 저장했습니다.';
       } catch (err) { root.querySelector('#mo-body-status').textContent = '저장 실패: ' + String(err && err.message || err); button.disabled = false; }
     });
   }
@@ -53039,7 +53197,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
     <div class="mo-dash">
       <div class="mo-dash-row"><span class="mo-dot ${s.pluginMainEndpoint || (s.pluginMainProvider && s.pluginMainProvider !== "custom") ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.directorLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.pluginMainEndpoint, s.pluginMainModel, s.pluginMainProvider && s.pluginMainProvider !== "custom"))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${effectiveCritic.endpoint || (effectiveCritic.provider && effectiveCritic.provider !== "custom") ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.criticLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(effectiveCritic.endpoint, effectiveCritic.model, effectiveCritic.provider && effectiveCritic.provider !== "custom"))}</span></div>
-      <div class="mo-dash-row"><span class="mo-dot ${s.embeddingEndpoint ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.embeddingLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.embeddingEndpoint, s.embeddingModel))}</span></div>
+      <div class="mo-dash-row"><span class="mo-dot ${s.embeddingEndpoint || s.embeddingProvider === "voyageai" ? "mo-dot-ok" : "mo-dot-unknown"}"></span><span class="mo-dash-label">${t('settings.model.embeddingLlm')}</span><span class="mo-dash-value">${escapeAttr(endpointSummary(s.embeddingEndpoint, s.embeddingModel, s.embeddingProvider === "voyageai"))}</span></div>
       <div class="mo-dash-row"><span class="mo-dot ${settingsStorageDot}"></span><span class="mo-dash-label">Storage</span><span class="mo-dash-value" title="${escapeAttr(settingsStorageDetail)}">${escapeAttr(settingsStorageLabel)}</span></div>
     </div>
 
@@ -53295,6 +53453,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         <input type="number" id="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? DEFAULT_SETTINGS.subLlmMaxCompletionTokens}" min="1" max="128000" step="1">
         <input class="mo-range" type="range" id="mo-subLlmMaxCompletionTokensRange" data-sync-input="mo-subLlmMaxCompletionTokens" value="${s.subLlmMaxCompletionTokens ?? DEFAULT_SETTINGS.subLlmMaxCompletionTokens}" min="1" max="128000" step="1">
       </div>
+      <div class="mo-row">
+        <label>${t('settings.label.criticReferenceMaxChars')}</label>
+        <input type="number" id="mo-criticReferenceMaxChars" value="${s.criticReferenceMaxChars ?? DEFAULT_SETTINGS.criticReferenceMaxChars}" min="0" step="100">
+        <small style="color:#888;font-size:11px;">${t('settings.hint.criticReferenceMaxChars')}</small>
+      </div>
       </div>
       </div>
     </div>
@@ -53546,7 +53709,11 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
         <div class="mo-row mo-range-row"><label>인물의 객관 상태</label><input type="number" id="mo-memoryBudgetCharacterObjective" data-memory-budget-control value="${memoryBudgets.character_objective}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetCharacterObjectiveRange" data-sync-input="mo-memoryBudgetCharacterObjective" data-memory-budget-control value="${memoryBudgets.character_objective}" min="0" max="50000" step="100"></div>
         <div class="mo-row mo-range-row"><label>인물별 주관 기억·관계</label><input type="number" id="mo-memoryBudgetSubjectiveRelationship" data-memory-budget-control value="${memoryBudgets.subjective_relationship}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetSubjectiveRelationshipRange" data-sync-input="mo-memoryBudgetSubjectiveRelationship" data-memory-budget-control value="${memoryBudgets.subjective_relationship}" min="0" max="50000" step="100"></div>
         <div class="mo-row mo-range-row"><label>물건·장소·세계 상태</label><input type="number" id="mo-memoryBudgetWorldState" data-memory-budget-control value="${memoryBudgets.world_state}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetWorldStateRange" data-sync-input="mo-memoryBudgetWorldState" data-memory-budget-control value="${memoryBudgets.world_state}" min="0" max="50000" step="100"></div>
-        <div class="mo-row mo-range-row"><label>비밀·정체 보호</label><input type="number" id="mo-memoryBudgetProtectedSecret" data-memory-budget-control value="${memoryBudgets.protected_secret}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetProtectedSecretRange" data-sync-input="mo-memoryBudgetProtectedSecret" data-memory-budget-control value="${memoryBudgets.protected_secret}" min="0" max="50000" step="100"></div>
+        <div class="mo-row">
+          <label>${t('settings.label.protectedSecretBudgetChars')}</label>
+          <input type="number" id="mo-protectedSecretBudgetChars" value="${s.protectedSecretBudgetChars ?? DEFAULT_SETTINGS.protectedSecretBudgetChars}" min="0" step="100">
+          <small>${t('settings.hint.protectedSecretBudgetChars')}</small>
+        </div>
         <div class="mo-row mo-range-row"><label>미해결 목표</label><input type="number" id="mo-memoryBudgetUnresolvedGoal" data-memory-budget-control value="${memoryBudgets.unresolved_goal}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetUnresolvedGoalRange" data-sync-input="mo-memoryBudgetUnresolvedGoal" data-memory-budget-control value="${memoryBudgets.unresolved_goal}" min="0" max="50000" step="100"></div>
         <div class="mo-row mo-range-row"><label>직접 근거</label><input type="number" id="mo-memoryBudgetDirectEvidence" data-memory-budget-control value="${memoryBudgets.direct_evidence}" min="0" max="50000" step="100"><input class="mo-range" type="range" id="mo-memoryBudgetDirectEvidenceRange" data-sync-input="mo-memoryBudgetDirectEvidence" data-memory-budget-control value="${memoryBudgets.direct_evidence}" min="0" max="50000" step="100"></div>
         <div class="mo-row">
@@ -54530,6 +54697,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             recentConversationReferenceCount: $("mo-recentConversationReferenceCount").value,
             llmRetryCount: $("mo-llmRetryCount").value,
             injectionBudgetExtraChars: $("mo-injectionBudgetExtraChars").value,
+            protectedSecretBudgetChars: $("mo-protectedSecretBudgetChars").value,
             memoryDeliveryBudgetMode: readValue("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode, true),
             memoryTransportMode: readValue("mo-memoryTransportMode", settings.memoryTransportMode, true),
             turnFinalizationMode: readValue("mo-turnFinalizationMode", settings.turnFinalizationMode, true),
@@ -54538,7 +54706,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
               character_objective: readValue("mo-memoryBudgetCharacterObjective", settings.memoryDeliveryBudgets.character_objective),
               subjective_relationship: readValue("mo-memoryBudgetSubjectiveRelationship", settings.memoryDeliveryBudgets.subjective_relationship),
               world_state: readValue("mo-memoryBudgetWorldState", settings.memoryDeliveryBudgets.world_state),
-              protected_secret: readValue("mo-memoryBudgetProtectedSecret", settings.memoryDeliveryBudgets.protected_secret),
               unresolved_goal: readValue("mo-memoryBudgetUnresolvedGoal", settings.memoryDeliveryBudgets.unresolved_goal),
               direct_evidence: readValue("mo-memoryBudgetDirectEvidence", settings.memoryDeliveryBudgets.direct_evidence),
             },
@@ -54566,6 +54733,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
             subLlmTimeoutMs: getSubLlmTimeoutSettingMs($("mo-subLlmTimeoutMs").value),
             subLlmTemperature: $("mo-subLlmTemperature").value,
             subLlmMaxCompletionTokens: $("mo-subLlmMaxCompletionTokens").value,
+            criticReferenceMaxChars: $("mo-criticReferenceMaxChars").value,
             subLlmReasoningPreset: $("mo-subLlmReasoningPreset").value.trim(),
             subLlmReasoningEffort: $("mo-subLlmReasoningEffort").value.trim(),
             subLlmReasoningBudgetTokens: $("mo-subLlmReasoningBudgetTokens").value,
@@ -54642,6 +54810,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           $("mo-subLlmTimeoutMs").value = settings.subLlmTimeoutMs || DEFAULT_SETTINGS.subLlmTimeoutMs;
           $("mo-subLlmTemperature").value = settings.subLlmTemperature;
           $("mo-subLlmMaxCompletionTokens").value = settings.subLlmMaxCompletionTokens;
+          $("mo-criticReferenceMaxChars").value = settings.criticReferenceMaxChars;
           $("mo-subLlmReasoningPreset").value = settings.subLlmReasoningPreset || "auto";
           $("mo-subLlmReasoningEffort").value = settings.subLlmReasoningEffort || "none";
           $("mo-subLlmReasoningBudgetTokens").value = settings.subLlmReasoningBudgetTokens || 0;
@@ -54668,6 +54837,7 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           $("mo-recentConversationReferenceCount").value = settings.recentConversationReferenceCount;
           $("mo-llmRetryCount").value = settings.llmRetryCount;
           $("mo-injectionBudgetExtraChars").value = settings.injectionBudgetExtraChars ?? DEFAULT_SETTINGS.injectionBudgetExtraChars;
+          setValueIfPresent("mo-protectedSecretBudgetChars", settings.protectedSecretBudgetChars ?? DEFAULT_SETTINGS.protectedSecretBudgetChars);
           setValueIfPresent("mo-memoryDeliveryBudgetMode", settings.memoryDeliveryBudgetMode || "auto");
           setValueIfPresent("mo-memoryTransportMode", settings.memoryTransportMode || "text");
           setValueIfPresent("mo-turnFinalizationMode", settings.turnFinalizationMode || "immediate_after_response");
@@ -54676,7 +54846,6 @@ button:disabled,input:disabled,select:disabled,textarea:disabled{opacity:.45;cur
           setValueIfPresent("mo-memoryBudgetCharacterObjective", refreshedMemoryBudgets.character_objective);
           setValueIfPresent("mo-memoryBudgetSubjectiveRelationship", refreshedMemoryBudgets.subjective_relationship);
           setValueIfPresent("mo-memoryBudgetWorldState", refreshedMemoryBudgets.world_state);
-          setValueIfPresent("mo-memoryBudgetProtectedSecret", refreshedMemoryBudgets.protected_secret);
           setValueIfPresent("mo-memoryBudgetUnresolvedGoal", refreshedMemoryBudgets.unresolved_goal);
           setValueIfPresent("mo-memoryBudgetDirectEvidence", refreshedMemoryBudgets.direct_evidence);
           syncMemoryDeliveryBudgetControls();

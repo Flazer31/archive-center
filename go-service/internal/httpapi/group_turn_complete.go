@@ -132,6 +132,9 @@ func (s *Server) handleCompleteTurn(w http.ResponseWriter, r *http.Request) {
 		completeTurnIdempotencyKey(req.ClientMeta),
 		completeTurnRequestFingerprint(req),
 		func(target http.ResponseWriter) {
+			if s.reuseWorldlineRecoveredCompletion(r.Context(), target, req) {
+				return
+			}
 			slog.DebugContext(r.Context(), "turn acceptance started", "request_id", workflowRequestID, "requested_turn", req.TurnIndex)
 			acceptance := s.beginCompleteTurnSourceAcceptance(r.Context(), req)
 			slog.InfoContext(r.Context(), "turn acceptance decided", "request_id", workflowRequestID,
@@ -776,6 +779,9 @@ func (s *Server) handleCompleteTurnDecoded(w http.ResponseWriter, r *http.Reques
 				}
 			}
 		} else {
+			// Configuration can arrive after this accepted turn. Capture its
+			// original input now so automatic recovery can replay it unchanged.
+			_, criticTrace, _ = s.runCompleteTurnCriticWithInputPolicy(ctx, sid, turnIndex, userText, assistantText, req.ContextMessages, req.OutputLanguageOverride, extractionCfg.Critic, true, s.completeTurnCriticInputPolicy(req.ClientMeta), completeTurnCriticInputReplay{SourceRevision: sourceAcceptance.Revision}, languageContext)
 			failReasons = append(failReasons, "critic_config_missing")
 			reprocessingReason = "critic_config_missing"
 			criticWorkflowStageHandled = true

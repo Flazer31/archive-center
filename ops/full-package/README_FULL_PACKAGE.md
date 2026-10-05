@@ -14,7 +14,7 @@ This is the lightweight Windows auto-install package for the version recorded in
 It includes:
 
 - Go backend
-- next-start package updater
+- managed package updater
 - per-user MariaDB and ChromaDB runtime installers
 - Archive Center.js
 - migrations
@@ -88,22 +88,26 @@ does not restart the stopped services.
 After a successful shutdown the BAT exits without an additional `pause`. It
 pauses only after a nonzero launcher exit so the error code remains visible.
 
-## Updates are applied on the next start
+## Apply an update and restart
 
-The Archive Center settings UI can check for an update and download a verified
-package into `.updates/`. It does not apply packages in the background and does
-not interrupt a running story session.
+The Archive Center settings UI checks for an update. Choosing **Update now**
+downloads a verified package into `.updates/` and requests a backend restart.
+The managed Windows launcher handles backend exit code 75 by applying the
+package and restarting immediately, so finish the current request before
+starting an update.
 
-On the next launcher start, before the env file, MariaDB, ChromaDB, or backend
-is opened, the launcher runs a temporary copy of `archive-center-updater.exe`.
+The launcher also checks for a remaining pending package on its next start,
+before opening the env file, MariaDB, ChromaDB, or backend. It runs a temporary
+copy of `archive-center-updater.exe` to apply the package.
 If no verified pending package exists, startup follows the normal path without
 changing package files. If a package is pending, the updater verifies the
 managed payload manifest, stages an atomic replacement, and keeps the old
 managed files available for rollback.
 
 After the existing local runtime services and additive schema migrations are
-ready, the launcher starts the updated backend and checks `/ready`. Only the
-main `ready` result is the update gate; an optional original-work reference
+ready, the launcher starts the updated backend and checks `/ready` and the exact
+target `/version`. The main `ready` result must report the backend as ready;
+an optional original-work reference
 vector degradation does not reject an otherwise healthy backend. A successful
 check commits the package. A failed check stops the candidate backend, restores
 the previous managed files, and starts the previous backend. If the updater
@@ -115,10 +119,12 @@ Updates do not move, replace, or copy `.runtime/`, `.updates/`,
 configured ChromaDB keep using their existing data directories. The MariaDB
 executable runtime remains outside the versioned package under
 `%LOCALAPPDATA%\ArchiveCenter`. The separately installed Python and ChromaDB
-runtime also remain outside the package. The v1 automatic updater
-rejects a package that adds or changes managed migration SQL or
-`mariadb-schema.exe`; database-changing releases require a separately reviewed
-manual migration path.
+runtime also remain outside the package. Supported direct updates allow changes
+to managed migration SQL and `mariadb-schema.exe`, including migration-file
+additions and removals, after the normal package and release-readiness checks.
+The launcher runs the updated `mariadb-schema.exe` to apply the package's schema
+migrations before starting the backend. File rollback restores the previous
+managed package files; it does not reverse SQL already applied to the database.
 
 ## RisuAI setup
 
@@ -166,8 +172,9 @@ See `WINDOWS_TRUST_AND_DEFENDER.md` for the submission checklist.
 
 Legacy 1.0 migration executables are not part of the normal Windows package.
 They are offline migration utilities, not normal startup dependencies. Users
-who still need to migrate an old `memory.db` must use the separately published
-Legacy Migration Tools package that matches this Archive Center release.
+who still need to migrate an old `memory.db` should preserve it and arrange
+a separate migration procedure. This release does not include a Legacy
+Migration Tools asset.
 
 ## Protect local env secrets
 
@@ -187,14 +194,3 @@ To edit settings later, double-click:
 
 Edit `.env.full.local`, then run `04_protect_env_windows.bat` again.
 
-## Do not ship local runtime data
-
-Do not put these into a release zip:
-
-- `.runtime/`
-- MariaDB, Python, or ChromaDB runtime binaries
-- database files
-- ChromaDB persist data
-- API keys
-- `.git`
-- `.runtime-cache`

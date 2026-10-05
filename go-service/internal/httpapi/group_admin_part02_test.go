@@ -1076,8 +1076,8 @@ func TestAdminReindexBlocksPartialClientMetaEmbeddingWithoutEnvFallback(t *testi
 	if cfgResolved.Embedder.Source != "client_meta_partial" {
 		t.Fatalf("embedding source = %q, want client_meta_partial", cfgResolved.Embedder.Source)
 	}
-	if cfgResolved.Embedder.APIKey != "" || cfgResolved.Embedder.Endpoint != "" {
-		t.Fatalf("partial client_meta must not be filled from env: %#v", cfgResolved.Embedder)
+	if cfgResolved.Embedder.APIKey != "" || cfgResolved.Embedder.Endpoint != "https://api.voyageai.com/v1/embeddings" {
+		t.Fatalf("partial client_meta must keep the provider default without env credential/endpoint fallback: %#v", cfgResolved.Embedder)
 	}
 
 	resp, err := srv.runAdminReindexJob(context.Background(), "sess-partial-embed", map[string]any{

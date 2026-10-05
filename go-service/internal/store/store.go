@@ -354,8 +354,9 @@ type SessionMigrationCompleteRequest struct {
 	OperatorNote    string
 	// RebuildPublicProjection reuses the canonical Go projection policy for
 	// receipts omitted by older copies. Empty text means public exclusion.
-	// It runs on retained extraction JSON inside the copy transaction, without I/O.
-	RebuildPublicProjection func(extractionJSON string) string
+	// It runs on retained extraction and the matching Memory.Evidence JSON
+	// inside the copy transaction, without I/O.
+	RebuildPublicProjection func(extractionJSON, storedEvidence string) string
 }
 
 // SessionMigrationCompleteResult reports the durable copy ledger written by

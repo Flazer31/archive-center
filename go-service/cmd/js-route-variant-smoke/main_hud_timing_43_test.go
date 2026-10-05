@@ -576,7 +576,7 @@ async function tick(){
 func TestHUDTransportErrorsStayShortAndDashboardRetainsDetails(t *testing.T) {
 	src := readArchiveCenterJS(t)
 	var production []string
-	for _, name := range []string{"escapeTurnWorkflowHUDHTML", "turnWorkflowHUDDismissButtonHTML", "turnWorkflowHUDStageStatus", "turnWorkflowHUDStageStatusColor", "turnWorkflowHUDStageDuration", "turnWorkflowHUDStageReason", "turnWorkflowHUDStageLedgerHTML", "turnWorkflowHUDCountPresentation", "turnWorkflowHUDCountLedgerHTML", "turnWorkflowHUDTimingHTML", "projectTurnWorkflowHUDPhaseView", "buildTurnWorkflowHUDPresentation", "turnWorkflowHUDSlotHTML", "buildTurnWorkflowHUDStackPresentation", "turnWorkflowHUDRecoveryPresentation", "turnWorkflowHUDErrorSummaryHTML", "turnWorkflowHUDTurnLabel", "turnWorkflowHUDCloseButtonOnly", "turnWorkflowHUDSeverityStyle", "turnWorkflowHUDWarningListHTML", "retainTurnWorkflowHUDHostTiming", "renderTurnWorkflowHUD", "rememberTurnWorkflowHUDHostWarning", "observeTurnWorkflowHUDTiming", "renderTurnWorkflowHUDSameRequestRetry", "finishTurnWorkflowHUDCurrentGeneration", "clearTurnWorkflowHUDTimer", "scheduleTurnWorkflowHUDElapsedFrame", "redactHostDiagnostic", "classifyTurnWorkflowHUDTransportFailure", "renderTurnWorkflowHUDTransportError", "renderTurnWorkflowHUDPreviousTransportError", "renderTurnWorkflowHUDPrevious"} {
+	for _, name := range []string{"escapeTurnWorkflowHUDHTML", "turnWorkflowHUDDismissButtonHTML", "turnWorkflowHUDStageStatus", "turnWorkflowHUDStageStatusColor", "turnWorkflowHUDStageDuration", "turnWorkflowHUDStageReason", "turnWorkflowHUDStageLedgerHTML", "turnWorkflowHUDCountPresentation", "turnWorkflowHUDCountLedgerHTML", "turnWorkflowHUDTimingHTML", "projectTurnWorkflowHUDPhaseView", "buildTurnWorkflowHUDPresentation", "turnWorkflowHUDSlotHTML", "buildTurnWorkflowHUDStackPresentation", "turnWorkflowHUDRecoveryPresentation", "turnWorkflowHUDErrorSummaryHTML", "turnWorkflowHUDTurnLabel", "turnWorkflowHUDCloseButtonOnly", "turnWorkflowHUDSeverityStyle", "turnWorkflowHUDWarningListHTML", "retainTurnWorkflowHUDHostTiming", "renderTurnWorkflowHUD", "rememberTurnWorkflowHUDHostWarning", "observeTurnWorkflowHUDTiming", "renderTurnWorkflowHUDSameRequestRetry", "finishTurnWorkflowHUDCurrentGeneration", "clearTurnWorkflowHUDTimer", "scheduleTurnWorkflowHUDElapsedFrame", "redactHostDiagnostic", "classifyTurnWorkflowHUDTransportFailure", "renderTurnWorkflowHUDTransportError", "renderTurnWorkflowHUDPreviousTransportError", "renderTurnWorkflowHUDPrevious", "observeTurnWorkflowHUDTranslation", "consumeTurnWorkflowHUDNotice", "queueTurnWorkflowHUDOperation"} {
 		production = append(production, extractArchiveCenterJSFunction(t, src, name))
 	}
 	production = append(production, extractArchiveCenterJSFunction(t, src, "dismissTurnWorkflowHUD"), extractArchiveCenterJSFunction(t, src, "turnWorkflowHUDIsEnabled"))
@@ -596,6 +596,7 @@ let _turnWorkflowHUDWatchToken=0,_turnWorkflowHUDWatchRunning=true;
 let _turnWorkflowHUDPreviousWatchToken=0,_turnWorkflowHUDPreviousWatchRunning=true,_turnWorkflowHUDPreviousRequestId='previous',_turnWorkflowHUDPreviousLastRevision=0;
 const TURN_WORKFLOW_HUD_SURFACE_SELECTOR='#fixture-hud';
 let _activeFinalConfirmationRequestContext={requestId:'current',characterIndex:3,chatIndex:2};
+const _turnWorkflowHUDConsumedNotices=new Set();
 const _turnWorkflowHUDHostWarningsByRequestId=new Map(),timers=new Map(),operations=[];
 let clock=10000,serial=0,control=true,composerAvailable=true,error='',selectedChat=2,readError=null,unavailable=false;
 Date.now=()=>clock;
@@ -621,7 +622,7 @@ const root={html:'',setInnerHTML:async function(html){this.html=html;},querySele
  return {};
 }};
 async function ensureTurnWorkflowHUDRoot(){return root;}
-function queueTurnWorkflowHUDOperation(label,fn){operations.push(fn);return Promise.resolve();}
+let _turnWorkflowHUDRenderChain=Promise.resolve();
 async function removeTurnWorkflowHUDDismissListeners(){}
 function takeTurnWorkflowHUDDismissListenerIds(){return [];}
 async function attachTurnWorkflowHUDDismiss(){}
@@ -635,17 +636,19 @@ function buildDashboardQueueObservations(){return [];}
 function getRequestTimeoutSettingMs(){return 15000;}
 async function bridgeFetch(path,options){assert.equal(path,'/dashboard/view-model');assert.equal(options.method,'POST');return {status:'ok',cards:[]};}
 function warnLog(){throw Error('dashboard unexpectedly failed');}
-async function flush(){while(operations.length)await operations.shift()();}
+async function flush(){let pending;do {pending=_turnWorkflowHUDRenderChain;await pending;} while(pending!==_turnWorkflowHUDRenderChain);}
 function view(){return {contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'current',revision:6,status:'awaiting_final_output',severity:'normal',
  host_timing:{started_ms:1000,main_started_ms:5000,backend_timing:{total_ms:4000}},
  current_stage:{key:'awaiting_final_output',label_key:'turn_hud.stage.awaiting_final_output',ordinal:6,total:12,status:'running',llm_call:false},stages:[]};}
 const previous={contract_version:TURN_WORKFLOW_HUD_CONTRACT,request_id:'previous',status:'running',severity:'normal',
  current_stage:{key:'critic_llm',label_key:'turn_hud.stage.critic_llm',ordinal:9,total:12,status:'running',llm_call:true,started_at:new Date(3000).toISOString()},stages:[]};
 async function mount(){
+ _activeFinalConfirmationRequestContext={requestId:"current",characterIndex:3,chatIndex:2};
  clearTurnWorkflowHUDTimer();control=true;composerAvailable=true;error='';selectedChat=2;unavailable=false;readError=null;
  _turnWorkflowHUDActiveRequestId='current';_turnWorkflowHUDCurrentFinalizationMode='next_user_input';
  _turnWorkflowHUDPreviousRequestId='previous';
  _turnWorkflowHUDLastView=view();_turnWorkflowHUDPreviousLastView=previous;
+ _turnWorkflowHUDLastRevision=0;_turnWorkflowHUDWatchRunning=true;
  _turnWorkflowHUDHostWarningsByRequestId.clear();_turnWorkflowHUDTerminalRequestId='';
  await applyTurnWorkflowHUDStack(root);
  assert.equal(_turnWorkflowHUDLastView.host_generation_control_seen,true);
@@ -660,6 +663,29 @@ async function tick(){
 (async()=>{
  for(const mode of ['normal','compact']){
   settings.turnWorkflowHUDMode=mode;
+  await mount();
+  _turnWorkflowHUDConsumedNotices.clear();
+  _activeFinalConfirmationRequestContext=null; // afterRequest detached the request
+  _turnWorkflowHUDLastView.host_generation_end={kind:'idle'};
+  observeTurnWorkflowHUDTiming('current','response_received',clock);
+  observeTurnWorkflowHUDTranslation('current','reading');await flush();
+  assert.ok(root.html.includes('turn_hud.translation.reading'),'translator reading HUD missing in '+mode);
+  assert.ok(!root.html.includes('turn_hud.result_unconfirmed'),'old Host idle hid translation read');
+  // A later backend awaiting revision cannot erase the Host source-read notice.
+  renderTurnWorkflowHUD({...view(),revision:7});await flush();
+  assert.ok(root.html.includes('turn_hud.translation.reading'));
+  observeTurnWorkflowHUDTranslation('current','ready');await flush();
+  assert.ok(!root.html.includes('turn_hud.translation.reading'),'ready kept pending notice');
+  observeTurnWorkflowHUDTranslation('current','reading');await flush();
+  observeTurnWorkflowHUDTranslation('current','unavailable');await flush();
+  assert.ok(root.html.includes('turn_hud.translation.unavailable'),'timeout notice missing in '+mode);
+  assert.ok(buildTurnWorkflowHUDPresentation(_turnWorkflowHUDLastView,'',mode).terminal,'timeout HUD still waiting');
+  assert.equal(_turnWorkflowHUDWatchRunning,false);
+  assert.ok(root.html.includes('data-turn-workflow-card="previous"'),'timeout erased previous card');
+  await mount();
+  observeTurnWorkflowHUDTranslation('older-request','unavailable');await flush();
+  assert.equal(_turnWorkflowHUDActiveRequestId,'current','old read timeout stole a new request HUD');
+  _activeFinalConfirmationRequestContext={requestId:'current',characterIndex:3,chatIndex:2};
   for(const kind of ['timeout','http_error','connection_failed','bridge_url_invalid','response_decode_failed']){
    await mount();
    const observed=_turnWorkflowHUDLastView;

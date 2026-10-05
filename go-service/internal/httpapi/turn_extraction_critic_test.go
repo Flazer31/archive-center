@@ -27,6 +27,59 @@ func combinedCriticPromptForTest(t *testing.T, userPrompt string) string {
 	return systemPrompt + "\n" + userPrompt
 }
 
+// This checks the shipped prompt contract and its example through the production
+// normalizer/delivery owner; it does not measure a model's extraction accuracy.
+func TestCriticSecretScopeExampleKeepsFactSpecificReaders(t *testing.T) {
+	prompt, source := readCriticSystemPrompt(filepath.Join("..", "..", "..", "prompts"))
+	if source == "fallback_builtin" {
+		t.Fatal("source critic_system.txt was not loaded")
+	}
+	marker := "Preserve the two distinct scopes:\n"
+	_, example, found := strings.Cut(strings.ReplaceAll(prompt, "\r\n", "\n"), marker)
+	if !found {
+		t.Fatal("critic prompt is missing the distinct-knowledge-scope example")
+	}
+	line, _, _ := strings.Cut(example, "\n")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(line), &payload); err != nil {
+		t.Fatal(err)
+	}
+	secrets := sliceFromAny(payload["protected_secrets"])
+	normalized := normalizeCriticExtraction(payload)
+	if len(sliceFromAny(normalized["protected_secrets"])) != len(secrets) {
+		t.Fatal("normalization merged fact-specific secret records")
+	}
+	before := mustCompactJSON(normalized)
+	readers := []string{"Mira", "Rowan", "Eren", "Visitor"}
+	for _, reader := range readers {
+		guard := prepareTurnProtectedMemoryGuardFromParsed(normalized, map[string]any{"current_pov": reader})
+		for _, raw := range secrets {
+			secret := mapFromAny(raw)
+			knows := containsStringFold(stringsFromAny(mapFromAny(secret["knowledge_scope"])["known_by"]), reader)
+			if strings.Contains(guard.LineText, stringFromMap(secret, "summary")) != knows {
+				t.Errorf("reader %q received the wrong scope for %q: %s", reader, secret["summary"], guard.LineText)
+			}
+		}
+	}
+	if before != mustCompactJSON(normalized) {
+		t.Fatal("delivery rewrote stored knowledge scopes")
+	}
+	// An old mixed summary is NOT repaired by this prompt update. It still
+	// follows its stored scope, so a historical correction must replace the data.
+	first := mapFromAny(secrets[0])
+	second := mapFromAny(secrets[1])
+	mixed := map[string]any{
+		"owner": first["owner"], "summary": first["summary"].(string) + "; " + second["summary"].(string),
+		"knowledge_scope": first["knowledge_scope"], "disclosure_policy": first["disclosure_policy"],
+	}
+	old := map[string]any{"protected_secrets": []any{mixed}}
+	oldBefore := mustCompactJSON(old)
+	guard := prepareTurnProtectedMemoryGuardFromParsed(old, map[string]any{"current_pov": "Eren"})
+	if !strings.Contains(guard.LineText, stringFromMap(second, "summary")) || oldBefore != mustCompactJSON(old) {
+		t.Fatal("stored mixed-record replay changed; reassess historical repair claims")
+	}
+}
+
 type characterTimelineRecordingStore struct {
 	*turnRecordingStore
 	characterStateRows []store.CharacterState
@@ -561,6 +614,22 @@ func TestCriticInputPolicyUsesObservedUserBudgetWithoutAnItemCountCap(t *testing
 	}
 	if policy.AuxiliaryMaxChars != policy.ConfiguredChars+policy.LedgerChars {
 		t.Fatalf("auxiliary budget does not combine the existing context and ledger budgets: %+v", policy)
+	}
+}
+
+func TestCriticReferenceBudgetIndependentOfPreInputContext(t *testing.T) {
+	srv := NewServer(config.Default())
+	if got := srv.completeTurnCriticInputPolicy(nil); got.ConfiguredChars != 4000 || got.Source != "critic_reference_default" {
+		t.Fatalf("missing Host setting must use the editable Critic default: %+v", got)
+	}
+	for _, chars := range []int{0, 975, 4000, 24000} {
+		got := srv.completeTurnCriticInputPolicy(map[string]any{"critic_input_budget_observation": map[string]any{
+			"contract_version":           completeTurnCriticInputBudgetObservationContract,
+			"critic_reference_max_chars": chars, "max_input_context_chars": 800,
+		}})
+		if got.ConfiguredChars != chars || got.AuxiliaryMaxChars != chars || got.Source != "risu_host_critic_reference_setting" {
+			t.Fatalf("Critic setting %d was replaced or capped by the unrelated input-context setting: %+v", chars, got)
+		}
 	}
 }
 

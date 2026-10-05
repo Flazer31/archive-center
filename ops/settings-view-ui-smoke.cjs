@@ -24,7 +24,7 @@ declarations=declarations.replace(/const attachSettingsEvents = [^\n]+\n/,'');
 declarations=declarations.slice(0,declarations.indexOf('async function bridgeFetch(path)'));
 declarations=declarations.replace("const PANEL_CSS = '',",'const PANEL_CSS = '+JSON.stringify(source.match(/const PANEL_CSS = `([\s\S]*?)`;/)[1])+',');
 declarations=declarations.replace('const resolveEffectiveCriticConfig = () => ({})','const resolveEffectiveCriticConfig = s => ({apiKey:s.subLlmApiKey,endpoint:s.subLlmEndpoint,model:s.subLlmModel})');
-const functions=['renderLlmProviderOptions','renderSettingsPanel','closeSettingsPanel','loadDashboardViewModel','bindLlmSettingsView','applyReasoningFieldsToPayload','sanitizeNumber','sanitizeEnumValue','normalizeLlmProvider','normalizeReasoningPreset','normalizeReasoningBudgetTokens','normalizeVertexFlexModeSetting','normalizeLlmGatewayServiceTierSetting','normalizeClaudePromptCacheModeSetting','sanitizeProviderOverrideJsonSetting','isValidBridgeUrlInput','sanitizeBridgeUrl'];
+const functions=['renderLlmProviderOptions','renderSettingsPanel','endpointSummary','closeSettingsPanel','loadDashboardViewModel','bindLlmSettingsView','applyReasoningFieldsToPayload','sanitizeNumber','sanitizeEnumValue','normalizeLlmProvider','normalizeReasoningPreset','normalizeReasoningBudgetTokens','normalizeVertexFlexModeSetting','normalizeLlmGatewayServiceTierSetting','normalizeClaudePromptCacheModeSetting','sanitizeProviderOverrideJsonSetting','isValidBridgeUrlInput','sanitizeBridgeUrl'];
 const events=between('      function getCurrentUiRequestTimeoutMs()', '      // /wakeup');
 const runtime=[declarations, "const COMPLETION_TOKEN_PROFILE_VERSION='fixture';", defaults, constants,
 `let settings={...DEFAULT_SETTINGS, pluginMainProvider:'openai',pluginMainModel:'gpt-5.6-luna',pluginMainApiKey:'publisher-fixture-key',pluginMainReasoningEffort:'max',pluginMainTemperature:0,pluginMainMaxCompletionTokens:4096,subLlmProvider:'claude',subLlmModel:'claude-sonnet-4-5',subLlmApiKey:'critic-fixture-key',subLlmReasoningBudgetTokens:2048,subLlmMaxCompletionTokens:3072};
@@ -46,7 +46,7 @@ async function bridgeFetch(route,options={}) {
  throw new Error('Unexpected HTTP route '+route);
 }
 const formatBridgeFailureForDisplay=()=> 'fixture failure';`,
-...functions.map(fn), 'function attachSettingsEvents(){const $ = id => document.getElementById(id);'+events+'}',
+...functions.map(fn), fn('diagnosticText'), 'function attachSettingsEvents(){const $ = id => document.getElementById(id);'+events+'}',
 `window.openPanel=()=>renderSettingsPanel({recompose:true});window.resetFixture=async()=>{settings={...DEFAULT_SETTINGS};await saveSettings();};`
 ].join('\n');
 
@@ -86,12 +86,14 @@ const formatBridgeFailureForDisplay=()=> 'fixture failure';`,
   assert.equal(criticTest.options.body.reasoning_input.budget,4096);
   // Explicit blank values and hidden provider-specific fields survive save/reopen.
   await page.locator('#mo-pluginMainEndpoint').fill('');await page.locator('#mo-subLlmApiKey').fill('');
+  await page.locator('#mo-criticReferenceMaxChars').fill('12500');
   await page.locator('#mo-pluginMainExtraHeadersJson').fill('{"X-Test":"saved"}');
   await page.locator('#mo-pluginMainVertexFlexMode').evaluate(el=>el.value='flex_only');
   await page.locator('#mo-save-btn').click();
   assert.deepEqual(await page.evaluate(()=>window.failures),[]);
   assert.equal(await page.evaluate(()=>window.saves.length),1);
   const saved=await page.evaluate(()=>window.currentSettings());
+  assert.equal(Number(saved.criticReferenceMaxChars),12500);
   assert.equal(saved.pluginMainApiKey,'publisher-fixture-key');assert.equal(saved.subLlmApiKey,'');assert.equal(saved.pluginMainEndpoint,'');
   assert.equal(Number(saved.pluginMainTemperature),0);assert.equal(Number(saved.pluginMainMaxCompletionTokens),4096);assert.equal(Number(saved.subLlmMaxCompletionTokens),3072);
   assert.equal(saved.pluginMainVertexFlexMode,'flex_only');assert.equal(saved.pluginMainExtraHeadersJson,'{"X-Test":"saved"}');
@@ -114,6 +116,7 @@ const formatBridgeFailureForDisplay=()=> 'fixture failure';`,
   await page.locator('#mo-reset-btn').click();
   assert.equal(await page.locator('#mo-pluginMainApiKey').inputValue(),'');assert.equal(await page.locator('#mo-subLlmApiKey').inputValue(),'');
   assert.equal(await page.evaluate(()=>window.saves.length),2);
+  assert.equal(await page.locator('#mo-criticReferenceMaxChars').inputValue(),'4000');
   assert.deepEqual(await page.evaluate(()=>window.failures),[]);assert.deepEqual(errors,[]);
   console.log('PASS: production settings DOM and role events; overlapping drafts, in-flight edits, offline preservation, save/reopen/reset, hidden fields, empty key, Publisher test, mobile; no external requests.');
  }finally{await browser.close();}

@@ -13,6 +13,7 @@ func TestSettings43OpensBeforeBackendStatusAndPreservesEdits(t *testing.T) {
 		extractArchiveCenterJSAsyncFunction(t, src, "renderSettingsPanel"),
 		extractArchiveCenterJSFunction(t, src, "renderLlmProviderOptions"),
 		extractArchiveCenterJSFunction(t, src, "diagnosticText"),
+		extractArchiveCenterJSFunction(t, src, "endpointSummary"),
 		extractArchiveCenterJSAsyncFunction(t, src, "loadDashboardViewModel"),
 	}, "\n")
 	script := `
@@ -20,7 +21,7 @@ const assert = require('node:assert/strict');
 const nodes = new Map(), pending = [], failures = [];
 let shown = 0, attached = 0, panelOpen = false, _settingsPanelRenderRequestId = 0;
 let _settingsActiveTab = 'settings';
-const settings = {bridgeUrl:'http://100.64.0.10:28080',memoryDeliveryBudgets:{}};
+const settings = {bridgeUrl:'http://100.64.0.10:28080',memoryDeliveryBudgets:{},embeddingProvider:'voyageai',embeddingModel:'voyage-context-4',embeddingEndpoint:''};
 const getSettings = () => settings, DEFAULT_SETTINGS = settings;
 const runtimeState = {queuePersistence:{}}, _settingsStorageStatus = {}, _turnHistory = [], _failedQueue = [];
 const _timelineState = {}, lastTurnTrace = null, _prepareTurnEverContacted = false;
@@ -29,7 +30,7 @@ const PANEL_CSS = '', LOG_PREFIX = 'test', VERSION = 'test', BUILD_LABEL = '', B
 const R = {showContainer:async () => { shown++; }};
 const t = x => x, escapeAttr = x => String(x ?? ''), debugLog = () => {};
 const warnLog = (...args) => failures.push(args.join(' '));
-const resolveEffectiveCriticConfig = () => ({}), endpointSummary = () => '';
+const resolveEffectiveCriticConfig = () => ({});
 const getRequestTimeoutSettingMs = () => 15000, buildDashboardQueueObservations = () => ({});
 const _turnWorkflowHUDHostWarningsByRequestId = new Map();
 const renderDashboardViewModel = vm => vm ? vm.html : 'unavailable';
@@ -76,6 +77,7 @@ const document = {
   assert.equal(attached, 1, 'connection controls must be bound before the response');
   await opening;
   const first = nodes.get('mo-settings-overlay');
+  assert.match(first.innerHTML, /자동 Endpoint · model: voyage-context-4/);
   first.querySelector('#mo-bridgeUrl').value = 'https://my-backend.example';
   pending[0].resolve({html:'first status'});
   await new Promise(resolve => setImmediate(resolve));

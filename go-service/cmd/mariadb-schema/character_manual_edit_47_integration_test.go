@@ -44,6 +44,24 @@ func TestCharacterManualEdit47HTTPMariaDBReprocessRollbackCopyAndDelivery(t *tes
 		if err != nil {
 			t.Fatal(err)
 		}
+		if !state.HasManualEdits() {
+			t.Fatal("manual edit marker absent after persistence operation")
+		}
+		response := call(http.MethodGet, "/characters/"+session, "")
+		characters, _ := response["characters"].([]any)
+		found := false
+		for _, raw := range characters {
+			item, _ := raw.(map[string]any)
+			if item["character_name"] == name {
+				found = true
+				if item["user_corrected"] != true {
+					t.Fatalf("manual marker absent from character API: %+v", item)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("manual character absent from API")
+		}
 		return state
 	}
 	const typedVoice = `{"contract_version":"voice_behavior_projection.v1","subject_entity_id":"entity-mira","subject_label":"Mira","principles":[{"principle_key":"automatic-old","support_refs":[]}]}`

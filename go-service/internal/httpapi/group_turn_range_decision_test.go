@@ -838,6 +838,7 @@ func activeSourceRevisionForUserAnchor(parentSessionID, parentHostChatID, userMe
 }
 
 func TestResolveRisuWorldlineObservationConfirmsExactParentActiveSource(t *testing.T) {
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
 	st := &durableSessionIdentityBindingStore{
 		Store: store.NewNoopStore(),
 		bindings: map[string]string{
@@ -848,6 +849,9 @@ func TestResolveRisuWorldlineObservationConfirmsExactParentActiveSource(t *testi
 		},
 	}
 	server := &Server{Store: st}
+	if _, err := server.saveBodyTrackingConfig("parent-session", bodyTrackingConfig{CycleTrackingEnabled: true, AutomaticPregnancyEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
 	req := sessionRoutingTurnResolutionRequest{
 		StableCharacterID: "character-stable",
 		HostChatID:        "child-chat",
@@ -876,6 +880,17 @@ func TestResolveRisuWorldlineObservationConfirmsExactParentActiveSource(t *testi
 		st.lineage[0].ContractVersion != store.RisuWorldlineForkLineageContractVersion ||
 		st.lineage[0].ForkSourceRole != "char" || st.lineage[0].InheritanceMode != "none" {
 		t.Fatalf("route/store state mode=%q lineage=%+v", st.lastMode, st.lineage)
+	}
+	child, err := server.loadBodyTrackingConfig("child-session")
+	if err != nil || !child.CycleTrackingEnabled || !child.AutomaticPregnancyEnabled || child.SimulationSeed != "" || len(child.Characters) != 0 {
+		t.Fatal("confirmed fork lost global switches or inherited a foreign model", child, err)
+	}
+	if _, err := server.saveBodyTrackingConfig("child-session", bodyTrackingConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	parent, err := server.loadBodyTrackingConfig("parent-session")
+	if err != nil || parent.CycleTrackingEnabled || parent.AutomaticPregnancyEnabled {
+		t.Fatal("branch OFF was not global", parent, err)
 	}
 }
 

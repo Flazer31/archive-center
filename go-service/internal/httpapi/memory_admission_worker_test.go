@@ -930,6 +930,47 @@ func TestCommittedAdmissionResultIsReusedBeforeSecondaryProjectionBuild(t *testi
 	}
 }
 
+func TestVectorReplayPreservesCommittedArrayOrder(t *testing.T) {
+	// Fresh extraction includes typed slices. JSON loading turns them into
+	// []any; reapplying payload normalization must not reorder the snapshot.
+	for _, index := range []string{memoryAdmissionIndexVersion, store.MemoryVectorOutboxContract} {
+		t.Run(index, func(t *testing.T) {
+			extraction := map[string]any{
+				"turn_summary":      "Zara told Ari the hidden password.",
+				"evidence_excerpts": []string{"Zara told Ari the hidden password."},
+				"protected_secrets": []any{map[string]any{
+					"owner": "Zara", "summary": "The hidden password is silver.",
+					"knowledge_scope": map[string]any{"known_by": []string{"Zara", "Ari"}},
+				}},
+				"subjective_entity_memories": []any{map[string]any{
+					"owner_entity_name": "Zara", "tags": []string{"z-first", "a-second"},
+				}},
+			}
+			st := newAdminCanonicalReplayTestStore("reindex-array-order", 1, extraction)
+			st.source.DerivedIndexVersion = index
+			st.source.DerivedResultHash = memoryAdmissionResultHashFromCanonicalJSON(st.source.SourceRevision, st.source.DerivedResultJSON, st.source.DerivedAdmissionVersion, st.source.DerivedExtractorVersion, index)
+			original := st.source.DerivedResultJSON
+			srv := &Server{Cfg: config.Default(), Store: st, Vector: vector.NewFakeVectorStore()}
+			for replay := 0; replay < 2; replay++ {
+				result := srv.processAcceptedSourceRevisionWithOptions(store.WithMemoryAdmissionVectorReplay(context.Background(), true, true), st.source, completeTurnExtractionConfig{}, acceptedSourceDerivationOptions{CommittedReplayOnly: true})
+				if result.State != "completed" || len(st.admissions) != replay+1 {
+					t.Fatalf("replay failed: %s %s", result.State, result.Failure)
+				}
+				admission := st.admissions[replay]
+				if admission.ResultJSON != original {
+					t.Fatal("vector replay reordered committed knowledge scope or tags")
+				}
+				if admission.Memory == nil || admission.Memory.SummaryJSON != original {
+					t.Fatal("vector replay changed the saved memory")
+				}
+				if result.CriticTrace["stage"] != "committed_result_replay" {
+					t.Fatal("vector replay did not use the stored extraction")
+				}
+			}
+		})
+	}
+}
+
 func TestAcceptedSourceReplaysCommittedExtractionWithoutCriticConfiguration(t *testing.T) {
 	extraction := map[string]any{
 		"turn_summary":      "Mina found the brass key.",

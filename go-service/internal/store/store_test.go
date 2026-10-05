@@ -993,12 +993,15 @@ func TestMariaDBSaveWorldRuleCreatesNewTurnVersion(t *testing.T) {
 		UpdatedAt:     now,
 	}
 
+	mock.ExpectQuery("SELECT pinned, suppressed, user_corrected FROM world_rules").
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"pinned", "suppressed", "user_corrected"}).AddRow(true, true, true))
 	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
 		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.ValueJSON, rule.SourceTurn, rule.SourceTurn).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}))
 	mock.ExpectExec("INSERT INTO world_rules").
 		WithArgs(rule.ChatSessionID, rule.Scope, nil, rule.Category, rule.Key, rule.ValueJSON,
-			rule.Genre, rule.SourceTurn, false, false, false, now, now).
+			rule.Genre, rule.SourceTurn, true, true, true, now, now).
 		WillReturnResult(sqlmock.NewResult(44, 1))
 
 	if err := m.SaveWorldRule(context.Background(), rule); err != nil {
@@ -1032,12 +1035,15 @@ func TestMariaDBSaveWorldRuleUpdatesSameTurnWithoutDuplicate(t *testing.T) {
 		UpdatedAt:     now,
 	}
 
+	mock.ExpectQuery("SELECT pinned, suppressed, user_corrected FROM world_rules").
+		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil).
+		WillReturnRows(sqlmock.NewRows([]string{"pinned", "suppressed", "user_corrected"}).AddRow(true, true, true))
 	mock.ExpectQuery("SELECT id FROM world_rules .*source_turn = \\?").
 		WithArgs(rule.ChatSessionID, rule.Scope, rule.Key, nil, rule.ValueJSON, rule.SourceTurn, rule.SourceTurn).
 		WillReturnRows(sqlmock.NewRows([]string{"id"}).AddRow(33))
 	mock.ExpectExec("UPDATE world_rules .*WHERE id = \\?").
 		WithArgs(nil, rule.Category, rule.ValueJSON, nil, rule.SourceTurn, rule.SourceTurn,
-			false, false, false, now, int64(33)).
+			true, true, true, now, int64(33)).
 		WillReturnResult(sqlmock.NewResult(0, 0))
 
 	if err := m.SaveWorldRule(context.Background(), rule); err != nil {
@@ -1150,8 +1156,8 @@ func TestMariaDBPatchPendingThreadUsesLiveColumnsAndMetadata(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT hook_metadata_json FROM pending_threads WHERE id = ?")).
 		WithArgs(int64(11)).
 		WillReturnRows(sqlmock.NewRows([]string{"hook_metadata_json"}).AddRow(`{"owner":"Nia"}`))
-	mock.ExpectExec(regexp.QuoteMeta("UPDATE pending_threads SET status = ?, hook_type = ?, description = ?, hook_metadata_json = ?, updated_at = ? WHERE id = ?")).
-		WithArgs("paused", "open_question", "Ask Mira why she hesitated", sqlmock.AnyArg(), sqlmock.AnyArg(), int64(11)).
+	mock.ExpectExec(regexp.QuoteMeta("UPDATE pending_threads SET status = ?, hook_type = ?, description = ?, user_corrected = ?, hook_metadata_json = ?, updated_at = ? WHERE id = ?")).
+		WithArgs("paused", "open_question", "Ask Mira why she hesitated", true, sqlmock.AnyArg(), sqlmock.AnyArg(), int64(11)).
 		WillReturnResult(sqlmock.NewResult(0, 1))
 
 	fields, err := m.PatchPendingThread(ctx, 11, map[string]any{
@@ -1162,7 +1168,7 @@ func TestMariaDBPatchPendingThreadUsesLiveColumnsAndMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PatchPendingThread: %v", err)
 	}
-	if got := strings.Join(fields, ","); got != "status,thread_type,title" {
+	if got := strings.Join(fields, ","); got != "status,thread_type,title,user_corrected" {
 		t.Fatalf("updated fields = %q", got)
 	}
 	if err := mock.ExpectationsWereMet(); err != nil {
@@ -1217,7 +1223,7 @@ func TestMariaDBSaveStorylineUsesOccurrenceIdentity46(t *testing.T) {
 				predicate, identity = "JSON_UNQUOTE(JSON_EXTRACT(ongoing_tensions_json, '$.lifecycle_key')) = ?", "book-occurrence-1"
 			}
 			mock.ExpectExec("(?s)UPDATE storylines.*"+regexp.QuoteMeta("WHERE chat_session_id = ? AND "+predicate)+"$").
-				WithArgs(s.Name, s.Status, nil, nil, nil, tensions, float64(0), 0, 0, 1, 2, false, false, false, s.UpdatedAt, s.ChatSessionID, identity).
+				WithArgs(s.Name, s.Status, nil, nil, nil, tensions, float64(0), 0, 0, 1, 2, s.UpdatedAt, s.ChatSessionID, identity).
 				WillReturnResult(sqlmock.NewResult(0, 0))
 			mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM storylines WHERE chat_session_id = ? AND "+predicate)).WithArgs(s.ChatSessionID, identity).WillReturnRows(sqlmock.NewRows([]string{"count"}).AddRow(1))
 			if err := (&mariadbStore{db: db}).SaveStoryline(context.Background(), &s); err != nil {

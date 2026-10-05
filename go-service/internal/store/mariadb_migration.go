@@ -650,7 +650,7 @@ func completeSessionMigrationSnapshotTx(ctx context.Context, tx *sql.Tx, req Ses
 				return nil, err
 			}
 			revision := source.Values["source_revision"].Text
-			text := strings.TrimSpace(req.RebuildPublicProjection(source.Values["derived_result_json"].Text))
+			text := strings.TrimSpace(req.RebuildPublicProjection(source.Values["derived_result_json"].Text, memory.Values["evidence"].Text))
 			item := &MemoryVectorOutboxItem{
 				ContractVersion: MemoryVectorOutboxContract, ChatSessionID: req.SourceSessionID,
 				SourceRevision: revision, DocumentID: documentID, Operation: "delete",

@@ -216,7 +216,7 @@ func TestMemorySelectionRowsStayDistinctAndOnlyTheSameRowIsRenderedOnceAcrossLan
 		t.Fatalf("different DB rows with the same text were collapsed: %#v", lines)
 	}
 	if intFromAny(trace["final_render_duplicate_count"], 0) != 1 ||
-		extractionStringFromAny(trace["final_render_dedup_scope"]) != "same_stored_memory_row_repeated_across_recall_lanes" {
+		extractionStringFromAny(trace["final_render_dedup_scope"]) != "same_stored_row_or_exact_protected_fact_artifact_and_boundary" {
 		t.Fatalf("same-row render dedupe trace mismatch: %#v", trace)
 	}
 }
@@ -347,7 +347,7 @@ func TestProtectedDeliveryGroupingRequiresTheSameOccurrenceFieldAndValue(t *test
 		t.Fatalf("exact artifact duplicate was not grouped once or different value was lost: groups=%#v", groups)
 	}
 }
-func TestProtectedDeliveryGroupingKeepsDifferentSourceCoordinates(t *testing.T) {
+func TestProtectedDeliveryGroupingKeepsLatestExactSecretAcrossSourceCoordinates(t *testing.T) {
 	items := []store.Memory{
 		{ID: 1, ChatSessionID: "protected-dedupe", TurnIndex: 4, SummaryJSON: `{"turn_summary":"first","protected_secrets":[{"owner":"Mira","secret_kind":"route","secret_summary":"hidden route","disclosure_policy":"owner_private_until_revealed","knowledge_scope":{"known_by":["Mira"]}}]}`},
 		{ID: 2, ChatSessionID: "protected-dedupe", TurnIndex: 5, SummaryJSON: `{"turn_summary":"second","protected_secrets":[{"owner":"Mira","secret_kind":"route","secret_summary":"hidden route","disclosure_policy":"owner_private_until_revealed","knowledge_scope":{"known_by":["Mira"]}}]}`},
@@ -357,8 +357,36 @@ func TestProtectedDeliveryGroupingKeepsDifferentSourceCoordinates(t *testing.T) 
 	for _, group := range groups {
 		count += len(group)
 	}
-	if count != len(items) {
-		t.Fatalf("different-turn protected memories were merged: %#v", groups)
+	if count != 1 || len(groups[prepareTurnMemoryLaneKey(items[1])]) != 1 {
+		t.Fatalf("identical secret and boundary must retain the latest source: %#v", groups)
+	}
+}
+
+func TestProtectedDeliveryGroupingPreservesFullBoundaryAndLatestSource(t *testing.T) {
+	secret := func() map[string]any {
+		return map[string]any{"owner": "Mira", "secret_kind": "route", "summary": "north tunnel", "disclosure_policy": "owner_private_until_revealed", "knowledge_scope": map[string]any{"known_by": []any{"Mira", "Rowan"}, "reader_visible": false}}
+	}
+	variants := []map[string]any{secret(), secret(), secret(), secret(), secret()}
+	variants[1]["evidence_excerpt"] = "newer evidence of the same fact"
+	mapFromAny(variants[1]["knowledge_scope"])["known_by"] = []any{"Rowan", "Mira"}
+	mapFromAny(variants[2]["knowledge_scope"])["suspected_by"] = []any{"Watchman"}
+	mapFromAny(variants[3]["knowledge_scope"])["unknown_to"] = []any{"Guard"}
+	variants[4]["summary"] = "south tunnel"
+	items := []store.Memory{}
+	for i, s := range variants {
+		items = append(items, store.Memory{ID: int64(i + 1), ChatSessionID: "boundary", TurnIndex: 5, SummaryJSON: mustCompactJSON(map[string]any{"turn_summary": "archive visit", "protected_secrets": []any{s}})})
+	}
+	before := mustCompactJSON(items)
+	groups, _ := buildPrepareTurnProtectedDeliveryGroups(prepareTurnMemoryLaneSelection{ProtectedSelected: items, ProtectedCandidates: items})
+	if len(groups) != len(items)-1 || len(groups[prepareTurnMemoryLaneKey(items[0])]) != 0 {
+		t.Fatalf("same fact not reused or distinct boundary lost: %#v", groups)
+	}
+	latest := groups[prepareTurnMemoryLaneKey(items[1])][0]
+	if latest.Memory.ID != items[1].ID || len(latest.SourceRowIDs) != 2 || !strings.Contains(latest.Memory.SummaryJSON, "newer evidence") {
+		t.Fatal("latest row/evidence/source lineage lost")
+	}
+	if mustCompactJSON(items) != before {
+		t.Fatal("stored rows changed")
 	}
 }
 

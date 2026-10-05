@@ -194,7 +194,8 @@ func Test44DeliveryCountsEqualActualUnicodeSections(t *testing.T) {
 		if sections > 0 {
 			sum += 2 * (sections - 1)
 		}
-		if sum != len([]rune(extractionStringFromAny(plan["final_text"]))) || sum > cap {
+		secret := mapFromAny(plan["protected_secret_budget"])
+		if sum != len([]rune(extractionStringFromAny(plan["final_text"]))) || sum > cap+intFromAny(secret["used_chars"], 0) || len([]rune(stringFromMap(plan, "main_memory_text"))) > cap || intFromAny(secret["used_chars"], 0) > intFromAny(secret["cap_chars"], 0) {
 			t.Fatal("whole delivery counter/budget mismatch")
 		}
 	}

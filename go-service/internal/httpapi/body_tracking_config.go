@@ -59,7 +59,22 @@ func (c *bodyCharacterConfig) UnmarshalJSON(data []byte) error {
 
 type bodyTrackingSettingsFile struct {
 	ContractVersion string                        `json:"contract_version"`
+	Global          bodyTrackingSwitches          `json:"global"`
 	Sessions        map[string]bodyTrackingConfig `json:"sessions"`
+	Migration       *bodyTrackingMigration        `json:"migration,omitempty"`
+}
+
+type bodyTrackingSwitches struct {
+	CycleTrackingEnabled      bool `json:"cycle_tracking_enabled"`
+	AutomaticPregnancyEnabled bool `json:"automatic_pregnancy_enabled"`
+}
+
+type bodyTrackingMigration struct {
+	Rule                    string `json:"rule"`
+	SessionCount            int    `json:"session_count"`
+	CycleOnSessionCount     int    `json:"cycle_on_session_count"`
+	PregnancyOnSessionCount int    `json:"pregnancy_on_session_count"`
+	BackupPath              string `json:"backup_path"`
 }
 
 func bodyTrackingSettingsPath() (string, error) {
@@ -71,7 +86,7 @@ func bodyTrackingSettingsPath() (string, error) {
 }
 
 func readBodyTrackingSettings() (bodyTrackingSettingsFile, error) {
-	out := bodyTrackingSettingsFile{ContractVersion: "body_tracking_settings.v1", Sessions: map[string]bodyTrackingConfig{}}
+	out := bodyTrackingSettingsFile{ContractVersion: "body_tracking_settings.v2", Sessions: map[string]bodyTrackingConfig{}}
 	path, err := bodyTrackingSettingsPath()
 	if err != nil {
 		return out, err
@@ -83,11 +98,45 @@ func readBodyTrackingSettings() (bodyTrackingSettingsFile, error) {
 	if err != nil {
 		return out, err
 	}
+	out.ContractVersion = "" // A legacy file may omit its version.
 	if err = json.Unmarshal(data, &out); err != nil {
 		return out, err
 	}
 	if out.Sessions == nil {
 		out.Sessions = map[string]bodyTrackingConfig{}
+	}
+	if out.ContractVersion != "body_tracking_settings.v2" {
+		migration := &bodyTrackingMigration{Rule: "any_session_on_per_toggle", SessionCount: len(out.Sessions)}
+		for _, c := range out.Sessions {
+			if c.CycleTrackingEnabled {
+				migration.CycleOnSessionCount++
+			}
+			if c.AutomaticPregnancyEnabled {
+				migration.PregnancyOnSessionCount++
+			}
+		}
+		// Preserve the exact original bytes before replacing the legacy file.
+		backup, backupErr := os.CreateTemp(filepath.Dir(path), "body-tracking.v1-*.bak")
+		if backupErr != nil {
+			return out, backupErr
+		}
+		migration.BackupPath = filepath.Base(backup.Name())
+		_, backupErr = backup.Write(data)
+		if backupErr == nil {
+			backupErr = backup.Sync()
+		}
+		closeErr := backup.Close()
+		if backupErr != nil {
+			return out, backupErr
+		}
+		if closeErr != nil {
+			return out, closeErr
+		}
+		out.Global = bodyTrackingSwitches{migration.CycleOnSessionCount > 0, migration.PregnancyOnSessionCount > 0}
+		out.ContractVersion, out.Migration = "body_tracking_settings.v2", migration
+		if err = writeBodyTrackingSettings(out); err != nil {
+			return out, err
+		}
 	}
 	return out, nil
 }
@@ -106,7 +155,23 @@ func writeBodyTrackingSettings(settings bodyTrackingSettingsFile) error {
 	}
 	name := tmp.Name()
 	defer os.Remove(name)
-	if err = json.NewEncoder(tmp).Encode(settings); err == nil {
+	// Session JSON retains only the model. The legacy API still exposes both
+	// toggles through bodyTrackingConfig, populated from Global on every read.
+	type model struct {
+		Characters     []bodyCharacterConfig `json:"characters"`
+		SimulationSeed string                `json:"simulation_seed,omitempty"`
+	}
+	models := make(map[string]model, len(settings.Sessions))
+	for sid, c := range settings.Sessions {
+		models[sid] = model{c.Characters, c.SimulationSeed}
+	}
+	var payload any = struct {
+		ContractVersion string                 `json:"contract_version"`
+		Global          bodyTrackingSwitches   `json:"global"`
+		Sessions        map[string]model       `json:"sessions"`
+		Migration       *bodyTrackingMigration `json:"migration,omitempty"`
+	}{settings.ContractVersion, settings.Global, models, settings.Migration}
+	if err = json.NewEncoder(tmp).Encode(payload); err == nil {
 		err = tmp.Sync()
 	}
 	closeErr := tmp.Close()
@@ -120,10 +185,12 @@ func writeBodyTrackingSettings(settings bodyTrackingSettingsFile) error {
 }
 
 func (s *Server) storedBodyTrackingConfig(sid string) (bodyTrackingConfig, bool, error) {
-	s.RuntimeConfigMu.RLock()
-	defer s.RuntimeConfigMu.RUnlock()
+	s.RuntimeConfigMu.Lock()
+	defer s.RuntimeConfigMu.Unlock()
 	settings, err := readBodyTrackingSettings()
 	c, exists := settings.Sessions[sid]
+	c.CycleTrackingEnabled = settings.Global.CycleTrackingEnabled
+	c.AutomaticPregnancyEnabled = settings.Global.AutomaticPregnancyEnabled
 	if c.Characters == nil {
 		c.Characters = []bodyCharacterConfig{}
 	}
@@ -206,7 +273,7 @@ func (s *Server) initializeAutomaticBodyTracking(ctx context.Context, sid string
 		return stored, err
 	}
 	if stored.SimulationSeed == "" {
-		stored, err = s.saveBodyTrackingConfig(sid, stored)
+		stored, err = s.saveBodyTrackingSettings(sid, stored, false)
 		if err != nil {
 			return stored, err
 		}
@@ -248,7 +315,7 @@ func (s *Server) initializeAutomaticBodyTracking(ctx context.Context, sid string
 		}
 	}
 	if before != mustCompactJSON(stored) {
-		if _, err = s.saveBodyTrackingConfig(sid, stored); err != nil {
+		if _, err = s.saveBodyTrackingSettings(sid, stored, false); err != nil {
 			return effective, err
 		}
 	}
@@ -256,12 +323,23 @@ func (s *Server) initializeAutomaticBodyTracking(ctx context.Context, sid string
 }
 
 func (s *Server) saveBodyTrackingConfig(sid string, c bodyTrackingConfig) (bodyTrackingConfig, error) {
+	return s.saveBodyTrackingSettings(sid, c, true)
+}
+
+// Only an explicit settings save changes common switches. Automatic model
+// initialization must not overwrite a newer user choice with an earlier read.
+func (s *Server) saveBodyTrackingSettings(sid string, c bodyTrackingConfig, saveGlobal bool) (bodyTrackingConfig, error) {
 	s.RuntimeConfigMu.Lock()
 	defer s.RuntimeConfigMu.Unlock()
 	settings, err := readBodyTrackingSettings()
 	if err != nil {
 		return c, err
 	}
+	if saveGlobal {
+		settings.Global = bodyTrackingSwitches{c.CycleTrackingEnabled, c.AutomaticPregnancyEnabled}
+	}
+	c.CycleTrackingEnabled = settings.Global.CycleTrackingEnabled
+	c.AutomaticPregnancyEnabled = settings.Global.AutomaticPregnancyEnabled
 	c.SimulationSeed = settings.Sessions[sid].SimulationSeed
 	origins := map[string]string{}
 	for _, previous := range settings.Sessions[sid].Characters {
@@ -445,7 +523,7 @@ func (s *Server) bodyTrackingSettingsView(ctx context.Context, sid string, c bod
 	}
 	c.SimulationSeed = ""
 	return map[string]any{
-		"status": "ok", "chat_session_id": sid, "settings": c,
+		"status": "ok", "chat_session_id": sid, "settings": c, "toggle_scope": "global",
 		"roster": c.Characters, "default_character": defaultBodyCharacterConfig(),
 		"target_mode": "automatic_female", "age_policy": "not_used",
 		"additional_memory_budget_chars": map[bool]int{true: bodyTrackingAdditionalBudgetChars, false: 0}[c.CycleTrackingEnabled || c.AutomaticPregnancyEnabled],
@@ -477,6 +555,9 @@ func (s *Server) handleBodyTrackingSettings(w http.ResponseWriter, r *http.Reque
 		if err = json.Unmarshal(payload, &envelope); err == nil && envelope.RestoreSnapshot != nil {
 			c = envelope.RestoreSnapshot.Config
 			err = s.restoreBodyTrackingConfig(sid, c)
+			if err == nil {
+				c, err = s.loadBodyTrackingConfig(sid)
+			}
 		} else if err = json.Unmarshal(payload, &c); err == nil {
 			c, err = s.saveBodyTrackingConfig(sid, c)
 			if err == nil {

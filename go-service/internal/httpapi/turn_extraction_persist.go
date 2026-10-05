@@ -98,9 +98,13 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	result := artifactSaveResult{EmbeddingStatus: "not_requested", VectorStatus: "not_requested"}
 	extraction = s.captureSourceStoryClock(ctx, sid, turnIndex, extraction, content)
 	var resolved bool
-	extraction, resolved = s.resolveCommittedMemoryAdmissionExtraction(ctx, sid, extraction, &result)
+	var committedResultJSON string
+	extraction, committedResultJSON, resolved = s.resolveCommittedMemoryAdmissionExtraction(ctx, sid, extraction, &result)
 	if !resolved {
 		return result
+	}
+	if committedResultJSON != "" {
+		ctx = context.WithValue(ctx, committedMemoryAdmissionResultContextKey{}, committedResultJSON)
 	}
 	observation := mapFromAny(mapFromAny(extraction["temporal_context"])["observed_at"])
 	if len(observation) == 0 {
@@ -150,7 +154,10 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 	}
 	extraction = appendPreciseMemoryEvidenceExcerpts(ctx, extraction)
 	extraction = appendNarrativeStateEvidenceExcerpts(extraction)
-	publicProjection := buildPublicMemoryProjection(extraction, "")
+	if committedResultJSON == "" {
+		extraction = s.retainPredecessorGoalKnowledgeMetadata(ctx, sid, turnIndex, extraction, content, existingEvidence, now, &result)
+	}
+	publicProjection := buildPublicMemoryProjection(extraction, "", content)
 	memorySearchText := publicProjection.SearchText
 	searchText := strings.TrimSpace(memorySearchText.Text)
 	embedding := "[]"
@@ -217,7 +224,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 				EmbeddingModel:        embeddingModel,
 				Importance:            finalImportance / 10.0,
 				EmotionalBoost:        emotionalBoost,
-				Evidence:              mustCompactJSON(map[string]any{"evidence_excerpts": stringsFromAny(extraction["evidence_excerpts"]), "relationship_memory": extraction["relationship_memory"]}),
+				Evidence:              memoryAdmissionEvidenceJSON(extraction, content),
 				EmotionalIntensity:    emotionalIntensity,
 				NarrativeSignificance: narrativeSignificance,
 				PlaceWing:             stringFromMap(archiveHint, "wing"),
@@ -242,7 +249,7 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 			}
 		}
 
-		privateEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
+		privateEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction, content)
 		for excerptIndex, text := range stringsFromAny(extraction["evidence_excerpts"]) {
 			originalText := text
 			text = sanitizeEvidenceExcerptForTurn(text, content)
@@ -254,9 +261,8 @@ func (s *Server) saveCriticExtractionArtifacts(ctx context.Context, sid string, 
 				result.addSkipReason("direct_evidence", "duplicate_source_turn_excerpt", map[string]any{"turn_index": turnIndex, "text": text})
 				continue
 			}
-			normalizedEvidence := normalizeArtifactDedupeText(text)
 			evidenceKind := "turn_excerpt"
-			if privateEvidenceKeys[normalizedEvidence] {
+			if memoryAdmissionPerspectiveEvidenceContains(privateEvidenceKeys, text) {
 				evidenceKind = "perspective_scoped_turn_excerpt"
 			}
 			ev := &store.DirectEvidence{

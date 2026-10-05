@@ -494,8 +494,11 @@ func (m *mariadbStore) ListPendingThreads(ctx context.Context, chatSessionID, st
 }
 
 func (m *mariadbStore) PatchPendingThread(ctx context.Context, hookID int64, updates map[string]any) ([]string, error) {
+	if len(updates) > 0 {
+		updates["user_corrected"] = true
+	}
 	return m.patchPendingThreadFields(ctx, hookID, updates, []string{
-		"status", "thread_type", "title", "owner", "target", "confidence", "details_json", "resolution_note",
+		"status", "thread_type", "title", "owner", "target", "confidence", "details_json", "resolution_note", "user_corrected",
 	})
 }
 

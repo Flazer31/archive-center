@@ -12,10 +12,10 @@ import (
 const SessionMigrationModeStitch = "stitch_keep_sources"
 
 type SessionStitchRequest struct {
-	SourceSessionIDs        []string            `json:"source_session_ids"`
-	CurrentSessionID        string              `json:"current_session_id"`
-	OperationID             string              `json:"operation_id"`
-	RebuildPublicProjection func(string) string `json:"-"`
+	SourceSessionIDs        []string                                           `json:"source_session_ids"`
+	CurrentSessionID        string                                             `json:"current_session_id"`
+	OperationID             string                                             `json:"operation_id"`
+	RebuildPublicProjection func(extractionJSON, storedEvidence string) string `json:"-"`
 }
 
 type SessionStitchSegment struct {
@@ -259,7 +259,7 @@ func sessionStitchJSON(raw string, offset int, replacements map[string]string) s
 	return string(encoded)
 }
 
-func sessionStitchSnapshot(ids []string, snapshots []map[string][]sessionMigrationRow, current string, rebuild func(string) string, currentImportedThrough ...int) (map[string][]sessionMigrationRow, []SessionStitchSegment, error) {
+func sessionStitchSnapshot(ids []string, snapshots []map[string][]sessionMigrationRow, current string, rebuild func(string, string) string, currentImportedThrough ...int) (map[string][]sessionMigrationRow, []SessionStitchSegment, error) {
 	out := map[string][]sessionMigrationRow{}
 	segments := []SessionStitchSegment{}
 	offset := 0
@@ -310,7 +310,7 @@ func sessionStitchSnapshot(ids []string, snapshots []map[string][]sessionMigrati
 			if err := sessionMigrationValidateAdmissionResult(rev); err != nil {
 				return nil, nil, err
 			}
-			text := rebuild(rev.Values["derived_result_json"].Text)
+			text := rebuild(rev.Values["derived_result_json"].Text, memory.Values["evidence"].Text)
 			operation := "upsert"
 			if strings.TrimSpace(text) == "" {
 				operation = "delete"

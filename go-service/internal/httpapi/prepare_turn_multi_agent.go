@@ -23,6 +23,10 @@ import (
 // This is request-local preprocessing, not another memory store or Publisher.
 const multiAgentContract = "memory_preprocessing.v1"
 
+// Explain existing metadata at both model-reading boundaries. This does not
+// populate missing provenance or change admission, selection or disclosure rules.
+const multiAgentKnowledgeScopeReading = "Knowledge scope: empty, null or absent allowed_viewers/viewers supplies no named readers; absence is not evidence that nobody or everybody knows. public, public_projection and general are source classification, not universal character awareness. source_scoped retains the source's scope; read its text and explicit disclosure evidence without inventing readers. Preserve named owners and viewers; participation, possession and relationship endpoints alone do not establish knowledge."
+
 var multiAgentRoles = []string{"event_recent", "character_objective", "subjective_relationship", "world_state", "unresolved_goal"}
 
 var multiAgentRoleNames = map[string]string{
@@ -51,6 +55,7 @@ Each role has at most one search query and one supplemental analysis. When searc
 // Transport vocabulary also accompanies saved editorial prompts. Stored user
 // prompts stay intact; this describes how their results reach the second call.
 const multiAgentReviewTransport = `Response transport for the current analysis_round:
+Selection and interpretation notes must respect the supplied fact-level known_by, unknown_to, suspected_by, misinformed_by and revealed_to; do not infer a knower or co-planner from shared scene participation, proximity or a relationship. Hearing an instruction does not establish knowledge of the full plan. Keep different facts' knowledge scopes separate; preserve suspicion, misinformation and disclosure as recorded rather than promoting them to knowledge.
 Selection fields use only the matching arrays in YOUR selectable_refs. candidates, turn_summaries and lorebook_candidates are selectable; search_evidence and related_evidence are reading support. Example: if selected_ids allows F1 but search_evidence supplies F9, choose F1 when useful and explain the change supported by F9 in its reason; do not return F9 as your selection. If no assigned candidate benefits, omit it. S refs are selected_summary_ids only for event_recent; world_state alone selects L refs. This is a reference directory, not a quota. An omitted second-round list preserves the corresponding first-round list; explicit [] clears it. Always return complete lists for the surfaces you actually reassessed.
 Reconcile open commitments with later observed outcomes even when their titles or stored keys differ. A completed earlier appointment can explain history but is not still an unresolved task. Keep genuinely remaining duties and distinct recurrences separate. Do not infer completion from a deadline alone. When stored status and observed outcome disagree, attribute the discrepancy in a useful selected reason rather than asserting both as current. Selection does not delete or rewrite the stored record.
 Recent context: recent_context_policy=full_configured keeps the configured recent conversations verbatim in both rounds, including older assistant responses. Current input is separate. Source turns identify stored records; story time comes from their text. If the supplied packet uses stored summaries, their labels and source refs distinguish them from original dialogue.
@@ -1003,6 +1008,7 @@ func multiAgentRecentPassages(recent any) []map[string]any {
 }
 
 func multiAgentModelInput(input map[string]any, round int) string {
+	hasLinkedState := false
 	packed := make(map[string]any, len(input)+3)
 	for key, value := range input {
 		packed[key] = value
@@ -1065,7 +1071,7 @@ func multiAgentModelInput(input map[string]any, round int) string {
 	scopes, scopeKeys := map[string]any{}, map[string]string{}
 	provenance := func(item map[string]any) map[string]any {
 		source := map[string]any{}
-		for _, key := range []string{"source_ref", "source_table", "source_turn", "visibility", "perspective_owner", "allowed_viewers"} {
+		for _, key := range []string{"source_ref", "source_table", "source_turn", "visibility", "perspective_owner", "allowed_viewers", "knowledge_boundaries"} {
 			if value, ok := item[key]; ok {
 				source[key] = value
 			}
@@ -1086,6 +1092,11 @@ func multiAgentModelInput(input map[string]any, round int) string {
 					item[k] = v
 				}
 			}
+			if reading, ok := item["original_reading"]; ok {
+				item["text"] = reading
+				delete(item, "original_reading")
+				hasLinkedState = true
+			}
 			if id, ref := extractionStringFromAny(original["id"]), extractionStringFromAny(original["ref"]); id != "" && ref != "" {
 				refs[id] = ref
 			}
@@ -1099,14 +1110,14 @@ func multiAgentModelInput(input map[string]any, round int) string {
 				if ref == "" {
 					ref = fmt.Sprintf("P%d", len(sources)+1)
 					compact := map[string]any{}
-					aliases := map[string]string{"source_ref": "r", "source_table": "t", "source_turn": "n", "visibility": "v", "perspective_owner": "o", "allowed_viewers": "a"}
+					aliases := map[string]string{"source_ref": "r", "source_table": "t", "source_turn": "n", "visibility": "v", "perspective_owner": "o", "allowed_viewers": "a", "knowledge_boundaries": "b"}
 					for field, value := range source {
 						compact[aliases[field]] = value
 					}
 					// Row identity/time vary; table and disclosure scope often repeat
 					// hundreds of times. Factor those values without merging rows.
 					group := map[string]any{}
-					for _, field := range []string{"t", "v", "o", "a"} {
+					for _, field := range []string{"t", "v", "o", "a", "b"} {
 						if value, exists := compact[field]; exists {
 							group[field] = value
 							delete(compact, field)
@@ -1172,11 +1183,14 @@ func multiAgentModelInput(input map[string]any, round int) string {
 		format[k] = v
 	}
 	if len(sources) > 0 {
-		format["source_catalog"] = "source names a P row: r=source_ref, n=source_turn, g=G entry in source_scopes. G fields: t=source_table, v=visibility, o=perspective_owner, a=allowed_viewers. Read the row and its scope together. F/S/L refs identify exact original evidence."
+		format["source_catalog"] = "source names a P row: r=source_ref, n=source_turn, g=G entry in source_scopes. G fields: t=source_table, v=visibility, o=perspective_owner, a=allowed_viewers. Read the row and its scope together. F/S/L refs identify exact original evidence. " + multiAgentKnowledgeScopeReading
 		packed["source_catalog"] = sources
 		packed["source_scopes"] = scopes
 	}
 	format["canonical_ids"] = "Return the supplied F/S/L refs; Go retains their exact canonical IDs."
+	if hasLinkedState {
+		format["linked_state"] = "Read each candidate's text together with its linked_state, resolving shared_record entries. Linked state is a separately dated stored observation, not proof that it remains true now. Its source turn belongs to that state, not to the candidate's original event. Prefer later explicit evidence for the same attribute; do not rewrite history."
+	}
 	format["recent_conversation"] = "Configured recent completed conversations, newest first. The latest conversation and user directions remain original. Older assistant text can use a stored public summary, labeled by Source and summary_sources; a summary is a condensed account. Text contains ordered C passages copied from this reading context. C refs are context, separate from selectable F/S/L memories, and keep their positions in both rounds."
 	format["recent_context_refs"] = "C refs select verbatim recent passages for this role's supplemental review, independently from final memory selection."
 	if input["recent_context_policy"] == "full_configured" {
@@ -1334,7 +1348,11 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 		if c.Minimum != nil {
 			text = c.Minimum.Text
 		}
-		groups[group] = append(groups[group], map[string]any{"ref": refs[c.SummaryID], "id": c.SummaryID, "source_ref": c.SourceRef, "text": text, "source_turn": c.SourceTurn})
+		item := map[string]any{"ref": refs[c.SummaryID], "id": c.SummaryID, "source_ref": c.SourceRef, "text": text, "source_turn": c.SourceTurn}
+		if len(c.KnowledgeBoundaries) > 0 {
+			item["knowledge_boundaries"] = c.KnowledgeBoundaries
+		}
+		groups[group] = append(groups[group], item)
 	}
 	for g := 2; g < len(groups); g++ {
 		sort.SliceStable(groups[g], func(i, j int) bool {
@@ -2140,7 +2158,7 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 		}
 		scopes, refs := []map[string]any{}, []string{}
 		for _, source := range sources {
-			scope := publisherModelSupportItem(source, []string{"source_table", "source_turn", "visibility", "perspective_owner", "allowed_viewers"})
+			scope := publisherModelSupportItem(source, []string{"source_table", "source_turn", "visibility", "perspective_owner", "allowed_viewers", "knowledge_boundaries"})
 			sourceRefs := stringsFromAny(source["source_refs"])
 			if ref := extractionStringFromAny(source["source_ref"]); ref != "" {
 				sourceRefs = appendUniqueStringValues(sourceRefs, ref)
@@ -2231,9 +2249,9 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 			if call.Round != role.SelectionRound {
 				continue
 			}
-			for _, raw := range outputFidelityLineageSlice(call.Input["candidates"]) {
+			for _, raw := range append(outputFidelityLineageSlice(call.Input["candidates"]), outputFidelityLineageSlice(call.Input["turn_summaries"])...) {
 				item := mapFromAny(raw)
-				scope := publisherModelSupportItem(item, []string{"visibility", "perspective_owner", "allowed_viewers"})
+				scope := publisherModelSupportItem(item, []string{"visibility", "perspective_owner", "allowed_viewers", "knowledge_boundaries"})
 				key, _ := json.Marshal(scope)
 				if !seenScopes[string(key)] {
 					scopes = append(scopes, scope)
@@ -2252,9 +2270,21 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 			ref := fmt.Sprintf("P%d", i)
 			scope := mapFromAny(sourceCatalog[ref])
 			fields := []string{}
-			for _, field := range []struct{ key, label string }{{"source_turn", "turn"}, {"visibility", "visibility"}, {"perspective_owner", "owner"}, {"allowed_viewers", "viewers"}} {
-				if value, exists := scope[field.key]; exists {
-					fields = append(fields, field.label+": "+prepareTurnMemoryDisplayFields(value))
+			for _, field := range []struct{ key, label string }{{"source_turn", "turn"}, {"visibility", "visibility"}, {"perspective_owner", "owner"}, {"allowed_viewers", "viewers"}, {"knowledge_boundaries", "fact boundaries"}} {
+				value, exists := scope[field.key]
+				display := prepareTurnMemoryDisplayFields(value)
+				switch field.key {
+				case "perspective_owner":
+					if strings.TrimSpace(extractionStringFromAny(value)) == "" {
+						continue
+					}
+				case "allowed_viewers":
+					if len(stringsFromAny(value)) == 0 {
+						continue
+					}
+				}
+				if exists {
+					fields = append(fields, field.label+": "+display)
 				}
 			}
 			catalog = append(catalog, ref+" — "+strings.Join(fields, "; "))
@@ -2263,7 +2293,7 @@ func buildPrepareTurnPreprocessingNotes(selection *multiAgentSelection, plan map
 		if selection.JevReview != nil {
 			reviewGuidance = " Jev labels qualify editor interpretations, not stored facts. Follow original evidence and linked current state over a contradicted interpretation; unknown is not false. Historical facts remain past. Private/model information does not establish character awareness."
 		}
-		text = "[Preprocessing Specialist Notes]\nThese are attributed AI interpretations beside the original evidence. F/S refs identify individual memories; L refs identify lorebook sources. P refs identify source turns and knowledge scope below. Missing or null viewers do not establish public knowledge. Uncertainty groups share the listed P scopes. The user directs the story, including revisions." + reviewGuidance + "\nKnowledge scopes:\n" + strings.Join(catalog, "\n") + "\n\n" + strings.Join(parts, "\n")
+		text = "[Preprocessing Specialist Notes]\nThese are attributed AI interpretations beside the original evidence. F/S refs identify individual memories; L refs identify lorebook sources. P refs identify source turns and knowledge scope below. " + multiAgentKnowledgeScopeReading + " Uncertainty groups share scope-only P rows without an event turn; these are not missing memory bodies. The user directs the story, including revisions." + reviewGuidance + "\nKnowledge scopes:\n" + strings.Join(catalog, "\n") + "\n\n" + strings.Join(parts, "\n")
 	}
 	return map[string]any{"contract_version": "memory_preprocessing_notes.v1", "authority": "ai_interpretation", "items": items, "source_refs": allRefs, "source_catalog": sourceCatalog, "final_text": text, "used_chars": len([]rune(text)), "count": len(items)}
 }

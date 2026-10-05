@@ -1,8 +1,7 @@
 # Third-Party Notices
 
-This file records the third-party software identified in the Archive Center
-source tree and the Archive Center 3.0.1 Windows full-package audit. It does
-not replace the license text supplied by each upstream project.
+This file identifies third-party software used by Archive Center. It does not
+replace the license text supplied by each upstream project.
 
 Release packaging must preserve upstream `LICENSE`, `LICENCE`, `COPYING`,
 `NOTICE`, and equivalent files. When a dependency version changes, this file
@@ -35,18 +34,11 @@ and `CREDITS` files remain inside the separately installed official runtime.
 
 The bundled or managed ChromaDB environment also contains CPython and Python packages.
 Their license texts and notices are retained in the Python runtime and the
-respective `*.dist-info/licenses` directories. The audited 3.0.1 Windows
-runtime contained 79 `*.dist-info` package records and 109 package-level
-license or notice files. Those embedded files are authoritative for the exact
-runtime build.
+respective `*.dist-info/licenses` directories. Those embedded files are
+authoritative for the exact runtime build.
 
-The audited upstream runtime omitted package-local license files for
-`flatbuffers` 25.12.19 and `tokenizers` 0.23.1 even though their installed
-metadata identifies the Apache License 2.0. Archive Center retains the
-unmodified Apache License 2.0 text at `licenses/Apache-2.0.txt`. The Windows
-internal full-package builder copies that text into both exact `*.dist-info/licenses`
-directories and stops the build if either dependency metadata directory or
-the license text is missing.
+The Apache License 2.0 text for `flatbuffers` 25.12.19 and `tokenizers` 0.23.1
+is retained at `licenses/Apache-2.0.txt` and in their runtime license directories.
 
 ### CPython runtime
 
@@ -63,15 +55,15 @@ The precise versions are declared in `go-service/go.mod` and
 `go-service/go.sum`. The table is an inventory of the source module graph; it
 does not mean that every module is linked into every release executable.
 
-The standard Windows package executables audited for this release
+The standard Windows package executables
 (`archive-center-go`, `archive-center-updater`, and `mariadb-schema`) use the
 following external modules: `filippo.io/edwards25519`,
 `github.com/go-ole/go-ole`, `github.com/go-sql-driver/mysql`,
 `github.com/phpdave11/gofpdi`, `github.com/pkg/errors`,
 `github.com/shirou/gopsutil/v4`, `github.com/signintech/gopdf`,
 `github.com/yusufpapurcu/wmi`, and `golang.org/x/sys`. Their upstream license
-files were present in the Go module cache used for the audit. The PDF-related
-license texts are also retained under `licenses/` in the Windows package.
+files are supplied by their upstream projects. The PDF-related license texts
+are also retained under `licenses/` in the Windows package.
 Other entries below are used by tests, transitive source dependencies, or
 optional migration tools and may not be present in a standard release binary.
 

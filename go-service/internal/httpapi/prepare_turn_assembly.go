@@ -56,6 +56,7 @@ func prepareTurnVectorRetrievalMethodStatus(vectorShadow map[string]any, selecte
 // These inputs live only inside one prepare request. Public perspective data is
 // separate from stored state and Go's selection policy; none is a wire DTO.
 type prepareTurnAssemblyInput struct {
+	Measurement                  *prepareTurnMeasurement
 	Memories                     []store.Memory
 	Triples                      []store.KGTriple
 	Evidence                     []store.DirectEvidence
@@ -73,6 +74,7 @@ type prepareTurnAssemblyInput struct {
 	UserInput, Profile           string
 	Documents                    []map[string]any
 	VectorTrace, LanguageContext map[string]any
+	ProtectedSecretBudgetChars   int
 	BudgetMode                   string
 	Budgets                      map[string]int
 	Perspective                  *prepareTurnAssemblyPerspective
@@ -93,6 +95,7 @@ type prepareTurnAssemblyCommon struct {
 }
 
 func prepareTurnCommonAssemblySources(input prepareTurnAssemblyInput) *prepareTurnAssemblyCommon {
+	defer input.Measurement.start("assembly.source_preparation").end()
 	c := &prepareTurnAssemblyCommon{RecallMemories: map[store.Memory]prepareTurnRecallMemory{}}
 	c.ThreadRelations = readMemoryRelations(memoryRelationInput{Threads: input.PendingThreads}).Records
 	c.KGRelations = readMemoryRelations(memoryRelationInput{Triples: input.Triples}).Records
@@ -121,9 +124,11 @@ type prepareTurnAssemblyPerspective struct {
 	ActiveStates                                  []store.ActiveState
 	CharacterText                                 string
 	CharacterSeeds                                []prepareTurnPriorityFactSeed
+	CharacterProtectedUnits                       map[string]store.PreciseMemoryUnit
 	CharacterCount                                int
 	InteractionPublicText, InteractionGuardedText string
 	InteractionCount                              int
+	InteractionItems                              []any
 	CharacterMemory, EntityAliases                map[string]any
 	Selection                                     prepareTurnMemorySelectionContext
 }
@@ -153,6 +158,9 @@ func buildPrepareTurnSupplementCandidates(input prepareTurnAssemblyInput) ([]pre
 }
 
 func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery bool) prepareTurnInjectionAssembly {
+	defer input.Measurement.start("assembly.initial_candidates").end()
+	input.Measurement.add("input.memories", len(input.Memories))
+	input.Measurement.add("input.chat_rows", len(input.ChatLogs))
 	memories, kgTriples, evidence, chatLogs := input.Memories, input.Triples, input.Evidence, input.ChatLogs
 	storylines, worldRules, charStates := input.Storylines, input.WorldRules, input.CharacterStates
 	pendingThreads, canonicalLayers, episodeSums := input.PendingThreads, input.CanonicalLayers, input.EpisodeSummaries
@@ -172,7 +180,10 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	if common == nil {
 		common = prepareTurnCommonAssemblySources(input)
 	}
+	preparationSpan := input.Measurement.start("assembly.request_preparation")
 	preparation := newPrepareTurnRequestPreparation(common)
+	preparation.metrics = input.Measurement
+	preparationSpan.end()
 	generalMemories, publicProjectionTrace := common.GeneralMemories, common.PublicTrace
 	recallLimit := len(memories) + len(kgTriples) + len(evidence) + len(chatLogs) + len(storylines) + len(worldRules) + len(charStates) + len(pendingThreads) + len(canonicalLayers) + len(episodeSums) + len(personaEntries) + len(characterPrivateMemories)
 	languageContext = normalizeCompleteTurnLanguageContext(languageContext)
@@ -205,10 +216,11 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	}
 
 	out := prepareTurnInjectionAssembly{
-		preparation:           preparation,
-		LanguageContext:       languageContext,
-		PerspectiveContext:    perspectiveContext,
-		PriorityEntityAliases: entityIdentityAliases,
+		ProtectedSecretBudgetChars: input.ProtectedSecretBudgetChars,
+		preparation:                preparation,
+		LanguageContext:            languageContext,
+		PerspectiveContext:         perspectiveContext,
+		PriorityEntityAliases:      entityIdentityAliases,
 		Counts: map[string]any{
 			"memory_count":                         len(memories),
 			"kg_count":                             len(kgTriples),
@@ -231,7 +243,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 			"top_k_definition":                     "vector_memory_search_limit_only",
 		},
 	}
-	protectedPerspectiveContext := prepareTurnProtectedPerspectiveContext(perspectiveContext, canonicalMemories, charStates)
+	protectedPerspectiveContext := prepareTurnProtectedPerspectiveContext(perspectiveContext, canonicalMemories, charStates, entityIdentityAliases)
 	for key, value := range publicProjectionTrace {
 		out.Counts[key] = value
 	}
@@ -330,8 +342,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		memorySelection = filterPrepareTurnProtectedMemoryLaneSelection(memorySelection, recollectionContext, protectedPerspectiveContext)
 		memorySelection.ProtectedSelected = protectedSelection.ProtectedSelected
 		memorySelection.ProtectedCandidates = protectedSelection.ProtectedCandidates
-		memorySelection.ProtectedAliasCanonical = protectedSelection.ProtectedAliasCanonical
-		memorySelection.ProtectedAmbiguousAlias = protectedSelection.ProtectedAmbiguousAlias
+		memorySelection.ProtectedAliasCanonical, memorySelection.ProtectedAmbiguousAlias = prepareTurnProtectedAliasResolution(canonicalMemories, entityIdentityAliases)
 		for _, key := range []string{
 			"protected_memory_before_filter",
 			"protected_memory_after_filter",
@@ -367,7 +378,16 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		memoryLines, memoryLanguageTrace := prepareTurnMemoryLaneLinesPrepared(memorySelection, languageContext, canonicalMemories, preparation, protectedPerspectiveContext)
 		actualMemoryLines := stringsFromAny(memoryLanguageTrace["actual_lines"])
 		protectedMemoryLines := stringsFromAny(memoryLanguageTrace["protected_lines"])
+		if perspectiveInput != nil {
+			attachCharacterPerspectiveProtectedFactKeys(out, memorySelection, canonicalMemories, memoryLanguageTrace, perspectiveInput.CharacterProtectedUnits, perspectiveContext, preparation)
+		}
 		out.MemoryDeliveryLineage = buildPrepareTurnMemoryDeliveryLineage(memorySelection, memoryLanguageTrace)
+		if out.authoritySelectionScores == nil {
+			out.authoritySelectionScores = map[string]float64{}
+		}
+		for line, score := range memoryLanguageTrace["authority_selection_scores"].(map[string]float64) {
+			out.authoritySelectionScores[line] = score
+		}
 		for k, v := range prepareTurnMemoryLaneProtectedCounts(memorySelection, protectedPerspectiveContext, preparation) {
 			out.Counts[k] = v
 		}
@@ -461,9 +481,27 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 			sourceTurn, validFrom, validTo, relation,
 		)
 		kgLines = append(kgLines, line)
+		seedStart := len(out.PriorityFactSeeds)
 		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "kg_triples", "auxiliary", line,
 			prepareTurnPriorityStoredOccurrence("kg_triples", t.ID, ""),
 			prepareTurnPriorityStoredRowID(t.ID), t.SourceTurn, 0, false, "general", "", nil)
+		periodStart, periodEnd := "start unrecorded", "end unrecorded"
+		if t.ValidFrom > 0 {
+			periodStart = fmt.Sprintf("turn %d", t.ValidFrom)
+		}
+		if t.ValidTo > 0 {
+			periodEnd = fmt.Sprintf("turn %d", t.ValidTo)
+		}
+		for i := seedStart; i < len(out.PriorityFactSeeds); i++ {
+			fact := &out.PriorityFactSeeds[i].Fact
+			reading := *fact.Reading
+			reading.fingerprint = [32]byte{}
+			reading.Parts = append(append([]prepareTurnMemoryPart(nil), reading.Parts...), prepareTurnMemoryPart{
+				Key: "@relation_validity", Label: "relation validity",
+				Value: periodStart + " to " + periodEnd + "; historical support, not current-state authority; an unrecorded end does not establish ongoing validity",
+			})
+			fact.Reading = &reading
+		}
 	}
 	out.KGText = makePrepareTurnSection("[Knowledge Graph Support History; context only, not current-state authority; end_unrecorded means no closing turn recorded]", kgLines)
 
@@ -479,7 +517,12 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		} else if ev.SourceTurnEnd > 0 {
 			meta = append(meta, fmt.Sprintf("turn %d", ev.SourceTurnEnd))
 		}
-		directEvidenceLines = append(directEvidenceLines, fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), text))
+		line := fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), text)
+		line = prepareTurnCarryDirectKnowledgeLine(line, ev, input)
+		directEvidenceLines = append(directEvidenceLines, line)
+		if score, ok := artifactHydration.EvidenceScores[ev.ID]; ok {
+			out.authoritySelectionScores[line] = score
+		}
 	}
 	out.DirectEvidenceText = makePrepareTurnSection("[Direct Evidence]", directEvidenceLines)
 
@@ -828,15 +871,18 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		perspectiveContext,
 		characterMemoryReadContext,
 	)
-	for _, line := range prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "character_objective") {
-		charObjectiveLines = append(charObjectiveLines, line)
-		appendPrepareTurnPrioritySourceMetadata(&out, "character_objective", "character_states", "required", line,
-			"", nil, 0, 0, false, "general", "", nil)
-	}
-	for _, line := range prepareTurnCharacterMemoryLines(out.CharacterMemorySupport, "subjective_relationship") {
-		charRelationshipLines = append(charRelationshipLines, line)
-		appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
-			"", nil, 0, 0, false, "perspective_scoped", "", nil)
+	for _, raw := range outputFidelityLineageSlice(out.CharacterMemorySupport["eligible_items"]) {
+		item := mapFromAny(raw)
+		line := strings.TrimSpace(stringFromMap(item, "text"))
+		switch stringFromMap(item, "class") {
+		case "character_objective":
+			charObjectiveLines = append(charObjectiveLines, line)
+		case "subjective_relationship":
+			charRelationshipLines = append(charRelationshipLines, line)
+		default:
+			continue
+		}
+		prepareTurnAppendCharacterMemorySource(&out, item)
 	}
 	if perspectiveInput != nil && perspectiveInput.BodyTracking != nil {
 		bodyNames := make([]string, 0, len(perspectiveInput.BodyTracking.Config.Characters))
@@ -849,10 +895,32 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	out.CharacterText = makePrepareTurnSection("[Characters]", charLines)
 	out.CharacterObjectiveText = makePrepareTurnSection("[Character Objective States]", charObjectiveLines)
 	if interactionPublicCandidateText != "" {
+		interactionSources := map[string]map[string]any{}
+		if perspectiveInput != nil {
+			for _, raw := range perspectiveInput.InteractionItems {
+				item := mapFromAny(raw)
+				interactionSources[strings.TrimSpace(stringFromMap(item, "line"))] = item
+			}
+		}
 		for _, line := range prepareTurnDeliveryItems(interactionPublicCandidateText) {
 			charRelationshipLines = append(charRelationshipLines, line)
-			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", "character_states", "required", line,
-				"", nil, 0, 0, false, "source_scoped", "", nil)
+			item := interactionSources[strings.TrimSpace(line)]
+			sourceTable, visibility := "character_states", "source_scoped"
+			var rowID any
+			if id := stringFromMap(item, "unit_id"); id != "" {
+				sourceTable, rowID = "precise_memory_units", id
+				visibility = stringFromMap(item, "visibility")
+			}
+			seedStart := len(out.PriorityFactSeeds)
+			appendPrepareTurnPrioritySourceMetadata(&out, "subjective_relationship", sourceTable, "required", line,
+				stringFromMap(item, "source_ref"), rowID, intFromAny(item["source_turn"], 0), 0, false,
+				visibility, stringFromMap(item, "perspective_owner"), stringsFromAny(item["allowed_viewers"]))
+			for i := seedStart; i < len(out.PriorityFactSeeds); i++ {
+				seed := &out.PriorityFactSeeds[i]
+				seed.RenderedSourceTable = "character_states"
+				seed.Fact = prepareTurnAttachWholeSourceContext([]prepareTurnPriorityMemoryFact{seed.Fact}, seed.Fact.SourcePath, seed.Fact.Text)[0]
+				seed.Fact.TemporalContext = mapFromAny(item["temporal_context"])
+			}
 		}
 		out.Counts["active_interaction_candidate_count"] = interactionCandidateCount
 	}
@@ -1271,6 +1339,12 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	}
 
 	prepareTurnAttachLastConfirmedClock(&out, fieldStoryClock)
+	out.attachSourceContext = func(target *prepareTurnInjectionAssembly) {
+		prepareTurnAttachLifecycleContext(target, narrativeCurrentValues, fieldStoryClock)
+		prepareTurnAttachCurrentStateContext(target, narrativeCurrentValues, fieldStoryClock)
+		prepareTurnAttachTemporalContext(target, fieldStoryClock)
+		prepareTurnCarryKnowledgeBoundaries(target, input)
+	}
 	// This template contains immutable request sources, not a previous query's
 	// selected candidate pool. Each question receives its own score/lineage maps.
 	template := out
@@ -1289,9 +1363,7 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 		projectHierarchy(&projected, selected)
 		beforeCanon.appendTo(&projected)
 		projectCanon(&projected, signatures)
-		prepareTurnAttachLifecycleContext(&projected, narrativeCurrentValues, fieldStoryClock)
-		prepareTurnAttachCurrentStateContext(&projected, narrativeCurrentValues, fieldStoryClock)
-		prepareTurnAttachTemporalContext(&projected, fieldStoryClock)
+		projected.attachSourceContext(&projected)
 		if selection.PriorityEnabled {
 			prepareTurnResolvePrioritySourcePool(&projected, priorityMemoryQuery, queries, selection.CurrentTurn, selection.SemanticFacts)
 		}
@@ -1301,14 +1373,15 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	deliveryBudgetContext.BudgetMode, deliveryBudgetContext.Budgets = input.BudgetMode, input.Budgets
 	deliveryBudgetContext.Query, deliveryBudgetContext.QuerySource = priorityMemoryQuery, priorityMemoryQuerySource
 	deliveryBudgetContext.QuerySet = priorityMemoryQuerySet
-	prepareTurnAttachLifecycleContext(&out, narrativeCurrentValues, fieldStoryClock)
-	prepareTurnAttachCurrentStateContext(&out, narrativeCurrentValues, fieldStoryClock)
-	prepareTurnAttachTemporalContext(&out, fieldStoryClock)
+	out.attachSourceContext(&out)
 	if !assembleDelivery {
 		if deliveryBudgetContext.PriorityEnabled {
 			prepareTurnResolvePrioritySourcePool(&out, strings.TrimSpace(priorityMemoryQuery), prepareTurnPriorityQuerySetFromAny(priorityMemoryQuerySet), deliveryBudgetContext.CurrentTurn, append([]prepareTurnPrioritySemanticFact(nil), deliveryBudgetContext.SemanticFacts...))
 		}
 		return out
+	}
+	if !deliveryBudgetContext.PriorityEnabled {
+		prepareTurnCarryLegacyKnowledgeSections(&out)
 	}
 	out.MemoryDeliveryPlan = buildPrepareTurnMemoryDeliveryPlan(&out, maxChars, deliveryBudgetContext)
 	out.MemoryDeliveryLineage = finalizePrepareTurnMemoryDeliveryLineage(out.MemoryDeliveryLineage, out.MemoryDeliveryPlan)

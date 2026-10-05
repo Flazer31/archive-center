@@ -55,6 +55,31 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 	if !reflect.DeepEqual(compact["payload_application_plan"], legacy["payload_application_plan"]) {
 		t.Fatal("compact projection changed the Go-owned payload application plan")
 	}
+	compactPreview := mapFromAny(compact["effective_input_preview"])
+	if compactPreview["contract_version"] != "effective_input_preview.v1" {
+		t.Fatalf("compact response omitted the effective-input preview contract: %#v", compactPreview)
+	}
+	if compactPreview["final_user_text"] != "Continue the current scene." {
+		t.Fatalf("compact preview lost the requested user input: %#v", compactPreview)
+	}
+	legacyPreview := mapFromAny(legacy["effective_input_preview"])
+	for _, key := range []string{"payload_application_plan", "memory_transport_plan"} {
+		if _, exists := compactPreview[key]; exists {
+			t.Fatalf("compact preview duplicates top-level %s", key)
+		}
+		if value, exists := legacyPreview[key]; !exists || !reflect.DeepEqual(value, legacy[key]) {
+			t.Fatalf("legacy preview lost its existing %s", key)
+		}
+	}
+	expectedPreview := map[string]any{}
+	for key, value := range legacyPreview {
+		if key != "payload_application_plan" && key != "memory_transport_plan" {
+			expectedPreview[key] = value
+		}
+	}
+	if !reflect.DeepEqual(compactPreview, expectedPreview) {
+		t.Fatalf("compact preview changed fields beyond the two repeated plans: compact=%#v legacy=%#v", compactPreview, expectedPreview)
+	}
 	legacyRecallPlan := mapFromAny(mapFromAny(legacy["injection_pack"])["memory_recall_plan"])
 	compactRecallPlan := mapFromAny(mapFromAny(compact["injection_pack"])["memory_recall_plan"])
 	if legacyRecallPlan["contract_version"] != "memory_recall_plan.v1" ||
@@ -79,6 +104,12 @@ func TestPrepareTurnProductionProjectionPreservesPlanAndShrinksResponse(t *testi
 		t.Fatalf("compact response did not remove enough legacy material: compact=%d legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
 	}
 	t.Logf("prepare-turn response bytes compact=%d legacy=%d", compactRec.Body.Len(), legacyRec.Body.Len())
+	previewWire, err := json.Marshal(compactPreview)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyWire, _ := json.Marshal("effective_input_preview")
+	t.Logf("compact effective-input preview adds %d bytes including its JSON key, colon and comma", len(previewWire)+len(keyWire)+2)
 }
 
 func TestPrepareTurnProductionProjectionExposesVectorRecallQueryDiagnostics(t *testing.T) {

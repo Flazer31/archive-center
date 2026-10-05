@@ -7,6 +7,7 @@ import (
 )
 
 const (
+	prepareTurnProtectedBudgetBaseChars  = 4000
 	prepareTurnMemoryDeliveryPlanVersion = "memory_delivery_plan.v1"
 	prepareTurnMemoryRecallPlanVersion   = "memory_recall_plan.v1"
 )
@@ -450,6 +451,7 @@ func finalizePrepareTurnMemoryDeliveryLineage(lineage, plan map[string]any) map[
 		if turn == 0 || collapseTextKey(line) == "" {
 			return ""
 		}
+		line = strings.ReplaceAll(line, prepareTurnProtectedCardGuard, "")
 		return fmt.Sprintf("%d\x1f%s", turn, collapseTextKey(line))
 	}
 	deliveredByClass := map[string]map[string]int{}

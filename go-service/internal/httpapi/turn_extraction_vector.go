@@ -528,6 +528,9 @@ func normalizeVoyageEmbeddingEndpoint(endpoint string) string {
 	if endpoint == "" {
 		return "https://api.voyageai.com/v1/embeddings"
 	}
+	if strings.HasSuffix(endpoint, "/contextualizedembeddings") {
+		return strings.TrimSuffix(endpoint, "/contextualizedembeddings") + "/embeddings"
+	}
 	if strings.HasSuffix(endpoint, "/embeddings") {
 		return endpoint
 	}
@@ -540,7 +543,7 @@ func normalizeVoyageEmbeddingEndpoint(endpoint string) string {
 func normalizeVoyageContextualizedEmbeddingEndpoint(endpoint string) string {
 	endpoint = strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if endpoint == "" {
-		return ""
+		return "https://api.voyageai.com/v1/contextualizedembeddings"
 	}
 	if strings.HasSuffix(endpoint, "/contextualizedembeddings") {
 		return endpoint
@@ -552,6 +555,18 @@ func normalizeVoyageContextualizedEmbeddingEndpoint(endpoint string) string {
 		return endpoint + "/contextualizedembeddings"
 	}
 	return endpoint + "/contextualizedembeddings"
+}
+
+// Resolve only after choosing configuration authority; a provider default must
+// not turn an otherwise empty client observation into an override of runtime.
+func (c completeTurnEmbeddingConfig) resolvedEndpoint() string {
+	if strings.EqualFold(strings.TrimSpace(c.Provider), "voyageai") {
+		if isVoyageContextualizedModel(c.Model) {
+			return normalizeVoyageContextualizedEmbeddingEndpoint(c.Endpoint)
+		}
+		return normalizeVoyageEmbeddingEndpoint(c.Endpoint)
+	}
+	return strings.TrimSpace(c.Endpoint)
 }
 
 func proxyNormalizeVertexEmbeddingEndpoint(endpoint, model string) string {

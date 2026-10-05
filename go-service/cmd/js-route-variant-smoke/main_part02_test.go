@@ -299,7 +299,6 @@ func TestArchiveCenterJSMemoryDeliveryBudgetsUseSynchronizedSliders(t *testing.T
 		"mo-memoryBudgetCharacterObjective",
 		"mo-memoryBudgetSubjectiveRelationship",
 		"mo-memoryBudgetWorldState",
-		"mo-memoryBudgetProtectedSecret",
 		"mo-memoryBudgetUnresolvedGoal",
 		"mo-memoryBudgetDirectEvidence",
 	}

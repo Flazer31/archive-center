@@ -174,7 +174,7 @@ func Test39BHabitAdmissionRequiresExactExpressionsAndBlocksLegacyTraitWrites(t *
 		t.Fatalf("habit precise candidate authority is wrong: %#v", candidates)
 	}
 	protected, incomplete := memoryAdmissionPerspectiveEvidenceScope(admitted)
-	if incomplete || protected[normalizeArtifactDedupeText(evidence)] {
+	if incomplete || memoryAdmissionPerspectiveEvidenceContains(protected, evidence) {
 		t.Fatalf("public habit evidence was incorrectly protected: protected=%#v incomplete=%v", protected, incomplete)
 	}
 	delta := mapFromAny(sliceFromAny(admitted["character_deltas"])[0])

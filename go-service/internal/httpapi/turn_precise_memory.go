@@ -158,6 +158,7 @@ func (s *Server) buildPreciseMemoryUnitsFromExtraction(
 	}
 	source.ContentHash = fmt.Sprintf("%x", sha256.Sum256([]byte(content)))
 	candidates := preciseMemoryCandidates(extraction)
+	privateEvidence, _ := memoryAdmissionPerspectiveEvidenceScope(extraction, content)
 	for _, candidate := range candidates {
 		spanStart, spanEnd, exact := preciseMemoryExactSpan(candidate.payload, candidate.excerpt, content)
 		if !exact {
@@ -180,6 +181,15 @@ func (s *Server) buildPreciseMemoryUnitsFromExtraction(
 		candidate.applyIdentityPointers(identities, spanStart, spanEnd)
 		candidate.resolveReviewedIdentityPointers(ctx, s.Store, sid)
 		candidate.applyPerspectivePayloadIdentityPointers()
+		// The atom includes its source quotation. A public semantic payload
+		// does not make a private quotation public; the aggregate projection
+		// separately retains the public meaning without that citation.
+		if candidate.visibility == "public" && memoryAdmissionPerspectiveEvidenceContains(privateEvidence, candidate.excerpt) {
+			candidate.visibility = "restricted"
+		}
+		if candidate.kind == "state" && candidate.subtype == "goal_status" {
+			retainExactGoalKnowledgeMetadata(candidate.payload, extraction, content, evidence, sid, turnIndex, source.Revision, candidate.excerpt)
+		}
 		payloadJSON := mustCompactJSON(normalizePreciseMemoryValue(candidate.payload))
 		roleSurfaceJSON := mustCompactJSON(normalizePreciseMemoryValue(candidate.surfaces))
 		keyMaterial := strings.Join([]string{
@@ -312,7 +322,8 @@ func preciseMemoryCandidates(extraction map[string]any) []preciseMemoryCandidate
 			payload: preciseMemorySemanticPayload(item, []string{
 				"subject", "entity", "owner", "subject_type", "state_slot", "slot",
 				"relation_dimension", "value", "state_value", "belief", "claim_scope",
-				"transition", "epistemic_mode", "modality", "truth_scope",
+				"transition", "lifecycle_key", "knowledge_scope", "knowledge_source", "knowledge_boundaries",
+				"source_ref", "source_refs", "fact_ref", "fact_refs", "fact_id", "canonical_fact_id", "secret_id", "artifact_id", "epistemic_mode", "modality", "truth_scope",
 				"truth_status", "statement_type", "is_lie", "is_deception",
 				"known_false", "is_uncertain", "is_speculation", "speculative",
 				"is_proposal", "proposed", "hypothetical", "is_ooc", "ooc",
@@ -536,14 +547,14 @@ func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []pre
 		mapping := preciseMemorySemanticPayload(identity, []string{
 			"surface_identity_name", "true_identity_name", "same_entity", "public_role", "true_role", "public_allegiance", "true_allegiance",
 		})
-		items = append(items, map[string]any{
+		items = append(items, preserveExplicitKnowledgeMetadata(map[string]any{
 			"secret_kind": extractionFirstNonEmpty(stringFromMap(identity, "identity_kind"), "identity"),
 			"secret_id":   stringFromMap(identity, "identity_id"),
 			"owner":       owner, "subject": owner,
 			"summary":         "Identity context: " + mustCompactJSON(mapping),
 			"knowledge_scope": identity["knowledge_scope"], "transition": identity["transition"],
 			"disclosure_policy": identity["reveal_policy"], "evidence_excerpt": identity["evidence_excerpt"],
-		})
+		}, identity))
 	}
 	for _, raw := range items {
 		item := mapFromAny(raw)
@@ -612,6 +623,7 @@ func protectedSecretPerspectiveMemoryCandidates(extraction map[string]any) []pre
 				"evidence_strength", "disclosure_policy",
 				"transition", "evidence_excerpt", "source_span_start", "source_span_end",
 			})
+			preserveExplicitKnowledgeMetadata(payload, item)
 			payload["contract_version"] = "perspective_memory.v1"
 			payload["epistemic_state"] = state
 			payload["knowledge_holder"] = holder
@@ -667,6 +679,7 @@ func subjectivePerspectiveMemoryCandidates(extraction map[string]any) []preciseM
 			"memory_text", "subjective_memory", "recollection", "interpretation",
 			"summary", "text", "evidence_excerpt", "source_span_start", "source_span_end",
 		})
+		preserveExplicitKnowledgeMetadata(payload, item)
 		payload["contract_version"] = "perspective_memory.v1"
 		payload["epistemic_state"] = "known"
 		payload["knowledge_holder"] = holder
@@ -967,6 +980,198 @@ func preciseMemorySemanticPayload(item map[string]any, fields []string) map[stri
 		}
 	}
 	return out
+}
+
+// Resolve the existing lifecycle edge before projection/admission/precise
+// writers consume the extraction. Missing history never prevents current writes.
+func (s *Server) retainPredecessorGoalKnowledgeMetadata(ctx context.Context, sid string, turn int, extraction map[string]any, content string, evidence []store.DirectEvidence, now time.Time, result *artifactSaveResult) map[string]any {
+	reader, ok := s.Store.(store.StatusCurrentValueStore)
+	if !ok {
+		return extraction
+	}
+	claims := normalizeNarrativeStateClaims(extraction)
+	for index, raw := range sliceFromAny(extraction["pending_threads"]) {
+		thread := narrativePendingThreadForExtraction(sid, turn, mapFromAny(raw), now)
+		claims = append(claims, narrativePendingClaim(thread, "pending_threads", index))
+	}
+	var enriched map[string]any
+	predecessors := map[string]map[string]any{}
+	revision := ""
+	if source, ok := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext); ok {
+		revision = source.Revision
+	}
+	for _, claim := range claims {
+		if claim.LifecycleKey == "" || claim.StateSlot != "goal_status" || !narrativeClaimIsLifecycle(claim) {
+			continue
+		}
+		owner := narrativeStateOwnerID(claim)
+		prior, read := predecessors[owner]
+		if !read {
+			rows, err := reader.ListStatusCurrentValues(ctx, sid, "entity", owner, narrativeStateStatusKey, 1)
+			if err != nil {
+				if result != nil {
+					result.Warnings = append(result.Warnings, "goal_knowledge_predecessor_read_failed")
+				}
+			} else if len(rows) > 0 && store.StatusCurrentObservationTurn(rows[0]) <= turn {
+				payload := parseJSONMap(rows[0].ValueJSON)
+				prior = cloneMapAny(mapFromAny(payload["lifecycle_details"]))
+				if thread := narrativePendingSnapshot(payload); thread != nil {
+					metadata := parseJSONMap(thread.HookMetadataJSON)
+					for _, key := range []string{"knowledge_scope", "knowledge_source", "knowledge_boundaries"} {
+						if _, exists := prior[key]; !exists {
+							if value, supplied := metadata[key]; supplied {
+								prior[key] = value
+							}
+						}
+					}
+				}
+			}
+			predecessors[owner] = prior
+		}
+		if len(prior) == 0 {
+			continue
+		}
+		if enriched == nil {
+			enriched = cloneMapAny(extraction)
+			for _, field := range []string{"state_claims", "pending_threads"} {
+				if _, exists := extraction[field]; exists {
+					enriched[field] = append([]any{}, sliceFromAny(extraction[field])...)
+				}
+			}
+		}
+		field := "state_claims"
+		if claim.SourceKind == "pending_threads" {
+			field = "pending_threads"
+		}
+		items := sliceFromAny(enriched[field])
+		item := cloneMapAny(mapFromAny(items[claim.SourceIndex]))
+		items[claim.SourceIndex] = item
+		// Current explicit fact attribution has the same precedence as supplied
+		// claim metadata. A source quotation remains separately attributed.
+		retainExactGoalKnowledgeMetadata(item, enriched, content, evidence, sid, turn, revision, claim.EvidenceExcerpt)
+		if len(mapFromAny(item["knowledge_scope"])) == 0 {
+			for _, key := range []string{"knowledge_scope", "knowledge_source"} {
+				if value, exists := prior[key]; exists {
+					item[key] = value
+				}
+			}
+		}
+		if len(sliceFromAny(item["knowledge_boundaries"])) == 0 {
+			if value, exists := prior["knowledge_boundaries"]; exists {
+				item["knowledge_boundaries"] = value
+			}
+		}
+	}
+	if enriched != nil {
+		return enriched
+	}
+	return extraction
+}
+
+// A fact identifier can attribute the claim's scope. A shared quotation can
+// only attribute source boundaries, separately from the claim's own scope.
+func retainExactGoalKnowledgeMetadata(payload, extraction map[string]any, content string, evidence []store.DirectEvidence, sid string, turn int, revision, excerpt string) {
+	spanStart, spanEnd, exact := preciseMemoryExactSpan(payload, excerpt, content)
+	ids := preciseMemoryExactEvidenceIDs(evidence, sid, turn, excerpt)
+	linkedScopes := map[string]map[string]any{}
+	linkedSources := map[string]map[string]any{}
+	linkedBoundaries := []any{}
+	boundaries := append([]any{}, sliceFromAny(payload["knowledge_boundaries"])...)
+	for index, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		item := mapFromAny(raw)
+		scope := mapFromAny(item["knowledge_scope"])
+		if len(scope) == 0 {
+			continue
+		}
+		origin := map[string]any{"source": "critic.protected_secrets", "source_index": index,
+			"source_revision": revision, "source_turn": turn, "source_session": sid}
+		quote := stringFromMap(item, "evidence_excerpt")
+		start, end, found := preciseMemoryExactSpan(item, quote, content)
+		// Public quotation overlap does not create protected authority. An
+		// explicit same-fact link still supplies its current scope below.
+		if protectedSecretRequiresGuard(item, "disclosure_policy") && exact && found && start == spanStart && end == spanEnd && len(ids) > 0 {
+			origin["root_evidence_id"], origin["direct_evidence_ids"] = ids[0], ids
+			origin["source_span_start"], origin["source_span_end"] = start, end
+			boundary := map[string]any{"knowledge_scope": cloneMapAny(scope), "knowledge_source": origin,
+				"protected_fact_ref": fmt.Sprintf("source-revision:%s/protected_secrets/%d", revision, index),
+				"fact_type":          "protected_secrets", "owner": stringFromMap(item, "owner")}
+			for _, key := range []string{"fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+				if value, ok := item[key]; ok {
+					boundary[key] = value
+				}
+			}
+			duplicate := false
+			for _, prior := range boundaries {
+				duplicate = duplicate || mustCompactJSON(prior) == mustCompactJSON(boundary)
+			}
+			if !duplicate {
+				boundaries = append(boundaries, boundary)
+			}
+		}
+		if goalKnowledgeFactLinked(payload, item) {
+			ref := fmt.Sprintf("source-revision:%s/protected_secrets/%d", revision, index)
+			linkedScopes[ref], linkedSources[ref] = scope, origin
+			// Each linked fact keeps its own quotation provenance. The goal's
+			// accepted quotation does not attest a different source quotation.
+			linkedOrigin := cloneMapAny(origin)
+			if found {
+				linkedOrigin["source_span_start"], linkedOrigin["source_span_end"] = start, end
+				if quoteIDs := preciseMemoryExactEvidenceIDs(evidence, sid, turn, quote); len(quoteIDs) > 0 {
+					linkedOrigin["root_evidence_id"], linkedOrigin["direct_evidence_ids"] = quoteIDs[0], quoteIDs
+				}
+			}
+			boundary := map[string]any{"knowledge_scope": cloneMapAny(scope), "knowledge_source": linkedOrigin,
+				"protected_fact_ref": ref, "fact_type": "protected_secrets", "owner": stringFromMap(item, "owner")}
+			for _, key := range []string{"fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+				if value, ok := item[key]; ok {
+					boundary[key] = value
+				}
+			}
+			linkedBoundaries = append(linkedBoundaries, boundary)
+		}
+	}
+	// A single explicit link retains the existing claim-scope behavior. Multiple
+	// links cannot choose one claim scope; retain every attributed fact instead.
+	if len(linkedScopes) > 1 {
+		for _, boundary := range linkedBoundaries {
+			duplicate := false
+			for _, prior := range boundaries {
+				duplicate = duplicate || mustCompactJSON(prior) == mustCompactJSON(boundary)
+			}
+			if !duplicate {
+				boundaries = append(boundaries, boundary)
+			}
+		}
+	}
+	if len(boundaries) > 0 {
+		payload["knowledge_boundaries"] = boundaries
+	}
+	if len(mapFromAny(payload["knowledge_scope"])) == 0 && len(linkedScopes) == 1 {
+		for encoded, scope := range linkedScopes {
+			payload["knowledge_scope"] = cloneMapAny(scope)
+			payload["knowledge_source"] = linkedSources[encoded]
+		}
+	}
+}
+
+func goalKnowledgeFactLinked(target, source map[string]any) bool {
+	if key := normalizeNarrativeLifecycleKey(stringFromMap(target, "lifecycle_key")); key != "" && key == normalizeNarrativeLifecycleKey(stringFromMap(source, "lifecycle_key")) {
+		return true
+	}
+	identifiers := map[string]bool{}
+	for _, key := range []string{"fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+		for _, ref := range prepareTurnKnowledgeRefValues(source[key]) {
+			identifiers[ref] = true
+		}
+	}
+	for _, key := range []string{"source_ref", "source_refs", "fact_ref", "fact_refs", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+		for _, ref := range prepareTurnKnowledgeRefValues(target[key]) {
+			if ref != "" && identifiers[ref] {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func preciseMemoryParticipantSurfaces(value any) []string {

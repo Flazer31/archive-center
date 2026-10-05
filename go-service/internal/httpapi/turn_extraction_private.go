@@ -78,6 +78,26 @@ func normalizeExplicitSubjectiveTargetRevealPolicy(raw string) (string, bool) {
 	}
 }
 
+// Retain supplied fact links without inventing provenance or changing admission.
+// A linked projection carries its source scope; unlinked payload shapes stay as
+// they were. Existing normalized scope on target remains authoritative.
+func preserveExplicitKnowledgeMetadata(target, source map[string]any) map[string]any {
+	if len(prepareTurnKnowledgeRefs(source)) == 0 {
+		return target
+	}
+	for _, key := range []string{"source_ref", "source_refs", "fact_ref", "fact_refs", "fact_id", "canonical_fact_id", "summary_ref", "summary_refs", "lineage_refs", "memory_ref", "memory_refs", "source_memory_id", "lifecycle_key", "pending_thread_key", "thread_key", "evidence_refs"} {
+		if value, exists := source[key]; exists {
+			target[key] = value
+		}
+	}
+	if scope, exists := source["knowledge_scope"]; exists {
+		if _, normalized := target["knowledge_scope"]; !normalized {
+			target["knowledge_scope"] = scope
+		}
+	}
+	return target
+}
+
 func normalizeSubjectiveEntityMemories(raw any) []any {
 	out := []any{}
 	for _, item := range sliceFromAny(raw) {
@@ -116,7 +136,7 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 		targetRevealPolicy := stringFromMap(memory, "target_reveal_policy")
 		secretGuard := boolFromAny(memory["secret_guard"])
 		portability := stringFromMap(memory, "portability")
-		out = append(out, map[string]any{
+		out = append(out, preserveExplicitKnowledgeMetadata(map[string]any{
 			"owner_entity_key":     ownerKey,
 			"owner_entity_name":    ownerName,
 			"owner_entity_role":    role,
@@ -130,7 +150,7 @@ func normalizeSubjectiveEntityMemories(raw any) []any {
 			"target_reveal_policy": targetRevealPolicy,
 			"tags":                 stringsFromAny(memory["tags"]),
 			"portability":          portability,
-		})
+		}, memory))
 	}
 	return out
 }
@@ -182,7 +202,7 @@ func appendBeliefUpdateSubjectiveMemories(subjective []any, beliefUpdates any) [
 			if seen[key] {
 				continue
 			}
-			derived := normalizeSubjectiveEntityMemories([]any{map[string]any{
+			derived := normalizeSubjectiveEntityMemories([]any{preserveExplicitKnowledgeMetadata(map[string]any{
 				"owner_entity_name": ownerName,
 				"memory_text":       memoryText,
 				"evidence_excerpt":  evidence,
@@ -195,7 +215,7 @@ func appendBeliefUpdateSubjectiveMemories(subjective []any, beliefUpdates any) [
 					extractionFloatFromAny(item["emotional_intensity"], 0.5),
 				),
 				"tags": []any{"belief_fact_transfer", "source_grounded_recollection"},
-			}})
+			}, item)})
 			if len(derived) == 0 {
 				continue
 			}
@@ -253,7 +273,7 @@ func normalizeProtectedSecrets(raw any) []any {
 		if disclosurePolicy == "" || disclosurePolicy == "requires_explicit_attachment" {
 			disclosurePolicy = "owner_private_until_revealed"
 		}
-		out = append(out, map[string]any{
+		out = append(out, preserveExplicitKnowledgeMetadata(map[string]any{
 			"contract_version":         "protected_secret.v1",
 			"secret_id":                strings.TrimSpace(stringFromMap(secret, "secret_id")),
 			"secret_kind":              firstNonEmpty(kind, "other"),
@@ -268,7 +288,7 @@ func normalizeProtectedSecrets(raw any) []any {
 			"evidence_excerpt":         strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(secret, "evidence_excerpt"), stringFromMap(secret, "evidence"))),
 			"raw_evidence_rewritten":   false,
 			"public_narration_allowed": boolFromAny(secret["public_narration_allowed"]),
-		})
+		}, secret))
 	}
 	return out
 }
@@ -309,7 +329,7 @@ func normalizeCharacterIdentityAccuracy(raw any) []any {
 			revealPolicy = "owner_private_until_revealed"
 		}
 		knowledgeScope := normalizeProtectedSecretKnowledgeScope(identity["knowledge_scope"], owner)
-		out = append(out, map[string]any{
+		out = append(out, preserveExplicitKnowledgeMetadata(map[string]any{
 			"contract_version":       "character_identity_accuracy.v1",
 			"identity_id":            strings.TrimSpace(stringFromMap(identity, "identity_id")),
 			"canonical_entity_key":   normalizeCharacterKey(owner),
@@ -331,7 +351,7 @@ func normalizeCharacterIdentityAccuracy(raw any) []any {
 			"evidence_excerpt":       strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(identity, "evidence_excerpt"), stringFromMap(identity, "evidence"))),
 			"transition":             normalizeNarrativeTransition(stringFromMap(identity, "transition")),
 			"raw_evidence_rewritten": false,
-		})
+		}, identity))
 	}
 	return out
 }
@@ -556,12 +576,17 @@ func appendProtectedSecretSubjectiveMemories(existing []any, secrets []any) []an
 	out := append([]any{}, existing...)
 	for _, raw := range secrets {
 		secret := mapFromAny(raw)
+		// Public disclosures retain their canonical secret record without
+		// manufacturing an owner-private copy that reclassifies the evidence.
+		if !protectedSecretRequiresGuard(secret, "disclosure_policy") {
+			continue
+		}
 		owner := strings.TrimSpace(stringFromMap(secret, "owner"))
 		summary := strings.TrimSpace(stringFromMap(secret, "summary"))
 		if owner == "" || summary == "" {
 			continue
 		}
-		out = appendSubjectiveMemoryIfMissing(out, map[string]any{
+		out = appendSubjectiveMemoryIfMissing(out, preserveExplicitKnowledgeMetadata(map[string]any{
 			"owner_entity_key":     normalizeCharacterKey(owner),
 			"owner_entity_name":    owner,
 			"owner_entity_role":    "npc",
@@ -574,7 +599,7 @@ func appendProtectedSecretSubjectiveMemories(existing []any, secrets []any) []an
 			"target_reveal_policy": normalizeTargetRevealPolicy(stringFromMap(secret, "disclosure_policy")),
 			"tags":                 protectedSecretTags(secret),
 			"portability":          "npc_private_recollection",
-		})
+		}, secret))
 	}
 	return out
 }
@@ -583,6 +608,9 @@ func appendIdentityAccuracySubjectiveMemories(existing []any, identities []any) 
 	out := append([]any{}, existing...)
 	for _, raw := range identities {
 		identity := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
+			continue
+		}
 		owner := strings.TrimSpace(extractionFirstNonEmpty(
 			stringFromMap(identity, "canonical_entity_name"),
 			stringFromMap(identity, "true_identity_name"),
@@ -591,7 +619,7 @@ func appendIdentityAccuracySubjectiveMemories(existing []any, identities []any) 
 		if owner == "" {
 			continue
 		}
-		out = appendSubjectiveMemoryIfMissing(out, map[string]any{
+		out = appendSubjectiveMemoryIfMissing(out, preserveExplicitKnowledgeMetadata(map[string]any{
 			"owner_entity_key":     normalizeCharacterKey(owner),
 			"owner_entity_name":    owner,
 			"owner_entity_role":    "npc",
@@ -603,7 +631,7 @@ func appendIdentityAccuracySubjectiveMemories(existing []any, identities []any) 
 			"target_reveal_policy": normalizeTargetRevealPolicy(stringFromMap(identity, "reveal_policy")),
 			"tags":                 protectedIdentityTags(identity),
 			"portability":          "npc_private_recollection",
-		})
+		}, identity))
 	}
 	return out
 }

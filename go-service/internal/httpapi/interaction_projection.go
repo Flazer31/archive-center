@@ -175,17 +175,20 @@ func buildPrepareTurnActiveInteractionProjection(
 			publicLines = append(publicLines, line)
 		}
 		items = append(items, map[string]any{
-			"unit_id":          candidate.unit.UnitID,
-			"source_turn":      candidate.sourceTurn,
-			"source_ref":       "precise_memory:" + candidate.unit.UnitID,
-			"kind":             candidate.kind,
-			"actor_entity_id":  candidate.actorID,
-			"target_entity_id": candidate.targetID,
-			"visibility":       candidate.visibility,
-			"writer_guarded":   candidate.guardedWriter,
-			"disposition":      "candidate",
-			"reason_code":      "latest_source_backed_observation",
-			"line":             line,
+			"unit_id":           candidate.unit.UnitID,
+			"source_turn":       candidate.sourceTurn,
+			"source_ref":        "precise_memory:" + candidate.unit.UnitID,
+			"kind":              candidate.kind,
+			"actor_entity_id":   candidate.actorID,
+			"target_entity_id":  candidate.targetID,
+			"visibility":        candidate.visibility,
+			"perspective_owner": extractionFirstNonEmpty(stringFromMap(candidate.payload, "perspective_owner"), candidate.unit.KnowledgeHolderEntityID),
+			"allowed_viewers":   stringsFromAny(candidate.payload["allowed_viewers"]),
+			"temporal_context":  prepareTurnSourceTemporalContext(nil, candidate.payload),
+			"writer_guarded":    candidate.guardedWriter,
+			"disposition":       "candidate",
+			"reason_code":       "latest_source_backed_observation",
+			"line":              line,
 		})
 	}
 	packet["items"] = items
@@ -325,7 +328,10 @@ func finalizePrepareTurnActiveInteractionProjection(packet map[string]any, publi
 	selected := 0
 	for _, item := range items {
 		line := strings.TrimSpace(extractionStringFromAny(item["line"]))
-		if line != "" && strings.Contains(finalMemoryText, line) {
+		// Delivery may put source provenance between the list bullet and the
+		// original body. Compare that exact body, retaining its direction/scope.
+		body := strings.TrimSpace(strings.TrimPrefix(line, "-"))
+		if body != "" && strings.Contains(finalMemoryText, body) {
 			item["disposition"] = "delivered"
 			item["reason_code"] = "selected_within_memory_delivery_plan"
 			selected++

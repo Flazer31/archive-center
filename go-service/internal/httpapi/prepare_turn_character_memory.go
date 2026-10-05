@@ -599,6 +599,46 @@ func prepareTurnCharacterMemoryDrop(dropped map[string]any, reason string) {
 	}
 }
 
+// Keep the admitted support record attached while registering its rendered
+// expression. A participant is not automatically another participant's knower.
+func prepareTurnAppendCharacterMemorySource(out *prepareTurnInjectionAssembly, item map[string]any) {
+	source := mapFromAny(item["source_metadata"])
+	owner := extractionFirstNonEmpty(stringFromMap(item, "subject_label"), stringFromMap(item, "subject_entity_id"))
+	visibility := stringFromMap(item, "visibility")
+	switch stringFromMap(item, "privacy_guard") {
+	case "subtext_only_do_not_reveal_private_fact":
+		visibility = "owner_private"
+	case "pov_private_do_not_leak_outside_holder":
+		if visibility != "user_private" {
+			visibility = "restricted"
+		}
+	}
+	viewers := stringsFromAny(source["allowed_viewers"])
+	if len(viewers) == 0 {
+		viewers = stringsFromAny(mapFromAny(source["knowledge_scope"])["known_by"])
+	}
+	if len(viewers) == 0 && owner != "" && (visibility == "owner_private" || visibility == "restricted" || visibility == "user_private") {
+		viewers = []string{owner}
+	}
+	start := len(out.PriorityFactSeeds)
+	appendPrepareTurnPrioritySourceMetadata(out, stringFromMap(item, "class"), "character_states", "required", stringFromMap(item, "text"),
+		stringFromMap(item, "source_ref"), nil, maxInt(intFromAny(source["source_turn_start"], 0), intFromAny(source["source_turn_end"], 0)),
+		0, false, visibility, owner, viewers)
+	facts := make([]prepareTurnPriorityMemoryFact, 0, len(out.PriorityFactSeeds)-start)
+	for _, seed := range out.PriorityFactSeeds[start:] {
+		facts = append(facts, seed.Fact)
+	}
+	facts = prepareTurnAttachWholeSourceContext(facts, "/character_support", prepareTurnPriorityCleanLine(stringFromMap(item, "text")))
+	for i := start; i < len(out.PriorityFactSeeds); i++ {
+		seed := &out.PriorityFactSeeds[i]
+		seed.SourceRef = stringFromMap(item, "source_ref")
+		seed.ProjectionSource = "character_memory:field_provenance"
+		seed.FieldObservationTurn = seed.SourceTurn
+		seed.Fact = facts[i-start]
+		seed.Fact.TemporalContext = prepareTurnSourceTemporalContext(nil, source)
+	}
+}
+
 func prepareTurnCharacterMemoryLines(support map[string]any, class string) []string {
 	lines := []string{}
 	for _, raw := range outputFidelityLineageSlice(support["eligible_items"]) {
@@ -617,16 +657,13 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 	if len(support) == 0 || extractionStringFromAny(support["status"]) == "fail_closed" {
 		return support
 	}
+	deliveredClassText := map[string]string{}
 	deliveredClassItems := map[string]map[string]int{}
 	for _, raw := range outputFidelityLineageSlice(plan["classes"]) {
 		class := mapFromAny(raw)
 		classKey := extractionStringFromAny(class["key"])
 		deliveredClassItems[classKey] = map[string]int{}
-		for _, item := range prepareTurnDeliveryItems(extractionStringFromAny(class["text"])) {
-			if itemKey := collapseTextKey(item); itemKey != "" {
-				deliveredClassItems[classKey][itemKey]++
-			}
-		}
+		deliveredClassText[classKey] = extractionStringFromAny(class["text"])
 	}
 	items := []map[string]any{}
 	delivered := []map[string]any{}
@@ -637,10 +674,12 @@ func finalizePrepareTurnCharacterMemorySupport(support, plan map[string]any) map
 		ref := strings.TrimSpace(extractionStringFromAny(item["source_ref"]))
 		class := extractionStringFromAny(item["class"])
 		text := strings.TrimSpace(extractionStringFromAny(item["text"]))
-		textKey := collapseTextKey(text)
-		wasDelivered := ref != "" && text != "" && deliveredClassItems[class][textKey] > 0
+		// Source headings and F refs can precede the original support body.
+		// Count exact bodies, never similar descriptions or candidate presence.
+		textKey := strings.TrimSpace(strings.TrimPrefix(text, "-"))
+		wasDelivered := ref != "" && textKey != "" && strings.Count(deliveredClassText[class], textKey) > deliveredClassItems[class][textKey]
 		if wasDelivered {
-			deliveredClassItems[class][textKey]--
+			deliveredClassItems[class][textKey]++
 		}
 		item["delivered"] = wasDelivered
 		items = append(items, item)

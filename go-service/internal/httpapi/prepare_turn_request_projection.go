@@ -13,6 +13,7 @@ import (
 // until the request ends. Source values and independent query evidence remain
 // separate; new search scores are applied after the reusable source conversion.
 type prepareTurnRequestPreparation struct {
+	metrics       *prepareTurnMeasurement
 	baseQueries   []string
 	baseLexical   func(string) float64
 	seedTemplates map[prepareTurnSourceTemplateKey]prepareTurnSourceTemplate
@@ -112,6 +113,7 @@ func (p *prepareTurnRequestPreparation) payload(raw string) any {
 	if value, ok := p.payloads[raw]; ok {
 		return value
 	}
+	defer p.measurement().start("assembly.row_parse").end()
 	value := parseSurfacePayload(raw)
 	p.payloads[raw] = value
 	return value
@@ -134,6 +136,7 @@ func prepareTurnPreparedSplitFact(out *prepareTurnInjectionAssembly, line string
 	if facts, ok := p.facts[line]; ok {
 		return facts
 	}
+	defer p.measurement().start("assembly.fact_parse").end()
 	facts := prepareTurnPrioritySplitFact(line)
 	p.facts[line] = facts
 	return facts
@@ -198,6 +201,7 @@ func (p *prepareTurnRequestPreparation) lexicalText(text string) prepareTurnPrio
 	if value, ok := p.lexicalTexts[text]; ok {
 		return value
 	}
+	defer p.measurement().start("assembly.tokenize").end()
 	value := prepareTurnPriorityAnalyzeText(text)
 	p.lexicalTexts[text] = value
 	return value
@@ -243,6 +247,7 @@ func (p *prepareTurnRequestPreparation) relevanceScorer(queries []string, fallba
 		functions = append(functions, fn)
 	}
 	return func(text string) float64 {
+		defer p.measurement().start("assembly.relevance_score").end()
 		best := 0.0
 		for _, score := range functions {
 			best = math.Max(best, score(text))

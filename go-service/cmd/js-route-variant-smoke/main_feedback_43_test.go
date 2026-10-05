@@ -115,12 +115,12 @@ const TURN_WORKFLOW_HUD_SURFACE_SELECTOR='.surface';
 const TURN_WORKFLOW_HUD_CONTRACT='turn_workflow_hud.v3';
 let settings={turnWorkflowHUDMode:'normal'};
 let _turnWorkflowHUDPreviousStreamAbortController=null,_turnWorkflowHUDPreviousStreamReader=null;
-let _turnWorkflowHUDRenderChain=Promise.resolve(),streamController,streamOpens=0;
+let _turnWorkflowHUDRenderChain=Promise.resolve(),streamController,streamOpens=0,streamCancels=0;
 function turnWorkflowHUDIsEnabled(){return true;}
 function resolveBridgeRuntimeRoute(){return {url:'http://fixture.invalid'};}
 async function openTurnWorkflowHUDStream(){
  streamOpens++;
- return new ReadableStream({start(controller){streamController=controller;}}).getReader();
+ return new ReadableStream({start(controller){streamController=controller;},cancel(){streamCancels++;}}).getReader();
 }
 async function sendPrevious(view){
  streamController.enqueue(new TextEncoder().encode(JSON.stringify(view)+'\n'));
@@ -239,12 +239,13 @@ async function outsideClick(){
   await sendPrevious(previous);
   assert.equal(_turnWorkflowHUDPreviousLastRevision,9);
   assert.ok(root.html.includes('turn_hud.stage.critic_llm'));
+  const cancellations=streamCancels;
   await sendPrevious({...previous,status:'completed',revision:12,stages:[{...previous.current_stage,status:'succeeded',duration_ms:1200}]});
   assert.equal(_turnWorkflowHUDPreviousWatchRunning,false);
+  assert.equal(streamCancels,cancellations+1,'terminal owner must close its reader without waiting for server EOF');
   await outsideClick();
   assert.equal(_turnWorkflowHUDPreviousRequestId,'');
   assert.equal(_turnWorkflowHUDActiveRequestId,'next-current','completed previous card dismissed current request');
-  streamController.close();
  }
 })().catch(err=>{console.error(err);process.exitCode=1;});
 `

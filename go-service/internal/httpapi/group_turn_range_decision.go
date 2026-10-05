@@ -755,24 +755,26 @@ type sessionRoutingTurnResolutionRequest struct {
 	ObservedInputGroupOrdinal int `json:"observed_input_group_ordinal,omitempty"`
 
 	worldlineOriginDepth   int
-	ChatSessionID          string                    `json:"chat_session_id"`
-	Mode                   string                    `json:"mode"`
-	StableCharacterID      string                    `json:"stable_character_id,omitempty"`
-	StableCharacterIDState string                    `json:"stable_character_id_state,omitempty"`
-	HostChatID             string                    `json:"host_chat_id,omitempty"`
-	HostChatIDState        string                    `json:"host_chat_id_state,omitempty"`
-	BindRequestedSession   bool                      `json:"bind_requested_session,omitempty"`
-	BindingMode            string                    `json:"binding_mode,omitempty"`
-	LatestUserHash         string                    `json:"latest_user_hash,omitempty"`
-	LatestAssistantHash    string                    `json:"latest_assistant_hash,omitempty"`
-	LocalTurnIndex         int                       `json:"local_turn_index"`
-	VisibleCompletedTurns  int                       `json:"visible_completed_turns"`
-	RisuUserMessageIndex   *int                      `json:"risu_user_message_index,omitempty"`
-	ObservedPairOrdinal    int                       `json:"observed_pair_ordinal,omitempty"`
-	Observations           []routingTurnObservation  `json:"observations,omitempty"`
-	Baseline               *routingTurnBaseline      `json:"baseline,omitempty"`
-	WorldlineObservation   *risuWorldlineObservation `json:"worldline_observation,omitempty"`
-	RoutingContext         string                    `json:"routing_context,omitempty"`
+	ChatSessionID          string                               `json:"chat_session_id"`
+	Mode                   string                               `json:"mode"`
+	StableCharacterID      string                               `json:"stable_character_id,omitempty"`
+	StableCharacterIDState string                               `json:"stable_character_id_state,omitempty"`
+	HostChatID             string                               `json:"host_chat_id,omitempty"`
+	HostChatIDState        string                               `json:"host_chat_id_state,omitempty"`
+	BindRequestedSession   bool                                 `json:"bind_requested_session,omitempty"`
+	BindingMode            string                               `json:"binding_mode,omitempty"`
+	LatestUserHash         string                               `json:"latest_user_hash,omitempty"`
+	LatestAssistantHash    string                               `json:"latest_assistant_hash,omitempty"`
+	LocalTurnIndex         int                                  `json:"local_turn_index"`
+	VisibleCompletedTurns  int                                  `json:"visible_completed_turns"`
+	RisuUserMessageIndex   *int                                 `json:"risu_user_message_index,omitempty"`
+	ObservedPairOrdinal    int                                  `json:"observed_pair_ordinal,omitempty"`
+	Observations           []routingTurnObservation             `json:"observations,omitempty"`
+	Baseline               *routingTurnBaseline                 `json:"baseline,omitempty"`
+	WorldlineObservation   *risuWorldlineObservation            `json:"worldline_observation,omitempty"`
+	RoutingContext         string                               `json:"routing_context,omitempty"`
+	InheritedRecovery      []worldlineSourceRecoveryObservation `json:"inherited_recovery,omitempty"`
+	RecoveryClientMeta     map[string]any                       `json:"recovery_client_meta,omitempty"`
 	canonicalTailAligned   bool
 }
 
@@ -854,6 +856,7 @@ type sessionRoutingTurnResolutionResponse struct {
 	ResolvedObservations   []routingTurnResolvedObservation `json:"resolved_observations,omitempty"`
 	ObservationCounts      map[string]int                   `json:"observation_counts,omitempty"`
 	Worldline              *worldlineViewModel              `json:"worldline,omitempty"`
+	InheritedRecovery      []worldlineSourceRecoveryPlan    `json:"inherited_recovery,omitempty"`
 }
 
 func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *http.Request) {
@@ -904,6 +907,13 @@ func (s *Server) handleSessionRoutingTurnResolution(w http.ResponseWriter, r *ht
 	resp.BindingCreated = identity.bindingCreated
 	resp.BindingUpdated = identity.bindingUpdated
 	resp.LockedSourceRedirect = identity.lockedSourceRedirect
+	if req.Mode == "recover_inherited" {
+		var err error
+		resp.InheritedRecovery, err = s.recoverWorldlineSources(r.Context(), req, worldline)
+		if err != nil {
+			resp.Status, resp.Code = "error", "worldline_source_recovery_failed"
+		}
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -1247,7 +1257,7 @@ func (s *Server) resolveRisuWorldlineObservation(ctx context.Context, req sessio
 			vm.OriginReadRequest = ancestorRead
 			return
 		}
-		if observation == nil || vm.MessageOriginsRecorded || observation.MessageOrigins != nil {
+		if observation == nil || (vm.MessageOriginsRecorded && req.Mode != "recover_inherited") || observation.MessageOrigins != nil {
 			return
 		}
 		parent, _, source, ok := parseExactRisuBranchMarker(observation.BranchMarker)

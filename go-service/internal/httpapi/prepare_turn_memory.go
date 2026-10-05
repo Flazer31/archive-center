@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
+	"sort"
 	"strings"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
@@ -21,6 +23,7 @@ func prepareTurnMemoryLaneLinesPrepared(selection prepareTurnMemoryLaneSelection
 	lineageItems := []map[string]any{}
 	actualLines := []string{}
 	protectedLines := []string{}
+	authorityScores := map[string]float64{}
 	perspectiveContext := map[string]any(nil)
 	if len(perspectiveContextArg) > 0 {
 		perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContextArg[0])
@@ -85,6 +88,11 @@ func prepareTurnMemoryLaneLinesPrepared(selection prepareTurnMemoryLaneSelection
 				renderedLine := fmt.Sprintf("- [%s] %s", strings.Join(meta, ", "), lineText)
 				lines = append(lines, renderedLine)
 				if group.CoverageKey != "" {
+					if score, ok := selection.VectorScores[memoryKey]; ok {
+						authorityScores[renderedLine] = score
+					} else if score, ok := selection.RelevantScores[memoryKey]; ok {
+						authorityScores[renderedLine] = score
+					}
 					protectedLines = append(protectedLines, renderedLine)
 				} else {
 					actualLines = append(actualLines, renderedLine)
@@ -144,10 +152,11 @@ func prepareTurnMemoryLaneLinesPrepared(selection prepareTurnMemoryLaneSelection
 	trace["direct_entity_render_gap"] = maxInt(len(selection.DirectlyReferenced)-len(coveredDirectEntities), 0)
 	trace["final_render_duplicate_count"] = finalRenderDuplicates
 	trace["final_render_dedup_applied"] = finalRenderDuplicates > 0
-	trace["final_render_dedup_scope"] = "same_stored_memory_row_repeated_across_recall_lanes"
+	trace["final_render_dedup_scope"] = "same_stored_row_or_exact_protected_fact_artifact_and_boundary"
 	trace["delivery_lineage_items"] = lineageItems
 	trace["actual_lines"] = actualLines
 	trace["protected_lines"] = protectedLines
+	trace["authority_selection_scores"] = authorityScores
 	return lines, trace
 }
 
@@ -231,7 +240,17 @@ func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemory
 			artifactCoordinate = "artifact:" + artifactID
 		}
 		groupKey := ""
-		if occurrenceKey != "" {
+		if field == "protected_secrets" {
+			// A shared owner/category/subject does not identify a secret. Consolidate
+			// repeated claims only with their recorded artifact and knowledge boundary.
+			claim := extractionFirstNonEmpty(stringFromMap(protectedItem, "summary"), stringFromMap(protectedItem, "secret_summary"), stringFromMap(protectedItem, "text"))
+			if claim != "" {
+				boundary := preciseMemorySemanticPayload(protectedItem, []string{"artifact_id", "secret_id", "identity_id", "source_occurrence_id", "subject", "owner", "secret_kind", "knowledge_scope", "owner_entity_id", "knower_entity_id", "visibility", "privacy_guard", "reveal_policy", "disclosure_policy"})
+				material := strings.Join([]string{item.ChatSessionID, field, strings.Join(strings.Fields(claim), " "), mustCompactJSON(boundary)}, "\x1f")
+				groupKey = fmt.Sprintf("protected-secret-fact:%x", sha256.Sum256([]byte(material)))
+			}
+		}
+		if groupKey == "" && occurrenceKey != "" {
 			identity := map[string]any{
 				"knowledge_scope":   protectedItem["knowledge_scope"],
 				"owner_entity_id":   protectedItem["owner_entity_id"],
@@ -243,7 +262,7 @@ func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemory
 			}
 			material := strings.Join([]string{occurrenceKey, field, artifactCoordinate, mustCompactJSON(identity), mustCompactJSON(protectedItem)}, "\x1f")
 			groupKey = fmt.Sprintf("protected-source-group:%x", sha256.Sum256([]byte(material)))
-		} else {
+		} else if groupKey == "" {
 			material := strings.Join([]string{prepareTurnMemoryLaneKey(item), field, artifactCoordinate, mustCompactJSON(protectedItem)}, "\x1f")
 			groupKey = fmt.Sprintf("protected-distinct-row:%x", sha256.Sum256([]byte(material)))
 		}
@@ -253,10 +272,6 @@ func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemory
 			groups[groupKey] = group
 			order = append(order, groupKey)
 		}
-		if latest, found := latestDisclosure[prepareTurnProtectedKnowledgeKey(item.ChatSessionID, field, protectedItem)]; found && !latest.guarded {
-			source := latest.source
-			group.Disclosure = &source
-		}
 		if len(group.ProtectedItems) == 0 {
 			group.ProtectedItems = append(group.ProtectedItems, protectedItem)
 		}
@@ -265,9 +280,25 @@ func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemory
 		if selected[itemKey] {
 			members[itemKey] = true
 		}
-		if group.Representative == "" && selected[itemKey] {
+		// Latest observation first; within that turn retain the most complete
+		// recorded named boundary, then the latest row. Never union conflicting
+		// historical scopes or infer a missing knower.
+		newerSecret := false
+		if strings.HasPrefix(groupKey, "protected-secret-fact:") {
+			previous := mapFromAny(group.ProtectedItems[0])
+			completeness := prepareTurnProtectedBoundaryCompleteness(protectedItem)
+			previousCompleteness := prepareTurnProtectedBoundaryCompleteness(previous)
+			newerSecret = item.TurnIndex > group.Memory.TurnIndex || (item.TurnIndex == group.Memory.TurnIndex && (completeness > previousCompleteness || (completeness == previousCompleteness && item.ID > group.Memory.ID)))
+		}
+		if selected[itemKey] && (group.Representative == "" || newerSecret) {
 			group.Representative = itemKey
 			group.Memory = item
+			group.ProtectedItems = []any{protectedItem}
+			group.Disclosure = nil
+			if latest, found := latestDisclosure[prepareTurnProtectedKnowledgeKey(item.ChatSessionID, field, protectedItem)]; found && !latest.guarded {
+				source := latest.source
+				group.Disclosure = &source
+			}
 		}
 	}
 	for _, item := range candidates {
@@ -303,6 +334,21 @@ func buildPrepareTurnProtectedDeliveryGroupsPrepared(selection prepareTurnMemory
 		out[group.Representative] = append(out[group.Representative], *group)
 	}
 	return out, members
+}
+
+func prepareTurnProtectedBoundaryCompleteness(item map[string]any) int {
+	scope := mapFromAny(item["knowledge_scope"])
+	count := 0
+	for _, field := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
+		names := map[string]bool{}
+		for _, name := range stringsFromAny(scope[field]) {
+			if key := normalizeCharacterKey(name); key != "" {
+				names[key] = true
+			}
+		}
+		count += len(names)
+	}
+	return count
 }
 
 func prepareTurnProtectedKnowledgeKey(sessionID, field string, item map[string]any) string {
@@ -397,6 +443,17 @@ func prepareTurnMemoryDeliveryLineageItem(item store.Memory, lane string, laneRa
 		"final_text_chars":             len([]rune(finalText)),
 		"final_render_key":             finalKey,
 		"source_occurrence_key":        nilIfEmpty(prepareTurnMemorySourceOccurrenceKey(item)),
+	}
+	if lane == "protected" {
+		if value, ok := selection.VectorScores[prepareTurnMemoryLaneKey(item)]; ok {
+			itemTrace["selection_score"] = value
+			itemTrace["selection_score_source"] = "same_row_vector_relevant"
+		} else if value, ok := selection.RelevantScores[prepareTurnMemoryLaneKey(item)]; ok {
+			itemTrace["selection_score"] = value
+			itemTrace["selection_score_source"] = "same_row_relevant"
+		} else {
+			itemTrace["selection_score_source"] = "unobserved_original_order"
+		}
 	}
 	if guard.Active {
 		itemTrace["core_objective_k_consumption"] = "item_count_exempt_protected_guard"
@@ -581,19 +638,15 @@ func prepareTurnMemoryInjectionLineText(item store.Memory, summary string, langu
 			"protected_secret_guarded":        true,
 			"protected_identity_pov_scoped":   guard.POVScoped,
 		}
-		return guard.LineText, lineTrace
+		return prepareTurnProtectedCardFromParsed(parseJSONMap(item.SummaryJSON), guard.LineText, perspectiveContext), lineTrace
 	}
 	parts := []string{summary}
 	rawEvidence := prepareTurnMemoryRawEvidenceLines(item)
 	if len(rawEvidence) > 0 && rawLanguage != "" && summaryLanguage != "" && rawLanguage != summaryLanguage {
 		parts = append(parts, "raw_evidence: "+strings.Join(rawEvidence, " | "))
 	}
-	if summaryLanguage != "" {
-		parts = append(parts, "summary_language="+summaryLanguage)
-	}
-	if rawLanguage != "" {
-		parts = append(parts, "raw_language="+rawLanguage)
-	}
+	// Language is diagnostic metadata, not another version of this source.
+	// Appending it here made the rendered summary miss its typed seed identity.
 	lineTrace := map[string]any{
 		"summary_language":                nilIfEmpty(summaryLanguage),
 		"summary_language_target":         nilIfEmpty(targetLanguage),
@@ -609,6 +662,71 @@ type prepareTurnProtectedMemoryGuardResult struct {
 	Active    bool
 	LineText  string
 	POVScoped bool
+}
+
+// Delivery is author-facing. Retain the established guard/POV decisions for
+// recall and private routing, but do not replace a secret's meaning with counts.
+// Missing knowledge metadata is not evidence that anyone knows (or does not).
+const prepareTurnProtectedGuardPreamble = "Protected continuity guard: protected private knowledge exists. | Do not reveal, confess, or let unrelated characters discover it without current-scene evidence."
+
+// The guard travels through general-memory paths; the protected section shares
+// it once and charges that shared text exactly.
+const prepareTurnProtectedCardGuard = "Protected continuity guard; Author-only (not public character knowledge; reveal only with current-scene evidence): "
+
+func prepareTurnProtectedCardFromParsed(parsed map[string]any, guardText string, perspectiveContext ...map[string]any) string {
+	cards := []string{}
+	for _, field := range []string{"protected_secrets", "character_identity_accuracy"} {
+		policyField := "disclosure_policy"
+		if field == "character_identity_accuracy" {
+			policyField = "reveal_policy"
+		}
+		for _, raw := range sliceFromAny(parsed[field]) {
+			item := mapFromAny(raw)
+			if !protectedSecretRequiresGuard(item, policyField) {
+				continue
+			}
+			parts := []string{}
+			claim := extractionFirstNonEmpty(stringFromMap(item, "summary"), stringFromMap(item, "secret_summary"), stringFromMap(item, "text"))
+			if claim != "" {
+				parts = append(parts, claim)
+			}
+			if subjects := stringsFromAny(item["subject"]); len(subjects) > 0 {
+				parts = append(parts, "subject="+strings.Join(subjects, ", "))
+			}
+			if field == "character_identity_accuracy" {
+				// Preserve the existing self/cover-role reading, including an
+				// explicitly recorded same-person relation; add named boundaries.
+				identityGuard := prepareTurnProtectedMemoryGuardFromParsed(map[string]any{field: []any{item}}, perspectiveContext...)
+				// The card prefix already carries the generic guard; keep only relations.
+				relation := strings.TrimPrefix(identityGuard.LineText, prepareTurnProtectedGuardPreamble)
+				relation = strings.TrimPrefix(relation, " | ")
+				if relation != "" {
+					parts = append([]string{relation}, parts...)
+				}
+			} else if kind := stringFromMap(item, "secret_kind"); kind != "" {
+				parts = append(parts, "kind="+kind)
+			}
+			if owner := stringFromMap(item, "owner"); owner != "" {
+				parts = append(parts, "owner="+owner)
+			}
+			scope := mapFromAny(item["knowledge_scope"])
+			for _, key := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
+				if names := stringsFromAny(scope[key]); len(names) > 0 {
+					parts = append(parts, key+"="+strings.Join(names, ", "))
+				}
+			}
+			if policy := stringFromMap(item, policyField); policy != "" {
+				parts = append(parts, "policy="+policy)
+			}
+			if len(parts) > 0 {
+				cards = append(cards, prepareTurnProtectedCardGuard+strings.Join(parts, "; "))
+			}
+		}
+	}
+	if len(cards) == 0 {
+		return guardText
+	}
+	return strings.Join(cards, " | ")
 }
 
 func prepareTurnProtectedMemoryGuard(item store.Memory, perspectiveContextArg ...map[string]any) prepareTurnProtectedMemoryGuardResult {
@@ -642,6 +760,7 @@ func prepareTurnProtectedMemoryGuardFromParsed(parsed map[string]any, perspectiv
 	policies := []string{}
 	knownBy := map[string]bool{}
 	suspectedBy := map[string]bool{}
+	boundaries := []string{}
 	addScope := func(scope map[string]any) {
 		for _, value := range stringsFromAny(scope["known_by"]) {
 			knownBy[normalizeCharacterKey(value)] = true
@@ -662,6 +781,35 @@ func prepareTurnProtectedMemoryGuardFromParsed(parsed map[string]any, perspectiv
 			policies = appendUniqueMemorySearchText(policies, policy)
 		}
 		addScope(mapFromAny(secret["knowledge_scope"]))
+		owner := stringFromMap(secret, "owner")
+		scope := mapFromAny(secret["knowledge_scope"])
+		boundary := []string{}
+		if owner != "" {
+			boundary = append(boundary, "owner="+owner)
+		}
+		for _, field := range []string{"known_by", "suspected_by", "unknown_to", "misinformed_by", "revealed_to"} {
+			if names := stringsFromAny(scope[field]); len(names) > 0 {
+				boundary = append(boundary, field+"="+strings.Join(names, ", "))
+			}
+		}
+		// Preserve the existing POV boundary. A suspicion is not knowledge.
+		pov, povKey := stringFromMap(perspectiveContext, "current_pov"), stringFromMap(perspectiveContext, "current_pov_key")
+		povAliases := stringsFromAny(perspectiveContext["current_pov_aliases"])
+		knows := prepareTurnPerspectiveNameMatches(pov, povKey, owner, povAliases...)
+		for _, name := range append(stringsFromAny(scope["known_by"]), stringsFromAny(scope["revealed_to"])...) {
+			knows = knows || prepareTurnPerspectiveNameMatches(pov, povKey, name, povAliases...)
+		}
+		if knows {
+			if subject := stringsFromAny(secret["subject"]); len(subject) > 0 {
+				boundary = append(boundary, "subject="+strings.Join(subject, ", "))
+			}
+			if claim := extractionFirstNonEmpty(stringFromMap(secret, "summary"), stringFromMap(secret, "secret_summary"), stringFromMap(secret, "text")); claim != "" {
+				boundary = append(boundary, "POV-private knowledge="+claim)
+			}
+		}
+		if len(boundary) > 0 {
+			boundaries = append(boundaries, strings.Join(boundary, "; "))
+		}
 	}
 	for _, raw := range identityAccuracy {
 		identity := mapFromAny(raw)
@@ -679,10 +827,7 @@ func prepareTurnProtectedMemoryGuardFromParsed(parsed map[string]any, perspectiv
 	if len(kinds) == 0 && len(policies) == 0 {
 		return prepareTurnProtectedMemoryGuardResult{}
 	}
-	parts := []string{
-		"Protected continuity guard: protected private knowledge exists.",
-		"Do not reveal, confess, or let unrelated characters discover it without current-scene evidence.",
-	}
+	parts := []string{prepareTurnProtectedGuardPreamble}
 	if len(kinds) > 0 {
 		parts = append(parts, "kind="+strings.Join(kinds, ","))
 	}
@@ -692,6 +837,7 @@ func prepareTurnProtectedMemoryGuardFromParsed(parsed map[string]any, perspectiv
 	if len(knownBy) > 0 || len(suspectedBy) > 0 {
 		parts = append(parts, fmt.Sprintf("knowledge_scope=known:%d suspected:%d", len(knownBy), len(suspectedBy)))
 	}
+	parts = append(parts, boundaries...)
 	return prepareTurnProtectedMemoryGuardResult{
 		Active:   true,
 		LineText: strings.Join(parts, " | "),
@@ -765,6 +911,7 @@ func prepareTurnProtectedIdentityContinuityGuardLine(identityAccuracy []any) str
 func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveContext map[string]any) string {
 	povName := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov"]))
 	povKey := strings.TrimSpace(extractionStringFromAny(perspectiveContext["current_pov_key"]))
+	povAliases := stringsFromAny(perspectiveContext["current_pov_aliases"])
 	if povName == "" && povKey == "" {
 		return ""
 	}
@@ -779,7 +926,7 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 		if !protectedSecretRequiresGuard(identity, "reveal_policy") {
 			continue
 		}
-		if !prepareTurnPerspectiveKnowsIdentity(identity, povName, povKey) {
+		if !prepareTurnPerspectiveKnowsIdentity(identity, povName, povKey, povAliases...) {
 			continue
 		}
 		surface := strings.TrimSpace(extractionFirstNonEmpty(
@@ -797,7 +944,7 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 		}
 		relations = appendUniqueMemorySearchText(relations, fmt.Sprintf("%s is %s's own protected surface identity/persona", surface, trueName))
 		samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("%s and %s refer to the same recorded person", surface, trueName))
-		if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey) {
+		if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey, povAliases...) {
 			samePersonRules = appendUniqueMemorySearchText(samePersonRules, "the recorded surface name is this POV's self/cover-role continuity")
 		} else {
 			samePersonRules = appendUniqueMemorySearchText(samePersonRules, fmt.Sprintf("%s knows this identity relationship about %s", povName, trueName))
@@ -837,14 +984,14 @@ func prepareTurnPOVScopedIdentityGuardLine(identityAccuracy []any, perspectiveCo
 	return strings.Join(parts, " | ")
 }
 
-func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKey string) bool {
-	if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey) {
+func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKey string, povAliases ...string) bool {
+	if prepareTurnPerspectiveOwnsIdentity(identity, povName, povKey, povAliases...) {
 		return true
 	}
 	scope := mapFromAny(identity["knowledge_scope"])
 	for _, field := range []string{"known_by", "revealed_to"} {
 		for _, candidate := range stringsFromAny(scope[field]) {
-			if prepareTurnPerspectiveNameMatches(povName, povKey, candidate) {
+			if prepareTurnPerspectiveNameMatches(povName, povKey, candidate, povAliases...) {
 				return true
 			}
 		}
@@ -852,7 +999,7 @@ func prepareTurnPerspectiveKnowsIdentity(identity map[string]any, povName, povKe
 	return false
 }
 
-func prepareTurnPerspectiveOwnsIdentity(identity map[string]any, povName, povKey string) bool {
+func prepareTurnPerspectiveOwnsIdentity(identity map[string]any, povName, povKey string, povAliases ...string) bool {
 	candidates := []string{
 		stringFromMap(identity, "canonical_entity_name"),
 		stringFromMap(identity, "true_identity_name"),
@@ -862,14 +1009,35 @@ func prepareTurnPerspectiveOwnsIdentity(identity map[string]any, povName, povKey
 	}
 	candidates = append(candidates, stringsFromAny(identity["aliases"])...)
 	for _, candidate := range candidates {
-		if prepareTurnPerspectiveNameMatches(povName, povKey, candidate) {
+		if prepareTurnPerspectiveNameMatches(povName, povKey, candidate, povAliases...) {
 			return true
 		}
 	}
 	return false
 }
 
-func prepareTurnPerspectiveNameMatches(povName, povKey, candidate string) bool {
+// A localized display can repeat the same name inside parentheses. Collapse
+// only equivalent normalized components; different names need recorded aliases.
+// Keep this separate from canonical storage and global character normalization.
+func prepareTurnPerspectiveNameKey(name string) string {
+	key := normalizeCharacterKey(name)
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '(' || r == ')' || r == '（' || r == '）' })
+	if len(parts) < 2 {
+		return key
+	}
+	partKey := normalizeCharacterKey(parts[0])
+	if partKey == "" {
+		return key
+	}
+	for _, part := range parts[1:] {
+		if strings.TrimSpace(part) != "" && normalizeCharacterKey(part) != partKey {
+			return key
+		}
+	}
+	return partKey
+}
+
+func prepareTurnPerspectiveNameMatches(povName, povKey, candidate string, povAliases ...string) bool {
 	candidate = strings.TrimSpace(candidate)
 	if candidate == "" {
 		return false
@@ -877,6 +1045,11 @@ func prepareTurnPerspectiveNameMatches(povName, povKey, candidate string) bool {
 	candidateKey := normalizeCharacterKey(candidate)
 	if povKey != "" && candidateKey != "" && povKey == candidateKey {
 		return true
+	}
+	for _, name := range append([]string{povName}, povAliases...) {
+		if key := prepareTurnPerspectiveNameKey(name); key != "" && key == prepareTurnPerspectiveNameKey(candidate) {
+			return true
+		}
 	}
 	return strings.TrimSpace(povName) != "" && strings.EqualFold(strings.TrimSpace(povName), candidate)
 }
@@ -1155,4 +1328,469 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+const prepareTurnKnowledgeBoundaryReading = "Preserve each linked fact's recorded knowledge scope; delivery does not establish additional character knowledge."
+
+// Links are read only from named metadata fields. A turn, owner or similar
+// sentence is provenance, not a fact-level disclosure relationship.
+func prepareTurnKnowledgeRefs(item map[string]any) []string {
+	refs := []string{}
+	for _, key := range []string{"source_ref", "source_refs", "fact_ref", "fact_refs", "fact_id", "canonical_fact_id", "summary_ref", "summary_refs", "lineage_refs", "memory_ref", "memory_refs", "evidence_refs"} {
+		for _, ref := range prepareTurnKnowledgeRefValues(item[key]) {
+			if ref = strings.TrimSpace(ref); ref != "" {
+				refs = appendUniqueStringValues(refs, ref)
+			}
+		}
+	}
+	for _, key := range []string{"lifecycle_key", "pending_thread_key", "thread_key"} {
+		if ref := strings.TrimSpace(stringFromMap(item, key)); ref != "" {
+			if key == "thread_key" {
+				key = "pending_thread_key"
+			}
+			refs = appendUniqueStringValues(refs, key+":"+ref)
+		}
+	}
+	// An explicit memory record reference is distinct from a source turn.
+	if id := intFromAny(item["source_memory_id"], 0); id > 0 {
+		refs = appendUniqueStringValues(refs, fmt.Sprintf("memories:%d", id))
+	}
+	return refs
+}
+
+func prepareTurnOwnKnowledgeBoundary(item map[string]any, classified ...bool) []map[string]any {
+	boundaries := []map[string]any{}
+	// Stored quotation boundaries already identify their protected source fact.
+	// Ingest metadata only, without turning that source scope into this claim's.
+	for _, raw := range sliceFromAny(item["knowledge_boundaries"]) {
+		stored := mapFromAny(raw)
+		boundary := map[string]any{}
+		for _, key := range []string{"knowledge_scope", "knowledge_source", "protected_fact_ref", "fact_type", "owner", "source_refs", "fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+			if value, exists := stored[key]; exists {
+				boundary[key] = value
+			}
+		}
+		boundaries = append(boundaries, boundary)
+	}
+	scope := mapFromAny(item["knowledge_scope"])
+	if len(scope) == 0 {
+		return boundaries
+	}
+	// An explicit public annotation already has its existing reading.
+	// Carry does not add a second guard to that unlinked public fact.
+	guarded := len(classified) > 0 && classified[0] || publicMemoryProjectionHasScopedMaterial(item)
+	if !strings.EqualFold(strings.TrimSpace(stringFromMap(item, "visibility")), "public") {
+		for _, key := range []string{"unknown_to", "suspected_by", "misinformed_by"} {
+			guarded = guarded || len(stringsFromAny(scope[key])) > 0
+		}
+	}
+	if !guarded && len(boundaries) == 0 {
+		return boundaries
+	}
+	// Beside historical quotations, retain the supplied current claim scope too.
+	// This is metadata on the existing reading, not private reclassification.
+	// Attribution uses explicit identifiers, never the protected body. That body
+	// is delivered only by its existing independently budgeted owner.
+	boundary := map[string]any{"knowledge_scope": scope, "owner": extractionFirstNonEmpty(stringFromMap(item, "owner"), stringFromMap(item, "owner_entity_name"), stringFromMap(item, "perspective_owner"), stringFromMap(item, "knowledge_holder")), "source_refs": prepareTurnKnowledgeRefs(item)}
+	for _, key := range []string{"fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+		if value, ok := item[key]; ok {
+			boundary[key] = value
+		}
+	}
+	return append(boundaries, boundary)
+}
+
+func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, input prepareTurnAssemblyInput) {
+	if out == nil {
+		return
+	}
+	byRef := map[string][]map[string]any{}
+	sessions := map[string]string{}
+	payloads := map[string]map[string]any{}
+	aliases := map[string][]string{}
+	declaredFacts := map[string]bool{}
+	originalBindings := []struct {
+		origin, session string
+		refs            []string
+		boundaries      []map[string]any
+	}{}
+	indexed := map[string]map[string]bool{}
+	index := func(session string, refs []string, boundaries []map[string]any) bool {
+		changed := false
+		for _, ref := range refs {
+			key := session + "\x1f" + ref
+			if indexed[key] == nil {
+				indexed[key] = map[string]bool{}
+			}
+			for _, boundary := range boundaries {
+				encoded := mustCompactJSON(boundary)
+				if !indexed[key][encoded] {
+					indexed[key][encoded] = true
+					byRef[key] = append(byRef[key], boundary)
+					changed = true
+				}
+			}
+		}
+		return changed
+	}
+	addNode := func(key, session string, payload map[string]any, boundaries []map[string]any) {
+		sessions[key] = session
+		payloads[key] = payload
+		// Only this record's identifiers export acquired scope. Source references
+		// are incoming edges, not aliases for unrelated facts in their parent.
+		ownRefs := map[string]any{}
+		for _, name := range []string{"fact_ref", "fact_id", "canonical_fact_id", "lifecycle_key", "pending_thread_key", "thread_key"} {
+			ownRefs[name] = payload[name]
+		}
+		aliases[key] = appendUniqueStringValues([]string{key}, prepareTurnKnowledgeRefs(ownRefs)...)
+		aliases[key] = appendUniqueStringValues(aliases[key], prepareTurnKnowledgeRefValues(payload["secret_id"])...)
+		for _, name := range []string{"fact_id", "canonical_fact_id", "fact_ref", "secret_id"} {
+			for _, ref := range prepareTurnKnowledgeRefValues(payload[name]) {
+				declaredFacts[session+"\x1f"+ref] = true
+			}
+		}
+		for _, boundary := range boundaries {
+			if stringFromMap(boundary, "protected_fact_ref") == "" {
+				boundary["protected_fact_ref"] = key
+			}
+		}
+		index(session, aliases[key], boundaries)
+	}
+	addSource := func(table string, id int64, session string, payload map[string]any) {
+		key := prepareTurnPriorityStoredOccurrence(table, id, "")
+		if table == "memories" || table == "character_states" {
+			// These aggregate rows provide provenance, not sibling aliases.
+			sessions[key], payloads[key] = session, payload
+			return
+		}
+		addNode(key, session, payload, prepareTurnOwnKnowledgeBoundary(payload))
+	}
+	for _, m := range input.Memories {
+		parsed := parseJSONMap(m.SummaryJSON)
+		addSource("memories", m.ID, m.ChatSessionID, parsed)
+		fields := make([]string, 0, len(parsed))
+		for field := range parsed {
+			fields = append(fields, field)
+		}
+		sort.Strings(fields)
+		for _, field := range fields {
+			for ordinal, raw := range sliceFromAny(parsed[field]) {
+				item := mapFromAny(raw)
+				// Reuse the existing scope owner for supplied unknown/suspected/
+				// misinformed metadata, even without a separate visibility flag.
+				guarded := publicMemoryProjectionHasScopedMaterial(item) || len(prepareTurnOwnKnowledgeBoundary(item)) > 0
+				switch field {
+				case "protected_secrets":
+					guarded = protectedSecretRequiresGuard(item, "disclosure_policy")
+				case "character_identity_accuracy":
+					guarded = protectedSecretRequiresGuard(item, "reveal_policy")
+				case "belief_updates", "subjective_entity_memories", "user_interaction_profile", "body_events":
+					guarded = true // Existing scoped extraction buckets.
+				}
+				var boundaries []map[string]any
+				if guarded {
+					boundaries = prepareTurnOwnKnowledgeBoundary(item, true)
+				} else {
+					boundaries = prepareTurnOwnKnowledgeBoundary(map[string]any{"knowledge_boundaries": item["knowledge_boundaries"]})
+				}
+				ref := fmt.Sprintf("memories:%d/%s/%d", m.ID, field, ordinal)
+				for _, boundary := range boundaries {
+					if stringFromMap(boundary, "fact_type") == "" {
+						boundary["fact_type"] = field
+					}
+				}
+				addNode(ref, m.ChatSessionID, item, boundaries)
+				originalBindings = append(originalBindings, struct {
+					origin, session string
+					refs            []string
+					boundaries      []map[string]any
+				}{ref, m.ChatSessionID, prepareTurnKnowledgeRefs(item), boundaries})
+				// An explicit source_memory_id can read original scoped facts. Never
+				// export a child's acquired scope through the aggregate memory row.
+				index(m.ChatSessionID, []string{prepareTurnPriorityStoredOccurrence("memories", m.ID, "")}, boundaries)
+			}
+		}
+	}
+	for _, pt := range input.PendingThreads {
+		p := parseJSONMap(pt.HookMetadataJSON)
+		for k, v := range parseJSONMap(pt.DetailsJSON) {
+			if _, ok := p[k]; !ok {
+				p[k] = v
+			}
+		}
+		p["thread_key"] = pt.ThreadKey
+		p["description"] = pt.Description
+		addSource("pending_threads", pt.ID, pt.ChatSessionID, p)
+	}
+	for _, sl := range input.Storylines {
+		p := parseJSONMap(sl.KeyPointsJSON)
+		for key, value := range parseJSONMap(sl.OngoingTensionsJSON) {
+			if _, exists := p[key]; !exists {
+				p[key] = value
+			}
+		}
+		p["source_refs"] = appendUniqueStringValues(prepareTurnKnowledgeJSONRefs(sl.KeyPointsJSON), prepareTurnKnowledgeJSONRefs(sl.OngoingTensionsJSON)...)
+		p["description"] = sl.CurrentContext
+		addSource("storylines", sl.ID, sl.ChatSessionID, p)
+	}
+	for _, es := range input.EpisodeSummaries {
+		p := parseJSONMap(es.OpenLoopsJSON)
+		p["source_refs"] = appendUniqueStringValues(prepareTurnKnowledgeJSONRefs(es.OpenLoopsJSON), append(prepareTurnKnowledgeJSONRefs(es.KeyEvents), prepareTurnKnowledgeJSONRefs(es.RelationshipChangesJSON)...)...)
+		p["summary"] = es.SummaryText
+		addSource("episode_summaries", es.ID, es.ChatSessionID, p)
+	}
+	for _, ev := range input.Evidence {
+		p := parseJSONMap(ev.LineageJSON)
+		p["source_refs"] = prepareTurnKnowledgeJSONRefs(ev.LineageJSON)
+		p["text"] = ev.EvidenceText
+		addSource("direct_evidence_records", ev.ID, ev.ChatSessionID, p)
+	}
+	for _, cs := range input.CharacterStates {
+		addSource("character_states", cs.ID, cs.ChatSessionID, map[string]any{"status": parseJSONMap(cs.StatusJSON), "personality": parseJSONMap(cs.PersonalityJSON), "appearance": parseJSONMap(cs.AppearanceJSON), "relationships": parseJSONMap(cs.RelationshipsJSON)})
+	}
+	for _, rule := range input.WorldRules {
+		addSource("world_rules", rule.ID, rule.ChatSessionID, parseJSONMap(rule.ValueJSON))
+	}
+	for _, layer := range input.CanonicalLayers {
+		addSource("canonical_state_layers", layer.ID, layer.ChatSessionID, parseJSONMap(layer.Content))
+	}
+	if pack := input.ResumePack; pack != nil {
+		if chapter := pack.Chapter; chapter != nil {
+			refs := []string{}
+			for _, raw := range []string{chapter.OpenLoopsJSON, chapter.RelationshipChangesJSON, chapter.WorldChangesJSON, chapter.CallbackCandidatesJSON} {
+				refs = appendUniqueStringValues(refs, prepareTurnKnowledgeJSONRefs(raw)...)
+			}
+			addSource("chapter_summaries", chapter.ID, chapter.ChatSessionID, map[string]any{"source_refs": refs})
+		}
+		if arc := pack.Arc; arc != nil {
+			refs := []string{}
+			for _, raw := range []string{arc.KeyTurningPointsJSON, arc.ActivePromisesJSON, arc.UnresolvedDebtsJSON, arc.ResolvedPayoffsJSON, arc.CallbackCandidatesJSON, arc.FuturePayoffCandidatesJSON, arc.IrreversibleTurnsJSON, arc.CallbackDebtsJSON, arc.RelationshipPivotsJSON} {
+				refs = appendUniqueStringValues(refs, prepareTurnKnowledgeJSONRefs(raw)...)
+			}
+			addSource("arc_summaries", arc.ID, arc.ChatSessionID, map[string]any{"source_refs": refs})
+		}
+		if saga := pack.Saga; saga != nil {
+			addSource("saga_digests", saga.ID, saga.ChatSessionID, map[string]any{"source_refs": appendUniqueStringValues(prepareTurnKnowledgeJSONRefs(saga.PersistentFactsJSON), prepareTurnKnowledgeJSONRefs(saga.NeverDropCandidatesJSON)...)})
+		}
+	}
+	for _, entry := range input.CharacterPrivateMemories {
+		addSource("protagonist_entity_memories", entry.ID, entry.SourceChatSessionID, map[string]any{"source_refs": prepareTurnKnowledgeJSONRefs(entry.TagsJSON)})
+	}
+	// Keep original same-fact and record-target bindings. A reference to a
+	// separately declared fact is incoming provenance, not an alias exporting
+	// this fact's own scope to that fact and its other descendants.
+	for _, binding := range originalBindings {
+		item := payloads[binding.origin]
+		if extractionFirstNonEmpty(stringFromMap(item, "fact_id"), stringFromMap(item, "canonical_fact_id"), stringFromMap(item, "fact_ref"), stringFromMap(item, "secret_id")) == "" {
+			index(binding.session, binding.refs, binding.boundaries)
+			continue
+		}
+		for _, ref := range binding.refs {
+			if declaredFacts[binding.session+"\x1f"+ref] && !slices.Contains(aliases[binding.origin], ref) {
+				continue
+			}
+			index(binding.session, []string{ref}, binding.boundaries)
+		}
+	}
+
+	// Follow explicit references through logical downstream records. Aggregate
+	// memory/character rows never become aliases for every co-turn fact.
+	recordKeys := make([]string, 0, len(payloads))
+	for key := range payloads {
+		recordKeys = append(recordKeys, key)
+	}
+	sort.Strings(recordKeys)
+	for pass := 0; pass < len(payloads); pass++ {
+		changed := false
+		for _, occurrence := range recordKeys {
+			payload := payloads[occurrence]
+			if len(aliases[occurrence]) == 0 {
+				continue
+			}
+			for _, ref := range prepareTurnKnowledgeRefs(payload) {
+				changed = index(sessions[occurrence], aliases[occurrence], byRef[sessions[occurrence]+"\x1f"+ref]) || changed
+			}
+		}
+		if !changed {
+			break
+		}
+	}
+	for i := range out.PriorityFactSeeds {
+		seed := &out.PriorityFactSeeds[i]
+		fact := &seed.Fact
+		occurrence := prepareTurnPriorityStoredOccurrence(seed.SourceTable, int64(intFromAny(seed.SourceRowID, 0)), "")
+		session := sessions[occurrence]
+		if fact.SourceSession != "" {
+			session = fact.SourceSession
+		}
+		refs := append([]string{}, fact.ExplicitRefs...)
+		if seed.SourceTable != "memories" && seed.SourceTable != "character_states" {
+			refs = appendUniqueStringValues(refs, seed.SourceRef, seed.SourceOccurrence, occurrence)
+		} else {
+			if seed.SourceRef != "" && seed.SourceRef != occurrence {
+				refs = appendUniqueStringValues(refs, seed.SourceRef)
+			}
+		}
+		payload := payloads[occurrence]
+		if seed.SourceTable == "character_states" || (seed.SourceTable == "memories" && (fact.Structured || fact.SourcePath != "")) {
+			// Public arrays may have removed private siblings. Their projected ordinal
+			// is not a canonical fact reference. Typed facts carry their admitted refs
+			// and own scopes; never recover these by indexing the original turn.
+			payload = nil
+		}
+
+		refs = appendUniqueStringValues(refs, prepareTurnKnowledgeRefs(payload)...)
+		boundaries := append([]map[string]any{}, fact.KnowledgeBoundaries...)
+		for _, ref := range refs {
+			boundaries = append(boundaries, byRef[session+"\x1f"+ref]...)
+		}
+		if len(boundaries) == 0 {
+			continue
+		}
+		// Multiple linked facts retain separately attributed scope records. They do
+		// not change this representation's owner or union its allowed_viewers.
+		reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+		if fact.Reading != nil {
+			reading = *fact.Reading
+			reading.Parts = append([]prepareTurnMemoryPart{}, fact.Reading.Parts...)
+			reading.fingerprint = [32]byte{}
+		}
+		seen := map[string]bool{}
+		for _, part := range reading.Parts {
+			seen[part.Key] = true
+		}
+		unique := []map[string]any{}
+		boundarySeen := map[string]bool{}
+		for _, b := range boundaries {
+			encoded := mustCompactJSON(b)
+			if boundarySeen[encoded] {
+				continue
+			}
+			boundarySeen[encoded] = true
+			unique = append(unique, b)
+			sum := sha256.Sum256([]byte(encoded))
+			key := fmt.Sprintf("@knowledge/%x", sum[:8])
+			if !seen[key] {
+				reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: key, Label: "linked fact knowledge boundary", Value: encoded + "; " + prepareTurnKnowledgeBoundaryReading})
+				seen[key] = true
+			}
+		}
+		fact.KnowledgeBoundaries = unique
+		fact.Reading = &reading
+	}
+}
+
+func prepareTurnCarryDirectKnowledgeLine(line string, ev store.DirectEvidence, input prepareTurnAssemblyInput) string {
+	projected := prepareTurnInjectionAssembly{PriorityFactSeeds: []prepareTurnPriorityFactSeed{{SourceTable: "direct_evidence_records", SourceRowID: ev.ID, Fact: prepareTurnPriorityMemoryFact{Text: line}}}}
+	prepareTurnCarryKnowledgeBoundaries(&projected, input)
+	boundaries := projected.PriorityFactSeeds[0].Fact.KnowledgeBoundaries
+	if len(boundaries) == 0 {
+		return line
+	}
+	return line + " | linked fact knowledge boundaries=" + mustCompactJSON(boundaries) + "; " + prepareTurnKnowledgeBoundaryReading
+}
+
+// Legacy sections do not consume the typed reading forms. Append only linked,
+// individually attributed scope records to their existing complete source row.
+func prepareTurnCarryLegacyKnowledgeSections(out *prepareTurnInjectionAssembly) {
+	for _, section := range []struct {
+		table string
+		text  *string
+	}{{"pending_threads", &out.PendingThreadText}, {"storylines", &out.StorylineText}, {"episode_summaries", &out.EpisodeText}, {"memories", &out.MemoryText}, {"character_states", &out.CharacterText}, {"chapter_summaries", &out.ChapterText}, {"arc_summaries", &out.ArcText}, {"saga_digests", &out.SagaText}, {"protagonist_entity_memories", &out.CharacterPrivateText}} {
+		lines := strings.Split(*section.text, "\n")
+		for i, line := range lines {
+			key := prepareTurnPriorityCleanLine(line)
+			bounds := []map[string]any{}
+			seen := map[string]bool{}
+			for _, seed := range out.PriorityFactSeeds {
+				if seed.SourceTable != section.table || seed.ParentLineKey != key {
+					continue
+				}
+				for _, b := range seed.Fact.KnowledgeBoundaries {
+					encoded := mustCompactJSON(b)
+					if !seen[encoded] {
+						bounds = append(bounds, b)
+						seen[encoded] = true
+					}
+				}
+			}
+			if len(bounds) > 0 {
+				lines[i] = line + " | linked fact knowledge boundaries=" + mustCompactJSON(bounds) + "; " + prepareTurnKnowledgeBoundaryReading
+				newKey := prepareTurnPriorityCleanLine(lines[i])
+				for j := range out.PriorityFactSeeds {
+					seed := &out.PriorityFactSeeds[j]
+					if seed.SourceTable == section.table && seed.ParentLineKey == key {
+						seed.ParentLineKey = newKey
+					}
+				}
+				for j := range out.PrioritySourceMetadata {
+					meta := &out.PrioritySourceMetadata[j]
+					if meta.SourceTable == section.table && meta.LineKey == key {
+						meta.LineKey = newKey
+					}
+				}
+			}
+		}
+		*section.text = strings.Join(lines, "\n")
+	}
+}
+
+func prepareTurnKnowledgeRefValues(value any) []string {
+	switch v := value.(type) {
+	case string:
+		if ref := strings.TrimSpace(v); ref != "" {
+			return []string{ref}
+		}
+	case []string:
+		return append([]string(nil), v...)
+	case []any:
+		refs := []string{}
+		for _, item := range v {
+			refs = appendUniqueStringValues(refs, prepareTurnKnowledgeRefValues(item)...)
+		}
+		return refs
+	case map[string]any:
+		refs := []string{}
+		for _, key := range []string{"source_ref", "fact_ref", "summary_ref", "ref"} {
+			refs = appendUniqueStringValues(refs, prepareTurnKnowledgeRefValues(v[key])...)
+		}
+		table := stringFromMap(v, "source_table")
+		id := intFromAny(v["source_row_id"], 0)
+		if table != "" && id > 0 {
+			refs = appendUniqueStringValues(refs, prepareTurnPriorityStoredOccurrence(table, int64(id), ""))
+		}
+		return refs
+	}
+	return nil
+}
+
+// JSON record fields can be object or array shaped. Only named reference
+// metadata establishes links; plain string entries remain ordinary content.
+func prepareTurnKnowledgeJSONRefs(raw string) []string {
+	var value any
+	if json.Unmarshal([]byte(raw), &value) != nil {
+		return nil
+	}
+	refs := []string{}
+	var visit func(any)
+	visit = func(value any) {
+		switch item := value.(type) {
+		case map[string]any:
+			refs = appendUniqueStringValues(refs, prepareTurnKnowledgeRefs(item)...)
+			keys := make([]string, 0, len(item))
+			for key := range item {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			for _, key := range keys {
+				visit(item[key])
+			}
+		case []any:
+			for _, nested := range item {
+				visit(nested)
+			}
+		}
+	}
+	visit(value)
+	return refs
 }

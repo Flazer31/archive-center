@@ -11,6 +11,7 @@ const names = [
   'extractComparableMessageRoleAndContent','normalizeRollbackMessageRole','extractMessageContentCandidate',
   'buildCompletedTurnPairsFromActiveChatMessages','buildSessionNormalizeCompletedTurnPairs',
   'beginNextInputFinalizationPipeline','buildNextInputSourceAcceptanceFinality','acceptRisuAfterRequestFinal',
+  'ensureActiveChatCompletedTurnsBackfilled',
   'backfillOneActiveChatCompletedTurn','buildCompleteTurnRequestBody','buildCompleteTurnSourceAcceptanceObservation',
   'buildRisuActiveChatContextMessageObservation','buildYumiV1ArchiveReadContext','extractActiveChatOriginalMessages',
   'readTranslationOriginalsForArchive','normalizeAssistantPersistenceCandidate','canonicalizeAssistantOutputForPersistence',
@@ -143,6 +144,58 @@ async function flush(){await new Promise(resolve=>setImmediate(resolve));}
     assert.equal(JSON.stringify(activeChat),before);
   }
   assert(notices.some(entry=>entry[2]?.reason_code==='translation_original_unavailable'));
+  // The reader's opt-in Host wait is exercised with real timers. Plain and
+  // GigaTrans responses must make zero Host reads and schedule zero timers.
+  const waitCases=[];
+  const hostReader=resolveCurrentActiveChatObject;
+  for(const kind of ['delayed','missing','giga','plain']) {
+    const original='The traveler brought the promised map.';
+    const display=kind==='giga'?'<GigaTrans>'+original+'</GigaTrans>'+translated:kind==='plain'?original:marker('late',translated);
+    activeChat={id:'chat-1',scriptstate:{},message:[{role:'user',data:'continue',chatId:'user-1'},
+      {role:'char',data:display,chatId:'assistant-1'},{role:'user',data:'next input',chatId:'user-2'}]};
+    const reads=[];
+    const started=Date.now();
+    globalThis.resolveCurrentActiveChatObject=async(...args)=>{reads.push(Date.now()-started);return hostReader(...args);};
+    if(kind==='delayed') setTimeout(()=>{activeChat.scriptstate['$__yumi_tr.late']=JSON.stringify({model:original});},1000);
+    const timer=setTimeout;
+    let timerCount=0;
+    globalThis.setTimeout=(...args)=>{timerCount++;return timer(...args);};
+    const read=await readTranslationOriginalsForArchive([{role:'assistant',content:display}],'translation-fixture',null,true);
+    globalThis.setTimeout=timer;
+    const elapsed=Date.now()-started;
+    const waitHostReads=reads.length;
+    if(kind==='missing') {
+      assert(elapsed>=9900 && elapsed<11000,'Host wait was not bounded to 10s: '+elapsed);
+      assert.equal(read[0].content,'');
+      const before=requests.length;
+      assert.equal(await buildCompleteTurnRequestBody(1,'continue',display,[],'translation-fixture'),null);
+      assert.equal(requests.length,before,'translation reached persistence');
+      // Next-input backfill executes the real collector, decoder, pair builder,
+      // backfill owner and request-body owner. Only backend/Host I/O is synthetic.
+      activeChat.scriptstate['$__yumi_tr.late']=JSON.stringify({model:original});
+      _nextInputFinalizations.clear();
+      Object.assign(globalThis,{SESSION_FALLBACK:'fallback',_activeChatBackfillInFlight:new Set(),
+        loadActiveChatBackfillLedger:async()=>({entries:{}}),t:key=>key,refreshOpenArchiveCenterUI:()=>{globalThis.backfillRefreshed=true;}});
+      settings.enabled=true; settings.dbEnabled=true;
+      const rawMessages=extractActiveChatComparableMessages(activeChat);
+      const result=await ensureActiveChatCompletedTurnsBackfilled('translation-fixture',{reason:'before_request',
+        identityPreflight:{status:'ok',resolvedActiveChat:{chat:activeChat},rawMessages,routingContext:''}});
+      assert.equal(result.saved,1,JSON.stringify(result));
+      assert.equal(requests.length,before+1);
+      assert.equal(requests.at(-1).assistant_content,original);
+      assert(notices.some(entry=>entry[0]==='lastSaveStatus' && entry[2]?.detail.includes('turn_hud.translation.backfilled')));
+      assert(globalThis.backfillRefreshed,'saved backfill did not refresh status screen');
+    } else {
+      assert.equal(read[0].content,original);
+      if(kind==='delayed') {
+        assert(elapsed>=1000 && elapsed<2000);
+        assert(reads.length>=3 && reads.length<=4);
+        for(let i=1;i<reads.length;i++) assert(reads[i]-reads[i-1]>=490,'polling faster than 0.5s');
+      } else {assert.equal(reads.length,0);assert.equal(timerCount,0);}
+    }
+    waitCases.push({kind,elapsed,hostReads:waitHostReads,timerCount});
+  }
+  globalThis.resolveCurrentActiveChatObject=hostReader;
   for(const broken of ['<GigaTrans>'+translated,marker('unknown',translated)]) {
     assert.equal(normalizeAssistantPersistenceCandidate(broken),'');
   }
@@ -222,5 +275,5 @@ async function flush(){await new Promise(resolve=>setImmediate(resolve));}
     assert.equal(JSON.stringify(activeChat),before,'scan or repair changed Host data');
     greetingCases.push({name:fixture.name,paired,turns:expectedTurns,issues:plan.assistantContentIssues});
   }
-  console.log(JSON.stringify({status:'passed',cases,missingOriginalCases:3,greetingCases,hostUnchanged:true}));
+  console.log(JSON.stringify({status:'passed',cases,waitCases,missingOriginalCases:3,greetingCases,hostUnchanged:true}));
 })().catch(err=>{console.error(err);process.exitCode=1;});

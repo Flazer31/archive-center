@@ -420,12 +420,17 @@ func TestArchiveCenter24ReplayRegressionGate(t *testing.T) {
 		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") || !strings.Contains(assembly.MemoryText, "kind=power_inheritance") {
 			t.Fatalf("protected secret replay did not inject guard: %q", assembly.MemoryText)
 		}
-		if !strings.Contains(assembly.MemoryText, "knowledge_scope=known:2 suspected:1") {
-			t.Fatalf("protected secret replay missing partial reveal counts: %q", assembly.MemoryText)
+		if !strings.Contains(assembly.MemoryText, "not public character knowledge") {
+			t.Fatalf("protected secret replay lost author/character distinction: %q", assembly.MemoryText)
 		}
-		for _, leaked := range []string{"sealed crest", "inherited", "Mentor", "Guard", "Oracle"} {
-			if strings.Contains(assembly.MemoryText, leaked) {
-				t.Fatalf("protected secret replay leaked scoped secret content %q: %q", leaked, assembly.MemoryText)
+		for _, boundary := range []string{"owner=Ari", "known_by=Ari, Mentor", "suspected_by=Oracle", "unknown_to=Guard"} {
+			if !strings.Contains(assembly.MemoryText, boundary) {
+				t.Fatalf("protected guidance lost who knows or suspects: %q", assembly.MemoryText)
+			}
+		}
+		for _, claim := range []string{"sealed crest", "inherited"} {
+			if !strings.Contains(assembly.ProtectedMemoryText, claim) || strings.Contains(assembly.ActualMemoryText, claim) {
+				t.Fatalf("protected secret replay lost scoped author content %q: %q", claim, assembly.MemoryText)
 			}
 		}
 	})

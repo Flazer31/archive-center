@@ -504,28 +504,29 @@ func (s *Server) projectNarrativePendingArtifacts(ctx context.Context, sid strin
 		}, result, func() { result.CanonicalStateLayers++ })
 	}
 	if saver, ok := s.Store.(storylineSaver); ok {
-		storylineStatus := threadRecord.Status
-		if storylineStatus == "open" {
-			storylineStatus = "active"
-		}
 		result.trySave("SaveStoryline", func() error {
-			return saver.SaveStoryline(ctx, &store.Storyline{
-				ChatSessionID:       sid,
-				Name:                title,
-				Status:              storylineStatus,
-				EntitiesJSON:        mustCompactJSON(extraction["entities"]),
-				CurrentContext:      extractionFirstNonEmpty(stringFromMap(thread, "details"), title),
-				KeyPointsJSON:       mustCompactJSON([]string{title}),
-				OngoingTensionsJSON: mustCompactJSON(thread),
-				Confidence:          clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1),
-				EvidenceCount:       len(stringsFromAny(extraction["evidence_excerpts"])),
-				LastEvidenceTurn:    projectionTurn,
-				FirstTurn:           threadRecord.CreatedTurn,
-				LastTurn:            projectionRecordedTurn,
-				CreatedAt:           now,
-				UpdatedAt:           now,
-			})
+			return saver.SaveStoryline(ctx, narrativePendingStoryline(sid, threadRecord, extraction, now))
 		}, result, func() { result.Storylines++ })
+	}
+}
+
+// Both ordinary projection and rollback restoration use the surviving snapshot.
+func narrativePendingStoryline(sid string, threadRecord store.PendingThread, extraction map[string]any, now time.Time) *store.Storyline {
+	thread := parseJSONMap(threadRecord.HookMetadataJSON)
+	title := extractionFirstNonEmpty(threadRecord.Title, threadRecord.Description)
+	status := threadRecord.Status
+	if status == "open" {
+		status = "active"
+	}
+	return &store.Storyline{
+		ChatSessionID: sid, Name: title, Status: status,
+		EntitiesJSON:   mustCompactJSON(extraction["entities"]),
+		CurrentContext: extractionFirstNonEmpty(stringFromMap(thread, "details"), stringFromMap(thread, "description"), threadRecord.Description, title),
+		KeyPointsJSON:  mustCompactJSON([]string{title}), OngoingTensionsJSON: mustCompactJSON(thread),
+		Confidence:    clampFloat(extractionFloatFromAny(thread["confidence"], 0), 0, 1),
+		EvidenceCount: len(stringsFromAny(extraction["evidence_excerpts"])), LastEvidenceTurn: threadRecord.SourceTurn,
+		FirstTurn: threadRecord.CreatedTurn, LastTurn: intFromAny(thread["repair_recorded_turn"], threadRecord.SourceTurn),
+		CreatedAt: now, UpdatedAt: now,
 	}
 }
 

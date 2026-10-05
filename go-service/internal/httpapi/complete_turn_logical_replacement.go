@@ -57,6 +57,10 @@ func (s *Server) replaceCompleteTurnLogicalTail(ctx context.Context, sid string,
 			"logical_turn_source_revision_invalid", "source_revision", false, false, err,
 		)
 	}
+	priorTrust, err := captureNarrativeManualTrust(ctx, s.Store, sid)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+		return newLogicalTurnReplacementError("logical_turn_narrative_restore_failed", "narrative_restore", true, false, err)
+	}
 	if err := replacer.ReplaceLogicalTurn(ctx, store.LogicalTurnReplacement{
 		ChatSessionID: sid, TurnIndex: turnIndex, UserContent: userText,
 		AssistantContent: assistantText, CreatedAt: now, SourceRevision: sourceRevision,
@@ -89,7 +93,7 @@ func (s *Server) replaceCompleteTurnLogicalTail(ctx context.Context, sid string,
 			"logical_turn_reference_cleanup_failed", "reference_cleanup", true, true, err,
 		)
 	}
-	if _, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid, turnIndex-1); err != nil {
+	if _, err := restoreNarrativeCurrentStatesAfterRollback(ctx, s.Store, sid, turnIndex-1, priorTrust); err != nil {
 		return newLogicalTurnReplacementError(
 			"logical_turn_narrative_restore_failed", "narrative_restore", true, true, err,
 		)

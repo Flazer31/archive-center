@@ -13,6 +13,8 @@ import (
 
 const memoryAdmissionIndexVersion = store.MemoryPublicProjectionIndex
 
+type committedMemoryAdmissionResultContextKey struct{}
+
 // resolveCommittedMemoryAdmissionExtraction makes crash recovery deterministic.
 // Once the common writer has admitted one extraction for this source/version,
 // every later foreground or worker pass must finish secondary projections from
@@ -22,47 +24,47 @@ func (s *Server) resolveCommittedMemoryAdmissionExtraction(
 	sid string,
 	extraction map[string]any,
 	result *artifactSaveResult,
-) (map[string]any, bool) {
+) (map[string]any, string, bool) {
 	if s == nil || s.Store == nil || result == nil {
-		return extraction, true
+		return extraction, "", true
 	}
 	lifecycle, lifecycleOK := s.Store.(store.MemoryDerivationLifecycleAvailability)
 	if !lifecycleOK || !lifecycle.MemoryDerivationLifecycleEnabled() {
-		return extraction, true
+		return extraction, "", true
 	}
 	sourceContext, accepted := ctx.Value(entityIdentitySourceContextKey{}).(entityIdentitySourceContext)
 	if !accepted ||
 		sourceContext.ContractVersion != completeTurnSourceAcceptanceContract ||
 		strings.TrimSpace(sourceContext.Revision) == "" {
-		return extraction, true
+		return extraction, "", true
 	}
 	sourceStore, ok := s.Store.(store.SourceRevisionStore)
 	if !ok {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "ResolveMemoryAdmission: source revision store is unavailable")
-		return extraction, false
+		return extraction, "", false
 	}
 	source, err := sourceStore.GetSourceRevision(ctx, sid, sourceContext.Revision)
 	if err == store.ErrNotFound {
-		return extraction, true
+		return extraction, "", true
 	}
 	if err != nil {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "ResolveMemoryAdmission: "+err.Error())
-		return extraction, false
+		return extraction, "", false
 	}
 	if source == nil ||
 		source.DerivedAdmissionState != "committed" ||
 		source.DerivedAdmissionVersion != store.MemoryAdmissionContract ||
 		source.DerivedExtractorVersion != completeTurnCriticPipelineVersion ||
 		source.DerivedIndexVersion != memoryAdmissionIndexVersion {
-		return extraction, true
+		return extraction, "", true
 	}
 	storedJSON := strings.TrimSpace(source.DerivedResultJSON)
 	if storedJSON == "" {
 		result.Errors++
 		result.ErrorDetails = append(result.ErrorDetails, "ResolveMemoryAdmission: committed result JSON is missing")
-		return extraction, false
+		return extraction, "", false
 	}
 	var committed map[string]any
 	if err := json.Unmarshal([]byte(storedJSON), &committed); err != nil || committed == nil {
@@ -71,12 +73,12 @@ func (s *Server) resolveCommittedMemoryAdmissionExtraction(
 			err = fmt.Errorf("committed result is not an object")
 		}
 		result.ErrorDetails = append(result.ErrorDetails, "ResolveMemoryAdmission: "+err.Error())
-		return extraction, false
+		return extraction, "", false
 	}
 	if memoryAdmissionCanonicalResultJSON(extraction) != storedJSON {
 		result.Warnings = append(result.Warnings, "memory_admission_committed_result_reused")
 	}
-	return committed, true
+	return committed, storedJSON, true
 }
 
 // commitAcceptedMemoryAdmission cuts an accepted source revision over to the
@@ -137,7 +139,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 	}
 
 	var memory *store.Memory
-	publicProjection := buildPublicMemoryProjection(extraction, "")
+	publicProjection := buildPublicMemoryProjection(extraction, "", content)
 	searchText = strings.TrimSpace(publicProjection.SearchText.Text)
 	memorySearchText = publicProjection.SearchText
 	if !publicProjection.Eligible {
@@ -164,7 +166,7 @@ func (s *Server) commitAcceptedMemoryAdmission(
 			EmbeddingModel:        embeddingModel,
 			Importance:            finalImportance / 10.0,
 			EmotionalBoost:        emotionalBoost,
-			Evidence:              mustCompactJSON(map[string]any{"evidence_excerpts": stringsFromAny(extraction["evidence_excerpts"]), "relationship_memory": extraction["relationship_memory"]}),
+			Evidence:              memoryAdmissionEvidenceJSON(extraction, content),
 			EmotionalIntensity:    emotionalIntensity,
 			NarrativeSignificance: narrativeSignificance,
 			PlaceWing:             stringFromMap(archiveHint, "wing"),
@@ -337,7 +339,19 @@ func (s *Server) commitAcceptedMemoryAdmission(
 		}
 	}
 
-	resultJSON := memoryAdmissionCanonicalResultJSON(extraction)
+	resultJSON, _ := ctx.Value(committedMemoryAdmissionResultContextKey{}).(string)
+	// Resolution already supplied the first committed canonical result.
+	// Decoded arrays and current predecessor projections must not reauthor it.
+	if resultJSON == "" {
+		if store.MemoryAdmissionVectorReplayRequested(ctx) {
+			// This is an already canonical, validated stored extraction. Decoding
+			// changes []string into []any; normalizing again would sort arrays that
+			// the original write preserved and conflict with its committed hash.
+			resultJSON = mustCompactJSON(extraction)
+		} else {
+			resultJSON = memoryAdmissionCanonicalResultJSON(extraction)
+		}
+	}
 	resultHash := memoryAdmissionResultHashFromCanonicalJSON(
 		source.Revision, resultJSON, store.MemoryAdmissionContract,
 		completeTurnCriticPipelineVersion, memoryAdmissionIndexVersion,
@@ -446,7 +460,14 @@ func memoryAdmissionHasHolderScopedPerspectiveContent(extraction map[string]any)
 	return false
 }
 
-func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[string]bool, bool) {
+type memoryPerspectiveEvidenceScope struct {
+	protected map[string]bool
+	// Only source-occurrence decisions that differ from quote containment are
+	// retained. Memory.Evidence carries them across a later source-free read.
+	sourceQuotes map[string]bool
+}
+
+func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any, content ...string) (memoryPerspectiveEvidenceScope, bool) {
 	protected := map[string]bool{}
 	for _, key := range []string{
 		"belief_updates",
@@ -457,7 +478,14 @@ func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[str
 		"body_events",
 	} {
 		for _, raw := range sliceFromAny(extraction[key]) {
-			memoryAdmissionAddPerspectiveEvidenceScope(protected, mapFromAny(raw))
+			item := mapFromAny(raw)
+			if key == "protected_secrets" && !protectedSecretRequiresGuard(item, "disclosure_policy") {
+				continue
+			}
+			if key == "character_identity_accuracy" && !protectedSecretRequiresGuard(item, "reveal_policy") {
+				continue
+			}
+			memoryAdmissionAddPerspectiveEvidenceScope(protected, item)
 		}
 	}
 	for _, key := range []string{
@@ -468,16 +496,133 @@ func memoryAdmissionPerspectiveEvidenceScope(extraction map[string]any) (map[str
 		"character_profile_observations",
 		"voice_observations",
 		"rp_character_profile",
+		"character_deltas",
+		"pending_threads",
+		"world_rules",
+		"reversible_states",
+		"physical_conditions",
+		"entity_conditions",
+		"narrative_events",
+		"state_claims",
 	} {
 		for _, raw := range sliceFromAny(extraction[key]) {
 			item := mapFromAny(raw)
-			if !memoryAdmissionExplicitPrivateItem(item) {
+			if !publicMemoryProjectionHasScopedMaterial(item) {
 				continue
 			}
 			memoryAdmissionAddPerspectiveEvidenceScope(protected, item)
 		}
 	}
-	return protected, false
+	scope := memoryPerspectiveEvidenceScope{protected: protected, sourceQuotes: map[string]bool{}}
+	if len(content) == 0 || len(protected) == 0 {
+		return scope, false
+	}
+	source := normalizeArtifactDedupeText(content[0])
+	privateSpans := [][2]int{}
+	unlocated := memoryPerspectiveEvidenceScope{protected: map[string]bool{}}
+	for quote := range protected {
+		spans := memoryEvidenceQuoteSpans(source, quote)
+		if len(spans) == 0 {
+			unlocated.protected[quote] = true
+		}
+		privateSpans = append(privateSpans, spans...)
+	}
+	// Both sets of offsets refer to the same normalized source. A quotation
+	// crossing even one protected boundary remains scoped; an independently
+	// public occurrence of the whole quotation remains available as public.
+	var visit func(any)
+	visit = func(value any) {
+		switch item := value.(type) {
+		case map[string]any:
+			for _, nested := range item {
+				visit(nested)
+			}
+		case []any:
+			for _, nested := range item {
+				visit(nested)
+			}
+		case []map[string]any:
+			for _, nested := range item {
+				visit(nested)
+			}
+		case []string:
+			for _, nested := range item {
+				visit(nested)
+			}
+		case string:
+			key := normalizeArtifactDedupeText(item)
+			spans := memoryEvidenceQuoteSpans(source, key)
+			if len(spans) == 0 {
+				return
+			}
+			private := true
+			for _, span := range spans {
+				overlaps := false
+				for _, protected := range privateSpans {
+					if span[0] < protected[1] && protected[0] < span[1] {
+						overlaps = true
+						break
+					}
+				}
+				if !overlaps {
+					private = false
+					break
+				}
+			}
+			// An absent full quotation supplies no source coordinates that
+			// could disprove its existing typed scope.
+			if !private && memoryAdmissionPerspectiveEvidenceContains(unlocated, item) {
+				private = true
+			}
+			if private != memoryAdmissionPerspectiveEvidenceContains(memoryPerspectiveEvidenceScope{protected: protected}, item) {
+				scope.sourceQuotes[key] = private
+			}
+		}
+	}
+	visit(extraction)
+	// Direct evidence retains the existing sanitizer's output, which may be
+	// shorter than the extraction quotation. Resolve that actual stored span
+	// too, using the same source coordinates and no separate overlap policy.
+	for _, excerpt := range stringsFromAny(extraction["evidence_excerpts"]) {
+		visit(sanitizeEvidenceExcerptForTurn(excerpt, content[0]))
+	}
+	return scope, false
+}
+
+func memoryEvidenceQuoteSpans(source, quote string) [][2]int {
+	spans := [][2]int{}
+	if quote == "" {
+		return spans
+	}
+	for from := 0; from < len(source); {
+		index := strings.Index(source[from:], quote)
+		if index < 0 {
+			break
+		}
+		start := from + index
+		spans = append(spans, [2]int{start, start + len(quote)})
+		from = start + 1
+	}
+	return spans
+}
+
+func memoryAdmissionEvidenceJSON(extraction map[string]any, content string) string {
+	evidence := map[string]any{"evidence_excerpts": stringsFromAny(extraction["evidence_excerpts"]), "relationship_memory": extraction["relationship_memory"]}
+	scope, _ := memoryAdmissionPerspectiveEvidenceScope(extraction, content)
+	if len(scope.sourceQuotes) > 0 {
+		evidence["source_quote_scope"] = scope.sourceQuotes
+	}
+	return mustCompactJSON(evidence)
+}
+
+func memoryPerspectiveEvidenceScopeFromStored(extraction map[string]any, evidence string) memoryPerspectiveEvidenceScope {
+	scope, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
+	for text, value := range mapFromAny(parseJSONMap(evidence)["source_quote_scope"]) {
+		if private, ok := value.(bool); ok {
+			scope.sourceQuotes[text] = private
+		}
+	}
+	return scope
 }
 
 func memoryAdmissionExplicitPrivateItem(item map[string]any) bool {
@@ -500,6 +645,25 @@ func memoryAdmissionAddPerspectiveEvidenceScope(protected map[string]bool, item 
 	}
 }
 
+// Source occurrence decisions take precedence over context-free containment.
+// Without the original source, retain the existing exact contiguous quote
+// relationship; do not guess partial overlaps from coincidental shared words.
+func memoryAdmissionPerspectiveEvidenceContains(scope memoryPerspectiveEvidenceScope, excerpt string) bool {
+	key := normalizeArtifactDedupeText(excerpt)
+	if key == "" {
+		return false
+	}
+	if private, exists := scope.sourceQuotes[key]; exists {
+		return private
+	}
+	for source := range scope.protected {
+		if source != "" && (strings.Contains(source, key) || strings.Contains(key, source)) {
+			return true
+		}
+	}
+	return false
+}
+
 func buildMemoryAdmissionEvidence(
 	sid string,
 	turnIndex int,
@@ -512,7 +676,7 @@ func buildMemoryAdmissionEvidence(
 ) []*store.DirectEvidence {
 	out := []*store.DirectEvidence{}
 	seen := map[string]bool{}
-	perspectiveEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
+	perspectiveEvidenceKeys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction, content)
 	maxID := int64(0)
 	for _, item := range existing {
 		if item.ID > maxID {
@@ -533,9 +697,8 @@ func buildMemoryAdmissionEvidence(
 			continue
 		}
 		seen[key] = true
-		normalizedEvidence := normalizeArtifactDedupeText(text)
 		evidenceKind := "turn_excerpt"
-		if perspectiveEvidenceKeys[normalizedEvidence] {
+		if memoryAdmissionPerspectiveEvidenceContains(perspectiveEvidenceKeys, text) {
 			evidenceKind = "perspective_scoped_turn_excerpt"
 		}
 		evidence := &store.DirectEvidence{

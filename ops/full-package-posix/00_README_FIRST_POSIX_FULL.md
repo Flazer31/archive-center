@@ -1,4 +1,4 @@
-# Archive Center 2.1 POSIX - Read First
+# Archive Center __ARCHIVE_CENTER_PACKAGE_VERSION__ POSIX - Read First
 
 This package is the standard local package for Linux, macOS, and Android Termux.
 
@@ -16,7 +16,7 @@ Termux:      AC_VECTOR_MODE=local_proot
 ```
 
 The standard package starts the Go backend, MariaDB path, and a local ChromaDB
-path. For 2.3, this is the single supported package line across desktop,
+path. This is the standard package line across desktop,
 server, and Termux.
 On Termux, local ChromaDB uses a managed proot runtime, so server-side or
 external-vector deployment is still preferable when the phone feels slow.
@@ -31,12 +31,17 @@ exits; restart Archive Center normally to apply the setting.
 For a standard Termux one-line installation:
 
 ```sh
-sh ~/.archive-center/start.sh --configure-ports
+sh "$HOME/.archive-center/start-archive-center.sh" --configure-ports
 ```
 
 For an extracted Termux package:
 `sh install-and-start-termux.sh --configure-ports`.
-Linux/macOS users append the same option to their existing start command.
+One-line installations on Linux/macOS also use `start-archive-center.sh`
+in the installation directory. On Linux with an active systemd environment,
+the one-line installer selects `/opt/archive-center`; otherwise its default
+is `$HOME/.archive-center`. Replace the directory in the command accordingly.
+For extracted Linux/macOS packages, append the option to the root launcher
+shown below.
 `--configure-chroma-port` still opens the ChromaDB port prompt directly.
 `--chroma-port 8001`, `--mariadb-port 3308`, and `--backend-port 28081` also
 save the requested port and start normally.
@@ -70,13 +75,15 @@ sh install-and-start-termux.sh
 
 ## Low-Memory Runtime Options
 
-Separate Lite ZIPs are retired for 2.3. Low-memory deployments should keep the
-standard package but choose a lighter runtime profile when needed:
+There is no separate Lite ZIP. To choose the lighter profile, append
+`--profile core_lite --vector-mode fallback` to the root launcher, for example:
 
-```text
-AC_RUNTIME_PROFILE=core_lite
-AC_VECTOR_MODE=fallback
+```sh
+sh start-archive-center-linux.sh --profile core_lite --vector-mode fallback
 ```
+
+The root launchers explicitly select `full_local` and their platform vector mode;
+setting only environment variables does not override those launcher arguments.
 
 ## Bridge URL
 

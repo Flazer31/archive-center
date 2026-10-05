@@ -19,7 +19,10 @@ import (
 type prepareTurnMemoryPart struct {
 	Key, Label, Value string
 	DeliveryLabel     string `json:",omitempty"`
-	FactTexts         []string
+	// Other slots matched by name remain scoring/preprocessing context for an
+	// explicitly typed assertion. Untyped facts keep their established reading.
+	ReferenceOnly bool `json:",omitempty"`
+	FactTexts     []string
 }
 type prepareTurnMemoryContext struct {
 	Path, Label string
@@ -43,6 +46,7 @@ func (c *prepareTurnMemoryContext) sourceFingerprint() [32]byte {
 
 type prepareTurnMemoryFormPart struct {
 	Key, Text string
+	SharedKey string
 	Refs      []string
 	// Nil uses the reading text; an empty override omits only typed bookkeeping.
 	DeliveryText *string
@@ -208,6 +212,7 @@ type prepareTurnMemoryFormKey struct {
 }
 
 func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidate, relevance func(string) float64, preparation *prepareTurnRequestPreparation) {
+	defer preparation.measurement().start("assembly.reading_forms").end()
 	refs := map[prepareTurnMemoryReadingSource]map[string]string{}
 	for _, c := range candidates {
 		if c.Reading != nil {
@@ -269,6 +274,10 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 			form.Heading = strings.TrimSpace(heading)
 			values, lines := []string{}, []string{}
 			seenRefs := map[string]bool{}
+			sharedSource := key
+			sharedSource.Lane = ""
+			sharedBytes, _ := json.Marshal(sharedSource)
+			sharedPrefix := fmt.Sprintf("@source/%x/", sha256.Sum256(sharedBytes))
 			for _, p := range c.Reading.Parts {
 				// Preprocessing reads and budgets the original candidate form.
 				// Final-prompt cleanup must not expand its candidate packet.
@@ -287,7 +296,7 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 						text = p.Label + ": " + text
 					}
 				}
-				part := prepareTurnMemoryFormPart{Key: p.Key, Text: text}
+				part := prepareTurnMemoryFormPart{Key: p.Key, Text: text, SharedKey: sharedPrefix + p.Key}
 				delivery, display := prepareTurnMemoryPartDisplay(p)
 				if !display {
 					part.DeliveryText = &delivery
@@ -339,6 +348,9 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 // Render only typed backend additions here. Original facts/quotations and the
 // source reading (including IDs used by selection and diagnostics) stay intact.
 func prepareTurnMemoryPartDisplay(p prepareTurnMemoryPart) (string, bool) {
+	if p.ReferenceOnly {
+		return "", false
+	}
 	if !strings.HasPrefix(p.Key, "@lifecycle/") && !strings.HasPrefix(p.Key, "@current/") && !strings.HasPrefix(p.Key, "@field_current/") && !strings.HasPrefix(p.Key, "@field/") {
 		return p.Value, true
 	}
@@ -591,7 +603,20 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 				reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
 			}
 			reading.fingerprint = [32]byte{}
-			reading.Parts = append(reading.Parts, parts...)
+			// A matching name remains discovery/scoring context. It does not make
+			// every stored slot part of an explicitly typed assertion. Unknown
+			// bindings retain the established reading (including indirect clues);
+			// missing optional metadata never removes useful current context.
+			linked := fact.StateSlot == "" || normalizeNarrativeStateSlot(fact.StateSlot) == view.Slot
+			for _, field := range stringsFromAny(view.Payload["source_fields"]) {
+				if fact.SourceFieldPath != "" && (fact.SourceFieldPath == field || strings.HasPrefix(fact.SourceFieldPath, strings.TrimRight(field, "/")+"/")) {
+					linked = true
+				}
+			}
+			for _, part := range parts {
+				part.ReferenceOnly = !linked
+				reading.Parts = append(reading.Parts, part)
+			}
 			fact.Reading = &reading
 		}
 	}
@@ -794,6 +819,28 @@ func prepareTurnAttachCharacterFieldContext(out *prepareTurnInjectionAssembly, s
 			path = prepareTurnCharacterFieldPath(seed.Fact.SourcePath)
 		}
 		provenance := store.CharacterFieldProvenanceForPath(fields, path)
+		seed.Fact.ExplicitRefs = appendUniqueStringValues(seed.Fact.ExplicitRefs, prepareTurnKnowledgeRefs(provenance)...)
+		// Split readings use /state while the stored field owner uses /status.
+		// Read metadata only from this exact containing field, never a sibling.
+		var containing any = map[string]any{"status": parseJSONMap(state.StatusJSON), "personality": parseJSONMap(state.PersonalityJSON), "appearance": parseJSONMap(state.AppearanceJSON), "relationships": parseJSONMap(state.RelationshipsJSON)}
+		pieces := strings.Split(strings.TrimPrefix(path, "/"), "/")
+		for _, piece := range pieces[:maxInt(len(pieces)-1, 0)] {
+			piece = strings.ReplaceAll(strings.ReplaceAll(piece, "~1", "/"), "~0", "~")
+			switch value := containing.(type) {
+			case map[string]any:
+				containing = value[piece]
+			case []any:
+				index := intFromAny(piece, -1)
+				if index >= 0 && index < len(value) {
+					containing = value[index]
+				} else {
+					containing = nil
+				}
+			default:
+				containing = nil
+			}
+		}
+		seed.Fact.ExplicitRefs = appendUniqueStringValues(seed.Fact.ExplicitRefs, prepareTurnKnowledgeRefs(mapFromAny(containing))...)
 		seed.Fact.TemporalContext = prepareTurnSourceTemporalContext(nil, provenance)
 		seed.FieldObservationTurn = intFromAny(provenance["source_turn"], 0)
 		seed.ProjectionSource += ":field_provenance"
@@ -910,7 +957,25 @@ func prepareTurnAttachWorldScope(out *prepareTurnInjectionAssembly, start int, l
 
 func prepareTurnMemoryModelCandidate(c prepareTurnPriorityMemoryCandidate, refs map[string]string) map[string]any {
 	item := map[string]any{"ref": refs[c.CanonicalFactID], "id": c.CanonicalFactID, "source_ref": c.SourceRef, "source_table": c.SourceTable, "text": prepareTurnMemoryReadingText(c), "source_turn": c.SourceTurn, "visibility": c.Visibility, "perspective_owner": c.PerspectiveOwner, "allowed_viewers": c.AllowedViewers}
+	if len(c.KnowledgeBoundaries) > 0 {
+		item["knowledge_boundaries"] = c.KnowledgeBoundaries
+	}
 	if c.Minimum != nil {
+		// Keep diagnostics intact; the model packet can share typed linked state
+		// without parsing arbitrary story text or merging candidate identities.
+		linked := []map[string]any{}
+		original := []string{c.Minimum.Heading}
+		for _, part := range c.Minimum.Parts {
+			if strings.HasPrefix(part.Key, "@current/") {
+				linked = append(linked, map[string]any{"key": part.Key, "text": part.Text})
+			} else {
+				original = append(original, "  "+part.Text)
+			}
+		}
+		if len(linked) > 0 {
+			item["original_reading"] = strings.TrimSpace(strings.Join(original, "\n"))
+			item["linked_state"] = linked
+		}
 		contextRefs := []string{}
 		for _, id := range c.Minimum.Refs {
 			if ref := refs[id]; ref != "" {
@@ -960,6 +1025,14 @@ type prepareTurnMemoryPartIdentity struct {
 	Key, Text string
 }
 
+func prepareTurnMemorySharedPartIdentity(part prepareTurnMemoryFormPart) prepareTurnMemoryPartIdentity {
+	key := part.SharedKey
+	if strings.HasPrefix(part.Key, "@current/") || strings.HasPrefix(part.Key, "@lifecycle/") || strings.HasPrefix(part.Key, "@field_current/") {
+		key = part.Key
+	}
+	return prepareTurnMemoryPartIdentity{key, part.Text}
+}
+
 type prepareTurnMemoryReadingLayout struct {
 	rows         []*prepareTurnMemoryReadingRow
 	groups       map[string]*prepareTurnMemoryReadingRow
@@ -997,8 +1070,9 @@ func (l *prepareTurnMemoryReadingLayout) preview(row prepareTurnMemoryReadingRow
 		}
 		for _, part := range incoming {
 			key := prepareTurnMemoryPartIdentity{part.Key, part.Text}
-			if strings.HasPrefix(part.Key, "@current/") && l.currentParts[key] {
-				continue // Same canonical state, already present in this final input.
+			shared := prepareTurnMemorySharedPartIdentity(part)
+			if shared.Key != "" && l.currentParts[shared] {
+				continue // Same source constituent already present in this input.
 			}
 			if !seen[key] {
 				row.Parts = append(row.Parts, part)
@@ -1056,8 +1130,9 @@ func (l *prepareTurnMemoryReadingLayout) apply(edit prepareTurnMemoryReadingEdit
 		l.groups[row.Group] = row
 	}
 	for _, part := range row.Parts {
-		if strings.HasPrefix(part.Key, "@current/") && l.currentParts != nil {
-			l.currentParts[prepareTurnMemoryPartIdentity{part.Key, part.Text}] = true
+		shared := prepareTurnMemorySharedPartIdentity(part)
+		if shared.Key != "" && l.currentParts != nil {
+			l.currentParts[shared] = true
 		}
 	}
 	return row.rendered

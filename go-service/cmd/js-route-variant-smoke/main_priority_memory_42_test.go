@@ -214,6 +214,7 @@ function consumeTurnWorkflowHUDPrevious(view){previousViews.push(view);}
 function renderTurnWorkflowHUDTransportError(){transportErrors.push("current");}
 function renderTurnWorkflowHUDPreviousTransportError(){transportErrors.push("previous");}
 async function safeCall(call){return await call();}
+function buildAdminRuntimeClientMeta(){return {critic:{},embedding:{}};}
 async function bridgeFetchWithRetry(_path,options){
   const requestId=String(options&&options.body&&options.body.client_meta&&options.body.client_meta.turn_workflow_request_id||"");
   return {

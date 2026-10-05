@@ -44,11 +44,11 @@ func TestMemoryAdmission46ExplicitPrivateProjectionAuthority(t *testing.T) {
 			if !tc.replay {
 				mock.ExpectQuery("SELECT id[\\s\\S]+FROM memories").WithArgs("private-session", 1).WillReturnRows(sqlmock.NewRows([]string{"id"}))
 				mock.ExpectExec("INSERT INTO memories").WillReturnResult(sqlmock.NewResult(42, 1))
+				mock.ExpectQuery("SELECT id, evidence_text, tombstoned").WithArgs("private-session", 1, 1).WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
+				mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").WithArgs("private-session", "private-source").WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
 				if tc.excluded {
 					mock.ExpectExec("INSERT INTO memory_vector_outbox").WithArgs(MemoryVectorOutboxContract, sqlmock.AnyArg(), "delete", "private-session", "private-source", "memory:private-session:42", sqlmock.AnyArg(), true, "active", "pending", 0, nil, nil, nil, nil, now, now).WillReturnResult(sqlmock.NewResult(7, 1))
 				}
-				mock.ExpectQuery("SELECT id, evidence_text, tombstoned").WithArgs("private-session", 1, 1).WillReturnRows(sqlmock.NewRows([]string{"id", "evidence_text", "tombstoned"}))
-				mock.ExpectQuery("SELECT id, unit_id, idempotency_key, lifecycle_state").WithArgs("private-session", "private-source").WillReturnRows(sqlmock.NewRows([]string{"id", "unit_id", "idempotency_key", "lifecycle_state"}))
 				mock.ExpectExec("UPDATE memory_source_revisions").WillReturnResult(sqlmock.NewResult(0, 1))
 			}
 			mock.ExpectCommit()

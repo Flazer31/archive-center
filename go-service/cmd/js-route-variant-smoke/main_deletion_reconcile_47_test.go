@@ -34,8 +34,9 @@ async function reconcileRollbackFromHostSignal(sid, context, options){
  calls.push('reconcile');await Promise.resolve();calls.push('reconciled');return true;
 }
 async function computeActiveChatRescanDryRunPlan(sid){
- assert.equal(sid,'fixture-session');assert.equal(calls.at(-1),'reconciled');calls.push('rescan');return {ok:true,pairs:[]};
+ assert.equal(sid,'fixture-session');assert.equal(calls.at(-1),'inherited_recovery');calls.push('rescan');return {ok:true,pairs:[]};
 }
+async function preflightActiveChatBackfillIdentity(sid,options){assert.equal(sid,'fixture-session');assert.equal(options.hostContext.hostChatId,'fixture-chat');assert.equal(calls.at(-1),'reconciled');calls.push('inherited_recovery');return {status:'ok'};}
 function buildSessionNormalizeRepairEntriesFromDryRunPlan(){return [];}
 function buildSessionNormalizeTargetTurnsFromDryRunPlan(){return [];}
 function buildAdminRuntimeClientMeta(x){return x;}
@@ -48,7 +49,7 @@ const explorerFetchChatLogs=read,explorerFetchMemories=read,explorerFetchDirectE
 ` + production + `
 (async()=>{
  assert.equal(await normalizeSession('fixture-session',5,{skipRescan:false}),true);
- assert.deepEqual(calls,['reconcile','reconciled','rescan','normalize']);
+ assert.deepEqual(calls,['reconcile','reconciled','inherited_recovery','rescan','normalize']);
  for(const tab of ['chat_logs','memories','direct_evidence','kg_triples','episodes','trust','world','entities']){
   calls=[];await explorerLoadTab(tab,true);assert.deepEqual(calls,['reconcile','reconciled','read'],tab);
  }

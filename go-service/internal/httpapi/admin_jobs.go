@@ -120,6 +120,12 @@ func (m *adminJobManager) start(kind, sid string, request map[string]any, work f
 			return
 		}
 		terminalStatus := "completed"
+		if strings.HasPrefix(normalizedKind, "worldline_source_recovery_") {
+			switch stringFromAny(result["status"]) {
+			case "processing", "queued_existing_reprocessing":
+				terminalStatus = "deferred"
+			}
+		}
 		if strings.EqualFold(normalizedKind, "session_normalize") {
 			switch strings.ToLower(strings.TrimSpace(stringFromAny(result["status"]))) {
 			case "deferred", "partial_deferred":

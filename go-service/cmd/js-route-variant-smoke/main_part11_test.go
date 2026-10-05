@@ -1927,6 +1927,7 @@ const settings = {enabled:true,dbEnabled:true};
 let nextResult = null;
 const runtimeUpdates = [];
 function buildCompleteTurnRequestBody() { return Promise.resolve({client_meta:{turn_workflow_request_id:"request-reroll"}}); }
+function buildAdminRuntimeClientMeta() { return {critic:{},embedding:{}}; }
 function turnWorkflowHUDRequestIdFromCompleteBody(body) { return body.client_meta.turn_workflow_request_id; }
 function startTurnWorkflowHUDWatch() {}
 function consumeTurnWorkflowHUD() {}
@@ -2179,6 +2180,15 @@ async function bridgeFetch(path, options) {
     if (request.settings.reference_injection_enabled !== referenceEnabled || request.settings.injection_enabled !== true ||
         request.settings.reference_injection_budget_basis_chars !== 3000 || request.settings.lorebook_reference_mode !== "reference_assist") {
       throw new Error("original-work toggle changed another lane or failed transport: " + JSON.stringify(request.settings));
+    }
+  }
+  for (const cap of [0, 4000, 5000, 6000, 7351]) {
+    settings.protectedSecretBudgetChars = cap;
+    await tryPrepareTurn("session-a", "hello", [{role:"user",content:"hello"}], null, "model", null, {
+      sourceObservation, capabilityObservation, hostObservations, bootstrapObservation
+    });
+    if (capturedBody.settings.protected_secret_budget_chars !== cap) {
+      throw new Error("secret ceiling was not transported unchanged: " + JSON.stringify(capturedBody.settings));
     }
   }
   if (lorebookSyncCalls !== capturedBodies.length) throw new Error("prepare-turn did not synchronize the active lorebook scope");
@@ -4351,7 +4361,7 @@ const saved = serializeCompleteTurnRecoveryPayload({
   chat_session_id:"session-1",turn_index:3,user_input:"user",assistant_content:"assistant",context_messages:exactContext,
   client_meta:{source_acceptance_required:true,source_acceptance_observation:sourceObservation,
     source_to_final_lineage_observation:sourceLineage,idempotency_key:"key-1",source_revision:"source-revision-7",
-    critic_input_budget_observation:{contract_version:"critic_input_budget_observation.v1",max_input_context_chars:975},
+    critic_input_budget_observation:{contract_version:"critic_input_budget_observation.v1",max_input_context_chars:975,critic_reference_max_chars:12500},
     critic:{api_key:"secret"},authorization:"Bearer secret"}
 });
 if (!saved || saved.client_meta.source_acceptance_required !== true) throw new Error("source fence requirement was lost");
@@ -4360,7 +4370,8 @@ if (saved.client_meta.idempotency_key !== "key-1") throw new Error("idempotency 
 if (saved.client_meta.source_revision !== "source-revision-7") throw new Error("source revision was lost");
 if (!saved.client_meta.critic_input_budget_observation ||
     saved.client_meta.critic_input_budget_observation.contract_version!=="critic_input_budget_observation.v1" ||
-    saved.client_meta.critic_input_budget_observation.max_input_context_chars!==975) throw new Error("critic input budget observation was lost");
+    saved.client_meta.critic_input_budget_observation.max_input_context_chars!==975 ||
+    saved.client_meta.critic_input_budget_observation.critic_reference_max_chars!==12500) throw new Error("critic input budget observation was lost");
 const savedLineage=saved.client_meta.source_to_final_lineage_observation;
 if (!savedLineage || savedLineage.archive_center_request_correlation_id!=="correlation-1" ||
   savedLineage.prepare_lineage_id!=="stl_1" || savedLineage.payload_plan_id!=="stp_1" ||
@@ -6996,8 +7007,12 @@ async function settle(predicate, label) {
 
 func TestAdapterTimerAndConfigAcknowledgementSourceContract(t *testing.T) {
 	src := readArchiveCenterJS(t)
-	if got := strings.Count(src, "setTimeout("); got != 2 {
-		t.Fatalf("production adapter setTimeout count=%d, want the UI-configured fetch abort and HUD elapsed timers", got)
+	translationRead := extractArchiveCenterJSAsyncFunction(t, src, "readTranslationOriginalsForArchive")
+	if got := strings.Count(translationRead, "setTimeout("); got != 2 {
+		t.Fatalf("translator Host read timer count=%d, want the approved 500ms reread and 10s deadline", got)
+	}
+	if got := strings.Count(strings.Replace(src, translationRead, "", 1), "setTimeout("); got != 2 {
+		t.Fatalf("other adapter setTimeout count=%d, want only UI-configured fetch abort and HUD elapsed timers", got)
 	}
 	if strings.Contains(src, "setInterval(") || strings.Contains(src, "clearInterval(") {
 		t.Fatal("production adapter still contains a fixed interval")

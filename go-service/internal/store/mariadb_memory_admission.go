@@ -180,17 +180,6 @@ func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission 
 	}
 	result.MemoryInserted = inserted
 	result.MemoryUpdated = updated
-	if admission.MemoryPublicProjectionExcluded && memoryID > 0 {
-		queued, err := enqueueAdmissionVectorDeleteTx(ctx, tx, admission,
-			"memory:"+admission.ChatSessionID+":"+strconv.FormatInt(memoryID, 10), "active", "no_public_memory_projection")
-		if err != nil {
-			return result, err
-		}
-		if queued {
-			result.VectorOperations++
-		}
-	}
-
 	evidenceByText, evidenceResult, err := reconcileAdmissionEvidenceTx(ctx, tx, admission)
 	if err != nil {
 		return result, err
@@ -228,6 +217,17 @@ func (m *mariadbStore) commitMemoryAdmissionOnce(ctx context.Context, admission 
 			return result, err
 		}
 		result.VectorOperations += reconciled
+	} else if admission.MemoryPublicProjectionExcluded && memoryID > 0 {
+		// ReconcileEligibility already owns this deletion during reindex.
+		// Queue it here only for ordinary admission, once per transaction.
+		queued, err := enqueueAdmissionVectorDeleteTx(ctx, tx, admission,
+			"memory:"+admission.ChatSessionID+":"+strconv.FormatInt(memoryID, 10), "active", "no_public_memory_projection")
+		if err != nil {
+			return result, err
+		}
+		if queued {
+			result.VectorOperations++
+		}
 	}
 
 	vectorCount, err := enqueueAdmissionVectorsTx(ctx, tx, admission, memoryID, evidenceByText)

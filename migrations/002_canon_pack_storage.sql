@@ -1,7 +1,6 @@
 -- Canon Pack storage migration for Archive Center 3.1.
 -- The same ordered statements are registered in 001_schema.sql and the
 -- production mariadb-schema compatibility pass for full-package upgrades.
--- Updater v1 must not apply migration or mariadb-schema changes.
 
 CREATE TABLE IF NOT EXISTS reference_work_editions (
     edition_row_id CHAR(36) PRIMARY KEY,

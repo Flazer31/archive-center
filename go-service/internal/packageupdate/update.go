@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -85,7 +86,9 @@ type packageManifest struct {
 }
 
 type manifestFile struct {
-	Path string `json:"path"`
+	Path      string `json:"path"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
 }
 
 type packageReleaseManifest struct {
@@ -96,10 +99,11 @@ type packageReleaseManifest struct {
 }
 
 type installFile struct {
-	Rel    string
-	Src    string
-	Mode   fs.FileMode
-	Remove bool
+	Rel       string
+	Src       string
+	Mode      fs.FileMode
+	Remove    bool
+	Integrity *manifestFile
 }
 
 type applyHook func(relativePath string, index int) error
@@ -379,7 +383,7 @@ func applyPending(root, runnerPath string, hook applyHook) (Result, error) {
 				applyErr = nil
 			}
 		} else {
-			applyErr = replaceFile(file.Src, target, file.Mode)
+			applyErr = replaceFile(file.Src, target, file.Mode, file.Integrity)
 		}
 		if applyErr != nil {
 			_, rollbackErr := rollback(root, paths, state, false)
@@ -824,7 +828,10 @@ func verifyNewPackage(root string, m packageManifest, required []string) ([]inst
 		if !info.Mode().IsRegular() {
 			return nil, fmt.Errorf("%s is not regular", rel)
 		}
-		files = append(files, installFile{Rel: rel, Src: path, Mode: managedInstallMode(rel, info.Mode().Perm(), runtime.GOOS)})
+		if err := verifyFileIntegrity(path, mf); err != nil {
+			return nil, err
+		}
+		files = append(files, installFile{Rel: rel, Src: path, Mode: managedInstallMode(rel, info.Mode().Perm(), runtime.GOOS), Integrity: &mf})
 	}
 	for _, req := range required {
 		if !seen[strings.ToLower(canonicalRelativePath(req))] {
@@ -833,6 +840,27 @@ func verifyNewPackage(root string, m packageManifest, required []string) ([]inst
 	}
 	sort.Slice(files, func(i, j int) bool { return files[i].Rel < files[j].Rel })
 	return files, nil
+}
+
+func verifyFileIntegrity(path string, expected manifestFile) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%s: %w", expected.Path, err)
+	}
+	defer f.Close()
+	hash := sha256.New()
+	size, err := io.Copy(hash, f)
+	if err != nil {
+		return fmt.Errorf("%s: %w", expected.Path, err)
+	}
+	if size != expected.SizeBytes {
+		return fmt.Errorf("%s size_bytes mismatch: got %d, want %d", expected.Path, size, expected.SizeBytes)
+	}
+	digest := fmt.Sprintf("%x", hash.Sum(nil))
+	if !strings.EqualFold(digest, expected.SHA256) {
+		return fmt.Errorf("%s sha256 mismatch: got %s, want %s", expected.Path, digest, expected.SHA256)
+	}
+	return nil
 }
 
 func verifyCurrentPackage(root string) (map[string]manifestFile, string, error) {
@@ -1087,7 +1115,7 @@ func rollback(root string, paths rootPaths, state State, clearPending bool) (Res
 			if err != nil {
 				return Result{}, err
 			}
-			if err := replaceFile(backup, target, info.Mode().Perm()); err != nil {
+			if err := replaceFile(backup, target, info.Mode().Perm(), nil); err != nil {
 				return Result{}, err
 			}
 		} else {
@@ -1117,7 +1145,7 @@ func rollback(root string, paths rootPaths, state State, clearPending bool) (Res
 	return Result{ContractVersion: ResultContract, Action: "rollback", Status: "rolled_back", CurrentVersion: state.CurrentVersion, Message: "update rolled back"}, nil
 }
 
-func replaceFile(src, target string, mode fs.FileMode) error {
+func replaceFile(src, target string, mode fs.FileMode, integrity *manifestFile) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
@@ -1125,6 +1153,15 @@ func replaceFile(src, target string, mode fs.FileMode) error {
 	_ = os.Remove(tmp)
 	if err := copyFile(src, tmp, mode); err != nil {
 		return err
+	}
+	// Verify the exact copy to be installed, before removing the target. A
+	// changed extracted payload uses the existing apply-failure rollback journal.
+	// Backups and the self-excluded package manifest have no manifest entry.
+	if integrity != nil {
+		if err := verifyFileIntegrity(tmp, *integrity); err != nil {
+			os.Remove(tmp)
+			return err
+		}
 	}
 	if err := os.Remove(target); err != nil && !errors.Is(err, os.ErrNotExist) {
 		os.Remove(tmp)

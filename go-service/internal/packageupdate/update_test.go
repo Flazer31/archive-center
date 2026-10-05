@@ -2,6 +2,7 @@ package packageupdate
 
 import (
 	"archive/zip"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -1125,7 +1126,8 @@ func manifestFor(packageVersion string, files map[string]string) packageManifest
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		m.Files = append(m.Files, manifestFile{Path: filepath.ToSlash(k)})
+		body := []byte(files[k])
+		m.Files = append(m.Files, manifestFile{Path: filepath.ToSlash(k), SHA256: fmt.Sprintf("%x", sha256.Sum256(body)), SizeBytes: int64(len(body))})
 	}
 	return m
 }

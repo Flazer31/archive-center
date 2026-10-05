@@ -907,7 +907,21 @@ func (s *Server) adminRescanSourceProjectionComplete(
 	ctx context.Context,
 	source *store.MemorySourceRevision,
 ) (bool, error) {
-	if s == nil || s.Store == nil || source == nil ||
+	if s == nil || s.Store == nil || source == nil || source.LifecycleState != "active" ||
+		source.DerivedAdmissionState != "committed" || source.DerivedAdmissionVersion != store.MemoryAdmissionContract ||
+		source.DerivedExtractorVersion != completeTurnCriticPipelineVersion || source.DerivedIndexVersion != memoryAdmissionIndexVersion ||
+		strings.TrimSpace(source.DerivedResultHash) == "" || strings.TrimSpace(source.DerivedResultJSON) == "" {
+		return false, nil
+	}
+	logs, err := s.Store.ListAuditLogs(ctx, source.ChatSessionID, "critic_ingest_trace", 0)
+	if err != nil && !errors.Is(err, store.ErrNotFound) {
+		return false, err
+	}
+	return adminRescanSourceProjectionCompleteFromAudit(source, logs), nil
+}
+
+func adminRescanSourceProjectionCompleteFromAudit(source *store.MemorySourceRevision, logs []store.AuditLog) bool {
+	if source == nil ||
 		source.LifecycleState != "active" ||
 		source.DerivedAdmissionState != "committed" ||
 		source.DerivedAdmissionVersion != store.MemoryAdmissionContract ||
@@ -915,18 +929,9 @@ func (s *Server) adminRescanSourceProjectionComplete(
 		source.DerivedIndexVersion != memoryAdmissionIndexVersion ||
 		strings.TrimSpace(source.DerivedResultHash) == "" ||
 		strings.TrimSpace(source.DerivedResultJSON) == "" {
-		return false, nil
+		return false
 	}
 	recoverableCharacterDeltaName := committedResultHasCharacterDeltaNameAlias(source.DerivedResultJSON)
-	logs, err := s.Store.ListAuditLogs(
-		ctx,
-		source.ChatSessionID,
-		"critic_ingest_trace",
-		0,
-	)
-	if err != nil && !errors.Is(err, store.ErrNotFound) {
-		return false, err
-	}
 	for _, item := range logs {
 		if item.ChatSessionID != source.ChatSessionID ||
 			item.TargetType != "turn" ||
@@ -949,12 +954,12 @@ func (s *Server) adminRescanSourceProjectionComplete(
 			if recoverableCharacterDeltaName &&
 				stringFromMap(reason, "surface") == "character_deltas" &&
 				stringFromMap(reason, "reason") == "missing_name" {
-				return false, nil
+				return false
 			}
 		}
-		return true, nil
+		return true
 	}
-	return false, nil
+	return false
 }
 
 func committedResultHasCharacterDeltaNameAlias(rawJSON string) bool {

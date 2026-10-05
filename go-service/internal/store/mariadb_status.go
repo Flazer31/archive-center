@@ -540,6 +540,11 @@ func (m *mariadbStore) ApplyReversibleStatusTransition(ctx context.Context, tran
 		}
 	}
 
+	// Join the source/outbox writer lane before taking any InnoDB locks. The
+	// outbox join can lock the source PRIMARY before its unique revision index;
+	// this transition's revision lookup takes those locks in the opposite order.
+	m.memoryDerivationWriteMu.Lock()
+	defer m.memoryDerivationWriteMu.Unlock()
 	tx, err := m.db.BeginTx(ctx, nil)
 	if err != nil {
 		return result, err

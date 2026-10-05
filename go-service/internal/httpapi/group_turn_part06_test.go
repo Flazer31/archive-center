@@ -261,16 +261,16 @@ func TestMEMBSamePersonSecretKindMergesOnceWithoutWeakeningProtection(t *testing
 		"owner_private_until_revealed",
 		"explicit_user_reveal_required",
 		"current_session_confirmation_required",
-		"knowledge_scope=known:2 suspected:1",
-		"Do not reveal, confess, or let unrelated characters discover it without current-scene evidence.",
+		"known_by=Mina, Advisor; suspected_by=Guard",
+		"not public character knowledge",
 	} {
 		if !strings.Contains(assembly.MemoryText, required) {
 			t.Fatalf("merged protection lost %q: %q", required, assembly.MemoryText)
 		}
 	}
-	for _, leaked := range []string{"first concealed route", "revised route details", "linked route details", "eastern watch timing"} {
-		if strings.Contains(assembly.MemoryText, leaked) {
-			t.Fatalf("merged protection leaked secret source %q: %q", leaked, assembly.MemoryText)
+	for _, claim := range []string{"first concealed route", "revised route details", "linked route details", "eastern watch timing"} {
+		if strings.Count(assembly.ProtectedMemoryText, claim) != 1 || strings.Contains(assembly.ActualMemoryText, claim) {
+			t.Fatalf("protected source missing, repeated or promoted to public memory: %q", claim)
 		}
 	}
 	hiddenPlanRows := 0
@@ -319,9 +319,9 @@ func TestMEMBAmbiguousAliasDoesNotMergeDifferentPeople(t *testing.T) {
 	if got := strings.Count(assembly.MemoryText, "kind=hidden_plan"); got != 2 {
 		t.Fatalf("ambiguous alias hidden plans were merged: count=%d text=%q", got, assembly.MemoryText)
 	}
-	for _, leaked := range []string{"Alice route", "Bob route"} {
-		if strings.Contains(assembly.MemoryText, leaked) {
-			t.Fatalf("ambiguous alias guard leaked secret source %q: %q", leaked, assembly.MemoryText)
+	for _, claim := range []string{"Alice route", "Bob route"} {
+		if strings.Count(assembly.ProtectedMemoryText, claim) != 1 || strings.Contains(assembly.ActualMemoryText, claim) {
+			t.Fatalf("ambiguous alias changed protected source ownership: %q", claim)
 		}
 	}
 	ambiguousGroups := 0

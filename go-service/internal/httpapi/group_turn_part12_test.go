@@ -463,8 +463,8 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		if !strings.Contains(assembly.MemoryText, "raw_evidence: 미나는 오래된 사당 아래에 황동 열쇠를 숨겼다.") {
 			t.Fatalf("memory text missing raw evidence: %q", assembly.MemoryText)
 		}
-		if !strings.Contains(assembly.MemoryText, "summary_language=en") || !strings.Contains(assembly.MemoryText, "raw_language=ko") {
-			t.Fatalf("memory text missing language markers: %q", assembly.MemoryText)
+		if strings.Contains(assembly.MemoryText, "summary_language=") || strings.Contains(assembly.MemoryText, "raw_language=") {
+			t.Fatalf("diagnostic language markers leaked into original reading: %q", assembly.MemoryText)
 		}
 		if assembly.LanguageInjectionTrace["status"] != "ready" {
 			t.Fatalf("language injection status = %#v", assembly.LanguageInjectionTrace)
@@ -549,7 +549,7 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		}
 	})
 
-	t.Run("protected_secret_memory_injection_masks_secret_content", func(t *testing.T) {
+	t.Run("protected_secret_memory_injection_preserves_author_content_and_knowledge_boundary", func(t *testing.T) {
 		memories := []store.Memory{{
 			ID:        88,
 			TurnIndex: 5,
@@ -581,8 +581,8 @@ func TestSeq123P83LongMemoryPromotionCandidateMarkers(t *testing.T) {
 		if !strings.Contains(assembly.MemoryText, "Protected continuity guard") {
 			t.Fatalf("protected memory did not produce guard text: %q", assembly.MemoryText)
 		}
-		if strings.Contains(assembly.MemoryText, "privately likes Rowan") {
-			t.Fatalf("protected memory leaked secret content: %q", assembly.MemoryText)
+		if !containsAll(assembly.ProtectedMemoryText, "privately likes Rowan", "unknown_to=Rowan", "not public character knowledge") || strings.Contains(assembly.ActualMemoryText, "privately likes Rowan") {
+			t.Fatalf("protected author content or character boundary lost: %q", assembly.MemoryText)
 		}
 		if !strings.Contains(assembly.MemoryText, "kind=romantic_feeling") {
 			t.Fatalf("protected memory guard missing kind: %q", assembly.MemoryText)

@@ -327,6 +327,16 @@ func prepareTurnMemoryPayloadBudgetStats(plan map[string]any, reversibleStateTex
 		stats.EffectiveCap = intFromAny(plan["main_memory_cap_chars"], 0)
 		delete(stats.ExclusionReason, "body_tracking_char_budget_reached")
 	}
+	if secret := mapFromAny(plan["protected_secret_budget"]); intFromAny(secret["cap_chars"], 0) > 0 {
+		stats.CandidateCount -= intFromAny(secret["candidate_count"], 0)
+		stats.CandidateChars = maxInt(0, stats.CandidateChars-intFromAny(secret["candidate_chars"], 0))
+		stats.SelectedCount -= intFromAny(secret["selected_count"], 0)
+		stats.SelectedChars = len([]rune(stringFromMap(plan, "main_memory_text")))
+		stats.FinalCount -= intFromAny(secret["selected_count"], 0)
+		stats.EffectiveCap = intFromAny(plan["main_memory_cap_chars"], 0)
+		delete(stats.ExclusionReason, "protected_secret_char_budget_reached")
+		delete(stats.ExclusionReason, "protected_secret_not_scene_related")
+	}
 	if supplementalChars := len([]rune(strings.TrimSpace(reversibleStateText))); supplementalChars > 0 {
 		separatorChars := 0
 		if stats.SelectedChars > 0 {
@@ -786,58 +796,63 @@ type prepareTurnInjectionBlock struct {
 }
 
 type prepareTurnInjectionAssembly struct {
-	preparation               *prepareTurnRequestPreparation
-	supplementProjection      func(map[string]any, prepareTurnMemorySelectionContext) prepareTurnInjectionAssembly
-	Preprocessing             *multiAgentSelection
-	priorityCandidates        []prepareTurnPriorityMemoryCandidate
-	priorityTurnSummaries     []prepareTurnPriorityTurnSummaryCandidate
-	prioritySuperseded        []prepareTurnPriorityMemoryCandidate
-	priorityIdentityMetadata  []prepareTurnPriorityIdentityMetadata
-	Text                      string
-	SagaText                  string
-	ChapterText               string
-	MemoryText                string
-	MemoryRecallQuery         string
-	ActualMemoryText          string
-	ProtectedMemoryText       string
-	MemoryDeliveryLineage     map[string]any
-	MemoryDeliveryPlan        map[string]any
-	BodyTrackingBudgetChars   int
-	PrioritySourceMetadata    []prepareTurnPrioritySourceMetadata
-	PriorityFactSeeds         []prepareTurnPriorityFactSeed
-	PriorityEntityAliases     map[string]any
-	CharacterMemorySupport    map[string]any
-	KGText                    string
-	DirectEvidenceText        string
-	FallbackText              string
-	StorylineText             string
-	WorldRulesText            string
-	CharacterText             string
-	CharacterObjectiveText    string
-	CharacterRelationshipText string
-	PendingThreadText         string
-	EpisodeText               string
-	PersonaText               string
-	CharacterPrivateText      string
-	ContinuityCorrectionText  string
-	LatestDirectEvidenceText  string
-	RecentRawTurnText         string
-	ScopedVerbatimText        string
-	ScopedVerbatimSupport     archivebridge.ScopedVerbatimSupport
-	ArcText                   string
-	CanonText                 string
-	CanonEventText            string
-	CanonCharacterText        string
-	CanonRelationshipText     string
-	CanonWorldText            string
-	Truncated                 bool
-	Blocks                    []prepareTurnInjectionBlock
-	Trimmed                   []map[string]any
-	BudgetDecisions           map[string]any
-	Counts                    map[string]any
-	LanguageContext           map[string]any
-	LanguageInjectionTrace    map[string]any
-	PerspectiveContext        map[string]any
+	preparation                *prepareTurnRequestPreparation
+	supplementProjection       func(map[string]any, prepareTurnMemorySelectionContext) prepareTurnInjectionAssembly
+	attachSourceContext        func(*prepareTurnInjectionAssembly)
+	Preprocessing              *multiAgentSelection
+	priorityCandidates         []prepareTurnPriorityMemoryCandidate
+	priorityTurnSummaries      []prepareTurnPriorityTurnSummaryCandidate
+	prioritySuperseded         []prepareTurnPriorityMemoryCandidate
+	priorityIdentityMetadata   []prepareTurnPriorityIdentityMetadata
+	authoritySelectionScores   map[string]float64
+	protectedFactKeys          map[string][]string
+	protectedKnownDuplicates   map[string]bool
+	Text                       string
+	SagaText                   string
+	ChapterText                string
+	MemoryText                 string
+	MemoryRecallQuery          string
+	ActualMemoryText           string
+	ProtectedMemoryText        string
+	MemoryDeliveryLineage      map[string]any
+	MemoryDeliveryPlan         map[string]any
+	ProtectedSecretBudgetChars int
+	BodyTrackingBudgetChars    int
+	PrioritySourceMetadata     []prepareTurnPrioritySourceMetadata
+	PriorityFactSeeds          []prepareTurnPriorityFactSeed
+	PriorityEntityAliases      map[string]any
+	CharacterMemorySupport     map[string]any
+	KGText                     string
+	DirectEvidenceText         string
+	FallbackText               string
+	StorylineText              string
+	WorldRulesText             string
+	CharacterText              string
+	CharacterObjectiveText     string
+	CharacterRelationshipText  string
+	PendingThreadText          string
+	EpisodeText                string
+	PersonaText                string
+	CharacterPrivateText       string
+	ContinuityCorrectionText   string
+	LatestDirectEvidenceText   string
+	RecentRawTurnText          string
+	ScopedVerbatimText         string
+	ScopedVerbatimSupport      archivebridge.ScopedVerbatimSupport
+	ArcText                    string
+	CanonText                  string
+	CanonEventText             string
+	CanonCharacterText         string
+	CanonRelationshipText      string
+	CanonWorldText             string
+	Truncated                  bool
+	Blocks                     []prepareTurnInjectionBlock
+	Trimmed                    []map[string]any
+	BudgetDecisions            map[string]any
+	Counts                     map[string]any
+	LanguageContext            map[string]any
+	LanguageInjectionTrace     map[string]any
+	PerspectiveContext         map[string]any
 }
 
 func buildInjectionPack(rawUserInput, inputContextText string, injectionEnabled, inputContextEnabled, inputContextTruncated bool, assembly prepareTurnInjectionAssembly, temporalSupportPacket map[string]any) map[string]any {
@@ -1009,7 +1024,7 @@ func buildPrepareTurnInputTransparencyRenderModel(sid string, turnIndex int, raw
 			assembly.LanguageInjectionTrace,
 		),
 		"perspective_context":   nilIfEmptyMap(assembly.PerspectiveContext),
-		"secret_display_policy": "counts_only_no_secret_text",
+		"secret_display_policy": "author_content_with_recorded_knowledge_scope",
 	}
 }
 

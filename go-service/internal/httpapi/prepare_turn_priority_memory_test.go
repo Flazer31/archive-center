@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/risulongmemory/archive-center-go/internal/config"
@@ -1013,6 +1014,7 @@ func Test42PriorityMemoryChromaEmbeddingUsesSeparateRecentConversationCount(t *t
 	user3 := "저잣거리에서 약재를 고른다."
 	recentConversationLimit := 2
 	embeddingInputs := []string{}
+	var embeddingInputsMu sync.Mutex
 	oldClient := proxyHTTPClient
 	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 		body, _ := io.ReadAll(r.Body)
@@ -1020,7 +1022,9 @@ func Test42PriorityMemoryChromaEmbeddingUsesSeparateRecentConversationCount(t *t
 		if err := json.Unmarshal(body, &payload); err != nil {
 			t.Fatalf("decode embedding request: %v body=%s", err, body)
 		}
+		embeddingInputsMu.Lock()
 		embeddingInputs = append(embeddingInputs, extractionStringFromAny(payload["input"]))
+		embeddingInputsMu.Unlock()
 		return &http.Response{
 			StatusCode: http.StatusOK, Status: "200 OK", Header: make(http.Header),
 			Body: io.NopCloser(strings.NewReader(`{"model":"embed-model","data":[{"embedding":[0.1,0.2,0.3]}]}`)),
@@ -1054,7 +1058,13 @@ func Test42PriorityMemoryChromaEmbeddingUsesSeparateRecentConversationCount(t *t
 	}
 	wantLatest := "user:\n" + user1 + "\nassistant:\n" + previous1
 	wantPrevious := "user:\n" + user2 + "\nassistant:\n" + previous2
-	if len(embeddingInputs) != 3 || embeddingInputs[0] != raw || embeddingInputs[1] != wantLatest || embeddingInputs[2] != wantPrevious {
+	counts := map[string]int{}
+	for _, input := range embeddingInputs {
+		counts[input]++
+	}
+	// Current input remains first. History request arrival may be concurrent;
+	// the exact selected inputs and one-call-per-input contract stay unchanged.
+	if len(embeddingInputs) != 3 || embeddingInputs[0] != raw || counts[wantLatest] != 1 || counts[wantPrevious] != 1 {
 		t.Fatalf("recent conversation query inputs=%#v, want current input plus latest two completed conversations", embeddingInputs)
 	}
 	if intFromAny(shadow["recent_conversation_query_limit"], 0) != 2 || intFromAny(shadow["recent_conversation_query_count"], 0) != 2 || intFromAny(shadow["query_vector_count"], 0) != 3 {

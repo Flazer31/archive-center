@@ -15,6 +15,64 @@ import (
 	archiveStore "github.com/risulongmemory/archive-center-go/internal/store"
 )
 
+func TestBodyTrackingGlobalHTTPMariaDBStatePreservation(t *testing.T) {
+	t.Setenv("ARCHIVE_CENTER_DATA_DIR", t.TempDir())
+	_, st := feedback43Database(t)
+	routes, _, _ := storyTime46Server(t, st)
+	ctx := context.Background()
+	before := map[string][]archiveStore.StatusCurrentValue{}
+	history := map[string][]archiveStore.StatusChangeEvent{}
+	models := map[string]any{}
+	for _, sid := range []string{"global-state-one", "global-state-two"} {
+		entity := sid + "-mina"
+		bodyProbability46Config(t, routes, st, sid, entity, 0)
+		for _, kind := range []string{"period_start", "pregnancy_confirmed"} {
+			storyTime46Request(t, routes, http.MethodPut, "/config/body-tracking/"+sid+"/state", map[string]any{
+				"operation_id": sid + "-" + kind, "character_id": entity,
+				"event": map[string]any{"kind": kind, "occurred_at": map[string]any{"date": "1423-01-15"}},
+			})
+		}
+		var err error
+		before[sid], err = st.(archiveStore.StatusCurrentValueStore).ListStatusCurrentValues(ctx, sid, "", "", "body_tracking", -1)
+		if err != nil || len(before[sid]) == 0 {
+			t.Fatal("body state fixture missing", sid, err)
+		}
+		history[sid], err = st.(archiveStore.StatusLifecycleStore).ListStatusChangeEvents(ctx, sid, "", "", "body_tracking", -1)
+		if err != nil || len(history[sid]) == 0 {
+			t.Fatal("body history fixture missing", sid, err)
+		}
+		models[sid] = storyTime46Map(storyTime46Request(t, routes, http.MethodGet, "/sessions/"+sid+"/export", nil)["body_tracking_settings"])["config"]
+	}
+	for _, on := range []bool{false, true} {
+		storyTime46Request(t, routes, http.MethodPut, "/config/body-tracking/new-rp", map[string]any{"cycle_tracking_enabled": on, "automatic_pregnancy_enabled": on})
+		for sid := range before {
+			view := storyTime46Request(t, routes, http.MethodGet, "/config/body-tracking/"+sid, nil)
+			settings := storyTime46Map(view["settings"])
+			if settings["cycle_tracking_enabled"] != on || settings["automatic_pregnancy_enabled"] != on {
+				t.Fatal("common toggle not delivered", sid, on)
+			}
+			current, err := st.(archiveStore.StatusCurrentValueStore).ListStatusCurrentValues(ctx, sid, "", "", "body_tracking", -1)
+			if err != nil || !reflect.DeepEqual(before[sid], current) {
+				t.Fatal("toggle changed SQL body current values", sid, err)
+			}
+			events, err := st.(archiveStore.StatusLifecycleStore).ListStatusChangeEvents(ctx, sid, "", "", "body_tracking", -1)
+			if err != nil || !reflect.DeepEqual(history[sid], events) {
+				t.Fatal("toggle changed SQL body history", sid, err)
+			}
+			model := storyTime46Map(storyTime46Map(storyTime46Request(t, routes, http.MethodGet, "/sessions/"+sid+"/export", nil)["body_tracking_settings"])["config"])
+			original := storyTime46Map(models[sid])
+			if !reflect.DeepEqual(model["characters"], original["characters"]) || model["simulation_seed"] != original["simulation_seed"] {
+				t.Fatal("toggle changed session model or seed", sid)
+			}
+		}
+	}
+	// New sessions do not acquire either session's state.
+	view := storyTime46Request(t, routes, http.MethodGet, "/config/body-tracking/unseen", nil)
+	if len(view["body_states"].([]any)) != 0 {
+		t.Fatal("global toggles leaked session body state")
+	}
+}
+
 // Use the production v3 afterRequest contract: physical input rows identify the
 // logical turn even when the host proposes the next ordinal after answer removal.
 func bodyTracking46Complete(t *testing.T, routes http.Handler, provider *storyTime46Provider, endpoint, sid string, proposedTurn int, at int64, ids, texts []string, assistant string, extraction map[string]any) map[string]any {

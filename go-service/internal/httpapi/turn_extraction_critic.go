@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -209,13 +210,17 @@ func scrubCriticFailureText(text, apiKey string) string {
 }
 
 func (s *Server) completeTurnCriticInputPolicy(clientMeta map[string]any) completeTurnCriticInputPolicy {
-	defaults := dto.PrepareTurnSettings{}
-	defaults.ApplyDefaults()
-	configuredChars := intPtrValue(defaults.MaxInputContextChars, 0)
-	source := "prepare_turn_default"
+	// Matches the editable Critic reference budget in the Host settings.
+	// The pre-input context setting governs a different injection slot.
+	configuredChars := 4000
+	source := "critic_reference_default"
 	observation := mapFromAny(clientMeta["critic_input_budget_observation"])
 	if stringFromMap(observation, "contract_version") == completeTurnCriticInputBudgetObservationContract {
-		if observed, ok := observation["max_input_context_chars"]; ok {
+		if observed, ok := observation["critic_reference_max_chars"]; ok {
+			configuredChars = intFromAny(observed, configuredChars)
+			source = "risu_host_critic_reference_setting"
+		} else if observed, ok := observation["max_input_context_chars"]; ok {
+			// Earlier Hosts send only this field. Preserve their explicit value.
 			configuredChars = intFromAny(observed, configuredChars)
 			source = "risu_host_setting_observation"
 		}
@@ -396,10 +401,6 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				"duration_ms", time.Since(startedDiagnostic).Milliseconds(), "error", scrubCriticFailureText(resultErr.Error(), cfg.APIKey))
 		}
 	}()
-	if !cfg.hasConfig() {
-		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
-		return nil, criticFailureTrace("", cfg, 0, err, ""), err
-	}
 	var languageContext map[string]any
 	if len(languageContextArg) > 0 {
 		languageContext = normalizeCompleteTurnLanguageContext(languageContextArg[0])
@@ -612,6 +613,14 @@ func (s *Server) runCompleteTurnCriticWithInputPolicy(ctx context.Context, sid s
 				}
 			}
 		}
+	}
+	// A deferred first call still needs its original input for the recovery
+	// worker. Preparing/persisting that input does not require provider settings.
+	if !cfg.hasConfig() {
+		err := newCriticPipelineError("CRITIC_CONFIG_MISSING", "configuration", false, 0, errors.New("critic_config_missing"))
+		trace := criticFailureTrace(promptSource, cfg, 0, err, "")
+		trace["input_snapshot"] = snapshotTrace
+		return nil, trace, err
 	}
 	userPrompt := buildCompleteTurnCriticPromptWithLanguageContext(sid, turnIndex, criticUserInput, criticAssistantContent, criticContextMessages, outputLanguageOverride, languageContext, criticArchiveLedgerPromptInput)
 	contextMessagesJSON, _ := json.Marshal(criticContextMessages)
@@ -1168,7 +1177,7 @@ func (s *Server) buildCompleteTurnCriticCanonicalContext(ctx context.Context, si
 				for _, raw := range sliceFromAny(extraction[lane]) {
 					item := mapFromAny(raw)
 					ref := map[string]any{}
-					for _, key := range []string{"subject", "state_slot", "lifecycle_key", "value", "transition", "title", "status", "description"} {
+					for _, key := range []string{"subject", "state_slot", "lifecycle_key", "value", "transition", "title", "status", "description", "remaining_obligations", "claim_scope", "perspective_owner"} {
 						if value, exists := item[key]; exists {
 							ref[key] = value
 						}
@@ -1343,6 +1352,55 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 	excluded := []map[string]any{}
 	order := 0
 	pairAdded := map[int]bool{}
+	referenceIdentity := func(ref map[string]any) string {
+		scope := ""
+		claimScope := normalizeNarrativeClaimScope(stringFromMap(ref, "claim_scope"))
+		if claimScope != "objective" || stringFromMap(ref, "perspective_owner") != "" {
+			scope = mustCompactJSON([]string{claimScope, stringFromMap(ref, "perspective_owner")})
+		}
+		if key := stringFromMap(ref, "lifecycle_key"); key != "" {
+			return "lifecycle:" + key + scope
+		}
+		return mustCompactJSON([]string{stringFromMap(ref, "subject"), stringFromMap(ref, "state_slot"), stringFromMap(ref, "title")}) + scope
+	}
+	// A reference is an identity, not one copy per historical memory. Keep its
+	// latest recorded wording from the already-read public candidates. This is
+	// support-only history, not a promotion to canonical current state.
+	latestReferences := map[string]map[string]any{}
+	referenceTurns := map[string]map[int]bool{}
+	for _, memory := range relevantMemories {
+		for _, lane := range []string{"recorded_state_claims", "recorded_pending_threads"} {
+			for _, raw := range sliceFromAny(memory[lane]) {
+				ref := mapFromAny(raw)
+				identity := referenceIdentity(ref)
+				previous := latestReferences[identity]
+				turn := intFromAny(memory["turn_index"], 0)
+				if referenceTurns[identity] == nil {
+					referenceTurns[identity] = map[int]bool{}
+				}
+				referenceTurns[identity][turn] = true
+				previousTurn := intFromAny(previous["source_turn"], 0)
+				if previous != nil && turn < previousTurn {
+					continue
+				}
+				if previous != nil && turn == previousTurn && intFromAny(memory["id"], 0) < intFromAny(previous["memory_id"], 0) {
+					continue
+				}
+				if previous != nil && turn == previousTurn && fmt.Sprint(previous["memory_id"]) == fmt.Sprint(memory["id"]) {
+					// Companion state/thread fields describe the same observation.
+					for key, value := range ref {
+						if _, exists := previous[key]; !exists {
+							previous[key] = value
+						}
+					}
+					continue
+				}
+				card := cloneMapAny(ref)
+				card["memory_id"], card["source_turn"] = memory["id"], turn
+				latestReferences[identity] = card
+			}
+		}
+	}
 	if len(characterNames) > 0 {
 		// Keep the related name set together so budget selection cannot turn
 		// a shared alias into an apparently unique person by dropping its peer.
@@ -1352,16 +1410,73 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 		})
 		order++
 	}
+	seenReferences := map[string]int{}
 	for _, memory := range relevantMemories {
 		turn := intFromAny(memory["turn_index"], 0)
 		summary := stringFromMap(memory, "summary")
 		relevance := simpleTokenSimilarity(selectionQuery, summary)
 		memoryID := fmt.Sprint(memory["id"])
+		// Keep the existing memory relevance and its state/thread bundle, but
+		// render structured support as cards instead of repeating the broad prose.
+		// Unstructured memories retain their whole-summary path.
+		supportMemory := memory
+		if len(sliceFromAny(memory["recorded_state_claims"])) > 0 || len(sliceFromAny(memory["recorded_pending_threads"])) > 0 {
+			supportMemory = cloneMapAny(memory)
+			delete(supportMemory, "summary")
+			delete(supportMemory, "recorded_state_claims")
+			delete(supportMemory, "recorded_pending_threads")
+		}
 		candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
 			Kind: "relevant_memory", ID: memoryID, Order: order,
-			Relevance: relevance, TurnIndex: turn, Value: memory,
+			Relevance: relevance, TurnIndex: turn, Value: supportMemory,
 		})
 		order++
+		// An existing identity is a complete reference in its own right. Do not
+		// tie delivery of its key to fitting the whole historical summary.
+		// These candidates use the same relevance ordering and measured budget.
+		seenMemoryReferences := map[string]bool{}
+		for _, lane := range []string{"recorded_state_claims", "recorded_pending_threads"} {
+			for _, raw := range sliceFromAny(memory[lane]) {
+				original := mapFromAny(raw)
+				identity := referenceIdentity(original)
+				if seenMemoryReferences[identity] {
+					continue
+				}
+				text := strings.Join([]string{stringFromMap(original, "subject"), stringFromMap(original, "title"), stringFromMap(original, "value"), stringFromMap(original, "description")}, " ")
+				if !prepareTurnRequestFirstRelevant(selectionQuery, selectionQuery, text) {
+					continue
+				}
+				seenMemoryReferences[identity] = true
+				// The compact bundle uses the same existing reference relevance
+				// result; saved space does not admit unrelated sibling references.
+				supportMemory[lane] = append(sliceFromAny(supportMemory[lane]), original)
+				referenceRelevance := simpleTokenSimilarity(selectionQuery, text)
+				if index, exists := seenReferences[identity]; exists {
+					// Preserve the best position the same identity already had in the
+					// existing ordering, without queuing another copy of its card.
+					if referenceRelevance > candidates[index].Relevance {
+						candidates[index].Relevance = referenceRelevance
+					}
+					continue
+				}
+				seenReferences[identity] = len(candidates)
+				ref := map[string]any{}
+				for _, key := range []string{"subject", "state_slot", "lifecycle_key", "title", "transition", "status", "value", "description", "remaining_obligations", "claim_scope", "perspective_owner"} {
+					if value, ok := original[key]; ok {
+						ref[key] = value
+					}
+				}
+				support := map[string]any{lane: []any{ref}}
+				for _, key := range []string{"source", "id", "turn_index", "support_only"} {
+					support[key] = memory[key]
+				}
+				candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
+					Kind: "relevant_memory_reference", ID: memoryID + "/" + identity, Order: order,
+					Relevance: referenceRelevance, TurnIndex: turn, Value: support,
+				})
+				order++
+			}
+		}
 		if !pairAdded[turn] && len(sourcePairs[turn]) > 0 {
 			candidates = append(candidates, completeTurnCriticAuxiliaryCandidate{
 				Kind: "relevant_memory_source_turn", ID: fmt.Sprint(turn), Order: order,
@@ -1449,6 +1564,40 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 	selectedContext := append([]map[string]any(nil), mandatoryContext...)
 	selectedAuxiliaryContext := []map[string]any{}
 	selectedMemories := []map[string]any{}
+	selectMemory := func(candidate completeTurnCriticAuxiliaryCandidate) {
+		for i, existing := range selectedMemories {
+			if fmt.Sprint(existing["id"]) != fmt.Sprint(candidate.Value["id"]) ||
+				intFromAny(existing["turn_index"], 0) != candidate.TurnIndex {
+				continue
+			}
+			if candidate.Kind == "relevant_memory" {
+				selectedMemories[i] = candidate.Value
+				return
+			}
+			merged := cloneMapAny(existing)
+			for _, lane := range []string{"recorded_state_claims", "recorded_pending_threads"} {
+				refs := append([]any(nil), sliceFromAny(existing[lane])...)
+				for _, incoming := range sliceFromAny(candidate.Value[lane]) {
+					found := false
+					for _, present := range refs {
+						if referenceIdentity(mapFromAny(present)) == referenceIdentity(mapFromAny(incoming)) {
+							found = true
+							break
+						}
+					}
+					if !found {
+						refs = append(refs, incoming)
+					}
+				}
+				if len(refs) > 0 {
+					merged[lane] = refs
+				}
+			}
+			selectedMemories[i] = merged
+			return
+		}
+		selectedMemories = append(selectedMemories, candidate.Value)
+	}
 	selectedLedgerItems := []any{}
 	selectedWorldRules := []map[string]any{}
 	selectedCharacterNames := []any{}
@@ -1469,10 +1618,56 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 		}
 		if len(selectedMemories) > 0 {
 			items := make([]any, 0, len(selectedMemories))
+			cards := []map[string]any{}
+			seen := map[string]bool{}
 			for _, item := range selectedMemories {
-				items = append(items, item)
+				summary := cloneMapAny(item)
+				for _, lane := range []string{"recorded_state_claims", "recorded_pending_threads"} {
+					delete(summary, lane)
+					for _, raw := range sliceFromAny(item[lane]) {
+						identity := referenceIdentity(mapFromAny(raw))
+						if !seen[identity] {
+							card := cloneMapAny(latestReferences[identity])
+							if stringFromMap(card, "title") == stringFromMap(card, "subject") {
+								delete(card, "title")
+							}
+							if stringFromMap(card, "description") == stringFromMap(card, "value") {
+								delete(card, "description")
+							}
+							cards = append(cards, card)
+							seen[identity] = true
+						}
+					}
+				}
+				if stringFromMap(summary, "summary") != "" {
+					items = append(items, summary)
+				}
 			}
-			out["relevant_turn_memories"] = items
+			if len(items) > 0 {
+				out["relevant_turn_memories"] = items
+			}
+			if len(cards) > 0 {
+				// Share field names once; retain whole values, conditions and source
+				// coordinates. No prose truncation or generated paraphrase is used.
+				fields := []string{}
+				for _, field := range []string{"lifecycle_key", "subject", "state_slot", "value", "transition", "title", "status", "description", "remaining_obligations", "claim_scope", "perspective_owner", "memory_id", "source_turn"} {
+					for _, card := range cards {
+						if _, exists := card[field]; exists {
+							fields = append(fields, field)
+							break
+						}
+					}
+				}
+				rows := make([]any, 0, len(cards))
+				for _, card := range cards {
+					row := make([]any, len(fields))
+					for i, field := range fields {
+						row[i] = card[field]
+					}
+					rows = append(rows, row)
+				}
+				out["reference_cards"] = map[string]any{"fields": fields, "rows": rows}
+			}
 		}
 		if len(selectedWorldRules) > 0 {
 			items := make([]any, 0, len(selectedWorldRules))
@@ -1509,11 +1704,15 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 			continue
 		}
 		before := used
+		var previousMemories []map[string]any
+		if candidate.Kind == "relevant_memory" || candidate.Kind == "relevant_memory_reference" {
+			previousMemories = append([]map[string]any(nil), selectedMemories...)
+		}
 		switch candidate.Kind {
 		case "character_names":
 			selectedCharacterNames = sliceFromAny(candidate.Value["entries"])
-		case "relevant_memory":
-			selectedMemories = append(selectedMemories, candidate.Value)
+		case "relevant_memory", "relevant_memory_reference":
+			selectMemory(candidate)
 		case "relevant_memory_source_turn":
 			selectedAuxiliaryContext = append(selectedAuxiliaryContext, candidate.Messages...)
 		case "critic_archive_ledger":
@@ -1527,8 +1726,8 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 			switch candidate.Kind {
 			case "character_names":
 				selectedCharacterNames = nil
-			case "relevant_memory":
-				selectedMemories = selectedMemories[:len(selectedMemories)-1]
+			case "relevant_memory", "relevant_memory_reference":
+				selectedMemories = previousMemories
 			case "relevant_memory_source_turn":
 				selectedAuxiliaryContext = selectedAuxiliaryContext[:len(selectedAuxiliaryContext)-len(candidate.Messages)]
 			case "critic_archive_ledger":
@@ -1572,7 +1771,271 @@ func applyCompleteTurnCriticAuxiliaryBudget(
 		"previous_turn_bounded":                  false,
 		"selection_query_includes_previous_turn": len(mandatoryContext) > 0,
 	}
-	return selectedContext, buildLedger(), trace
+	ledger := buildLedger()
+	covered := map[string]bool{}
+	for _, memory := range selectedMemories {
+		for _, lane := range []string{"recorded_state_claims", "recorded_pending_threads"} {
+			for _, raw := range sliceFromAny(memory[lane]) {
+				covered[referenceIdentity(mapFromAny(raw))] = true
+			}
+		}
+	}
+	// Structural identity support is separate from the optional reference cards.
+	// It neither competes for their budget nor asserts which attribute changed.
+	// The inputs are the same already-read PUBLIC projections as the cards.
+	beforeIndex := mustCompactJSON(ledger)
+	index, indexTrace := buildCompleteTurnCriticIdentityIndex(latestReferences, referenceTurns, covered, query, selectionQuery, ledger, budget)
+	if index != nil {
+		if ledger == nil {
+			ledger = map[string]any{}
+		}
+		ledger["existing_identity_index"] = index
+	}
+	indexChars := len([]rune(mustCompactJSON(ledger))) - len([]rune(beforeIndex))
+	trace["identity_index_chars"] = indexChars
+	trace["identity_index_budget_class"] = "structural_identity_support"
+	trace["identity_index_budget_chars"] = budget
+	trace["identity_index_selection"] = indexTrace
+	trace["total_support_chars"] = used + indexChars
+	return selectedContext, ledger, trace
+}
+
+// Supply exact stored identities for explicitly mentioned subjects, without
+// binding nearby property words to a person. Meaning belongs to the Critic.
+// This is latest observed public support, not canonical current-state truth.
+func buildCompleteTurnCriticIdentityIndex(latest map[string]map[string]any, referenceTurns map[string]map[int]bool, covered map[string]bool, currentQuery, query string, ledger map[string]any, budget int) (map[string]any, map[string]any) {
+	// Pending threads may identify their stored topic by title alone. Use that
+	// literal title as the index label without changing the reference cards.
+	indexReferences := make(map[string]map[string]any, len(latest))
+	for identity, ref := range latest {
+		if stringFromMap(ref, "subject") == "" && stringFromMap(ref, "title") != "" {
+			ref = cloneMapAny(ref)
+			ref["subject"] = ref["title"]
+		}
+		indexReferences[identity] = ref
+	}
+	latest = indexReferences
+	words := func(text string) []string {
+		return strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
+			return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+		})
+	}
+	mentioned := func(subject string, queryWords []string) bool {
+		parts := words(subject)
+		if len(parts) == 0 {
+			return false
+		}
+		for start := 0; start+len(parts) <= len(queryWords); start++ {
+			match := true
+			for offset, part := range parts {
+				if !slices.Contains(prepareTurnRecallTermForms(queryWords[start+offset]), part) {
+					match = false
+					break
+				}
+			}
+			if match {
+				return true
+			}
+		}
+		return false
+	}
+	identities := make([]string, 0, len(latest))
+	queryWords, currentWords := words(query), words(currentQuery)
+	current := map[string]bool{}
+	latestSubject := map[string]int{}
+	for identity, ref := range latest {
+		subject := stringFromMap(ref, "subject")
+		if !covered[identity] && mentioned(subject, queryWords) {
+			identities = append(identities, identity)
+			current[identity] = mentioned(subject, currentWords)
+			latestSubject[subject] = maxInt(latestSubject[subject], intFromAny(ref["source_turn"], 0))
+		}
+	}
+	trace := map[string]any{"candidate_rows": len(identities), "selected_rows": 0, "omitted_values": 0}
+	if len(identities) == 0 {
+		return nil, trace
+	}
+	slices.SortFunc(identities, func(a, b string) int {
+		if current[a] != current[b] {
+			if current[a] {
+				return -1
+			}
+			return 1
+		}
+		as, bs := stringFromMap(latest[a], "subject"), stringFromMap(latest[b], "subject")
+		if as != bs {
+			if recent := latestSubject[bs] - latestSubject[as]; recent != 0 {
+				return recent
+			}
+			return strings.Compare(as, bs)
+		}
+		if turn := intFromAny(latest[b]["source_turn"], 0) - intFromAny(latest[a]["source_turn"], 0); turn != 0 {
+			return turn
+		}
+		return strings.Compare(a, b)
+	})
+	fields := []string{"subject", "state_slot", "lifecycle_key", "value", "memory_id", "source_turn"}
+	for _, field := range []string{"claim_scope", "perspective_owner"} {
+		for _, identity := range identities {
+			if stringFromMap(latest[identity], field) != "" {
+				fields = append(fields, field)
+				break
+			}
+		}
+	}
+	build := func(fields []string) []any {
+		rows := make([]any, 0, len(identities))
+		for _, identity := range identities {
+			row := make([]any, len(fields))
+			for i, field := range fields {
+				row[i] = latest[identity][field]
+			}
+			rows = append(rows, row)
+		}
+		return rows
+	}
+	withIndex := cloneMapAny(ledger)
+	if withIndex == nil {
+		withIndex = map[string]any{}
+	}
+	withIndex["existing_identity_index"] = nil
+	envelopeChars := len([]rune(mustCompactJSON(withIndex))) - len([]rune(mustCompactJSON(ledger))) - len([]rune(mustCompactJSON(nil)))
+	measureIndex := func(index map[string]any) int {
+		if index == nil {
+			return 0
+		}
+		return len([]rune(mustCompactJSON(index))) + envelopeChars
+	}
+	measure := func(fields []string, rows []any) int {
+		return measureIndex(map[string]any{"fields": fields, "rows": rows})
+	}
+	trace["original_chars"] = measure(fields, build(fields))
+	fields = slices.DeleteFunc(fields, func(field string) bool { return field == "memory_id" })
+	trace["without_memory_id_chars"] = measure(fields, build(fields))
+	fields = slices.DeleteFunc(fields, func(field string) bool {
+		if field != "claim_scope" && field != "perspective_owner" {
+			return false
+		}
+		for _, identity := range identities {
+			value := stringFromMap(latest[identity], field)
+			if field == "claim_scope" && value != "" && value != "objective" || field == "perspective_owner" && value != "" {
+				return false
+			}
+		}
+		return true
+	})
+	trace["without_defaults_chars"] = measure(fields, build(fields))
+	// Share subjects/scopes and lossless key prefixes. Reused identities retain
+	// literal full keys and exact context; key-only rows share a prefix instead.
+	// CSV quoting preserves delimiters, newlines and quotes inside stored text.
+	omitContext := map[string]bool{}
+	escapeCell := strings.NewReplacer("\\", "\\\\", "\r", "\\r", "\n", "\\n")
+	render := func(identities []string) map[string]any {
+		if len(identities) == 0 {
+			return nil
+		}
+		groups := []any{}
+		for start := 0; start < len(identities); {
+			first := latest[identities[start]]
+			subject, scope, owner := stringFromMap(first, "subject"), stringFromMap(first, "claim_scope"), stringFromMap(first, "perspective_owner")
+			end := start + 1
+			for end < len(identities) {
+				next := latest[identities[end]]
+				if stringFromMap(next, "subject") != subject || stringFromMap(next, "claim_scope") != scope || stringFromMap(next, "perspective_owner") != owner {
+					break
+				}
+				end++
+			}
+			prefix, prefixRows := "", 0
+			for _, identity := range identities[start:end] {
+				if !omitContext[identity] {
+					continue
+				}
+				key := stringFromMap(latest[identity], "lifecycle_key")
+				if prefixRows == 0 {
+					prefix = key
+				}
+				for !strings.HasPrefix(key, prefix) {
+					prefix = string([]rune(prefix)[:len([]rune(prefix))-1])
+				}
+				prefixRows++
+			}
+			group := map[string]any{"subject": subject}
+			if len([]rune(prefix))*prefixRows > len([]rune(mustCompactJSON(map[string]any{"key_prefix": prefix}))) {
+				group["key_prefix"] = prefix
+			} else {
+				prefix = ""
+			}
+			if scope != "" && scope != "objective" {
+				group["claim_scope"] = scope
+			}
+			if owner != "" {
+				group["perspective_owner"] = owner
+			}
+			var table strings.Builder
+			writer := csv.NewWriter(&table)
+			writer.Comma = '|'
+			for _, identity := range identities[start:end] {
+				ref := latest[identity]
+				key := stringFromMap(ref, "lifecycle_key")
+				row := []string{key, fmt.Sprint(ref["source_turn"])}
+				if omitContext[identity] {
+					row[0] = strings.TrimPrefix(key, prefix)
+				} else {
+					// Non-string values use complete JSON text; stored strings
+					// remain readable without JSON quotes.
+					value, ok := ref["value"].(string)
+					if !ok {
+						value = mustCompactJSON(ref["value"])
+					}
+					row = append(row, stringFromMap(ref, "state_slot"), value)
+				}
+				for i, cell := range row {
+					row[i] = escapeCell.Replace(cell)
+				}
+				_ = writer.Write(row)
+			}
+			writer.Flush()
+			group["rows"] = strings.TrimSuffix(table.String(), "\n")
+			groups = append(groups, group)
+			start = end
+		}
+		return map[string]any{"fields": []string{"key", "turn", "slot", "value"}, "groups": groups}
+	}
+	trace["compact_chars"] = measureIndex(render(identities))
+	if intFromAny(trace["compact_chars"], 0) > budget {
+		for _, identity := range identities {
+			// Single observations still supply the exact identity and source.
+			// Keep context for keys demonstrably reused on distinct source turns.
+			// This compression does not change the strict recent-source ordering.
+			if len(referenceTurns[identity]) == 1 && stringFromMap(latest[identity], "lifecycle_key") != "" {
+				omitContext[identity] = true
+			}
+		}
+	}
+	trace["optional_context_chars"] = measureIndex(render(identities))
+	for _, identity := range identities {
+		if !omitContext[identity] && stringFromMap(latest[identity], "lifecycle_key") != "" && measureIndex(render([]string{identity})) > budget {
+			omitContext[identity] = true
+		}
+	}
+	trace["oversize_context_chars"] = measureIndex(render(identities))
+	selected := []string{}
+	for _, identity := range identities {
+		attempt := append(slices.Clone(selected), identity)
+		if measureIndex(render(attempt)) > budget {
+			break
+		}
+		selected = attempt
+	}
+	omitted := 0
+	for _, identity := range selected {
+		if omitContext[identity] {
+			omitted++
+		}
+	}
+	trace["selected_rows"], trace["omitted_values"] = len(selected), omitted
+	return render(selected), trace
 }
 
 func (s *Server) buildCompleteTurnActiveWorldRuleInput(ctx context.Context, sid string) ([]map[string]any, map[string]any) {

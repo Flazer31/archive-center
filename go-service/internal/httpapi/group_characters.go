@@ -966,6 +966,7 @@ func characterResponseItem(item store.CharacterState, snapshot map[string]any, l
 		"relationships_json":        nullableJSONString(item.RelationshipsJSON),
 		"speech_style_json":         nullableJSONString(item.SpeechStyleJSON),
 		"field_provenance_json":     nullableJSONString(item.FieldProvenanceJSON),
+		"user_corrected":            item.HasManualEdits(),
 		"turn_index":                item.TurnIndex,
 		"last_observed_turn":        snapshot["last_observed_turn"],
 		"freshness_turn_gap":        snapshot["freshness_turn_gap"],

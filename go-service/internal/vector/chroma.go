@@ -648,6 +648,7 @@ func (s *chromaStore) doJSON(ctx context.Context, method string, path string, bo
 	defer resp.Body.Close()
 	if !statusAllowed(resp.StatusCode, okStatuses) {
 		data, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		observeQueryResponse(ctx, path, len(data), resp.StatusCode)
 		if readErr != nil {
 			return resp.StatusCode, fmt.Errorf("chroma store: read %s %s returned %d: %w; body: %s", method, path, resp.StatusCode, readErr, strings.TrimSpace(string(data)))
 		}
@@ -656,6 +657,7 @@ func (s *chromaStore) doJSON(ctx context.Context, method string, path string, bo
 	// Successful candidate queries include stored embeddings and can exceed
 	// the diagnostic error-body limit. Decode their complete JSON response.
 	data, readErr := io.ReadAll(resp.Body)
+	observeQueryResponse(ctx, path, len(data), resp.StatusCode)
 	if readErr != nil {
 		return resp.StatusCode, fmt.Errorf("chroma store: read %s %s returned %d: %w", method, path, resp.StatusCode, readErr)
 	}

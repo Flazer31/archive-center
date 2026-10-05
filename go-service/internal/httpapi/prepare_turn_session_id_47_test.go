@@ -38,8 +38,16 @@ func Test47FinalPresentationDoesNotChangePreprocessingPacket(t *testing.T) {
 	// Keep the historical data snapshot independent of the test.5 clarification
 	// of selection instructions. Candidate text, refs and budgets stay covered.
 	packet["reference_format"].(map[string]any)["minimum_context"] = "Candidate text includes its minimum source context before selection. context_refs are facts read with it, not additional AI choices. minimum_chars includes its source heading; shared context is counted once when contiguous. Independent supplements remain separately selectable. Keep scope, direction, negation and conditions together; old recollections are not present-world facts."
+	wire := multiAgentModelInput(packet, 1)
+	// The new empty-scope explanation is a deliberate instruction addition.
+	// Its behavior is tested separately; preserve the historical hash for every
+	// candidate, provenance value and budget instead of blessing a new snapshot.
+	if strings.Count(wire, multiAgentKnowledgeScopeReading) != 1 {
+		t.Fatal("expected one shared knowledge-scope explanation")
+	}
+	wire = strings.Replace(wire, " "+multiAgentKnowledgeScopeReading, "", 1)
 	for _, check := range []struct{ name, text, sha string }{
-		{"test16 preprocessing", multiAgentModelInput(packet, 1), "1df8abda0cb40b513839854a9fbeb12c15e06cdb6391827af12c36b3e9004593"},
+		{"test16 preprocessing", wire, "1df8abda0cb40b513839854a9fbeb12c15e06cdb6391827af12c36b3e9004593"},
 		{"test17 final delivery", stringFromMap(out.MemoryDeliveryPlan, "final_text"), "a0016cc1e1cf0ff7c96729aa63c607cfb25414323c97953b787cf942d605b7e6"},
 	} {
 		if got := fmt.Sprintf("%x", sha256.Sum256([]byte(mustCompactJSON(check.text)))); got != check.sha {

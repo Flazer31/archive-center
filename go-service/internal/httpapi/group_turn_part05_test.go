@@ -1510,7 +1510,7 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 	if model["contract_version"] != "input_transparency_render.v1" || model["read_only"] != true || model["llm_call_attempted"] != false {
 		t.Fatalf("input_transparency_model contract mismatch: %#v", model)
 	}
-	if model["secret_display_policy"] != "counts_only_no_secret_text" {
+	if model["secret_display_policy"] != "author_content_with_recorded_knowledge_scope" {
 		t.Fatalf("secret_display_policy = %v", model["secret_display_policy"])
 	}
 	counts := mapFromAny(model["counts"])
@@ -1555,7 +1555,10 @@ func TestPrepareTurnInputTransparencyRenderModelExposesSafeBlocksAndCounters(t *
 		t.Fatalf("protected guidance block should contain protected guard text, got %q", protectedText)
 	}
 	modelJSON := mustCompactJSON(model)
-	for _, leaked := range []string{"Gloria privately inherited the sealed crest", "secret_summary", "true_identity_name", "surface_identity_name"} {
+	if !containsAll(protectedText, "Gloria privately inherited the sealed crest", "known_by=Gloria", "unknown_to=Siwoo", "not public character knowledge") || strings.Contains(stringFromMap(related, "text"), "sealed crest") {
+		t.Fatal("transparency must show the delivered author card in its protected block with the recorded knowledge boundary")
+	}
+	for _, leaked := range []string{"secret_summary", "true_identity_name", "surface_identity_name"} {
 		if strings.Contains(modelJSON, leaked) {
 			t.Fatalf("input_transparency_model leaked protected detail %q: %s", leaked, modelJSON)
 		}
@@ -1688,9 +1691,9 @@ func TestMEMADeliveryLineageConnectsRowsVectorHitsAndFinalTopKConsumption(t *tes
 	if !strings.Contains(memoryText, "Mina secured the archive permit during the council hearing") {
 		t.Fatalf("actual event row must survive into final memory text: %q", memoryText)
 	}
-	for _, leaked := range []string{"evacuation route", "watches the eastern gate", "council allegiance"} {
-		if strings.Contains(memoryText, leaked) {
-			t.Fatalf("protected source detail leaked into final text (%s): %q", leaked, memoryText)
+	for _, claim := range []string{"evacuation route", "watches the eastern gate", "council allegiance"} {
+		if !strings.Contains(extractionStringFromAny(pack["protected_memory_text"]), claim) || strings.Contains(extractionStringFromAny(pack["actual_memory_text"]), claim) {
+			t.Fatalf("author fact missing from protected text or promoted to public memory (%s)", claim)
 		}
 	}
 	deliveredRows := map[int]bool{}

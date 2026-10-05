@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -196,6 +197,10 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	result := prepareTurnVectorRecallResult{Trace: shadow}
 	searchTiming := newBackendTimingTrace("")
 	shadow["breakdown_ms"] = searchTiming.stagesMS
+	queryCounts := map[string]int{}
+	shadow["query_observations"] = queryCounts
+	shadow["query_response_bytes_basis"] = "HTTP decoded body bytes; error bodies may be truncated at 1 MiB"
+	shadow["query_includes_embeddings"] = true
 	defer finalizePrepareTurnVectorShadow(shadow)
 	defer func() {
 		for _, key := range []string{"health_error", "query_embedding_error", "query_history_embedding_errors", "search_error", "memory_search_error", "precise_memory_search_error"} {
@@ -255,10 +260,49 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		}
 		historyEmbeddingErrors := []string{}
 		model := strings.TrimSpace(embeddingCfg.Model)
+		type queryEmbeddingResult struct {
+			vector    []float32
+			model     string
+			err       error
+			attempted bool
+		}
+		embeddings := make([]queryEmbeddingResult, len(retrievalQueries))
+		embed := func(index int) {
+			text, resolvedModel, err := callQueryEmbedding(ctx, embeddingCfg, retrievalQueries[index].Text)
+			embeddings[index] = queryEmbeddingResult{parseFloat32JSONList(text), resolvedModel, err, true}
+		}
+		embeddingStarted := time.Now()
+		// Preserve the primary-query failure path: do not spend requests on
+		// history if the current input cannot be embedded. Independent history
+		// requests keep their configured per-call timeout and original ordering.
+		embed(0)
+		if embeddings[0].err == nil && len(embeddings[0].vector) > 0 {
+			const historyEmbeddingConcurrency = 3 // transport bound, not a recall limit
+			var workers sync.WaitGroup
+			for worker := 0; worker < minInt(historyEmbeddingConcurrency, len(retrievalQueries)-1); worker++ {
+				workers.Add(1)
+				go func(worker int) {
+					defer workers.Done()
+					for index := worker + 1; index < len(retrievalQueries); index += historyEmbeddingConcurrency {
+						embed(index)
+					}
+				}(worker)
+			}
+			workers.Wait()
+		}
+		// This timing measures elapsed preparation, not summed concurrent calls.
+		searchTiming.addElapsed("embedding", embeddingStarted)
+		for _, embedded := range embeddings {
+			if embedded.attempted {
+				queryCounts["embedding_calls"]++
+			}
+			if embedded.attempted && (embedded.err != nil || len(embedded.vector) == 0) {
+				queryCounts["embedding_failures"]++
+			}
+		}
 		for index, query := range retrievalQueries {
-			embeddingStarted := time.Now()
-			embeddingJSON, resolvedModel, err := callQueryEmbedding(ctx, embeddingCfg, query.Text)
-			searchTiming.addElapsed("embedding", embeddingStarted)
+			embedded := embeddings[index]
+			err := embedded.err
 			if err != nil {
 				if index == 0 {
 					shadow["status"] = "degraded"
@@ -270,7 +314,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 				historyEmbeddingErrors = append(historyEmbeddingErrors, err.Error())
 				continue
 			}
-			vectorValue := parseFloat32JSONList(embeddingJSON)
+			vectorValue := embedded.vector
 			if len(vectorValue) == 0 {
 				if index == 0 {
 					shadow["status"] = "degraded"
@@ -283,8 +327,8 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 			}
 			queryVectors = append(queryVectors, vectorValue)
 			vectorQueries = append(vectorQueries, query)
-			if strings.TrimSpace(resolvedModel) != "" {
-				model = strings.TrimSpace(resolvedModel)
+			if strings.TrimSpace(embedded.model) != "" {
+				model = strings.TrimSpace(embedded.model)
 			}
 		}
 		queryVector = queryVectors[0]
@@ -312,7 +356,15 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	candidateLimit := limit
 	filter := strings.TrimSpace(clientMetaString(req.ClientMeta, "chroma_filter"))
 	searchSessionIDs := prepareTurnVectorHistorySessionIDs(req.ChatSessionID, historyScopes)
-	searchAcrossSessions := func(searchFilter func(string) string, perSessionLimits map[string]int) ([]vector.VectorDocument, error) {
+	searchAcrossSessions := func(pass string, searchFilter func(string) string, perSessionLimits map[string]int) ([]vector.VectorDocument, error) {
+		passStarted := time.Now()
+		defer func() { searchTiming.addElapsed("pass_"+pass, passStarted) }()
+		queryContext := vector.WithQueryResponseObserver(ctx, func(size, status int) {
+			queryCounts[pass+".http_responses"]++
+			queryCounts[pass+".response_bytes"] += size
+		})
+		queryCounts[pass+".sessions"] = len(searchSessionIDs)
+		queryCounts[pass+".queries"] = len(queryVectors)
 		resultsByID := map[string]vector.VectorDocument{}
 		resultOrder := []string{}
 		var firstErr error
@@ -326,8 +378,13 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 			}
 			for queryIndex, searchVector := range queryVectors {
 				vectorStarted := time.Now()
-				sessionResults, searchErr := s.Vector.Search(ctx, searchSessionID, searchVector, sessionLimit, searchFilter(searchSessionID))
+				queryCounts[pass+".calls"]++
+				sessionResults, searchErr := s.Vector.Search(queryContext, searchSessionID, searchVector, sessionLimit, searchFilter(searchSessionID))
 				searchTiming.addElapsed("vector_search", vectorStarted)
+				if searchErr != nil && !errors.Is(searchErr, vector.ErrNotFound) {
+					queryCounts[pass+".failures"]++
+				}
+				queryCounts[pass+".returned_rows"] += len(sessionResults)
 				switch {
 				case searchErr == nil:
 					for index := range sessionResults {
@@ -392,7 +449,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	shadow["candidate_policy"] = "ui_configured_vector_recall_limit_per_worldline_history_session"
 	shadow["filter"] = filter
 	shadow["history_session_ids"] = searchSessionIDs
-	results, err := searchAcrossSessions(func(searchSessionID string) string {
+	results, err := searchAcrossSessions("all", func(searchSessionID string) string {
 		if filter != "" {
 			return filter
 		}
@@ -428,7 +485,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 	memoryFilter := `tier == "memory"`
 	shadow["memory_search_attempted"] = true
 	shadow["memory_search_filter"] = memoryFilter
-	memoryResults, memoryErr := searchAcrossSessions(func(string) string { return memoryFilter }, nil)
+	memoryResults, memoryErr := searchAcrossSessions("memory", func(string) string { return memoryFilter }, nil)
 	switch {
 	case memoryErr == nil:
 		revisionStarted := time.Now()
@@ -470,7 +527,7 @@ func (s *Server) prepareTurnVectorShadowWithPreciseCandidateLimits(ctx context.C
 		return result
 	}
 	shadow["precise_memory_search_attempted"] = true
-	preciseResults, preciseErr := searchAcrossSessions(func(string) string { return preciseMemoryFilter }, preciseCandidateLimits)
+	preciseResults, preciseErr := searchAcrossSessions("precise", func(string) string { return preciseMemoryFilter }, preciseCandidateLimits)
 	switch {
 	case preciseErr == nil:
 		shadow["precise_memory_search_result"] = "ok"
@@ -1027,6 +1084,9 @@ func normalizePrepareTurnPerspectiveContext(raw map[string]any) map[string]any {
 	}
 	if mode := strings.TrimSpace(extractionStringFromAny(raw["mode"])); mode != "" {
 		out["mode"] = mode
+	}
+	if aliases := stringsFromAny(raw["current_pov_aliases"]); len(aliases) > 0 {
+		out["current_pov_aliases"] = append([]string(nil), aliases...)
 	}
 	return out
 }
@@ -2013,7 +2073,7 @@ func selectPrepareTurnMemoryLanesWithPreparedRecall(memories, vectorHydrationMem
 	return out
 }
 
-func prepareTurnProtectedAliasResolution(memories []store.Memory) (map[string]string, map[string]bool) {
+func prepareTurnProtectedAliasResolution(memories []store.Memory, registeredAliases ...map[string]any) (map[string]string, map[string]bool) {
 	candidates := map[string]map[string]bool{}
 	add := func(alias, canonical string) {
 		aliasKey := normalizeCharacterKey(alias)
@@ -2025,6 +2085,13 @@ func prepareTurnProtectedAliasResolution(memories []store.Memory) (map[string]st
 			candidates[aliasKey] = map[string]bool{}
 		}
 		candidates[aliasKey][canonicalKey] = true
+	}
+	for _, aliases := range registeredAliases {
+		for alias, rawCanonical := range aliases {
+			canonical := extractionStringFromAny(rawCanonical)
+			add(alias, canonical)
+			add(canonical, canonical)
+		}
 	}
 	for _, item := range memories {
 		parsed := parseJSONMap(item.SummaryJSON)
@@ -2146,15 +2213,35 @@ func prepareTurnProtectedMemoryCoverageKeys(item store.Memory, aliasCanonical ma
 	return keys
 }
 
-func prepareTurnProtectedPerspectiveContext(perspectiveContext map[string]any, memories []store.Memory, charStates []store.CharacterState) map[string]any {
+func prepareTurnProtectedPerspectiveContext(perspectiveContext map[string]any, memories []store.Memory, charStates []store.CharacterState, registeredAliases ...map[string]any) map[string]any {
 	perspectiveContext = normalizePrepareTurnPerspectiveContext(perspectiveContext)
-	povKey := normalizeCharacterKey(extractionStringFromAny(perspectiveContext["current_pov"]))
+	pov := extractionStringFromAny(perspectiveContext["current_pov"])
+	povKey := prepareTurnPerspectiveNameKey(pov)
 	if povKey == "" {
 		return nil
+	}
+	// Resolve only this request's explicit alias records. Do not persist a merge
+	// or infer a new alias from a similar name or an arbitrary parenthetical label.
+	aliases, _ := prepareTurnProtectedAliasResolution(memories, registeredAliases...)
+	povKeys := appendUniqueString([]string{povKey}, normalizeCharacterKey(pov))
+	canonicalKeys := []string{povKey}
+	for alias, canonical := range aliases {
+		if prepareTurnPerspectiveNameMatches(pov, normalizeCharacterKey(pov), alias) {
+			canonicalKeys = appendUniqueString(canonicalKeys, canonical)
+		}
+	}
+	for alias, canonical := range aliases {
+		if stringSliceContains(canonicalKeys, canonical) {
+			povKeys = appendUniqueString(povKeys, alias)
+			povKeys = appendUniqueString(povKeys, canonical)
+		}
 	}
 	known := map[string]bool{}
 	add := func(value string) {
 		if key := normalizeCharacterKey(value); key != "" {
+			known[key] = true
+		}
+		if key := prepareTurnPerspectiveNameKey(value); key != "" {
 			known[key] = true
 		}
 	}
@@ -2178,6 +2265,11 @@ func prepareTurnProtectedPerspectiveContext(perspectiveContext map[string]any, m
 		}
 		for _, secret := range memorySearchMapItems(parsed["protected_secrets"]) {
 			add(stringFromMap(secret, "owner"))
+			for _, field := range []string{"known_by", "revealed_to"} {
+				for _, name := range stringsFromAny(mapFromAny(secret["knowledge_scope"])[field]) {
+					add(name)
+				}
+			}
 			for _, subject := range memorySearchStringValues(secret["subject"]) {
 				add(subject)
 			}
@@ -2191,10 +2283,14 @@ func prepareTurnProtectedPerspectiveContext(perspectiveContext map[string]any, m
 			}
 		}
 	}
-	if !known[povKey] {
-		return nil
+	for _, key := range povKeys {
+		if known[key] {
+			sort.Strings(povKeys)
+			perspectiveContext["current_pov_aliases"] = povKeys
+			return perspectiveContext
+		}
 	}
-	return perspectiveContext
+	return nil
 }
 
 func prepareTurnVectorRecallReady(trace map[string]any) bool {
@@ -2643,9 +2739,10 @@ type prepareTurnVectorMemoryHydration struct {
 }
 
 type prepareTurnVectorArtifactHydration struct {
-	Evidence   []store.DirectEvidence
-	WorldRules []store.WorldRule
-	Trace      map[string]any
+	Evidence       []store.DirectEvidence
+	EvidenceScores map[int64]float64
+	WorldRules     []store.WorldRule
+	Trace          map[string]any
 }
 
 const (
@@ -2792,8 +2889,9 @@ func prepareTurnHydrateVectorArtifactHits(
 	blockedEvidenceIDsArg ...map[int64]bool,
 ) prepareTurnVectorArtifactHydration {
 	out := prepareTurnVectorArtifactHydration{
-		Evidence:   []store.DirectEvidence{},
-		WorldRules: []store.WorldRule{},
+		Evidence:       []store.DirectEvidence{},
+		EvidenceScores: map[int64]float64{},
+		WorldRules:     []store.WorldRule{},
 		Trace: map[string]any{
 			"version":                   "vdb2.hydrate_artifact_hits.v1",
 			"status":                    "not_attempted",
@@ -2886,6 +2984,7 @@ func prepareTurnHydrateVectorArtifactHits(
 			}
 			seenEvidence[id] = true
 			out.Evidence = append(out.Evidence, item)
+			out.EvidenceScores[id] = score
 		case sourceTable == "world_rules" || tier == "world_rule" || strings.HasPrefix(strings.ToLower(strings.TrimSpace(stringFromMap(hit, "id"))), "world_rule:"):
 			out.Trace["world_rule_hit_count"] = intFromAny(out.Trace["world_rule_hit_count"], 0) + 1
 			if id <= 0 {
@@ -2922,14 +3021,14 @@ func filterPrepareTurnPerspectiveScopedEvidence(
 	evidence []store.DirectEvidence,
 	memories []store.Memory,
 ) ([]store.DirectEvidence, map[int64]bool) {
-	protectedEvidenceKeysByTurn := map[int]map[string]bool{}
+	protectedEvidenceKeysByTurn := map[int]memoryPerspectiveEvidenceScope{}
 	for _, memory := range memories {
 		if memory.TurnIndex <= 0 {
 			continue
 		}
 		extraction := parseJSONMap(memory.SummaryJSON)
-		keys, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
-		if len(keys) > 0 {
+		keys := memoryPerspectiveEvidenceScopeFromStored(extraction, memory.Evidence)
+		if len(keys.protected) > 0 {
 			protectedEvidenceKeysByTurn[memory.TurnIndex] = keys
 		}
 	}
@@ -2955,9 +3054,8 @@ func filterPrepareTurnPerspectiveScopedEvidence(
 		}
 		blocked := false
 		if start > 0 && end > 0 {
-			evidenceKey := normalizeArtifactDedupeText(item.EvidenceText)
 			for turn, protectedKeys := range protectedEvidenceKeysByTurn {
-				if turn >= start && turn <= end && protectedKeys[evidenceKey] {
+				if turn >= start && turn <= end && memoryAdmissionPerspectiveEvidenceContains(protectedKeys, item.EvidenceText) {
 					blocked = true
 					break
 				}

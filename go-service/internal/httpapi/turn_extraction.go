@@ -714,6 +714,7 @@ func (s *Server) selectCompleteTurnEmbeddingConfig(meta map[string]any, metaCfg 
 	metaCfg.TimeoutMs = timeoutMs
 	metaEmbedding := mapFromAny(meta["embedding"])
 	if len(metaEmbedding) > 0 && metaCfg.hasAnyAuthorityConfigField() {
+		metaCfg.Endpoint = metaCfg.resolvedEndpoint()
 		metaCfg.Source = "client_meta"
 		if !metaCfg.hasConfig() {
 			metaCfg.Source = "client_meta_partial"
@@ -730,6 +731,7 @@ func (s *Server) selectCompleteTurnEmbeddingConfig(meta map[string]any, metaCfg 
 		Source:    "runtime_config",
 	}
 	if runtimeCfg.hasAnyAuthorityConfigField() {
+		runtimeCfg.Endpoint = runtimeCfg.resolvedEndpoint()
 		if !runtimeCfg.hasConfig() {
 			runtimeCfg.Source = "runtime_config_partial"
 		}
@@ -753,6 +755,7 @@ func (s *Server) selectCompleteTurnEmbeddingConfig(meta map[string]any, metaCfg 
 		TimeoutMs: timeoutMs,
 		Source:    "env_or_config",
 	}
+	envCfg.Endpoint = envCfg.resolvedEndpoint()
 	if !envCfg.hasConfig() {
 		envCfg.Source = "missing"
 	}
@@ -782,7 +785,7 @@ func (c completeTurnEmbeddingConfig) hasConfig() bool {
 }
 
 func (c completeTurnEmbeddingConfig) missingFields() []string {
-	missing := configMissingFieldsWithProvider(c.Provider, c.APIKey, c.Endpoint, c.Model)
+	missing := configMissingFieldsWithProvider(c.Provider, c.APIKey, c.resolvedEndpoint(), c.Model)
 	if c.TimeoutMs <= 0 {
 		missing = append(missing, "timeout_ms")
 	}

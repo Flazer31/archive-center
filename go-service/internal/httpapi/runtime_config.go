@@ -545,6 +545,11 @@ func (s *Server) runtimeConfigTrace() map[string]any {
 	embeddingIdentity := s.currentEmbeddingModelIdentity()
 	embeddingModel := embeddingIdentity.Model
 	embeddingModelID := runtimeSourceValue{Value: embeddingModel, Source: embeddingIdentity.Source}
+	embeddingEndpoint := (completeTurnEmbeddingConfig{Provider: embeddingProviderID.Value, Model: embeddingModel, Endpoint: embeddingEndpointID.Value}).resolvedEndpoint()
+	if embeddingEndpointID.Value == "" && embeddingEndpoint != "" {
+		embeddingEndpointID.Source = "provider_default." + strings.ToLower(strings.TrimSpace(embeddingProviderID.Value))
+	}
+	embeddingEndpointID.Value = embeddingEndpoint
 	mainTrace := configuredTrace(mainProviderID.Value, mainAPIKeyID.Value, mainEndpointID.Value, mainModelID.Value, rt.MainTimeoutSec)
 	addRuntimeSourceTrace(mainTrace, mainProviderID, mainAPIKeyID, mainEndpointID, mainModelID)
 	addOptionalRuntimeTraceFields(mainTrace, rt.MainTemperature, rt.MainMaxTokens)

@@ -34,13 +34,13 @@ func (m *mariadbStore) SaveStoryline(ctx context.Context, s *Storyline) error {
 			key_points_json = ?, ongoing_tensions_json = ?, confidence = ?,
 			evidence_count = ?, last_evidence_turn = ?,
 			first_turn = CASE WHEN first_turn IS NULL OR first_turn = 0 THEN ? ELSE first_turn END,
-			last_turn = ?, pinned = ?, suppressed = ?, user_corrected = ?,
+			last_turn = ?,
 			updated_at = ?
 		WHERE chat_session_id = ? AND `+identityPredicate,
 		s.Name, firstNonEmptyString(s.Status, "active"), nullableString(s.EntitiesJSON),
 		nullableString(s.CurrentContext), nullableString(s.KeyPointsJSON), nullableString(s.OngoingTensionsJSON),
 		s.Confidence, s.EvidenceCount, s.LastEvidenceTurn, s.FirstTurn, s.LastTurn,
-		s.Pinned, s.Suppressed, s.UserCorrected, updatedAt, s.ChatSessionID, identityValue)
+		updatedAt, s.ChatSessionID, identityValue)
 	if err != nil {
 		return err
 	}
@@ -70,10 +70,13 @@ func (m *mariadbStore) SaveStoryline(ctx context.Context, s *Storyline) error {
 }
 
 func (m *mariadbStore) PatchStoryline(ctx context.Context, storylineID int64, updates map[string]any) ([]string, error) {
+	if len(updates) > 0 {
+		updates["user_corrected"] = true
+	}
 	return m.patchStorylineFields(ctx, storylineID, updates, []string{
 		"name", "status", "entities_json", "current_context", "key_points_json",
 		"ongoing_tensions_json", "confidence", "evidence_count", "last_evidence_turn",
-		"first_turn", "last_turn",
+		"first_turn", "last_turn", "user_corrected",
 	})
 }
 
@@ -203,6 +206,18 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now().UTC()
 	}
+	// Trust settings belong to the rule identity, independently of the
+	// automatic version written for a later source turn.
+	var pinned, suppressed, corrected bool
+	trustErr := m.db.QueryRowContext(ctx, `SELECT pinned, suppressed, user_corrected
+		FROM world_rules WHERE chat_session_id = ? AND scope = ? AND `+"`key`"+` = ? AND scope_name <=> ?
+		ORDER BY COALESCE(source_turn, 0) DESC, id DESC LIMIT 1`, w.ChatSessionID, scope, w.Key, scopeName).
+		Scan(&pinned, &suppressed, &corrected)
+	if trustErr == nil {
+		w.Pinned, w.Suppressed, w.UserCorrected = pinned, suppressed, corrected
+	} else if !errors.Is(trustErr, sql.ErrNoRows) {
+		return trustErr
+	}
 	lookupErr := m.db.QueryRowContext(ctx, `
 		SELECT id
 		FROM world_rules
@@ -251,7 +266,10 @@ func (m *mariadbStore) SaveWorldRule(ctx context.Context, w *WorldRule) error {
 }
 
 func (m *mariadbStore) PatchWorldRule(ctx context.Context, ruleID int64, updates map[string]any) ([]string, error) {
-	return m.patchWorldRuleFields(ctx, ruleID, updates, []string{"scope", "scope_name", "category", "key", "value_json", "genre", "source_turn"})
+	if len(updates) > 0 {
+		updates["user_corrected"] = true
+	}
+	return m.patchWorldRuleFields(ctx, ruleID, updates, []string{"scope", "scope_name", "category", "key", "value_json", "genre", "source_turn", "user_corrected"})
 }
 
 func (m *mariadbStore) PatchWorldRuleTrust(ctx context.Context, ruleID int64, updates map[string]any) ([]string, error) {

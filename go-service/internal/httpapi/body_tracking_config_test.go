@@ -180,8 +180,8 @@ func Test46BodyTrackingSettingsDefaultOffAndIndependentControls(t *testing.T) {
 		t.Fatalf("restart/save reset seed, independent controls or explicit invalid model values: %#v", second)
 	}
 	other, exists, err := s.storedBodyTrackingConfig("two")
-	if err != nil || exists || other.SimulationSeed != "" || other.CycleTrackingEnabled || other.AutomaticPregnancyEnabled {
-		t.Fatalf("session settings leaked: %#v %t %v", other, exists, err)
+	if err != nil || exists || other.SimulationSeed != "" || other.CycleTrackingEnabled || !other.AutomaticPregnancyEnabled {
+		t.Fatalf("common controls or session model isolation failed: %#v %t %v", other, exists, err)
 	}
 }
 

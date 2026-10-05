@@ -307,6 +307,155 @@ func narrativeStateEvidencePayload(claim narrativeStateClaim, evidenceIDs []int6
 	return payload
 }
 
+// Match only typography in a single contiguous source span. Keep byte offsets
+// through normalization so persisted evidence is always the original text.
+// Other evidence consumers retain sanitizeEvidenceExcerptForTurn unchanged.
+func narrativeStateEvidenceExcerpt(excerpt, content string, wholeMessage bool) string {
+	normalize := func(text string) (string, []int, []int) {
+		var out strings.Builder
+		starts, ends := []int{}, []int{}
+		space := false
+		for offset, r := range text {
+			end := offset + len(string(r))
+			if unicode.IsSpace(r) {
+				if space {
+					ends[len(ends)-1] = end
+					continue
+				}
+				r, space = ' ', true
+			} else {
+				space = false
+				switch r {
+				case '\'', '“', '”', '„', '«', '»', '「', '」', '『', '』', '‘', '’', '‚':
+					r = '"'
+				}
+			}
+			out.WriteRune(r)
+			for range len(string(r)) {
+				starts, ends = append(starts, offset), append(ends, end)
+			}
+		}
+		return out.String(), starts, ends
+	}
+	text := strings.TrimSpace(excerpt)
+	if len([]rune(text)) > 500 {
+		text = string([]rune(text)[:500])
+	}
+	source, starts, ends := normalize(content)
+	match := func(quote string) string {
+		quote, _, _ = normalize(strings.TrimSpace(quote))
+		if quote == "" || (!wholeMessage && quote == strings.TrimSpace(source)) {
+			return ""
+		}
+		if at := strings.Index(source, quote); at >= 0 {
+			return content[starts[at]:ends[at+len(quote)-1]]
+		}
+		return ""
+	}
+	if found := match(text); found != "" {
+		return found
+	}
+	return match(strings.Trim(text, " \t\r\n\"'“”‘’„‚«»『』「」()[]{}（）［］｛｝【】〈〉《》"))
+}
+
+func (s *Server) narrativePreviousCriticSources(ctx context.Context, sid, revision string, turn int) []string {
+	reader, ok := s.Store.(store.SourceRevisionStore)
+	if !ok || revision == "" || turn <= 1 {
+		return nil
+	}
+	source, err := reader.GetSourceRevision(ctx, sid, revision)
+	if err != nil || source == nil {
+		return nil
+	}
+	var snapshot completeTurnCriticInputSnapshot
+	if json.Unmarshal([]byte(source.CriticInputSnapshotJSON), &snapshot) != nil {
+		return nil
+	}
+	var texts []string
+	for _, message := range snapshot.ContextMessages {
+		if stringFromMap(message, "source") == "previous_canonical_turn" && intFromAny(message["turn_index"], 0) == turn-1 {
+			texts = append(texts, stringFromMap(message, "content"))
+		}
+	}
+	return texts
+}
+
+// A legacy pending description does not replace an explicit lifecycle value.
+// Copy just its description; retain the last value, phase, obligations and time.
+func narrativePendingDescriptionUpdate(claim narrativeStateClaim, previous map[string]any, explicitClaim *narrativeStateClaim, history []store.StatusChangeEvent, turn int, now time.Time) map[string]any {
+	if claim.SourceKind != "pending_threads" || claim.Transition != "set" || stringFromMap(previous, "value") == "" {
+		return nil
+	}
+	if value, explicit := claim.LifecycleDetails["value"]; explicit && normalizeArtifactDedupeText(extractionStringFromAny(value)) != normalizeArtifactDedupeText(stringFromMap(previous, "value")) {
+		return nil
+	}
+	payload := parseJSONMap(mustCompactJSON(previous))
+	thread := narrativePendingSnapshot(payload)
+	if thread == nil || claim.PendingThread == nil {
+		return nil
+	}
+	description := claim.PendingThread.Description
+	if normalizeArtifactDedupeText(thread.Description) == normalizeArtifactDedupeText(description) {
+		return nil
+	}
+	// Repeating an already recorded description is not new detail. Use the
+	// history this owner already read, rather than interpreting prose or adding
+	// a search. Explicit corrections/transitions keep their existing path.
+	for _, event := range history {
+		if event.OwnerID == narrativeStateOwnerID(claim) && event.EventState == "recorded" {
+			if prior := narrativePendingSnapshot(parseJSONMap(event.NewValueJSON)); prior != nil && normalizeArtifactDedupeText(prior.Description) == normalizeArtifactDedupeText(description) {
+				return nil
+			}
+		}
+	}
+	// A description used as the legacy value is still a value replacement,
+	// unless an accompanying explicit claim separates the state from detail.
+	// An explicit reaffirmation owns its repeated text. Only an actual appended
+	// description outside that text is a separate descriptive update.
+	if explicitClaim != nil && explicitClaim.Transition == "reaffirm" {
+		value, detail := normalizeArtifactDedupeText(explicitClaim.Value), normalizeArtifactDedupeText(description)
+		if value == "" || !strings.HasPrefix(detail, value) || strings.TrimSpace(strings.TrimPrefix(detail, value)) == "" {
+			return nil
+		}
+	} else if explicitClaim == nil && normalizeArtifactDedupeText(stringFromMap(previous, "value")) == normalizeArtifactDedupeText(thread.Description) {
+		return nil
+	}
+	thread.Description = description
+	thread.SourceTurn, thread.LastSeenTurn, thread.UpdatedAt = turn, turn, now
+	metadata, details := parseJSONMap(thread.HookMetadataJSON), parseJSONMap(thread.DetailsJSON)
+	metadata["description"], details["description"] = description, description
+	lifecycle := mapFromAny(payload["lifecycle_details"])
+	if lifecycle == nil {
+		lifecycle = map[string]any{}
+	}
+	lifecycle["description"] = description
+	metadata["lifecycle_details"] = lifecycle
+	thread.HookMetadataJSON, thread.DetailsJSON = mustCompactJSON(metadata), mustCompactJSON(details)
+	payload["pending_thread"], payload["lifecycle_details"] = thread, lifecycle
+	return payload
+}
+
+// Compare attributed scopes independently of their observation receipts. The
+// stored boundaries keep full provenance; refreshing it alone is not a change
+// to the current goal or the knowledge holders of an identified fact.
+func narrativeKnowledgeBoundaryScopes(value any) string {
+	boundaries := []string{}
+	for _, raw := range sliceFromAny(value) {
+		boundary := cloneMapAny(mapFromAny(raw))
+		delete(boundary, "knowledge_source")
+		// An explicit fact identity survives a new extraction revision. Without
+		// one, keep the original source path so different origins stay distinct.
+		if extractionFirstNonEmpty(stringFromMap(boundary, "fact_ref"), stringFromMap(boundary, "fact_id"), stringFromMap(boundary, "canonical_fact_id"), stringFromMap(boundary, "secret_id")) != "" {
+			delete(boundary, "protected_fact_ref")
+		}
+		// Stored JSON arrays and freshly normalized string slices must compare
+		// as the same scope before deduplicating repeated observation receipts.
+		boundaries = appendUniqueStringValues(boundaries, mustCompactJSON(normalizePreciseMemoryValue(parseJSONMap(mustCompactJSON(boundary)))))
+	}
+	sort.Strings(boundaries)
+	return mustCompactJSON(boundaries)
+}
+
 func narrativeClaimIsLifecycle(claim narrativeStateClaim) bool {
 	return claim.ClaimScope == "objective" && (claim.LifecycleKey != "" ||
 		(claim.SubjectType == "entity" && claim.StateSlot == "goal_status"))
@@ -340,7 +489,16 @@ func narrativePendingClaim(thread store.PendingThread, sourceKind string, index 
 	subject := strings.TrimSpace(extractionFirstNonEmpty(thread.Title, stringFromMap(metadata, "title"), thread.Description))
 	transition := normalizeNarrativeTransition(stringFromMap(metadata, "transition"))
 	if transition == "" {
-		transition = "set"
+		// Pending entries may carry the Critic's decision as a status alone.
+		// Keep that decision instead of treating every entry as open.
+		switch strings.ToLower(strings.TrimSpace(stringFromMap(metadata, "status"))) {
+		case "resolved":
+			transition = "resolve"
+		case "paused":
+			transition = "pause"
+		default:
+			transition = "set"
+		}
 	}
 	return narrativeStateClaim{
 		Subject: subject, SubjectType: "entity", StateSlot: "goal_status",
@@ -360,7 +518,7 @@ func narrativePendingThreadForExtraction(sid string, turnIndex int, raw map[stri
 	}
 	return store.PendingThread{
 		ChatSessionID: sid, ThreadKey: key, Title: title,
-		Description: extractionFirstNonEmpty(stringFromMap(raw, "details"), title), Status: "open",
+		Description: extractionFirstNonEmpty(stringFromMap(raw, "details"), stringFromMap(raw, "description"), title), Status: "open",
 		CreatedTurn: turnIndex, SourceTurn: turnIndex, Priority: intFromAny(raw["priority"], 0),
 		HookType: stringFromMap(raw, "thread_type"), ThreadType: stringFromMap(raw, "thread_type"),
 		HookMetadataJSON: mustCompactJSON(raw), DetailsJSON: mustCompactJSON(raw),
@@ -581,6 +739,13 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 	claims = narrativeLifecycleClaims(claims, extraction, currentValues, threads, sid, turnIndex, now)
 	existingEvents, _ := lifecycle.ListStatusChangeEvents(ctx, sid, "", "", narrativeStateStatusKey, 1000)
 	observationContext := reversibleObservationContext(ctx, s.Store, sid)
+	previousSources := s.narrativePreviousCriticSources(ctx, sid, sourceRevision, turnIndex)
+	explicitClaims := map[string]narrativeStateClaim{}
+	for _, claim := range claims {
+		if claim.SourceKind == "objective" {
+			explicitClaims[narrativeStateOwnerID(claim)] = claim
+		}
+	}
 	acceptedTransitions := map[string]bool{}
 	for _, claim := range claims {
 		ownerID := narrativeStateOwnerID(claim)
@@ -590,10 +755,33 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			continue
 		}
 		legacyLifecycleInput := claim.SourceKind == "pending_threads" || claim.SourceKind == "resolved_threads"
-		claim.EvidenceExcerpt = sanitizeEvidenceExcerptForTurn(claim.EvidenceExcerpt, content)
+		originalExcerpt := claim.EvidenceExcerpt
+		claim.EvidenceExcerpt = narrativeStateEvidenceExcerpt(originalExcerpt, content, false)
+		evidenceTurn := turnIndex
+		if claim.EvidenceExcerpt == "" {
+			for _, source := range previousSources {
+				if found := narrativeStateEvidenceExcerpt(originalExcerpt, source, true); found != "" {
+					claim.EvidenceExcerpt, evidenceTurn = found, turnIndex-1
+					break
+				}
+			}
+		}
 		if claim.EvidenceExcerpt == "" && !legacyLifecycleInput {
 			result.addSkipReason("narrative_state", "evidence_excerpt_not_grounded", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot})
 			continue
+		}
+		// These are state-owned copies, not mutations of the extraction consumed
+		// by the other shared evidence callers. Do not retain the model's quote
+		// in nested state metadata after matching it to a different source span.
+		claim.LifecycleDetails = cloneMapAny(claim.LifecycleDetails)
+		for _, key := range []string{"evidence_excerpt", "evidence"} {
+			if _, supplied := claim.LifecycleDetails[key]; supplied {
+				if claim.EvidenceExcerpt == "" {
+					delete(claim.LifecycleDetails, key)
+				} else {
+					claim.LifecycleDetails[key] = claim.EvidenceExcerpt
+				}
+			}
 		}
 		goalLifecycle := narrativeClaimIsLifecycle(claim)
 		if goalLifecycle && claim.Confidence < narrativeStateMinimumConfidence && !legacyLifecycleInput {
@@ -622,16 +810,89 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			continue
 		}
 		previousTransition := normalizeNarrativeTransition(extractionStringFromAny(previousPayload["transition"]))
+		suppliedKnowledgeScope := mapFromAny(claim.LifecycleDetails["knowledge_scope"])
+		var suppliedKnowledgeBoundaries []any
+		if goalLifecycle {
+			if claim.PendingThread != nil && len(mapFromAny(claim.LifecycleDetails["knowledge_scope"])) == 0 {
+				pendingMetadata := parseJSONMap(claim.PendingThread.HookMetadataJSON)
+				for _, key := range []string{"knowledge_scope", "knowledge_source", "knowledge_boundaries"} {
+					if _, supplied := claim.LifecycleDetails[key]; !supplied {
+						if value, exists := pendingMetadata[key]; exists {
+							claim.LifecycleDetails[key] = value
+						}
+					}
+				}
+			}
+			retainExactGoalKnowledgeMetadata(claim.LifecycleDetails, extraction, content, evidence, sid, evidenceTurn, sourceRevision, claim.EvidenceExcerpt)
+			// Explicit fact attribution supplies current scope just as a claim does.
+			// Capture it before historical metadata is inherited below.
+			suppliedKnowledgeScope = mapFromAny(claim.LifecycleDetails["knowledge_scope"])
+			suppliedKnowledgeBoundaries = sliceFromAny(claim.LifecycleDetails["knowledge_boundaries"])
+			// The existing lifecycle owner is the continuity edge. Retain scope
+			// before comparing details so its retention is not new progress.
+			priorDetails := cloneMapAny(mapFromAny(previousPayload["lifecycle_details"]))
+			if priorThread := narrativePendingSnapshot(previousPayload); priorThread != nil {
+				priorMetadata := parseJSONMap(priorThread.HookMetadataJSON)
+				for _, key := range []string{"knowledge_scope", "knowledge_source", "knowledge_boundaries"} {
+					if _, exists := priorDetails[key]; !exists {
+						if value, supplied := priorMetadata[key]; supplied {
+							priorDetails[key] = value
+						}
+					}
+				}
+			}
+			if len(mapFromAny(claim.LifecycleDetails["knowledge_scope"])) == 0 {
+				for _, key := range []string{"knowledge_scope", "knowledge_source"} {
+					if value, exists := priorDetails[key]; exists {
+						claim.LifecycleDetails[key] = value
+					}
+				}
+			}
+			if len(sliceFromAny(claim.LifecycleDetails["knowledge_boundaries"])) == 0 {
+				if value, exists := priorDetails["knowledge_boundaries"]; exists {
+					claim.LifecycleDetails["knowledge_boundaries"] = value
+				}
+			}
+		}
+		knowledgeScopeChanged := len(suppliedKnowledgeScope) > 0 && mustCompactJSON(suppliedKnowledgeScope) != mustCompactJSON(mapFromAny(previousPayload["lifecycle_details"])["knowledge_scope"])
+		// Separately attributed facts can change without assigning this goal a
+		// single set of knowers. Persist those supplied updates through the same
+		// metadata-only path, preserving a closed goal's recorded lifecycle.
+		knowledgeScopeChanged = knowledgeScopeChanged || len(suppliedKnowledgeBoundaries) > 0 && narrativeKnowledgeBoundaryScopes(suppliedKnowledgeBoundaries) != narrativeKnowledgeBoundaryScopes(mapFromAny(previousPayload["lifecycle_details"])["knowledge_boundaries"])
+		var descriptionPayload map[string]any
+		if narrativeLifecycleProjectionStatus(previousTransition) == "open" {
+			var explicit *narrativeStateClaim
+			if candidate, ok := explicitClaims[ownerID]; ok {
+				explicit = &candidate
+			}
+			descriptionPayload = narrativePendingDescriptionUpdate(claim, previousPayload, explicit, existingEvents, turnIndex, now)
+		}
 		incomingClosing := narrativeLifecycleProjectionStatus(claim.Transition) != "open"
 		sameValue := previousValue != "" && normalizeArtifactDedupeText(previousValue) == normalizeArtifactDedupeText(claim.Value)
 		progressEvidenceChanged := goalLifecycle && (claim.Transition == "progress" || claim.Transition == "partial" || claim.Transition == "modify" || claim.Transition == "missed" || claim.Transition == "refused" || claim.Transition == "impossible") &&
 			(mustCompactJSON(previousPayload["lifecycle_details"]) != mustCompactJSON(claim.LifecycleDetails) ||
 				stringFromMap(parseJSONMap(previous.EvidenceJSON), "evidence_excerpt") != claim.EvidenceExcerpt)
-		if sameValue && (!goalLifecycle || (previousTransition == claim.Transition && !progressEvidenceChanged) || claim.Transition == "set" || claim.Transition == "reaffirm" || claim.Transition == "uncertain") {
+		if descriptionPayload == nil && sameValue && !knowledgeScopeChanged && (!goalLifecycle || (previousTransition == claim.Transition && !progressEvidenceChanged) || claim.Transition == "set" || claim.Transition == "reaffirm" || claim.Transition == "uncertain") {
 			result.addSkipReason("narrative_state", "exact_current_value_reaffirmed", map[string]any{"subject": claim.Subject, "state_slot": claim.StateSlot, "value": claim.Value})
 			continue
 		}
-		if previousValue != "" && goalLifecycle {
+		knowledgeMetadataUpdate := false
+		if goalLifecycle && sameValue && knowledgeScopeChanged {
+			switch claim.Transition {
+			case "set", "reaffirm", "uncertain", "reveal":
+				knowledgeMetadataUpdate = true
+			default:
+				knowledgeMetadataUpdate = previousTransition == claim.Transition && !progressEvidenceChanged
+			}
+		}
+		preserveClosedPhase := knowledgeMetadataUpdate && narrativeLifecycleProjectionStatus(previousTransition) != "open"
+		if preserveClosedPhase {
+			// Disclosure changes knowledge metadata, not this goal's closed phase.
+			// Keep the recorded decision while saving the newly supplied scope.
+			claim.Value, claim.Transition = previousValue, previousTransition
+			claim.LifecycleDetails["value"], claim.LifecycleDetails["transition"] = previousValue, previousTransition
+		}
+		if descriptionPayload == nil && previousValue != "" && goalLifecycle && !knowledgeMetadataUpdate {
 			confirmedReplacement := false
 			switch claim.Transition {
 			case "change", "reversal", "recovery", "correction", "reveal", "resolve", "clear",
@@ -667,16 +928,40 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 		if claim.PendingThread != nil {
 			thread := *claim.PendingThread
 			if predecessor := narrativePendingSnapshot(previousPayload); predecessor != nil {
-				thread.CreatedTurn, thread.CreatedAt = predecessor.CreatedTurn, predecessor.CreatedAt
+				if preserveClosedPhase {
+					thread = *predecessor
+				} else {
+					thread.CreatedTurn, thread.CreatedAt = predecessor.CreatedTurn, predecessor.CreatedAt
+				}
 			}
 			thread.Status = narrativeLifecycleProjectionStatus(claim.Transition)
 			thread.SourceTurn, thread.LastSeenTurn, thread.UpdatedAt = turnIndex, turnIndex, now
-			thread.ResolvedTurn = 0
-			if thread.Status == "resolved" {
-				thread.ResolvedTurn = turnIndex
-				thread.ResolutionNote = claim.Value
+			if !preserveClosedPhase {
+				thread.ResolvedTurn = 0
+				if thread.Status == "resolved" {
+					thread.ResolvedTurn = turnIndex
+					thread.ResolutionNote = claim.Value
+				}
 			}
 			metadata := parseJSONMap(thread.HookMetadataJSON)
+			details := parseJSONMap(thread.DetailsJSON)
+			for _, key := range []string{"knowledge_scope", "knowledge_source", "knowledge_boundaries"} {
+				if value, exists := claim.LifecycleDetails[key]; exists {
+					metadata[key], details[key] = value, value
+				}
+			}
+			for _, fields := range []map[string]any{metadata, details} {
+				for _, key := range []string{"evidence_excerpt", "evidence"} {
+					if _, supplied := fields[key]; supplied {
+						if claim.EvidenceExcerpt == "" {
+							delete(fields, key)
+						} else {
+							fields[key] = claim.EvidenceExcerpt
+						}
+					}
+				}
+			}
+			thread.DetailsJSON = mustCompactJSON(details)
 			metadata["status"], metadata["transition"], metadata["value"] = thread.Status, claim.Transition, claim.Value
 			metadata["source_turn"] = turnIndex
 			if len(claim.LifecycleDetails) > 0 {
@@ -685,12 +970,37 @@ func (s *Server) saveNarrativeStateFromExtraction(ctx context.Context, sid strin
 			thread.HookMetadataJSON = mustCompactJSON(metadata)
 			claim.PendingThread = &thread
 		}
-		evidenceIDs := narrativeStateMatchingEvidenceIDs(evidence, turnIndex, claim.EvidenceExcerpt)
+		evidenceIDs := narrativeStateMatchingEvidenceIDs(evidence, evidenceTurn, claim.EvidenceExcerpt)
 		valuePayload := narrativeStateValuePayload(claim, previousValue, turnIndex)
+		if descriptionPayload != nil {
+			valuePayload = descriptionPayload
+		}
 		if _, explicit := valuePayload["observed_at"]; !explicit {
 			valuePayload["observed_at"] = observationContext
 		}
 		evidencePayload := narrativeStateEvidencePayload(claim, evidenceIDs, turnIndex, sourceRevision)
+		evidencePayload["evidence_source_turn"] = evidenceTurn
+		if descriptionPayload != nil {
+			evidencePayload["descriptive_update"] = true
+			if claim.EvidenceExcerpt == "" {
+				priorEvidence := parseJSONMap(previous.EvidenceJSON)
+				for _, key := range []string{"evidence_excerpt", "direct_evidence_ids"} {
+					evidencePayload[key] = priorEvidence[key]
+				}
+				evidencePayload["evidence_source_turn"] = intFromAny(priorEvidence["evidence_source_turn"], intFromAny(priorEvidence["source_turn"], previous.SourceTurn))
+			}
+			provenance := mapFromAny(valuePayload["field_provenance"])
+			if provenance == nil {
+				provenance = map[string]any{"contract_version": "narrative_field_provenance.v1", "fields": map[string]any{}}
+			}
+			fields := mapFromAny(provenance["fields"])
+			if fields == nil {
+				fields = map[string]any{}
+			}
+			fields["/pending_thread/description"] = map[string]any{"source_turn": turnIndex, "source_revision": sourceRevision, "observed_at": observationContext}
+			provenance["fields"] = fields
+			valuePayload["field_provenance"] = provenance
+		}
 		evidencePayload["source_unit_id"] = fmt.Sprintf("narrative:%s:%s:%d:%d", ownerID, claim.SourceKind, claim.SourceIndex, turnIndex)
 		result.Attempted++
 		currentValue := store.StatusCurrentValue{
@@ -830,7 +1140,83 @@ func narrativeStateMatchingEvidenceIDs(evidence []store.DirectEvidence, turnInde
 	return ids
 }
 
-func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.Store, sid string, maxSourceTurn int) (int, error) {
+type narrativeManualTrustSnapshot struct {
+	Storylines []store.Storyline
+	Pending    []store.PendingThread
+	WorldRules []store.WorldRule
+}
+
+func captureNarrativeManualTrust(ctx context.Context, st store.Store, sid string) (narrativeManualTrustSnapshot, error) {
+	var snapshot narrativeManualTrustSnapshot
+	var err error
+	snapshot.Storylines, err = st.ListStorylines(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+		return snapshot, err
+	}
+	snapshot.Pending, err = st.ListPendingThreads(ctx, sid, "all")
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+		return snapshot, err
+	}
+	snapshot.WorldRules, err = st.ListWorldRules(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+		return snapshot, err
+	}
+	return snapshot, nil
+}
+
+// Reapply only trust metadata to identities that survived rollback. The content
+// and existence of each item remain governed by the surviving source history.
+func restoreNarrativeManualTrust(ctx context.Context, st store.Store, sid string, before narrativeManualTrustSnapshot) error {
+	if patcher, ok := st.(interface {
+		PatchPendingThreadTrust(context.Context, int64, map[string]any) ([]string, error)
+	}); ok {
+		items, err := st.ListPendingThreads(ctx, sid, "all")
+		if err != nil {
+			return err
+		}
+		prior := map[string]store.PendingThread{}
+		for _, item := range before.Pending {
+			if item.ThreadKey != "" {
+				prior[item.ThreadKey] = item
+			}
+		}
+		for _, item := range items {
+			old, exists := prior[item.ThreadKey]
+			if exists && (old.Pinned != item.Pinned || old.Suppressed != item.Suppressed || old.UserCorrected != item.UserCorrected) {
+				if _, err := patcher.PatchPendingThreadTrust(ctx, item.ID, map[string]any{"pinned": old.Pinned, "suppressed": old.Suppressed, "user_corrected": old.UserCorrected}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	if patcher, ok := st.(interface {
+		PatchWorldRuleTrust(context.Context, int64, map[string]any) ([]string, error)
+	}); ok {
+		items, err := st.ListWorldRules(ctx, sid)
+		if err != nil {
+			return err
+		}
+		prior := map[[3]string]store.WorldRule{}
+		for _, item := range before.WorldRules {
+			prior[[3]string{item.Scope, item.ScopeName, item.Key}] = item
+		}
+		for _, item := range items {
+			old, exists := prior[[3]string{item.Scope, item.ScopeName, item.Key}]
+			if exists && (old.Pinned != item.Pinned || old.Suppressed != item.Suppressed || old.UserCorrected != item.UserCorrected) {
+				if _, err := patcher.PatchWorldRuleTrust(ctx, item.ID, map[string]any{"pinned": old.Pinned, "suppressed": old.Suppressed, "user_corrected": old.UserCorrected}); err != nil {
+					return err
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.Store, sid string, maxSourceTurn int, priorTrust ...narrativeManualTrustSnapshot) (int, error) {
+	var before narrativeManualTrustSnapshot
+	if len(priorTrust) > 0 {
+		before = priorTrust[0]
+	}
 	currentStore, currentOK := st.(store.StatusCurrentValueStore)
 	lifecycle, lifecycleOK := st.(store.StatusLifecycleStore)
 	if !currentOK || !lifecycleOK || maxSourceTurn < 0 {
@@ -876,6 +1262,10 @@ func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.St
 		}
 	}
 	restored := 0
+	storylines, err := st.ListStorylines(ctx, sid)
+	if err != nil && !errors.Is(err, store.ErrNotEnabled) {
+		return 0, err
+	}
 	for _, event := range latest {
 		evidence := parseJSONMap(event.EvidenceJSON)
 		if stringFromMap(evidence, "projection_action") == "remove" {
@@ -931,7 +1321,42 @@ func restoreNarrativeCurrentStatesAfterRollback(ctx context.Context, st store.St
 				}
 			}
 		}
+		if snapshot := narrativePendingSnapshot(payload); snapshot != nil {
+			if saver, ok := st.(storylineSaver); ok {
+				item := narrativePendingStoryline(sid, *snapshot, nil, time.Now().UTC())
+				key := stringFromMap(parseJSONMap(item.OngoingTensionsJSON), "lifecycle_key")
+				present := false
+				for _, existing := range storylines {
+					if key != "" {
+						present = stringFromMap(parseJSONMap(existing.OngoingTensionsJSON), "lifecycle_key") == key
+					} else {
+						present = existing.Name == item.Name
+					}
+					if present {
+						break
+					}
+				}
+				if !present {
+					for _, prior := range before.Storylines {
+						priorKey := stringFromMap(parseJSONMap(prior.OngoingTensionsJSON), "lifecycle_key")
+						if (key != "" && key == priorKey) || (key == "" && item.Name == prior.Name) {
+							item.Pinned, item.Suppressed, item.UserCorrected = prior.Pinned, prior.Suppressed, prior.UserCorrected
+							break
+						}
+					}
+					if err := saver.SaveStoryline(ctx, item); err != nil {
+						return restored, err
+					}
+					storylines = append(storylines, *item)
+				}
+			}
+		}
 		restored++
+	}
+	if len(priorTrust) > 0 {
+		if err := restoreNarrativeManualTrust(ctx, st, sid, before); err != nil {
+			return restored, err
+		}
 	}
 	return restored, nil
 }

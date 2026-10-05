@@ -22,6 +22,7 @@ func bodyProbability46Config(t *testing.T, routes http.Handler, st archiveStore.
 		"entity_id": entity, "origin_entity_id": entity, "character_name": "Mina", "cycle_viability": 1, "conditional_peak": peak,
 		"cycle": map[string]any{"reference_time": map[string]any{"date": "1423-01-01"}, "reference_kind": "author_setting", "cycle_days": 28, "variation_days": 0, "period_days": 5, "luteal_min_days": 14, "luteal_max_days": 14},
 	}}}
+	storyTime46Request(t, routes, http.MethodPut, "/config/body-tracking/"+sid, config)
 	storyTime46Request(t, routes, http.MethodPut, "/config/body-tracking/"+sid, map[string]any{"restore_snapshot": map[string]any{"contract_version": "body_tracking_settings.v1", "config": config}})
 }
 
@@ -59,6 +60,16 @@ func TestBodyProbability46HTTPMariaDBFrozenDrawReplayBranchAndReroll(t *testing.
 	decisions, ok := firstModel["cycles"].([]any)
 	if !ok || len(decisions) == 0 || storyTime46Map(storyTime46Map(decisions[0])["day_draw"])["token"] == "" || firstEvidence["model_cycles"] == nil {
 		t.Fatalf("event lacks its persisted immutable draw/checkpoint: %#v", firstEvidence)
+	}
+	beforeToggleHistory := bodyTracking46History(t, st, sid, entity, 2)
+	for _, on := range []bool{false, true} {
+		storyTime46Request(t, routes, http.MethodPut, "/config/body-tracking/other-rp", map[string]any{"cycle_tracking_enabled": on, "automatic_pregnancy_enabled": on})
+		if got := storyTime46Current(t, st, sid, "body_tracking"); !reflect.DeepEqual(first, got) {
+			t.Fatal("common toggle rewrote persisted model draw/state")
+		}
+		if got := bodyTracking46History(t, st, sid, entity, 2); !reflect.DeepEqual(beforeToggleHistory, got) {
+			t.Fatal("common toggle rewrote immutable model history")
+		}
 	}
 	// Retry, process restart and read-only settings delivery
 	// cannot resample or change the original event's model/parameters.

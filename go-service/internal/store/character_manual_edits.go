@@ -257,6 +257,11 @@ func applyCharacterManualEdits(state *CharacterState, edits []CharacterManualFie
 	state.manualEdits = append([]CharacterManualFieldEdit{}, edits...)
 }
 
+// Includes explicit removals: clearing a field is also a user's edit.
+func (state CharacterState) HasManualEdits() bool {
+	return len(state.manualEdits) > 0
+}
+
 func characterVoicePrincipleKey(value any) string {
 	object, _ := value.(map[string]any)
 	key, _ := object["principle_key"].(string)

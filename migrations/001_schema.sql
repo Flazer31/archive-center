@@ -1,7 +1,5 @@
 -- Archive Center 2.0 ? Canonical Truth Schema (R0)
 -- Engine: InnoDB, Charset: utf8mb4, Collation: utf8mb4_unicode_ci
--- Status: DRAFT ? dry-run only until explicit approval.
--- Reference: contracts/mariadb-truth-schema-plan.md
 
 SET NAMES utf8mb4;
 

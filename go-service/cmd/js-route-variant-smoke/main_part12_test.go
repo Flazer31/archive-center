@@ -71,7 +71,7 @@ func TestCompleteTurnHUDUsesObservedRequestIDWithoutPublisherLineage(t *testing.
 	script := bodyFunction + `
 const AUTO_CONTINUE_USER_INPUT_MARKER="[auto-continue]";
 const DEFAULT_SETTINGS={episodeIntervalTurns:20,chapterIntervalEpisodes:5,arcIntervalChapters:5,sagaIntervalArcs:3};
-const settings={...DEFAULT_SETTINGS,maxInputContextChars:4321};
+const settings={...DEFAULT_SETTINGS,maxInputContextChars:4321,criticReferenceMaxChars:12500};
 let _latestOrchResultForUI={_chatSessionId:"wrong-session"};
 async function resolveRuntimeOutputLanguageOverride(){return "ko";}
 async function buildLanguageContextTrace(){return {output_language_override:"ko"};}
@@ -107,7 +107,7 @@ function debugLog(...args){throw new Error("unexpected build failure: "+args.joi
     throw new Error("workflow request id was not forwarded from the accepted beforeRequest context");
   }
   const budget=body.client_meta.critic_input_budget_observation;
-  if(!budget || budget.contract_version!=="critic_input_budget_observation.v1" || budget.max_input_context_chars!==4321) {
+  if(!budget || budget.contract_version!=="critic_input_budget_observation.v1" || budget.max_input_context_chars!==4321 || budget.critic_reference_max_chars!==12500) {
     throw new Error("critic budget observation mismatch: "+JSON.stringify(budget));
   }
 })().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
@@ -616,7 +616,7 @@ const assert = (condition,message) => { if (!condition) throw new Error(message)
   const confirmed = await ensureActiveChatCompletedTurnsBackfilled("child-session",{reason:"plugin_init"});
   assert(confirmed.status === "skipped", "fixture backfills should report skipped");
   assert(order[0] === "route" && order.slice(1).every(item=>item === "backfill"), "worldline preflight did not run first: "+JSON.stringify(order));
-  assert(routed.length === 1 && routed[0].mode === "identity", "preflight must use the existing identity route");
+  assert(routed.length === 1 && routed[0].mode === "recover_inherited", "preflight must request inherited recovery through the existing route owner");
   const observation = routed[0].facts.worldlineObservation;
   assert(observation.contract_version === "risu_worldline_observation.v2", "preflight contract mismatch");
   assert(observation.host_signal_source === "active_chat_pre_backfill", "preflight was falsely labeled as output");
@@ -1385,8 +1385,9 @@ async function safeCall(fn){ return await fn(); }
   const meta=buildAdminRuntimeClientMeta();
   for (const budget of [6400, 1, 0, 128000]) {
     settings.maxInputContextChars=budget;
+    settings.criticReferenceMaxChars=budget;
     const observed=buildAdminRuntimeClientMeta().critic_input_budget_observation;
-    if(!observed || observed.contract_version!=="critic_input_budget_observation.v1" || observed.max_input_context_chars!==budget) {
+    if(!observed || observed.contract_version!=="critic_input_budget_observation.v1" || observed.max_input_context_chars!==budget || observed.critic_reference_max_chars!==budget) {
       throw new Error("admin critic budget lost configured value: "+JSON.stringify({budget,observed}));
     }
   }
@@ -2235,6 +2236,12 @@ func TestRegisteredAfterRequestCarriesEachCapturedContextIntoCompleteTurn(t *tes
 const settings={enabled:true,debug:false};
 const registered={};
 const completeCalls=[];
+const translationHUD=[];
+const translationDiagnostics=[];
+function observeTurnWorkflowHUDTranslation(requestId,state){translationHUD.push({requestId,state});}
+function recordHostDiagnostic(event){translationDiagnostics.push(event);}
+function refreshOpenArchiveCenterUI(){}
+function t(key){return key;}
 const _nextInputFinalizations=new Map();
 let previousBoundaryResolve=null, previousBoundaryCall=null, activeChat=null;
 async function saveNextInputFinalizationsToStorage(){}
@@ -2427,6 +2434,29 @@ function context(sid,cid,requestId,user,turn){
     }
   }
 
+  const delayedFailures=[];
+  for(const mode of ['delayed','missing','previous-delayed']) {
+    const original='The traveler returned with the promised map.';
+    const display='<!-- yumi-tr:v1:late:start -->번역된 응답<!-- yumi-tr:v1:late:end -->';
+    activeChat={id:'cid-late',scriptstate:{},message:[]};
+    const owner=context('session-late','cid-late','late-'+mode,'continue',1);
+    Object.assign(owner,{userMessageIndex:0,userMessageChatId:'late-user',userObservedPairOrdinal:1});
+    if(mode==='previous-delayed') owner.orchestrationResult.turnFinalizationPolicy={owner:'go',mode:'next_user_input'};
+    _activeFinalConfirmationRequestContext=owner;
+    const beforeCount=completeCalls.length;
+    const started=Date.now();
+    const returned=registered.afterRequest(display,'model');
+    if(returned!==display || returned instanceof Promise || Date.now()-started>100) throw new Error('translation blocked Host display');
+    if(mode!=='missing') setTimeout(()=>{activeChat.scriptstate['$__yumi_tr.late']=JSON.stringify({model:original});},1000);
+    const expected=mode==='missing'?10500:1600;
+    await new Promise(resolve=>setTimeout(resolve,expected));
+    const hud=translationHUD.filter(item=>item.requestId===owner.requestId);
+    const saves=completeCalls.slice(beforeCount);
+    if(mode==='delayed' && (saves.length!==1 || saves[0].assistant!==original || !hud.some(item=>item.state==='ready'))) delayedFailures.push('(a) delayed original did not save in same request with ready HUD');
+    if(mode==='missing' && (saves.length!==0 || !hud.some(item=>item.state==='unavailable') || !translationDiagnostics.some(item=>item.error==='translation_original_unavailable'))) delayedFailures.push('(b) timeout did not close HUD with diagnostic and zero saves');
+    if(mode==='previous-delayed' && (saves.length!==0 || !_nextInputFinalizations.has(owner.sessionId))) delayedFailures.push('(e) delayed original did not retain previous-turn policy');
+  }
+  if(delayedFailures.length) throw new Error(delayedFailures.join('\n'));
 })().catch(err=>{console.error(err && err.stack || err);process.exit(1);});
 `
 	cmd := exec.Command(nodePath, "-")

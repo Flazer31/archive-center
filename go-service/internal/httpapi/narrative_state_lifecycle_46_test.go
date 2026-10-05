@@ -2,10 +2,16 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
 
@@ -83,6 +89,164 @@ func Test46ResolvedOnlySynchronizesCurrentAndLaterMentionProjections(t *testing.
 	oldArtifact := mustCompactJSON(map[string]any{"lifecycle_key": key, "title": "Remember the restored museum"})
 	if !narrativeCurrentStateSupersedesOpenArtifact(st.returnStatusCurrent, 9, oldArtifact) {
 		t.Fatal("later same-key open representation defeated the authoritative completion")
+	}
+}
+
+func TestStorylineLifecycleRetainsExplicitPendingStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, transition, want string
+	}{
+		{"resolved_status", "resolved", "", "resolved"},
+		{"paused_status", "paused", "", "paused"},
+		{"explicit_progress_wins", "resolved", "partial", "active"},
+		{"explicit_completion", "open", "complete", "resolved"},
+		{"unknown_status_is_not_completion", "unknown", "", "active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st := &turnRecordingStore{}
+			key := "shield-handover-one"
+			initial := map[string]any{"title": "Collect the shield", "description": "The shield is ready for collection.", "lifecycle_key": key, "status": "open"}
+			save46LifecycleFixture(t, st, 1, normalizeCriticExtraction(map[string]any{"pending_threads": []any{initial}}), "The shield is ready for collection.")
+			update := map[string]any{"title": "Shield handover", "description": "The shield handover is recorded.", "lifecycle_key": key, "status": tc.status, "transition": tc.transition}
+			save46LifecycleFixture(t, st, 2, normalizeCriticExtraction(map[string]any{"pending_threads": []any{update}}), "The shield handover is recorded.")
+			got := st.savedStorylines[len(st.savedStorylines)-1]
+			if got.Status != tc.want {
+				t.Fatalf("explicit model decision lost: status=%s transition=%s storyline=%s; want=%s", tc.status, tc.transition, got.Status, tc.want)
+			}
+			if len(st.returnPendingThreads) != 1 || len(st.returnStatusCurrent) != 1 || got.FirstTurn != 1 {
+				t.Fatalf("renamed occurrence duplicated or lost origin: pending=%+v current=%+v storyline=%+v", st.returnPendingThreads, st.returnStatusCurrent, got)
+			}
+			if tc.want == "resolved" {
+				count := len(st.savedStatusEvents)
+				save46LifecycleFixture(t, st, 2, normalizeCriticExtraction(map[string]any{"pending_threads": []any{update}}), "The shield handover is recorded.")
+				save46LifecycleFixture(t, st, 3, normalizeCriticExtraction(map[string]any{"pending_threads": []any{initial}}), "They remember collecting the shield.")
+				if len(st.savedStatusEvents) != count || st.returnPendingThreads[0].Status != "resolved" || st.savedStorylines[len(st.savedStorylines)-1].Status != "resolved" {
+					t.Fatal("replay or historical mention duplicated/reopened the completed occurrence")
+				}
+			}
+		})
+	}
+}
+
+func TestStorylineLifecyclePreservesIndependentDescription(t *testing.T) {
+	st := &turnRecordingStore{}
+	description := "Deliver both crates to Mira; handing over only one does not complete the promise."
+	save46LifecycleFixture(t, st, 1, normalizeCriticExtraction(map[string]any{"pending_threads": []any{map[string]any{
+		"title": "Workshop delivery", "description": description, "lifecycle_key": "workshop-crates", "status": "open",
+	}}}), description)
+	if len(st.returnPendingThreads) != 1 || st.returnPendingThreads[0].Description != description {
+		t.Fatalf("fulfillment terms lost in current pending projection: %+v", st.returnPendingThreads)
+	}
+	if len(st.savedStorylines) != 1 || st.savedStorylines[0].CurrentContext != description {
+		t.Fatalf("fulfillment terms lost in Storyline projection: %+v", st.savedStorylines)
+	}
+}
+
+// Only provider and persistence boundaries are substituted. Cold start, Critic
+// parsing, source admission, lifecycle projection and the UI's GET are real.
+type storylineColdStartStore struct {
+	*canonicalRawReplaySessionNormalizeStore
+	store.StatusSchemaRegistryStore
+	store.StatusCurrentValueStore
+	store.StatusLifecycleStore
+	store.ReversibleStatusTransitionStore
+	projection *turnRecordingStore
+}
+
+func (st *storylineColdStartStore) SaveStoryline(ctx context.Context, item *store.Storyline) error {
+	if err := st.projection.SaveStoryline(ctx, item); err != nil {
+		return err
+	}
+	key := stringFromMap(parseJSONMap(item.OngoingTensionsJSON), "lifecycle_key")
+	if key == "" {
+		return fmt.Errorf("fixture expected an occurrence key")
+	}
+	copyItem := *item
+	for i, previous := range st.projection.returnStorylines {
+		if stringFromMap(parseJSONMap(previous.OngoingTensionsJSON), "lifecycle_key") == key {
+			copyItem.ID = previous.ID
+			st.projection.returnStorylines[i] = copyItem
+			return nil
+		}
+	}
+	copyItem.ID = int64(len(st.projection.returnStorylines) + 1)
+	st.projection.returnStorylines = append(st.projection.returnStorylines, copyItem)
+	return nil
+}
+
+func TestStorylineLifecycleColdStartPreservesDecisions(t *testing.T) {
+	const sid = "storyline-cold-start"
+	initial := []any{}
+	updates := []any{}
+	wants := map[string]string{"quest-selection": "resolved", "shield-handover": "resolved", "greaves-fitting": "paused", "relic-recovery": "active"}
+	for _, key := range []string{"quest-selection", "shield-handover", "greaves-fitting", "relic-recovery"} {
+		initial = append(initial, map[string]any{"title": key, "lifecycle_key": key, "status": "open"})
+		if wants[key] != "active" {
+			updates = append(updates, map[string]any{"title": key + " update", "lifecycle_key": key, "status": wants[key]})
+		}
+	}
+	contents := []string{"The group selects tasks: quest selection, shield handover, greaves fitting and relic recovery.", "The quest is accepted and the shield collected. Greaves fitting is paused; relic recovery continues."}
+	logs := []store.ChatLog{}
+	for i, content := range contents {
+		logs = append(logs, store.ChatLog{ChatSessionID: sid, TurnIndex: i + 1, Role: "user", Content: "Proceed with the tasks."}, store.ChatLog{ChatSessionID: sid, TurnIndex: i + 1, Role: "assistant", Content: content})
+	}
+	projection := &turnRecordingStore{}
+	fake := &storylineColdStartStore{
+		canonicalRawReplaySessionNormalizeStore: &canonicalRawReplaySessionNormalizeStore{
+			memoryAdmissionWorkerStore: &memoryAdmissionWorkerStore{Store: projection, logs: logs},
+			sources:                    map[string]*store.MemorySourceRevision{},
+		},
+		StatusSchemaRegistryStore: projection, StatusCurrentValueStore: projection,
+		StatusLifecycleStore: projection, ReversibleStatusTransitionStore: projection, projection: projection,
+	}
+	cfg := config.Default()
+	cfg.StoreMode = config.StoreModeMariaDBAuthority
+	srv := NewServer(cfg)
+	srv.Store, srv.StoreOpenError = fake, nil
+	oldClient := proxyHTTPClient
+	calls := 0
+	responses := []string{
+		criticWireJSONForTest(map[string]any{"turn_summary": contents[0], "importance_score": 6, "pending_threads": initial}),
+		criticWireJSONForTest(map[string]any{"turn_summary": contents[1], "importance_score": 6, "pending_threads": updates}),
+	}
+	proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != "api.example.com" || !strings.HasSuffix(r.URL.Path, "/chat/completions") || calls >= len(responses) {
+			t.Fatalf("unexpected provider call: %s, calls=%d", r.URL, calls)
+		}
+		request, err := io.ReadAll(r.Body)
+		if err != nil || !strings.Contains(string(request), contents[calls]) {
+			t.Fatalf("cold start did not replay the expected source: %s, %v", request, err)
+		}
+		body, _ := json.Marshal(map[string]any{"choices": []any{map[string]any{"message": map[string]any{"content": responses[calls]}}}})
+		calls++
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body)))}, nil
+	})}
+	t.Cleanup(func() { proxyHTTPClient = oldClient })
+	result, err := srv.runAdminSessionNormalize(context.Background(), sid, adminSessionNormalizeRequest{
+		SkipRepair: true, SkipReindex: true,
+		ClientMeta: map[string]any{"critic": map[string]any{"api_key": "synthetic-key", "endpoint": "https://api.example.com/v1", "model": "critic", "provider": "openai", "timeout_ms": 45000}},
+	}, nil)
+	if err != nil || result["status"] != "ok" || calls != len(contents) || len(fake.admissions) != len(contents) || len(fake.enqueuedJobs) != 0 {
+		t.Fatalf("cold start failed: result=%+v error=%v calls=%d admissions=%d queued=%d", result, err, calls, len(fake.admissions), len(fake.enqueuedJobs))
+	}
+	req := httptest.NewRequest(http.MethodGet, "/storylines/"+sid, nil)
+	req.SetPathValue("chat_session_id", sid)
+	rec := httptest.NewRecorder()
+	srv.handleStorylinesGet(rec, req)
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil || rec.Code != http.StatusOK {
+		t.Fatalf("Storylines response: %d %s %v", rec.Code, rec.Body.String(), err)
+	}
+	items := sliceFromAny(payload["storylines"])
+	if len(items) != len(wants) {
+		t.Fatalf("unexpected Storyline count: %s", rec.Body.String())
+	}
+	for _, raw := range items {
+		item := mapFromAny(raw)
+		key := strings.TrimSuffix(stringFromMap(item, "name"), " update")
+		if want, ok := wants[key]; !ok || stringFromMap(item, "status") != want {
+			t.Fatalf("cold start lost explicit decision: %s want=%s got=%v", key, want, item["status"])
+		}
 	}
 }
 

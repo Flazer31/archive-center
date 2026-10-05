@@ -1023,6 +1023,8 @@ type PrepareTurnSettings struct {
 	// MemoryTransportMode selects the representation of the already-selected long-term-memory lane.
 	// DEFAULT: text preserves the existing payload path.
 	MemoryTransportMode *string `json:"memory_transport_mode,omitempty"`
+	// ProtectedSecretBudgetChars is an independent ceiling; absent or nonpositive uses 4000.
+	ProtectedSecretBudgetChars *int `json:"protected_secret_budget_chars,omitempty"`
 	// MemoryDeliveryBudgetMode selects automatic profile budgets or user-supplied per-class reservations.
 	MemoryDeliveryBudgetMode *string `json:"memory_delivery_budget_mode,omitempty"`
 	// MemoryDeliveryBudgets carries character reservations for the seven Go-owned delivery classes.

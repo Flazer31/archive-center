@@ -33,13 +33,16 @@ type publicMemoryProjection struct {
 // Memory.Evidence JSON when rebuilding an existing row; fresh admission may
 // pass an empty string because grounded evidence_excerpts are already present
 // in extraction.
-func buildPublicMemoryProjection(extraction map[string]any, storedEvidence string) publicMemoryProjection {
+func buildPublicMemoryProjection(extraction map[string]any, storedEvidence string, content ...string) publicMemoryProjection {
 	projected := map[string]any{}
 	if len(extraction) == 0 {
 		return publicMemoryProjection{Extraction: projected}
 	}
 
-	privateEvidence, _ := memoryAdmissionPerspectiveEvidenceScope(extraction)
+	privateEvidence := memoryPerspectiveEvidenceScopeFromStored(extraction, storedEvidence)
+	if len(content) > 0 {
+		privateEvidence, _ = memoryAdmissionPerspectiveEvidenceScope(extraction, content...)
+	}
 	rawSummaryUnsafe := false
 	for _, key := range []string{
 		"belief_updates",
@@ -87,7 +90,8 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		items := []any{}
 		for _, raw := range sliceFromAny(extraction[key]) {
 			item := mapFromAny(raw)
-			clean, ok := publicMemoryProjectionValue(item)
+			item = publicMemoryProjectionCitationItem(item, extraction, privateEvidence)
+			clean, ok := publicMemoryProjectionValue(item, privateEvidence)
 			if !ok {
 				continue
 			}
@@ -104,7 +108,8 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 	for _, key := range objectiveKeys {
 		items := []any{}
 		for _, raw := range sliceFromAny(extraction[key]) {
-			clean, ok := publicMemoryProjectionValue(mapFromAny(raw))
+			item := publicMemoryProjectionCitationItem(mapFromAny(raw), extraction, privateEvidence)
+			clean, ok := publicMemoryProjectionValue(item, privateEvidence)
 			if !ok {
 				continue
 			}
@@ -137,7 +142,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		if skip[key] {
 			continue
 		}
-		clean, ok := publicMemoryProjectionValue(value)
+		clean, ok := publicMemoryProjectionValue(value, privateEvidence)
 		if !ok {
 			continue
 		}
@@ -169,7 +174,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 		"memory_write_contract",
 	} {
 		if value, ok := extraction[key]; ok {
-			if clean, keep := publicMemoryProjectionValue(value); keep {
+			if clean, keep := publicMemoryProjectionValue(value, privateEvidence); keep {
 				projected[key] = clean
 			}
 		}
@@ -178,7 +183,7 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 	publicEvidence := []string{}
 	appendEvidence := func(values any) {
 		for _, excerpt := range memorySearchStringValues(values) {
-			if privateEvidence[normalizeArtifactDedupeText(excerpt)] {
+			if memoryAdmissionPerspectiveEvidenceContains(privateEvidence, excerpt) {
 				continue
 			}
 			publicEvidence = appendUniqueMemorySearchText(publicEvidence, excerpt)
@@ -208,10 +213,73 @@ func buildPublicMemoryProjection(extraction map[string]any, storedEvidence strin
 	}
 }
 
+// Retain the source attribution before the existing projection strips a private
+// citation. Equal stored citation fields identify the source quotation, not the
+// public claim's own knowledge scope or an accepted occurrence in raw text.
+func publicMemoryProjectionCitationItem(item, extraction map[string]any, privateEvidence memoryPerspectiveEvidenceScope) map[string]any {
+	boundaries := append([]any{}, sliceFromAny(item["knowledge_boundaries"])...)
+	for index, raw := range sliceFromAny(extraction["protected_secrets"]) {
+		source := mapFromAny(raw)
+		if !protectedSecretRequiresGuard(source, "disclosure_policy") {
+			continue
+		}
+		scope := mapFromAny(source["knowledge_scope"])
+		quote := strings.TrimSpace(extractionFirstNonEmpty(stringFromMap(source, "evidence_excerpt"), stringFromMap(source, "evidence"), stringFromMap(source, "source_excerpt")))
+		if quote == "" || len(scope) == 0 {
+			continue
+		}
+		linked := false
+		for _, field := range []string{"evidence_excerpt", "evidence", "source_excerpt", "identity_evidence_excerpt"} {
+			citation := strings.TrimSpace(stringFromMap(item, field))
+			if citation == quote && memoryAdmissionPerspectiveEvidenceContains(privateEvidence, citation) {
+				linked = true
+				break
+			}
+		}
+		if !linked {
+			continue
+		}
+		origin := cloneMapAny(mapFromAny(source["knowledge_source"]))
+		if origin == nil {
+			origin = map[string]any{}
+		}
+		if _, exists := origin["source"]; !exists {
+			origin["source"] = "critic.protected_secrets"
+		}
+		if _, exists := origin["source_index"]; !exists {
+			origin["source_index"] = index
+		}
+		ref := extractionFirstNonEmpty(stringFromMap(source, "protected_fact_ref"), fmt.Sprintf("critic.protected_secrets/%d", index))
+		if revision := stringFromMap(origin, "source_revision"); revision != "" {
+			ref = extractionFirstNonEmpty(stringFromMap(source, "protected_fact_ref"), fmt.Sprintf("source-revision:%s/protected_secrets/%d", revision, intFromAny(origin["source_index"], index)))
+		}
+		boundary := map[string]any{"knowledge_scope": cloneMapAny(scope), "knowledge_source": origin,
+			"protected_fact_ref": ref, "fact_type": "protected_secrets", "owner": stringFromMap(source, "owner")}
+		for _, field := range []string{"source_refs", "fact_ref", "fact_id", "canonical_fact_id", "secret_id", "artifact_id"} {
+			if value, exists := source[field]; exists {
+				boundary[field] = value
+			}
+		}
+		duplicate := false
+		for _, previous := range boundaries {
+			duplicate = duplicate || mustCompactJSON(previous) == mustCompactJSON(boundary)
+		}
+		if !duplicate {
+			boundaries = append(boundaries, boundary)
+		}
+	}
+	if len(boundaries) == len(sliceFromAny(item["knowledge_boundaries"])) {
+		return item
+	}
+	out := cloneMapAny(item)
+	out["knowledge_boundaries"] = boundaries
+	return out
+}
+
 // Retained for the admission caller; publicMemoryProjectionValue owns the
 // only item-level exclusion policy.
 func publicMemoryProjectionInteractionEligible(item map[string]any) bool {
-	clean, ok := publicMemoryProjectionValue(item)
+	clean, ok := publicMemoryProjectionValue(item, memoryPerspectiveEvidenceScope{})
 	return ok && len(mapFromAny(clean)) > 0
 }
 
@@ -231,7 +299,7 @@ func publicMemoryProjectionHasScopedMaterial(value any) bool {
 	return false
 }
 
-func publicMemoryProjectionValue(value any) (any, bool) {
+func publicMemoryProjectionValue(value any, privateEvidence memoryPerspectiveEvidenceScope) (any, bool) {
 	if value == nil {
 		return nil, false
 	}
@@ -242,7 +310,34 @@ func publicMemoryProjectionValue(value any) (any, bool) {
 		}
 		out := map[string]any{}
 		for key, nested := range item {
-			if clean, ok := publicMemoryProjectionValue(nested); ok {
+			switch key {
+			case "knowledge_boundaries":
+				// Source boundaries are attributed metadata, not public prose.
+				// Preserve their scope arrays and receipts without copying bodies.
+				boundaries := []any{}
+				for _, boundary := range prepareTurnOwnKnowledgeBoundary(map[string]any{key: nested}) {
+					boundaries = append(boundaries, boundary)
+				}
+				out[key] = boundaries
+				continue
+			case "evidence_excerpt", "evidence", "source_excerpt", "identity_evidence_excerpt":
+				// Retain the independently expressed public fact, while its
+				// private source quotation stays in canonical/typed storage.
+				if memoryAdmissionPerspectiveEvidenceContains(privateEvidence, extractionStringFromAny(nested)) {
+					continue
+				}
+			case "event", "summary", "description", "text", "content", "observation", "change":
+				// Narrative source copies must not rebuild a public summary.
+				// Typed public values/profile meanings retain their independent
+				// classification even when their private citation contains them.
+				if strings.EqualFold(strings.TrimSpace(stringFromMap(item, "visibility")), "public") {
+					break // Explicit public meaning survives a mixed private citation.
+				}
+				if text, ok := nested.(string); ok && memoryAdmissionPerspectiveEvidenceContains(privateEvidence, text) {
+					continue
+				}
+			}
+			if clean, ok := publicMemoryProjectionValue(nested, privateEvidence); ok {
 				out[key] = clean
 			}
 		}
@@ -250,7 +345,7 @@ func publicMemoryProjectionValue(value any) (any, bool) {
 	case []any:
 		out := []any{}
 		for _, nested := range item {
-			if clean, ok := publicMemoryProjectionValue(nested); ok {
+			if clean, ok := publicMemoryProjectionValue(nested, privateEvidence); ok {
 				out = append(out, clean)
 			}
 		}
@@ -258,7 +353,7 @@ func publicMemoryProjectionValue(value any) (any, bool) {
 	case []map[string]any:
 		out := []any{}
 		for _, nested := range item {
-			if clean, ok := publicMemoryProjectionValue(nested); ok {
+			if clean, ok := publicMemoryProjectionValue(nested, privateEvidence); ok {
 				out = append(out, clean)
 			}
 		}

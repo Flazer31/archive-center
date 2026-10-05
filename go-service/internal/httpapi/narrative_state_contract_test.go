@@ -546,8 +546,10 @@ func TestPrepareTurnCurrentStatePreservesMultiEventAndProtectedContext(t *testin
 	if !boolFromAny(assembly.Counts["protected_perspective_recognized"]) {
 		t.Fatalf("early current-state filtering discarded multi-event protected context: counts=%#v", assembly.Counts)
 	}
-	if strings.Contains(assembly.Text, "RAW_HIDDEN_PLAN") {
-		t.Fatalf("preserved protected context leaked raw secret content: %q", assembly.Text)
+	// The recorded owner knows this plan. Preserve it as private guidance;
+	// unknown and suspected-only POVs are covered by the disclosure tests.
+	if !containsAll(assembly.ProtectedMemoryText, "RAW_HIDDEN_PLAN", "known_by=Mina", "not public character knowledge") {
+		t.Fatalf("known POV lost its private continuity: %q", assembly.Text)
 	}
 	if !strings.Contains(assembly.ActualMemoryText, "Mina met Rowan at the archive") ||
 		!strings.Contains(extractionStringFromAny(assembly.MemoryDeliveryPlan["final_text"]), "Mina met Rowan at the archive") {

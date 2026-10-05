@@ -101,8 +101,8 @@ func (s *Server) handleSessionStitch(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "session_stitch_store_unavailable", "MariaDB session stitching is unavailable")
 		return
 	}
-	req.RebuildPublicProjection = func(raw string) string {
-		projection := buildPublicMemoryProjection(parseJSONMap(raw), "")
+	req.RebuildPublicProjection = func(raw, storedEvidence string) string {
+		projection := buildPublicMemoryProjection(parseJSONMap(raw), storedEvidence)
 		if !projection.Eligible {
 			return ""
 		}
@@ -137,7 +137,7 @@ func (s *Server) stitchBodyTrackingConfig(result *store.SessionStitchResult) err
 		if !exists {
 			continue
 		}
-		combined.CycleTrackingEnabled, combined.AutomaticPregnancyEnabled, combined.SimulationSeed = config.CycleTrackingEnabled, config.AutomaticPregnancyEnabled, config.SimulationSeed
+		combined.SimulationSeed = config.SimulationSeed
 		for _, character := range config.Characters {
 			character.OriginEntityID = extractionFirstNonEmpty(character.OriginEntityID, character.EntityID)
 			if id := result.EntityIDMap[character.EntityID]; id != "" {
@@ -264,8 +264,8 @@ func (s *Server) handleSessionMigrateComplete(w http.ResponseWriter, r *http.Req
 		TargetSessionID: targetID,
 		Mode:            mode,
 		OperatorNote:    strings.TrimSpace(req.OperatorNote),
-		RebuildPublicProjection: func(extractionJSON string) string {
-			projection := buildPublicMemoryProjection(parseJSONMap(extractionJSON), "")
+		RebuildPublicProjection: func(extractionJSON, storedEvidence string) string {
+			projection := buildPublicMemoryProjection(parseJSONMap(extractionJSON), storedEvidence)
 			if !projection.Eligible {
 				return ""
 			}

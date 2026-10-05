@@ -764,8 +764,11 @@ func TestMixedProjectionKeepsGroundedEventDescriptionsWithoutRawPrivateSummary(t
 			t.Fatalf("private sibling caused general KG/entity metadata %q to disappear: %s", retained, serialized)
 		}
 	}
-	if !strings.Contains(serialized, privateEvidence) {
-		t.Fatalf("same-turn objective evidence was globally removed by a private typed item: %s", serialized)
+	if strings.Contains(serialized, privateEvidence) {
+		t.Fatalf("private citation accompanied otherwise retained public meaning: %s", serialized)
+	}
+	if !strings.Contains(mustCompactJSON(extraction), privateEvidence) {
+		t.Fatal("canonical private evidence was modified by the public read")
 	}
 
 	projectedMemory, ok := publicMemoryFromCanonical(store.Memory{

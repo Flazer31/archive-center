@@ -288,6 +288,72 @@ func Test43RoleOrderUsesOwningRecommendation(t *testing.T) {
 	}
 }
 
+func TestPreprocessingKnowledgeScopeOmitsEmptyFields(t *testing.T) {
+	for _, visibility := range []string{"public", "public_projection", "general", "source_scoped", "owner_private"} {
+		for _, audience := range []string{"missing", "null", "typed_nil", "empty", "named"} {
+			t.Run(visibility+"/"+audience, func(t *testing.T) {
+				item := map[string]any{"canonical_fact_id": "fact", "id": "fact", "ref": "F1", "selection_status": "selected", "source_ref": "source:1", "source_table": "precise_memory_units", "source_turn": 7, "visibility": visibility, "perspective_owner": "", "text": "Mira handed the sealed box to Rook."}
+				switch audience {
+				case "null":
+					item["allowed_viewers"] = nil
+				case "typed_nil":
+					item["allowed_viewers"] = []string(nil)
+				case "empty":
+					item["allowed_viewers"] = []string{}
+				case "named":
+					item["perspective_owner"], item["allowed_viewers"] = "Mira", []string{"Mira", "Rook"}
+				}
+				input := map[string]any{"role": "subjective_relationship", "candidates": []map[string]any{item}}
+				before := mustCompactJSON(input)
+				reason := "The earlier handover explains the box's location. Its contents are not recorded."
+				selection := &multiAgentSelection{Roles: []multiAgentRoleResult{{Role: "subjective_relationship", SelectionRound: 1, Calls: []multiAgentCall{{Round: 1, Input: input}}, Selection: multiAgentRecommendation{SelectedIDs: []string{"fact"}, Reasons: map[string]string{"fact": reason}, Unresolved: []string{"The box's contents have not been disclosed."}}}}}
+				notes := buildPrepareTurnPreprocessingNotes(selection, map[string]any{"priority_items": []map[string]any{item}}, nil)
+				text := stringFromMap(notes, "final_text")
+				if strings.Contains(text, "viewers: []") || strings.Contains(text, "viewers: null") || strings.Contains(text, "owner: ;") || strings.Contains(text, "viewers: not recorded") || strings.Contains(text, "owner: not recorded") {
+					t.Fatalf("unexplained empty scope reached the writer: %s", text)
+				}
+				if !strings.Contains(text, reason) {
+					t.Fatal("scope cleanup changed actual interpretation prose")
+				}
+				if !containsAll(text, "no named readers", "not evidence that nobody or everybody knows", "source classification", "scope-only") {
+					t.Fatal("writer lacks the distinction between source classification, character knowledge and uncertainty scope")
+				}
+				if audience == "named" {
+					if !containsAll(text, "owner: Mira", "viewers: [Mira | Rook]") {
+						t.Fatal("recorded readers were lost")
+					}
+				} else if strings.Contains(text, "owner:") || strings.Contains(text, "viewers:") {
+					t.Fatal("empty scope fields were retained or readers were inferred from a participant")
+				}
+				for _, raw := range mapFromAny(notes["source_catalog"]) {
+					scope := mapFromAny(raw)
+					actual, exists := scope["allowed_viewers"]
+					// Existing support projection omits untyped null, while retaining
+					// typed nil/empty slices. Readability must change neither behavior.
+					if exists != (audience != "missing" && audience != "null") || !reflect.DeepEqual(actual, item["allowed_viewers"]) || scope["perspective_owner"] != item["perspective_owner"] || scope["visibility"] != visibility {
+						t.Fatal("readable explanation rewrote diagnostic provenance")
+					}
+				}
+				wire := multiAgentModelInput(input, 1)
+				if !containsAll(wire, "no named readers", "not evidence that nobody or everybody knows", "source classification") {
+					t.Fatal("preprocessing model lacks empty-scope semantics")
+				}
+				group := multiAgentGroupedInput([]multiAgentCall{{ModelInput: wire}, {ModelInput: wire}}, []string{"subjective_relationship", "event_recent"}, defaultMultiAgentSettings())
+				if !containsAll(group, "no named readers", "not evidence that nobody or everybody knows", "source classification") {
+					t.Fatal("grouped request lost empty-scope semantics")
+				}
+				payload := buildPrepareTurnPayloadApplicationPlan("Open the box.", "", "Original evidence", "", true, true, 2000, 0, 0, nil, "disabled", notes)
+				if !strings.Contains(stringFromMap(payload, "auxiliary_text"), text) {
+					t.Fatal("final payload lost the readable scope contract")
+				}
+				if mustCompactJSON(input) != before {
+					t.Fatal("formatting changed source facts or scope")
+				}
+			})
+		}
+	}
+}
+
 func Test43CompactNoteCatalogPreservesExactScope(t *testing.T) {
 	selection := &multiAgentSelection{}
 	planItems := []map[string]any{}
@@ -336,13 +402,9 @@ func Test43CompactNoteCatalogPreservesExactScope(t *testing.T) {
 		if turn := intFromAny(row["source_turn"], 0); turn > 0 && !strings.Contains(line, fmt.Sprintf("turn: %d;", turn)) {
 			t.Fatal("source turn lost")
 		}
-		if viewers, exists := row["allowed_viewers"]; !exists {
+		if viewers := row["allowed_viewers"]; len(stringsFromAny(viewers)) == 0 {
 			if strings.Contains(line, "viewers:") {
-				t.Fatal("missing viewers were invented")
-			}
-		} else if viewers == nil {
-			if !strings.Contains(line, "viewers: null") {
-				t.Fatal("null viewers became public or empty")
+				t.Fatal("empty viewers were rendered")
 			}
 		} else if !strings.Contains(line, "viewers: ["+strings.Join(stringsFromAny(viewers), " | ")+"]") {
 			t.Fatal("allowed viewers changed")

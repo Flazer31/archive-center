@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -170,6 +171,51 @@ func TestCompleteTurnMemorySourceRevisionRejectsUnexposedLogicalTurn(t *testing.
 	)
 	if err == nil || err.Error() != "source_revision_logical_turn_not_exposed" {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestCompleteTurnMissingConfigCapturesOriginalRecoveryInput(t *testing.T) {
+	for _, budget := range []int{0, 4000} {
+		t.Run(fmt.Sprintf("budget_%d", budget), func(t *testing.T) {
+			base := &turnRecordingStore{}
+			recording := &completeTurnReprocessingStore{turnRecordingStore: base}
+			cfg := config.Default()
+			cfg.StoreMode = config.StoreModeMariaDBAuthority
+			srv := NewServer(cfg)
+			srv.Store, srv.StoreOpenError = recording, nil
+			oldClient := proxyHTTPClient
+			calls := 0
+			proxyHTTPClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				calls++
+				return nil, errors.New("provider must not be called without settings")
+			})}
+			defer func() { proxyHTTPClient = oldClient }()
+			body := completeTurnAnchoredAcceptanceTestRequest("deferred-config", 1, "Mina opens the box.", "Mina keeps the blue key.", 1000, "generation-1", "not_streaming", 0, 1, 2)
+			body.ClientMeta["critic_input_budget_observation"] = map[string]any{
+				"contract_version":           completeTurnCriticInputBudgetObservationContract,
+				"critic_reference_max_chars": budget, "max_input_context_chars": 64000,
+			}
+			raw, _ := json.Marshal(body)
+			rec := httptest.NewRecorder()
+			mux := http.NewServeMux()
+			srv.RegisterRoutes(mux)
+			mux.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/complete-turn", bytes.NewReader(raw)))
+			if rec.Code != http.StatusOK || len(recording.sources) != 1 || len(recording.jobs) != 1 || calls != 0 {
+				t.Fatalf("status=%d sources=%d jobs=%d calls=%d body=%s", rec.Code, len(recording.sources), len(recording.jobs), calls, rec.Body.String())
+			}
+			for revision := range recording.sources {
+				saved := base.savedCriticInputSnapshots[revision]
+				snapshot, _, err := decodeCompleteTurnCriticInputSnapshot(completeTurnCriticInputReplay{
+					SourceRevision: revision, SnapshotJSON: saved.JSON, SnapshotHash: saved.Hash, Required: true,
+				}, "deferred-config", 1, *body.UserInput, *body.AssistantContent)
+				if err != nil {
+					t.Fatalf("accepted turn cannot be replayed after settings sync: %v", err)
+				}
+				if snapshot.InputPolicy.ConfiguredChars != budget {
+					t.Fatalf("lost original budget: %+v", snapshot.InputPolicy)
+				}
+			}
+		})
 	}
 }
 

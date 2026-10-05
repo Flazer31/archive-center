@@ -379,8 +379,8 @@ func TestPrepareTurnDirectPairProtectedEventNeverBecomesActualMemory(t *testing.
 		t.Fatalf("protected current-pair memory bypassed into actual memory: %q", assembly.ActualMemoryText)
 	}
 	if strings.TrimSpace(assembly.ProtectedMemoryText) == "" ||
-		strings.Contains(assembly.ProtectedMemoryText, "RAW_PAIR_SECRET") {
-		t.Fatalf("protected pair memory was lost or exposed raw: %q", assembly.ProtectedMemoryText)
+		!containsAll(assembly.ProtectedMemoryText, "RAW_PAIR_SECRET", "known_by=베라", "not public character knowledge") {
+		t.Fatalf("protected pair memory lost author content or boundary: %q", assembly.ProtectedMemoryText)
 	}
 }
 

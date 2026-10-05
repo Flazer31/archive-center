@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"github.com/risulongmemory/archive-center-go/internal/config"
 	"github.com/risulongmemory/archive-center-go/internal/store"
+	"os"
 	"testing"
 )
 
@@ -125,7 +126,8 @@ func TestSessionStitchBodySettingsPreserveSourceAndRetry(t *testing.T) {
 		"old":     {CycleTrackingEnabled: true, SimulationSeed: "old-seed", Characters: []bodyCharacterConfig{{EntityID: "old-ID", CharacterName: "Mina", GestationDays: 300}}},
 		"current": {AutomaticPregnancyEnabled: true, SimulationSeed: "current-seed", Characters: []bodyCharacterConfig{{EntityID: "new-ID", CharacterName: "Rin", GestationDays: 400}}},
 	}}
-	if err := writeBodyTrackingSettings(original); err != nil {
+	path, _ := bodyTrackingSettingsPath()
+	if err := os.WriteFile(path, []byte(mustCompactJSON(original)), 0600); err != nil {
 		t.Fatal(err)
 	}
 	result := &store.SessionStitchResult{TargetSessionID: "combined", Segments: []store.SessionStitchSegment{{SessionID: "old"}, {SessionID: "current"}}, EntityIDMap: map[string]string{"old-ID": "target-old-ID", "new-ID": "target-new-ID"}}
@@ -137,8 +139,11 @@ func TestSessionStitchBodySettingsPreserveSourceAndRetry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	combined := got.Sessions["combined"]
-	if combined.CycleTrackingEnabled || !combined.AutomaticPregnancyEnabled || len(combined.Characters) != 2 || combined.Characters[0].EntityID != "target-old-ID" || combined.Characters[0].OriginEntityID != "old-ID" || combined.Characters[0].GestationDays != 300 || combined.Characters[1].GestationDays != 400 {
+	combined, err := server.loadBodyTrackingConfig("combined")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !combined.CycleTrackingEnabled || !combined.AutomaticPregnancyEnabled || len(combined.Characters) != 2 || combined.Characters[0].EntityID != "target-old-ID" || combined.Characters[0].OriginEntityID != "old-ID" || combined.Characters[0].GestationDays != 300 || combined.Characters[1].GestationDays != 400 {
 		t.Fatalf("settings lost: %+v", combined)
 	}
 	if got.Sessions["old"].Characters[0].EntityID != "old-ID" || got.Sessions["current"].Characters[0].EntityID != "new-ID" {

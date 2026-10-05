@@ -16,6 +16,7 @@
 
 # Go build cache and artifacts
 .gocache/
+.codex-gocache*/
 .runtime/
 .runtime-cache/
 .updates/

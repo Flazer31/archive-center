@@ -140,7 +140,7 @@ func buildCharacterPerspectivePacket(
 		// A secret category and an episodic recollection are collections, not
 		// single-valued state slots. Keep independent claims in those collections.
 		if stringFromMap(payload, "secret_kind") != "" || unit.Subtype == "subjective_memory" {
-			claimKey := extractionFirstNonEmpty(stringFromMap(payload, "secret_id"), normalizeArtifactDedupeText(claim))
+			claimKey := extractionFirstNonEmpty(stringFromMap(payload, "secret_id"), stringFromMap(payload, "artifact_id"), normalizeArtifactDedupeText(claim))
 			currentKey += "\x1f" + claimKey
 		}
 		candidatesByKey[currentKey] = append(candidatesByKey[currentKey], perspectiveCandidate{
@@ -194,8 +194,8 @@ func buildCharacterPerspectivePacket(
 
 	lines := []string{}
 	recollections := []prepareTurnPriorityFactSeed{}
+	protectedUnits := map[string]store.PreciseMemoryUnit{}
 	candidateStates := packet["candidate_states"].(map[string]any)
-	used := 0
 	for _, candidate := range current {
 		if candidate.state == "unknown" || candidate.state == "hidden" {
 			drop("not_known_by_current_holder")
@@ -218,7 +218,7 @@ func buildCharacterPerspectivePacket(
 			text := strings.TrimPrefix(line, "- ")
 			recollections = append(recollections, prepareTurnPriorityFactSeed{
 				Lane: "subjective_relationship", SourceTable: "precise_memory_units", Tier: "required",
-				Fact:        prepareTurnPriorityMemoryFact{Text: text},
+				Fact:        prepareTurnPriorityMemoryFact{Text: text, SourceSession: candidate.unit.ChatSessionID, ExplicitRefs: prepareTurnKnowledgeRefs(payload), KnowledgeBoundaries: prepareTurnOwnKnowledgeBoundary(payload)},
 				SourceRowID: candidate.unit.UnitID, SourceOccurrence: "precise-memory-unit:" + candidate.unit.UnitID,
 				SourceTurn: candidate.sourceTurn, Visibility: "owner_private",
 				PerspectiveOwner: holderID, AllowedViewers: []string{holderID},
@@ -228,19 +228,9 @@ func buildCharacterPerspectivePacket(
 			candidateStates[state] = intFromAny(candidateStates[state], 0) + 1
 			continue
 		}
-		lineChars := utf8.RuneCountInString(line)
-		separatorChars := 0
-		if len(lines) == 0 {
-			lineChars += utf8.RuneCountInString("[Character Perspective]\n")
-		} else {
-			separatorChars = 1
-		}
-		if used+separatorChars+lineChars > maxChars {
-			packet["truncated"] = true
-			drop("delivery_budget_exhausted")
-			continue
-		}
-		used += separatorChars + lineChars
+		// Keep whole protected candidates until the independent protected budget
+		// owner selects them. A main-memory cap cannot establish their delivery.
+		protectedUnits[line] = candidate.unit
 		lines = append(lines, line)
 		candidateStates[state] = intFromAny(candidateStates[state], 0) + 1
 	}
@@ -252,20 +242,131 @@ func buildCharacterPerspectivePacket(
 	packet["candidate_count"] = len(lines)
 	packet["candidate_chars"] = utf8.RuneCountInString(text)
 	packet["_character_perspective_fact_seeds"] = recollections
+	packet["_character_perspective_protected_units"] = protectedUnits
 	return packet, text
+}
+
+// The protected source card already carries the named knowledge boundary. Its
+// known projection is the same fact, while suspicion, misinformation and a
+// different source/claim remain independent perspective material.
+func characterPerspectiveKnownCoveredByProtectedSource(unit store.PreciseMemoryUnit, payload map[string]any, memories []store.Memory, perspective map[string]any) bool {
+	if unit.EpistemicMode != "known" || stringFromMap(payload, "secret_kind") == "" {
+		return false
+	}
+	claim := strings.Join(strings.Fields(stringFromMap(payload, "claim")), " ")
+	holder := extractionFirstNonEmpty(stringFromMap(payload, "knowledge_holder"), stringFromMap(perspective, "current_pov"))
+	turn := unit.SourceTurnEnd
+	if turn <= 0 {
+		turn = unit.SourceTurnStart
+	}
+	for _, memory := range memories {
+		if turn <= 0 || memory.TurnIndex != turn || memory.ChatSessionID != unit.ChatSessionID {
+			continue
+		}
+		parsed := parseJSONMap(memory.SummaryJSON)
+		if revision := stringFromMap(parsed, "source_revision"); revision != "" && unit.SourceRevision != "" && revision != unit.SourceRevision {
+			continue
+		}
+		for _, raw := range sliceFromAny(parsed["protected_secrets"]) {
+			secret := mapFromAny(raw)
+			body := extractionFirstNonEmpty(stringFromMap(secret, "summary"), stringFromMap(secret, "secret_summary"), stringFromMap(secret, "text"))
+			if claim != strings.Join(strings.Fields(body), " ") || !protectedSecretRequiresGuard(secret, "disclosure_policy") {
+				continue
+			}
+			if normalizeProtectedSecretToken(stringFromMap(secret, "secret_kind")) != normalizeProtectedSecretToken(stringFromMap(payload, "secret_kind")) {
+				continue
+			}
+			if comparableEntityKey(stringFromMap(secret, "owner")) != comparableEntityKey(stringFromMap(payload, "owner")) {
+				continue
+			}
+			subject := extractionFirstNonEmpty(firstStringFromAny(secret["subject"]), stringFromMap(secret, "owner"))
+			if comparableEntityKey(subject) != comparableEntityKey(stringFromMap(payload, "subject")) {
+				continue
+			}
+			secretID := extractionFirstNonEmpty(stringFromMap(secret, "secret_id"), stringFromMap(secret, "artifact_id"))
+			projectionID := extractionFirstNonEmpty(stringFromMap(payload, "secret_id"), stringFromMap(payload, "artifact_id"))
+			if projectionID != "" && secretID != projectionID {
+				continue
+			}
+			if prepareTurnRelationshipNameInList(holder, stringsFromAny(mapFromAny(secret["knowledge_scope"])["known_by"])) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// Attach identity to the already admitted/rendered representations, without a
+// second relevance pass or a delivery decision. CoverageKey retains the exact
+// protected fact, artifact and boundary from the existing grouping owner.
+func attachCharacterPerspectiveProtectedFactKeys(out *prepareTurnInjectionAssembly, selection prepareTurnMemoryLaneSelection, memories []store.Memory, trace map[string]any, units map[string]store.PreciseMemoryUnit, perspective map[string]any, prepared *prepareTurnRequestPreparation) {
+	if len(units) == 0 {
+		return
+	}
+	out.protectedFactKeys = map[string][]string{}
+	lines := stringsFromAny(trace["protected_lines"])
+	lineIndex := 0
+	renderedKeys := map[string]bool{}
+	for _, raw := range prepareTurnMemoryLineageSlice(trace["delivery_lineage_items"]) {
+		item := mapFromAny(raw)
+		key := stringFromMap(item, "protected_coverage_key")
+		if key == "" || !boolFromAny(item["delivered"]) {
+			continue
+		}
+		line := lines[lineIndex]
+		lineIndex++
+		out.protectedFactKeys[line] = append(out.protectedFactKeys[line], key)
+		renderedKeys[key] = true
+	}
+	groups, _ := buildPrepareTurnProtectedDeliveryGroupsPrepared(selection, prepared, memories...)
+	sources := map[string]store.Memory{}
+	for _, memory := range memories {
+		sources[fmt.Sprint(prepareTurnMemorySourceRowID(memory))] = memory
+	}
+	for line, unit := range units {
+		keys := map[string]bool{}
+		payload := prepared.sourceMap(unit.PayloadJSON)
+		for _, sourceGroups := range groups {
+			for _, group := range sourceGroups {
+				if !renderedKeys[group.CoverageKey] || group.Disclosure != nil || group.ProtectionField != "protected_secrets" {
+					continue
+				}
+				for _, id := range group.SourceRowIDs {
+					if memory, ok := sources[fmt.Sprint(id)]; ok {
+						memory.SummaryJSON = group.Memory.SummaryJSON
+						if characterPerspectiveKnownCoveredByProtectedSource(unit, payload, []store.Memory{memory}, perspective) {
+							keys[group.CoverageKey] = true
+						}
+					}
+				}
+			}
+		}
+		// An ambiguous projection must not merge distinct artifacts or scopes.
+		if len(keys) == 1 {
+			for key := range keys {
+				out.protectedFactKeys[line] = []string{key}
+			}
+		}
+	}
 }
 
 func finalizeCharacterPerspectivePacket(
 	packet map[string]any,
 	candidateText string,
 	finalMemoryText string,
+	protectedDuplicates ...map[string]bool,
 ) (map[string]any, string) {
 	delete(packet, "_character_perspective_fact_seeds")
+	delete(packet, "_character_perspective_protected_units")
 	if len(packet) == 0 || strings.TrimSpace(candidateText) == "" {
 		return packet, ""
 	}
 	delivered := []string{}
 	selectedStates := map[string]any{}
+	if len(protectedDuplicates) > 0 {
+		dropped := mapFromAny(packet["dropped_counts"])
+		dropped["same_source_protected_secret"] = len(protectedDuplicates[0])
+	}
 	for _, line := range strings.Split(candidateText, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line == "[Character Perspective]" {
