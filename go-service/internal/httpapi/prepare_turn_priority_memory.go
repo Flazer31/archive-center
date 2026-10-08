@@ -1747,6 +1747,7 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 	}
 	bySource := map[string]*prepareTurnPriorityTurnSummaryCandidate{}
 	linkedBySource := map[string][]prepareTurnPriorityMemoryCandidate{}
+	boundarySeen := map[string]map[string]bool{}
 	order := []string{}
 	for _, candidate := range resolved {
 		if candidate.SourceTable != "memories" || strings.TrimSpace(candidate.ParentLineText) == "" {
@@ -1774,15 +1775,18 @@ func prepareTurnBuildPriorityTurnSummaries(resolved []prepareTurnPriorityMemoryC
 			order = append(order, key)
 		}
 		summary.MemberFactIDs = append(summary.MemberFactIDs, candidate.CanonicalFactID)
-		for _, boundary := range candidate.KnowledgeBoundaries {
-			exists := false
+		// Encode each boundary once; a summary keeps the first of equal records.
+		seen := boundarySeen[key]
+		if seen == nil {
+			seen = map[string]bool{}
 			for _, previous := range summary.KnowledgeBoundaries {
-				if mustCompactJSON(previous) == mustCompactJSON(boundary) {
-					exists = true
-					break
-				}
+				seen[mustCompactJSON(previous)] = true
 			}
-			if !exists {
+			boundarySeen[key] = seen
+		}
+		for _, boundary := range candidate.KnowledgeBoundaries {
+			if encoded := mustCompactJSON(boundary); !seen[encoded] {
+				seen[encoded] = true
 				summary.KnowledgeBoundaries = append(summary.KnowledgeBoundaries, boundary)
 			}
 		}
