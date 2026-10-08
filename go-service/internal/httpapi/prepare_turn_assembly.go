@@ -75,6 +75,7 @@ type prepareTurnAssemblyInput struct {
 	Documents                    []map[string]any
 	VectorTrace, LanguageContext map[string]any
 	ProtectedSecretBudgetChars   int
+	knowledgeIndex               *prepareTurnKnowledgeIndexCache
 	BudgetMode                   string
 	Budgets                      map[string]int
 	Perspective                  *prepareTurnAssemblyPerspective
@@ -161,6 +162,10 @@ func buildPrepareTurnAssembly(input prepareTurnAssemblyInput, assembleDelivery b
 	defer input.Measurement.start("assembly.initial_candidates").end()
 	input.Measurement.add("input.memories", len(input.Memories))
 	input.Measurement.add("input.chat_rows", len(input.ChatLogs))
+	if input.knowledgeIndex == nil {
+		// Every boundary carry in this request reads the same immutable sources.
+		input.knowledgeIndex = &prepareTurnKnowledgeIndexCache{}
+	}
 	memories, kgTriples, evidence, chatLogs := input.Memories, input.Triples, input.Evidence, input.ChatLogs
 	storylines, worldRules, charStates := input.Storylines, input.WorldRules, input.CharacterStates
 	pendingThreads, canonicalLayers, episodeSums := input.PendingThreads, input.CanonicalLayers, input.EpisodeSummaries
