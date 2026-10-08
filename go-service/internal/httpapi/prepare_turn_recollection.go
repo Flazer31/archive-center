@@ -1230,11 +1230,17 @@ func prepareTurnAnyOwnerTokenMatches(tokens []string, text string) bool {
 }
 
 func normalizePrepareTurnEntityNeedle(text string) string {
-	text = strings.ToLower(strings.TrimSpace(text))
+	return prepareTurnEntityNeedleChars(strings.TrimSpace(text))
+}
+
+// The needle characters of already trimmed text.
+func prepareTurnEntityNeedleChars(text string) string {
+	text = strings.ToLower(text)
 	if text == "" {
 		return ""
 	}
 	var b strings.Builder
+	b.Grow(len(text)) // Size hint only; kept runes rarely exceed the source bytes.
 	for _, r := range text {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r > 127 {
 			b.WriteRune(r)

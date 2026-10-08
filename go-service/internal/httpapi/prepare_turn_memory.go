@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -1400,11 +1401,43 @@ func prepareTurnOwnKnowledgeBoundary(item map[string]any, classified ...bool) []
 	return append(boundaries, boundary)
 }
 
-func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, input prepareTurnAssemblyInput) {
-	if out == nil {
-		return
+// One linked scope record. Its encoding is fixed once indexed, so request-wide
+// reuse never re-marshals the same boundary for each alias, pass or seed.
+type prepareTurnKnowledgeBoundaryRecord struct {
+	value   map[string]any
+	encoded string
+	partKey string
+}
+
+func newPrepareTurnKnowledgeBoundaryRecord(boundary map[string]any) *prepareTurnKnowledgeBoundaryRecord {
+	encoded := mustCompactJSON(boundary)
+	sum := sha256.Sum256([]byte(encoded))
+	return &prepareTurnKnowledgeBoundaryRecord{value: boundary, encoded: encoded, partKey: fmt.Sprintf("@knowledge/%x", sum[:8])}
+}
+
+// The linked-scope graph depends only on immutable request sources. It is read
+// by every carry in one request and never by another request.
+type prepareTurnKnowledgeIndex struct {
+	byRef    map[string][]*prepareTurnKnowledgeBoundaryRecord
+	sessions map[string]string
+	payloads map[string]map[string]any
+}
+
+type prepareTurnKnowledgeIndexCache struct {
+	once  sync.Once
+	index *prepareTurnKnowledgeIndex
+}
+
+func prepareTurnKnowledgeIndexFor(input prepareTurnAssemblyInput) *prepareTurnKnowledgeIndex {
+	if input.knowledgeIndex == nil {
+		return buildPrepareTurnKnowledgeIndex(input)
 	}
-	byRef := map[string][]map[string]any{}
+	input.knowledgeIndex.once.Do(func() { input.knowledgeIndex.index = buildPrepareTurnKnowledgeIndex(input) })
+	return input.knowledgeIndex.index
+}
+
+func buildPrepareTurnKnowledgeIndex(input prepareTurnAssemblyInput) *prepareTurnKnowledgeIndex {
+	byRef := map[string][]*prepareTurnKnowledgeBoundaryRecord{}
 	sessions := map[string]string{}
 	payloads := map[string]map[string]any{}
 	aliases := map[string][]string{}
@@ -1412,10 +1445,10 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 	originalBindings := []struct {
 		origin, session string
 		refs            []string
-		boundaries      []map[string]any
+		boundaries      []*prepareTurnKnowledgeBoundaryRecord
 	}{}
 	indexed := map[string]map[string]bool{}
-	index := func(session string, refs []string, boundaries []map[string]any) bool {
+	index := func(session string, refs []string, boundaries []*prepareTurnKnowledgeBoundaryRecord) bool {
 		changed := false
 		for _, ref := range refs {
 			key := session + "\x1f" + ref
@@ -1423,9 +1456,8 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 				indexed[key] = map[string]bool{}
 			}
 			for _, boundary := range boundaries {
-				encoded := mustCompactJSON(boundary)
-				if !indexed[key][encoded] {
-					indexed[key][encoded] = true
+				if !indexed[key][boundary.encoded] {
+					indexed[key][boundary.encoded] = true
 					byRef[key] = append(byRef[key], boundary)
 					changed = true
 				}
@@ -1433,7 +1465,7 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 		}
 		return changed
 	}
-	addNode := func(key, session string, payload map[string]any, boundaries []map[string]any) {
+	addNode := func(key, session string, payload map[string]any, boundaries []map[string]any) []*prepareTurnKnowledgeBoundaryRecord {
 		sessions[key] = session
 		payloads[key] = payload
 		// Only this record's identifiers export acquired scope. Source references
@@ -1449,12 +1481,15 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 				declaredFacts[session+"\x1f"+ref] = true
 			}
 		}
+		records := make([]*prepareTurnKnowledgeBoundaryRecord, 0, len(boundaries))
 		for _, boundary := range boundaries {
 			if stringFromMap(boundary, "protected_fact_ref") == "" {
 				boundary["protected_fact_ref"] = key
 			}
+			records = append(records, newPrepareTurnKnowledgeBoundaryRecord(boundary))
 		}
-		index(session, aliases[key], boundaries)
+		index(session, aliases[key], records)
+		return records
 	}
 	addSource := func(table string, id int64, session string, payload map[string]any) {
 		key := prepareTurnPriorityStoredOccurrence(table, id, "")
@@ -1499,15 +1534,15 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 						boundary["fact_type"] = field
 					}
 				}
-				addNode(ref, m.ChatSessionID, item, boundaries)
+				records := addNode(ref, m.ChatSessionID, item, boundaries)
 				originalBindings = append(originalBindings, struct {
 					origin, session string
 					refs            []string
-					boundaries      []map[string]any
-				}{ref, m.ChatSessionID, prepareTurnKnowledgeRefs(item), boundaries})
+					boundaries      []*prepareTurnKnowledgeBoundaryRecord
+				}{ref, m.ChatSessionID, prepareTurnKnowledgeRefs(item), records})
 				// An explicit source_memory_id can read original scoped facts. Never
 				// export a child's acquired scope through the aggregate memory row.
-				index(m.ChatSessionID, []string{prepareTurnPriorityStoredOccurrence("memories", m.ID, "")}, boundaries)
+				index(m.ChatSessionID, []string{prepareTurnPriorityStoredOccurrence("memories", m.ID, "")}, records)
 			}
 		}
 	}
@@ -1600,20 +1635,47 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 		recordKeys = append(recordKeys, key)
 	}
 	sort.Strings(recordKeys)
+	// Payloads are not changed by indexing; read each record's links once.
+	recordRefs := make(map[string][]string, len(recordKeys))
+	for _, occurrence := range recordKeys {
+		recordRefs[occurrence] = prepareTurnKnowledgeRefs(payloads[occurrence])
+	}
 	for pass := 0; pass < len(payloads); pass++ {
 		changed := false
 		for _, occurrence := range recordKeys {
-			payload := payloads[occurrence]
 			if len(aliases[occurrence]) == 0 {
 				continue
 			}
-			for _, ref := range prepareTurnKnowledgeRefs(payload) {
+			for _, ref := range recordRefs[occurrence] {
 				changed = index(sessions[occurrence], aliases[occurrence], byRef[sessions[occurrence]+"\x1f"+ref]) || changed
 			}
 		}
 		if !changed {
 			break
 		}
+	}
+	return &prepareTurnKnowledgeIndex{byRef: byRef, sessions: sessions, payloads: payloads}
+}
+
+func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, input prepareTurnAssemblyInput) {
+	if out == nil {
+		return
+	}
+	if len(out.PriorityFactSeeds) == 0 {
+		return
+	}
+	graph := prepareTurnKnowledgeIndexFor(input)
+	byRef, sessions, payloads := graph.byRef, graph.sessions, graph.payloads
+	// The shared graph is request-wide. Each carry receives its own copies, so a
+	// later reader of one result never changes another carry's scope records.
+	copies := map[*prepareTurnKnowledgeBoundaryRecord]map[string]any{}
+	copyOf := func(record *prepareTurnKnowledgeBoundaryRecord) map[string]any {
+		if value, ok := copies[record]; ok {
+			return value
+		}
+		value, _ := prepareTurnCloneKnowledgeValue(record.value).(map[string]any)
+		copies[record] = value
+		return value
 	}
 	for i := range out.PriorityFactSeeds {
 		seed := &out.PriorityFactSeeds[i]
@@ -1640,11 +1702,15 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 		}
 
 		refs = appendUniqueStringValues(refs, prepareTurnKnowledgeRefs(payload)...)
-		boundaries := append([]map[string]any{}, fact.KnowledgeBoundaries...)
-		for _, ref := range refs {
-			boundaries = append(boundaries, byRef[session+"\x1f"+ref]...)
+		boundaries := make([]*prepareTurnKnowledgeBoundaryRecord, 0, len(fact.KnowledgeBoundaries))
+		for _, b := range fact.KnowledgeBoundaries {
+			boundaries = append(boundaries, newPrepareTurnKnowledgeBoundaryRecord(b))
 		}
-		if len(boundaries) == 0 {
+		linked := 0
+		for _, ref := range refs {
+			linked += len(byRef[session+"\x1f"+ref])
+		}
+		if len(boundaries) == 0 && linked == 0 {
 			continue
 		}
 		// Multiple linked facts retain separately attributed scope records. They do
@@ -1661,23 +1727,67 @@ func prepareTurnCarryKnowledgeBoundaries(out *prepareTurnInjectionAssembly, inpu
 		}
 		unique := []map[string]any{}
 		boundarySeen := map[string]bool{}
-		for _, b := range boundaries {
-			encoded := mustCompactJSON(b)
-			if boundarySeen[encoded] {
-				continue
+		accept := func(record *prepareTurnKnowledgeBoundaryRecord, value func() map[string]any) {
+			if boundarySeen[record.encoded] {
+				return
 			}
-			boundarySeen[encoded] = true
-			unique = append(unique, b)
-			sum := sha256.Sum256([]byte(encoded))
-			key := fmt.Sprintf("@knowledge/%x", sum[:8])
-			if !seen[key] {
-				reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: key, Label: "linked fact knowledge boundary", Value: encoded + "; " + prepareTurnKnowledgeBoundaryReading})
-				seen[key] = true
+			boundarySeen[record.encoded] = true
+			unique = append(unique, value())
+			if !seen[record.partKey] {
+				reading.Parts = append(reading.Parts, prepareTurnMemoryPart{Key: record.partKey, Label: "linked fact knowledge boundary", Value: record.encoded + "; " + prepareTurnKnowledgeBoundaryReading})
+				seen[record.partKey] = true
+			}
+		}
+		for _, record := range boundaries {
+			accept(record, func() map[string]any { return record.value })
+		}
+		for _, ref := range refs {
+			for _, record := range byRef[session+"\x1f"+ref] {
+				accept(record, func() map[string]any { return copyOf(record) })
 			}
 		}
 		fact.KnowledgeBoundaries = unique
 		fact.Reading = &reading
 	}
+}
+
+func prepareTurnCloneKnowledgeValue(value any) any {
+	// nil and empty values encode differently and stay distinct.
+	switch v := value.(type) {
+	case map[string]any:
+		if v == nil {
+			return v
+		}
+		out := make(map[string]any, len(v))
+		for key, item := range v {
+			out[key] = prepareTurnCloneKnowledgeValue(item)
+		}
+		return out
+	case []any:
+		if v == nil {
+			return v
+		}
+		out := make([]any, len(v))
+		for i, item := range v {
+			out[i] = prepareTurnCloneKnowledgeValue(item)
+		}
+		return out
+	case []string:
+		if v == nil {
+			return v
+		}
+		return append(make([]string, 0, len(v)), v...)
+	case []map[string]any:
+		if v == nil {
+			return v
+		}
+		out := make([]map[string]any, len(v))
+		for i, item := range v {
+			out[i], _ = prepareTurnCloneKnowledgeValue(item).(map[string]any)
+		}
+		return out
+	}
+	return value
 }
 
 func prepareTurnCarryDirectKnowledgeLine(line string, ev store.DirectEvidence, input prepareTurnAssemblyInput) string {

@@ -4,7 +4,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"math"
+	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -26,6 +28,10 @@ type prepareTurnRequestPreparation struct {
 	guards        map[prepareTurnGuardKey]prepareTurnProtectedMemoryGuardResult
 	lexical       map[string]func(string) float64
 	lexicalTexts  map[string]prepareTurnPriorityLexicalText
+	partTerms     map[string][]string
+	partNeedles   map[string]prepareTurnNeedleSegment
+	termForms     map[string][]prepareTurnPriorityLexicalTerm
+	partDigests   map[prepareTurnPartDigestKey][32]byte
 	readingForms  map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm
 	readingGroups map[prepareTurnMemoryGroupKey]string
 	matches       map[string]func(store.Memory) prepareTurnRecallEvidence
@@ -45,6 +51,9 @@ func newPrepareTurnRequestPreparation(common *prepareTurnAssemblyCommon) *prepar
 		guards:      map[prepareTurnGuardKey]prepareTurnProtectedMemoryGuardResult{},
 		lexical:     map[string]func(string) float64{}, matches: map[string]func(store.Memory) prepareTurnRecallEvidence{},
 		lexicalTexts: map[string]prepareTurnPriorityLexicalText{},
+		partTerms:    map[string][]string{}, partNeedles: map[string]prepareTurnNeedleSegment{},
+		termForms:    map[string][]prepareTurnPriorityLexicalTerm{},
+		partDigests:  map[prepareTurnPartDigestKey][32]byte{},
 		readingForms: map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm{}, readingGroups: map[prepareTurnMemoryGroupKey]string{},
 		similarities: map[string]map[store.Memory]float64{},
 	}
@@ -97,6 +106,14 @@ type prepareTurnSourceTemplate struct {
 }
 
 func prepareTurnSourceSeedKey(seed prepareTurnPriorityFactSeed, query string) prepareTurnSourceTemplateKey {
+	return prepareTurnSourceSeedKeyWith(seed, query, seed.Fact.Reading.sourceFingerprint())
+}
+
+func (p *prepareTurnRequestPreparation) sourceSeedKey(seed prepareTurnPriorityFactSeed, query string) prepareTurnSourceTemplateKey {
+	return prepareTurnSourceSeedKeyWith(seed, query, p.readingFingerprint(seed.Fact.Reading))
+}
+
+func prepareTurnSourceSeedKeyWith(seed prepareTurnPriorityFactSeed, query string, readingFingerprint [32]byte) prepareTurnSourceTemplateKey {
 	// Query discoveries are observations on the source, not its identity.
 	seed.SourceSelectionScore = 0
 	seed.SourceSelectionScoreObserved, seed.SourceSelectionScoreIsVector = false, false
@@ -104,7 +121,7 @@ func prepareTurnSourceSeedKey(seed prepareTurnPriorityFactSeed, query string) pr
 	seed.SemanticSimilarity, seed.SemanticSimilarityObserved = 0, false
 	seed.SemanticUnitID, seed.SemanticSimilaritySource = "", ""
 	encoded, _ := json.Marshal(seed)
-	return prepareTurnSourceTemplateKey{sha256.Sum256(encoded), query, seed.Fact.Reading.sourceFingerprint()}
+	return prepareTurnSourceTemplateKey{sha256.Sum256(encoded), query, readingFingerprint}
 }
 
 // Callers that edit a payload must copy its map first (canonical world-state
@@ -195,6 +212,136 @@ func (p *prepareTurnRequestPreparation) recallMatcher(query string) func(store.M
 	}
 	p.matches[query] = fn
 	return fn
+}
+
+// Readings are their parts joined by "\n", and many readings share the same
+// long parts. Recall fields never cross that separator, so the analysis of the
+// joined text is composed from cached per-part fields using the same first-seen
+// order as prepareTurnRecallTerms, and the needle from per-part needle
+// characters with the whole text's surrounding white space removed. The result
+// equals prepareTurnPriorityAnalyzeText(joined); later lookups reuse it.
+func (p *prepareTurnRequestPreparation) primeJoinedLexicalText(joined string, parts []string) {
+	if p == nil {
+		return
+	}
+	if _, ok := p.lexicalTexts[joined]; ok {
+		return
+	}
+	defer p.measurement().start("assembly.tokenize").end()
+	seen := map[string]bool{}
+	terms := []prepareTurnPriorityLexicalTerm{}
+	for _, part := range parts {
+		fields, ok := p.partTerms[part]
+		if !ok {
+			fields = []string{}
+			distinct := map[string]bool{}
+			// A repeated field cannot add a form: its own forms were added first.
+			for _, field := range strings.FieldsFunc(strings.ToLower(part), prepareTurnRecallTermBreak) {
+				if !distinct[field] {
+					distinct[field] = true
+					fields = append(fields, field)
+				}
+			}
+			p.partTerms[part] = fields
+		}
+		for _, field := range fields {
+			if seen[field] {
+				continue
+			}
+			forms, ok := p.termForms[field]
+			if !ok {
+				for _, form := range prepareTurnRecallTermForms(field) {
+					forms = append(forms, prepareTurnPriorityLexicalTermOf(form))
+				}
+				p.termForms[field] = forms
+			}
+			for _, form := range forms {
+				if !seen[form.value] {
+					seen[form.value] = true
+					terms = append(terms, form)
+				}
+			}
+		}
+	}
+	first, last := -1, -1
+	for i, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	// The needle stays segmented: middle parts are shared request segments and
+	// only the trimmed first and last parts are this reading's own text.
+	analyzed := prepareTurnPriorityLexicalText{terms: terms}
+	if first >= 0 {
+		analyzed.needleSegments = make([]prepareTurnNeedleSegment, 0, last-first+1)
+		for i := first; i <= last; i++ {
+			part := parts[i]
+			if i != first && i != last {
+				segment, ok := p.partNeedles[part]
+				if !ok {
+					segment = prepareTurnNeedleSegment{text: prepareTurnEntityNeedleChars(part), id: int32(len(p.partNeedles))}
+					p.partNeedles[part] = segment
+				}
+				analyzed.needleSegments = append(analyzed.needleSegments, segment)
+				continue
+			}
+			if i == first {
+				part = strings.TrimLeftFunc(part, unicode.IsSpace)
+			}
+			if i == last {
+				part = strings.TrimRightFunc(part, unicode.IsSpace)
+			}
+			analyzed.needleSegments = append(analyzed.needleSegments, prepareTurnNeedleSegment{text: prepareTurnEntityNeedleChars(part), id: -1})
+		}
+	}
+	p.lexicalTexts[joined] = analyzed
+}
+
+// Same value as sourceFingerprint; digests of parts shared by many readings are
+// computed once per request. Without a preparation it hashes directly.
+func (p *prepareTurnRequestPreparation) readingFingerprint(c *prepareTurnMemoryContext) [32]byte {
+	if p == nil {
+		return c.sourceFingerprint()
+	}
+	return c.fingerprintWith(p.partDigest)
+}
+
+func (p *prepareTurnRequestPreparation) partDigest(part prepareTurnMemoryPart) [32]byte {
+	key := prepareTurnPartDigestKey{part.Key, part.Label, part.Value, part.DeliveryLabel, part.ReferenceOnly, part.FactTexts == nil, ""}
+	if len(part.FactTexts) > 0 {
+		var facts strings.Builder
+		for _, text := range part.FactTexts {
+			facts.WriteString(strconv.Itoa(len(text)))
+			facts.WriteByte(':')
+			facts.WriteString(text)
+		}
+		key.facts = facts.String()
+	}
+	digest, ok := p.partDigests[key]
+	if !ok {
+		digest = prepareTurnMemoryPartDigest(part)
+		p.partDigests[key] = digest
+	}
+	return digest
+}
+
+// Distinct parts give distinct keys: facts are length-prefixed and nil and
+// empty fact lists are kept apart.
+type prepareTurnPartDigestKey struct {
+	key, label, value, deliveryLabel string
+	referenceOnly, factsNil          bool
+	facts                            string
+}
+
+// nil when the request has no preparation; callers then analyze text directly.
+func prepareTurnPreparationLexicalText(p *prepareTurnRequestPreparation) func(string) prepareTurnPriorityLexicalText {
+	if p == nil {
+		return nil
+	}
+	return p.lexicalText
 }
 
 func (p *prepareTurnRequestPreparation) lexicalText(text string) prepareTurnPriorityLexicalText {
