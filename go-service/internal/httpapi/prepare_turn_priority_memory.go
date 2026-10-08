@@ -1527,17 +1527,25 @@ func prepareTurnPrioritySurfaceMatches(query, surface string) bool {
 }
 
 func prepareTurnPriorityStructuredBias(query string, fact prepareTurnPriorityMemoryFact) (float64, float64, float64, float64) {
+	return prepareTurnPriorityStructuredBiasMatching(fact, func(surface string) bool {
+		return prepareTurnPrioritySurfaceMatches(query, surface)
+	})
+}
+
+// matches reports prepareTurnPrioritySurfaceMatches(query, surface) for the
+// caller's query; a caller scoring many facts may memoize it per surface.
+func prepareTurnPriorityStructuredBiasMatching(fact prepareTurnPriorityMemoryFact, matches func(string) bool) (float64, float64, float64, float64) {
 	speakerBias := 0.0
 	locationBias := 0.0
 	storylineBias := 0.0
 	speaker := strings.TrimSpace(extractionFirstNonEmpty(fact.SpeakerSurface, fact.EntitySurface))
-	if prepareTurnPrioritySurfaceMatches(query, speaker) {
+	if matches(speaker) {
 		speakerBias = 0.04
 	}
-	if prepareTurnPrioritySurfaceMatches(query, fact.LocationSurface) {
+	if matches(fact.LocationSurface) {
 		locationBias = 0.05
 	}
-	if prepareTurnPrioritySurfaceMatches(query, fact.StorylineSurface) {
+	if matches(fact.StorylineSurface) {
 		storylineBias = 0.06
 	}
 	total := speakerBias + locationBias + storylineBias
@@ -1960,6 +1968,17 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 	candidates := []prepareTurnPriorityMemoryCandidate{}
 	identityMetadata := []prepareTurnPriorityIdentityMetadata{}
 	seededParentKeys := map[string]bool{}
+	// Few distinct speaker/location/storyline surfaces recur across facts.
+	surfaceMatches := map[[2]string]bool{}
+	matchSurface := func(surface string) bool {
+		key := [2]string{query, surface}
+		matched, ok := surfaceMatches[key]
+		if !ok {
+			matched = prepareTurnPrioritySurfaceMatches(query, surface)
+			surfaceMatches[key] = matched
+		}
+		return matched
+	}
 	prepareSource := func(seed prepareTurnPriorityFactSeed) prepareTurnSourceTemplate {
 		fact := seed.Fact
 		observationTurn := seed.SourceTurn
@@ -1983,7 +2002,7 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 			importance = seed.Importance
 			importanceSource = "stored_source_value"
 		}
-		speakerBias, locationBias, storylineBias, structuredBias := prepareTurnPriorityStructuredBias(query, fact)
+		speakerBias, locationBias, storylineBias, structuredBias := prepareTurnPriorityStructuredBiasMatching(fact, matchSurface)
 		identity, entityIdentityObserved := prepareTurnPriorityCanonicalEntityIdentity(fact, out.PriorityEntityAliases)
 		if identity == "" {
 			identity = collapseTextKey(fact.Text)

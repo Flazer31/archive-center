@@ -287,6 +287,19 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 	}
 	groups := map[prepareTurnMemoryGroupKey]string{}
 	forms := map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm{}
+	// Shared state parts recur across thousands of readings. Their reading and
+	// delivery texts depend only on the part, so each is rendered once.
+	type partTextKey struct{ label, value string }
+	partTexts := map[partTextKey]string{}
+	type partDisplay struct {
+		text    string
+		display bool
+	}
+	type partDisplayKey struct {
+		key, label, value, deliveryLabel string
+		referenceOnly                    bool
+	}
+	partDisplays := map[partDisplayKey]partDisplay{}
 	if preparation != nil {
 		groups, forms = preparation.readingGroups, preparation.readingForms
 	}
@@ -348,19 +361,29 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 				if p.Label == "source_session_id" {
 					continue
 				}
-				text := p.Value
-				switch p.Label {
-				case "source-relative time (last confirmed clock; read only)", "state time (read only)":
-					text = storyTimePromptReading(parseJSONMap(p.Value))
-				case "schedule reading (read only)":
-					text = storyTimePromptSchedule(parseJSONMap(p.Value))
-				default:
-					if p.Label != "" {
-						text = p.Label + ": " + text
+				text, ok := partTexts[partTextKey{p.Label, p.Value}]
+				if !ok {
+					text = p.Value
+					switch p.Label {
+					case "source-relative time (last confirmed clock; read only)", "state time (read only)":
+						text = storyTimePromptReading(parseJSONMap(p.Value))
+					case "schedule reading (read only)":
+						text = storyTimePromptSchedule(parseJSONMap(p.Value))
+					default:
+						if p.Label != "" {
+							text = p.Label + ": " + text
+						}
 					}
+					partTexts[partTextKey{p.Label, p.Value}] = text
 				}
 				part := prepareTurnMemoryFormPart{Key: p.Key, Text: text, SharedKey: sharedPrefix + p.Key}
-				delivery, display := prepareTurnMemoryPartDisplay(p)
+				displayKey := partDisplayKey{p.Key, p.Label, p.Value, p.DeliveryLabel, p.ReferenceOnly}
+				shown, ok := partDisplays[displayKey]
+				if !ok {
+					shown.text, shown.display = prepareTurnMemoryPartDisplay(p)
+					partDisplays[displayKey] = shown
+				}
+				delivery, display := shown.text, shown.display
 				if !display {
 					part.DeliveryText = &delivery
 				} else if delivery != p.Value || p.DeliveryLabel != "" {
@@ -611,6 +634,9 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 	// Each matched fact gets one private reading copy in this pass. Later states
 	// append to that copy instead of re-copying every earlier part per state.
 	owned := map[int]*prepareTurnMemoryContext{}
+	// A fact's entity key does not depend on the state; compute it once.
+	factEntityKeys := make([]string, len(out.PriorityFactSeeds))
+	factEntityKeyDone := make([]bool, len(out.PriorityFactSeeds))
 	for _, view := range narrativeCurrentStateViews(values) {
 		switch view.Scope {
 		case "belief", "rumor", "secret":
@@ -620,6 +646,8 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 			continue // Commitments retain their explicit lifecycle-key owner.
 		}
 		subjectKey := prepareTurnPriorityEntityKey(view.Subject, out.PriorityEntityAliases)
+		// Whether a source token names this subject depends only on the token.
+		tokenMatches := map[string]bool{}
 		subjectWords := strings.FieldsFunc(strings.ToLower(view.Subject), wordBreak)
 		subjectPhrase := " " + strings.Join(subjectWords, " ") + " "
 		origin, evidence := prepareTurnCurrentStateReadingOrigin(view.Value)
@@ -650,12 +678,21 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 				continue // Field-linked current readings already own these projections.
 			}
 			fact := &out.PriorityFactSeeds[i].Fact
-			mentioned := subjectKey != "" && prepareTurnPriorityEntityKey(fact.EntitySurface, out.PriorityEntityAliases) == subjectKey
+			if subjectKey != "" && !factEntityKeyDone[i] {
+				factEntityKeys[i], factEntityKeyDone[i] = prepareTurnPriorityEntityKey(fact.EntitySurface, out.PriorityEntityAliases), true
+			}
+			mentioned := subjectKey != "" && factEntityKeys[i] == subjectKey
 			// Whole source tokens preserve Latin name boundaries and the existing
 			// Korean inflection handling. Similar spelling never creates an alias.
 			for _, token := range sourceTerms[i] {
-				if strings.EqualFold(token, view.Subject) || prepareTurnPriorityInflectedNonASCIIMatch(token, view.Subject) {
+				matched, known := tokenMatches[token]
+				if !known {
+					matched = strings.EqualFold(token, view.Subject) || prepareTurnPriorityInflectedNonASCIIMatch(token, view.Subject)
+					tokenMatches[token] = matched
+				}
+				if matched {
 					mentioned = true
+					break
 				}
 			}
 			if len(subjectWords) > 1 && strings.Contains(sourcePhrases[i], subjectPhrase) {
