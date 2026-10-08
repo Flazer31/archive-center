@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -38,10 +39,72 @@ func (c *prepareTurnMemoryContext) sourceFingerprint() [32]byte {
 		return [32]byte{}
 	}
 	if c.fingerprint == ([32]byte{}) {
-		b, _ := json.Marshal(c)
-		c.fingerprint = sha256.Sum256(b)
+		c.fingerprint = c.encodedFingerprint()
 	}
 	return c.fingerprint
+}
+
+// The fingerprint is only compared for equality. Two readings get the same
+// value exactly when their JSON encodings are equal: every exported field is
+// hashed length-prefixed, invalid UTF-8 bytes are replaced one by one as JSON
+// does, and nil and empty slices stay distinct (null versus []). This avoids
+// marshalling readings that carry thousands of linked parts. A new exported
+// field on either struct must be added here.
+func (c *prepareTurnMemoryContext) encodedFingerprint() [32]byte {
+	h := sha256.New()
+	var scratch [binary.MaxVarintLen64]byte
+	writeLen := func(n int) {
+		h.Write(scratch[:binary.PutUvarint(scratch[:], uint64(n))])
+	}
+	writeString := func(s string) {
+		if utf8.ValidString(s) {
+			writeLen(len(s))
+			h.Write([]byte(s))
+			return
+		}
+		var b strings.Builder
+		for i := 0; i < len(s); {
+			r, size := utf8.DecodeRuneInString(s[i:])
+			if r == utf8.RuneError && size == 1 {
+				b.WriteRune(utf8.RuneError)
+			} else {
+				b.WriteString(s[i : i+size])
+			}
+			i += size
+		}
+		writeLen(b.Len())
+		h.Write([]byte(b.String()))
+	}
+	writeSliceHeader := func(isNil bool, n int) {
+		if isNil {
+			h.Write([]byte{0})
+			return
+		}
+		h.Write([]byte{1})
+		writeLen(n)
+	}
+	writeString(c.Path)
+	writeString(c.Label)
+	writeString(c.DisplayPath)
+	writeSliceHeader(c.Parts == nil, len(c.Parts))
+	for _, part := range c.Parts {
+		writeString(part.Key)
+		writeString(part.Label)
+		writeString(part.Value)
+		writeString(part.DeliveryLabel)
+		if part.ReferenceOnly {
+			h.Write([]byte{1})
+		} else {
+			h.Write([]byte{0})
+		}
+		writeSliceHeader(part.FactTexts == nil, len(part.FactTexts))
+		for _, text := range part.FactTexts {
+			writeString(text)
+		}
+	}
+	var out [32]byte
+	h.Sum(out[:0])
+	return out
 }
 
 type prepareTurnMemoryFormPart struct {
