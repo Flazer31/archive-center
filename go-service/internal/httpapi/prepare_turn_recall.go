@@ -1190,13 +1190,25 @@ func prepareTurnMemoryRecallMatcher(query string) func(prepareTurnRecallMemory) 
 	query = strings.TrimSpace(query)
 	phrases := prepareTurnRecallPhrasePairs(query)
 	termsByAnchors := map[string][]string{"": prepareTurnDistinctiveRecallTerms(query)}
+	// The query is fixed for this matcher: normalize it once, and decide each
+	// distinct anchor once, exactly as prepareTurnRecallContainsAnchor does.
+	queryNeedle := normalizePrepareTurnEntityNeedle(query)
+	anchorMatches := map[string]bool{}
+	containsAnchor := func(anchor string) bool {
+		matched, ok := anchorMatches[anchor]
+		if !ok {
+			matched = strings.TrimSpace(anchor) != "" && strings.Contains(queryNeedle, normalizePrepareTurnEntityNeedle(anchor))
+			anchorMatches[anchor] = matched
+		}
+		return matched
+	}
 	return func(item prepareTurnRecallMemory) prepareTurnRecallEvidence {
 		if query == "" {
 			return prepareTurnRecallEvidence{}
 		}
 		evidence := prepareTurnRecallEvidence{}
 		for _, anchor := range item.anchors {
-			if prepareTurnRecallContainsAnchor(query, anchor) {
+			if containsAnchor(anchor) {
 				evidence.StructuredAnchors = append(evidence.StructuredAnchors, anchor)
 			}
 		}

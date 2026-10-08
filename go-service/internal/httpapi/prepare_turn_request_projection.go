@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"math"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -30,6 +31,7 @@ type prepareTurnRequestPreparation struct {
 	partTerms     map[string][]string
 	partNeedles   map[string]string
 	termForms     map[string][]prepareTurnPriorityLexicalTerm
+	partDigests   map[prepareTurnPartDigestKey][32]byte
 	readingForms  map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm
 	readingGroups map[prepareTurnMemoryGroupKey]string
 	matches       map[string]func(store.Memory) prepareTurnRecallEvidence
@@ -51,6 +53,7 @@ func newPrepareTurnRequestPreparation(common *prepareTurnAssemblyCommon) *prepar
 		lexicalTexts: map[string]prepareTurnPriorityLexicalText{},
 		partTerms:    map[string][]string{}, partNeedles: map[string]string{},
 		termForms:    map[string][]prepareTurnPriorityLexicalTerm{},
+		partDigests:  map[prepareTurnPartDigestKey][32]byte{},
 		readingForms: map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm{}, readingGroups: map[prepareTurnMemoryGroupKey]string{},
 		similarities: map[string]map[store.Memory]float64{},
 	}
@@ -103,6 +106,14 @@ type prepareTurnSourceTemplate struct {
 }
 
 func prepareTurnSourceSeedKey(seed prepareTurnPriorityFactSeed, query string) prepareTurnSourceTemplateKey {
+	return prepareTurnSourceSeedKeyWith(seed, query, seed.Fact.Reading.sourceFingerprint())
+}
+
+func (p *prepareTurnRequestPreparation) sourceSeedKey(seed prepareTurnPriorityFactSeed, query string) prepareTurnSourceTemplateKey {
+	return prepareTurnSourceSeedKeyWith(seed, query, p.readingFingerprint(seed.Fact.Reading))
+}
+
+func prepareTurnSourceSeedKeyWith(seed prepareTurnPriorityFactSeed, query string, readingFingerprint [32]byte) prepareTurnSourceTemplateKey {
 	// Query discoveries are observations on the source, not its identity.
 	seed.SourceSelectionScore = 0
 	seed.SourceSelectionScoreObserved, seed.SourceSelectionScoreIsVector = false, false
@@ -110,7 +121,7 @@ func prepareTurnSourceSeedKey(seed prepareTurnPriorityFactSeed, query string) pr
 	seed.SemanticSimilarity, seed.SemanticSimilarityObserved = 0, false
 	seed.SemanticUnitID, seed.SemanticSimilaritySource = "", ""
 	encoded, _ := json.Marshal(seed)
-	return prepareTurnSourceTemplateKey{sha256.Sum256(encoded), query, seed.Fact.Reading.sourceFingerprint()}
+	return prepareTurnSourceTemplateKey{sha256.Sum256(encoded), query, readingFingerprint}
 }
 
 // Callers that edit a payload must copy its map first (canonical world-state
@@ -285,6 +296,42 @@ func (p *prepareTurnRequestPreparation) primeJoinedLexicalText(joined string, pa
 		}
 	}
 	p.lexicalTexts[joined] = prepareTurnPriorityLexicalText{terms: terms, needle: needle.String()}
+}
+
+// Same value as sourceFingerprint; digests of parts shared by many readings are
+// computed once per request. Without a preparation it hashes directly.
+func (p *prepareTurnRequestPreparation) readingFingerprint(c *prepareTurnMemoryContext) [32]byte {
+	if p == nil {
+		return c.sourceFingerprint()
+	}
+	return c.fingerprintWith(p.partDigest)
+}
+
+func (p *prepareTurnRequestPreparation) partDigest(part prepareTurnMemoryPart) [32]byte {
+	key := prepareTurnPartDigestKey{part.Key, part.Label, part.Value, part.DeliveryLabel, part.ReferenceOnly, part.FactTexts == nil, ""}
+	if len(part.FactTexts) > 0 {
+		var facts strings.Builder
+		for _, text := range part.FactTexts {
+			facts.WriteString(strconv.Itoa(len(text)))
+			facts.WriteByte(':')
+			facts.WriteString(text)
+		}
+		key.facts = facts.String()
+	}
+	digest, ok := p.partDigests[key]
+	if !ok {
+		digest = prepareTurnMemoryPartDigest(part)
+		p.partDigests[key] = digest
+	}
+	return digest
+}
+
+// Distinct parts give distinct keys: facts are length-prefixed and nil and
+// empty fact lists are kept apart.
+type prepareTurnPartDigestKey struct {
+	key, label, value, deliveryLabel string
+	referenceOnly, factsNil          bool
+	facts                            string
 }
 
 // nil when the request has no preparation; callers then analyze text directly.

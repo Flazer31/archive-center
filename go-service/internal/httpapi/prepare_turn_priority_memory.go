@@ -2063,7 +2063,7 @@ func prepareTurnBuildPriorityCandidates(out *prepareTurnInjectionAssembly, query
 		}
 		var prepared prepareTurnSourceTemplate
 		if out.preparation != nil {
-			key := prepareTurnSourceSeedKey(seed, query)
+			key := out.preparation.sourceSeedKey(seed, query)
 			var found bool
 			prepared, found = out.preparation.seedTemplates[key]
 			if !found {

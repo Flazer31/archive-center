@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash"
 	"math"
 	"sort"
 	"strconv"
@@ -35,76 +36,94 @@ type prepareTurnMemoryContext struct {
 // Source preparation is serialized by the existing request owner. Cache only
 // this immutable value's fingerprint, never any question or selection result.
 func (c *prepareTurnMemoryContext) sourceFingerprint() [32]byte {
+	return c.fingerprintWith(prepareTurnMemoryPartDigest)
+}
+
+func (c *prepareTurnMemoryContext) fingerprintWith(partDigest func(prepareTurnMemoryPart) [32]byte) [32]byte {
 	if c == nil {
 		return [32]byte{}
 	}
 	if c.fingerprint == ([32]byte{}) {
-		c.fingerprint = c.encodedFingerprint()
+		c.fingerprint = c.encodedFingerprint(partDigest)
 	}
 	return c.fingerprint
 }
 
 // The fingerprint is only compared for equality. Two readings get the same
 // value exactly when their JSON encodings are equal: every exported field is
-// hashed length-prefixed, invalid UTF-8 bytes are replaced one by one as JSON
-// does, and nil and empty slices stay distinct (null versus []). This avoids
-// marshalling readings that carry thousands of linked parts. A new exported
-// field on either struct must be added here.
-func (c *prepareTurnMemoryContext) encodedFingerprint() [32]byte {
+// hashed length-prefixed (each part through its own digest), invalid UTF-8
+// bytes are replaced one by one as JSON does, and nil and empty slices stay
+// distinct (null versus []). This avoids marshalling readings that carry
+// thousands of linked parts, and lets a request reuse the digest of a part
+// shared by many readings. A new exported field on either struct must be
+// added here.
+func (c *prepareTurnMemoryContext) encodedFingerprint(partDigest func(prepareTurnMemoryPart) [32]byte) [32]byte {
 	h := sha256.New()
-	var scratch [binary.MaxVarintLen64]byte
-	writeLen := func(n int) {
-		h.Write(scratch[:binary.PutUvarint(scratch[:], uint64(n))])
-	}
-	writeString := func(s string) {
-		if utf8.ValidString(s) {
-			writeLen(len(s))
-			h.Write([]byte(s))
-			return
-		}
-		var b strings.Builder
-		for i := 0; i < len(s); {
-			r, size := utf8.DecodeRuneInString(s[i:])
-			if r == utf8.RuneError && size == 1 {
-				b.WriteRune(utf8.RuneError)
-			} else {
-				b.WriteString(s[i : i+size])
-			}
-			i += size
-		}
-		writeLen(b.Len())
-		h.Write([]byte(b.String()))
-	}
-	writeSliceHeader := func(isNil bool, n int) {
-		if isNil {
-			h.Write([]byte{0})
-			return
-		}
-		h.Write([]byte{1})
-		writeLen(n)
-	}
-	writeString(c.Path)
-	writeString(c.Label)
-	writeString(c.DisplayPath)
-	writeSliceHeader(c.Parts == nil, len(c.Parts))
+	prepareTurnFingerprintString(h, c.Path)
+	prepareTurnFingerprintString(h, c.Label)
+	prepareTurnFingerprintString(h, c.DisplayPath)
+	prepareTurnFingerprintSliceHeader(h, c.Parts == nil, len(c.Parts))
 	for _, part := range c.Parts {
-		writeString(part.Key)
-		writeString(part.Label)
-		writeString(part.Value)
-		writeString(part.DeliveryLabel)
-		if part.ReferenceOnly {
-			h.Write([]byte{1})
-		} else {
-			h.Write([]byte{0})
-		}
-		writeSliceHeader(part.FactTexts == nil, len(part.FactTexts))
-		for _, text := range part.FactTexts {
-			writeString(text)
-		}
+		digest := partDigest(part)
+		h.Write(digest[:])
 	}
 	var out [32]byte
 	h.Sum(out[:0])
 	return out
+}
+
+func prepareTurnMemoryPartDigest(part prepareTurnMemoryPart) [32]byte {
+	h := sha256.New()
+	prepareTurnFingerprintString(h, part.Key)
+	prepareTurnFingerprintString(h, part.Label)
+	prepareTurnFingerprintString(h, part.Value)
+	prepareTurnFingerprintString(h, part.DeliveryLabel)
+	if part.ReferenceOnly {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
+	prepareTurnFingerprintSliceHeader(h, part.FactTexts == nil, len(part.FactTexts))
+	for _, text := range part.FactTexts {
+		prepareTurnFingerprintString(h, text)
+	}
+	var out [32]byte
+	h.Sum(out[:0])
+	return out
+}
+
+func prepareTurnFingerprintLen(h hash.Hash, n int) {
+	var scratch [binary.MaxVarintLen64]byte
+	h.Write(scratch[:binary.PutUvarint(scratch[:], uint64(n))])
+}
+
+func prepareTurnFingerprintString(h hash.Hash, s string) {
+	if utf8.ValidString(s) {
+		prepareTurnFingerprintLen(h, len(s))
+		h.Write([]byte(s))
+		return
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		r, size := utf8.DecodeRuneInString(s[i:])
+		if r == utf8.RuneError && size == 1 {
+			b.WriteRune(utf8.RuneError)
+		} else {
+			b.WriteString(s[i : i+size])
+		}
+		i += size
+	}
+	prepareTurnFingerprintLen(h, b.Len())
+	h.Write([]byte(b.String()))
+}
+
+func prepareTurnFingerprintSliceHeader(h hash.Hash, isNil bool, n int) {
+	if isNil {
+		h.Write([]byte{0})
+		return
+	}
+	h.Write([]byte{1})
+	prepareTurnFingerprintLen(h, n)
 }
 
 type prepareTurnMemoryFormPart struct {
@@ -335,7 +354,7 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 				bindings.WriteByte('\x1f')
 			}
 		}
-		formKey := prepareTurnMemoryFormKey{groupID, c.Reading.sourceFingerprint(), bindings.String()}
+		formKey := prepareTurnMemoryFormKey{groupID, preparation.readingFingerprint(c.Reading), bindings.String()}
 		form := forms[formKey]
 		if form == nil {
 			form = &prepareTurnMemoryForm{Group: groupID}
