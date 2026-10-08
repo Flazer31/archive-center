@@ -1266,14 +1266,33 @@ func multiAgentPublicEvidence(c prepareTurnPriorityMemoryCandidate) bool {
 	return (c.Visibility == "" || c.Visibility == "public" || c.Visibility == "general" || c.Visibility == "public_projection") && c.PerspectiveOwner == "" && len(c.AllowedViewers) == 0 && c.Lane != "subjective_relationship"
 }
 
+func multiAgentCurrentRelevanceByText(currentInput string, facts []prepareTurnPriorityMemoryCandidate) map[string]float64 {
+	score := prepareTurnPriorityRelevanceScorer(nil, currentInput)
+	scores := make(map[string]float64, len(facts))
+	add := func(text string) {
+		if _, ok := scores[text]; !ok {
+			scores[text] = score(text)
+		}
+	}
+	for _, c := range facts {
+		add(c.CompleteText)
+		if c.Minimum != nil {
+			add(c.Minimum.Meaning)
+		}
+	}
+	return scores
+}
+
 func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, summaries []prepareTurnPriorityTurnSummaryCandidate, req dto.PrepareTurnRequest, cfg multiAgentSettings, capChars, maxItems int, laneCaps map[string]int, context ...map[string]any) map[string]any {
 	var lore []map[string]any
 	var refs map[string]string
 	var searchEvidenceRanks map[string]float64
+	var knownCurrentRelevance map[string]float64
 	loreBudget := 0
 	if len(context) > 0 {
 		refs, _ = context[0]["candidate_refs"].(map[string]string)
 		searchEvidenceRanks, _ = context[0]["search_evidence_ranks"].(map[string]float64)
+		knownCurrentRelevance, _ = context[0]["current_relevance_by_text"].(map[string]float64)
 		if role == "world_state" {
 			lore, _ = context[0]["lorebook_candidates"].([]map[string]any)
 			loreBudget = intFromAny(context[0]["lorebook_budget_chars"], 0)
@@ -1294,7 +1313,13 @@ func multiAgentInput(role string, facts []prepareTurnPriorityMemoryCandidate, su
 	// recalled context, without weakening a precise semantic match.
 	facts = append([]prepareTurnPriorityMemoryCandidate(nil), facts...)
 	if currentInput := strings.TrimSpace(stringPtrValue(req.RawUserInput, "")); currentInput != "" && searchEvidenceRanks == nil {
-		currentRelevance := prepareTurnPriorityRelevanceScorer(nil, currentInput)
+		scoreCurrent := prepareTurnPriorityRelevanceScorer(nil, currentInput)
+		currentRelevance := func(text string) float64 {
+			if value, ok := knownCurrentRelevance[text]; ok {
+				return value
+			}
+			return scoreCurrent(text)
+		}
 		readingScore := map[string]float64{}
 		for _, c := range facts {
 			current := currentRelevance(c.CompleteText)
@@ -1561,6 +1586,11 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 	lore, _ := inputContext["lorebook_candidates"].([]map[string]any)
 	refs := multiAgentReferences(facts, summaries, lore, nil)
 	inputContext["candidate_refs"] = refs
+	// Every role reads the same current-input relevance for the same text.
+	// Score each text once here, before role goroutines; roles only read it.
+	if currentInput := strings.TrimSpace(stringPtrValue(req.RawUserInput, "")); currentInput != "" {
+		inputContext["current_relevance_by_text"] = multiAgentCurrentRelevanceByText(currentInput, facts)
+	}
 	for _, role := range multiAgentRoles {
 		if cfg.Roles[role].Enabled || (!cfg.Enabled && cfg.Jev.Enabled) {
 			result.Roles = append(result.Roles, multiAgentRoleResult{Role: role, Source: "go_default", Reason: "no_recommendation"})
