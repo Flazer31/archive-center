@@ -650,6 +650,27 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 		sourceTerms[i] = prepareTurnRecallTerms(text)
 		sourcePhrases[i] = " " + strings.Join(strings.FieldsFunc(strings.ToLower(text), wordBreak), " ") + " "
 	}
+	// Number every distinct source token once. Each state then decides a token
+	// at most once, stamped with the state's index instead of a per-state map.
+	tokenIDs := map[string]int{}
+	tokens := []string{}
+	sourceTokenIDs := make([][]int, len(sourceTerms))
+	for i, terms := range sourceTerms {
+		ids := make([]int, len(terms))
+		for j, token := range terms {
+			id, ok := tokenIDs[token]
+			if !ok {
+				id = len(tokens)
+				tokenIDs[token] = id
+				tokens = append(tokens, token)
+			}
+			ids[j] = id
+		}
+		sourceTokenIDs[i] = ids
+	}
+	tokenStamp := make([]int, len(tokens))
+	tokenMatched := make([]bool, len(tokens))
+	viewIndex := 0
 	// Each matched fact gets one private reading copy in this pass. Later states
 	// append to that copy instead of re-copying every earlier part per state.
 	owned := map[int]*prepareTurnMemoryContext{}
@@ -666,7 +687,7 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 		}
 		subjectKey := prepareTurnPriorityEntityKey(view.Subject, out.PriorityEntityAliases)
 		// Whether a source token names this subject depends only on the token.
-		tokenMatches := map[string]bool{}
+		viewIndex++
 		subjectWords := strings.FieldsFunc(strings.ToLower(view.Subject), wordBreak)
 		subjectPhrase := " " + strings.Join(subjectWords, " ") + " "
 		origin, evidence := prepareTurnCurrentStateReadingOrigin(view.Value)
@@ -703,16 +724,16 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 			mentioned := subjectKey != "" && factEntityKeys[i] == subjectKey
 			// Whole source tokens preserve Latin name boundaries and the existing
 			// Korean inflection handling. Similar spelling never creates an alias.
-			for _, token := range sourceTerms[i] {
-				matched, known := tokenMatches[token]
-				if !known {
-					matched = strings.EqualFold(token, view.Subject) || prepareTurnPriorityInflectedNonASCIIMatch(token, view.Subject)
-					tokenMatches[token] = matched
-				}
-				if matched {
-					mentioned = true
+			for _, id := range sourceTokenIDs[i] {
+				if mentioned {
 					break
 				}
+				if tokenStamp[id] != viewIndex {
+					token := tokens[id]
+					tokenStamp[id] = viewIndex
+					tokenMatched[id] = strings.EqualFold(token, view.Subject) || prepareTurnPriorityInflectedNonASCIIMatch(token, view.Subject)
+				}
+				mentioned = tokenMatched[id]
 			}
 			if len(subjectWords) > 1 && strings.Contains(sourcePhrases[i], subjectPhrase) {
 				mentioned = true

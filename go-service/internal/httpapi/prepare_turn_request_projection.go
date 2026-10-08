@@ -29,7 +29,7 @@ type prepareTurnRequestPreparation struct {
 	lexical       map[string]func(string) float64
 	lexicalTexts  map[string]prepareTurnPriorityLexicalText
 	partTerms     map[string][]string
-	partNeedles   map[string]string
+	partNeedles   map[string]prepareTurnNeedleSegment
 	termForms     map[string][]prepareTurnPriorityLexicalTerm
 	partDigests   map[prepareTurnPartDigestKey][32]byte
 	readingForms  map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm
@@ -51,7 +51,7 @@ func newPrepareTurnRequestPreparation(common *prepareTurnAssemblyCommon) *prepar
 		guards:      map[prepareTurnGuardKey]prepareTurnProtectedMemoryGuardResult{},
 		lexical:     map[string]func(string) float64{}, matches: map[string]func(store.Memory) prepareTurnRecallEvidence{},
 		lexicalTexts: map[string]prepareTurnPriorityLexicalText{},
-		partTerms:    map[string][]string{}, partNeedles: map[string]string{},
+		partTerms:    map[string][]string{}, partNeedles: map[string]prepareTurnNeedleSegment{},
 		termForms:    map[string][]prepareTurnPriorityLexicalTerm{},
 		partDigests:  map[prepareTurnPartDigestKey][32]byte{},
 		readingForms: map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm{}, readingGroups: map[prepareTurnMemoryGroupKey]string{},
@@ -272,18 +272,20 @@ func (p *prepareTurnRequestPreparation) primeJoinedLexicalText(joined string, pa
 			last = i
 		}
 	}
-	var needle strings.Builder
+	// The needle stays segmented: middle parts are shared request segments and
+	// only the trimmed first and last parts are this reading's own text.
+	analyzed := prepareTurnPriorityLexicalText{terms: terms}
 	if first >= 0 {
-		needle.Grow(len(joined))
+		analyzed.needleSegments = make([]prepareTurnNeedleSegment, 0, last-first+1)
 		for i := first; i <= last; i++ {
 			part := parts[i]
 			if i != first && i != last {
-				chars, ok := p.partNeedles[part]
+				segment, ok := p.partNeedles[part]
 				if !ok {
-					chars = prepareTurnEntityNeedleChars(part)
-					p.partNeedles[part] = chars
+					segment = prepareTurnNeedleSegment{text: prepareTurnEntityNeedleChars(part), id: int32(len(p.partNeedles))}
+					p.partNeedles[part] = segment
 				}
-				needle.WriteString(chars)
+				analyzed.needleSegments = append(analyzed.needleSegments, segment)
 				continue
 			}
 			if i == first {
@@ -292,10 +294,10 @@ func (p *prepareTurnRequestPreparation) primeJoinedLexicalText(joined string, pa
 			if i == last {
 				part = strings.TrimRightFunc(part, unicode.IsSpace)
 			}
-			needle.WriteString(prepareTurnEntityNeedleChars(part))
+			analyzed.needleSegments = append(analyzed.needleSegments, prepareTurnNeedleSegment{text: prepareTurnEntityNeedleChars(part), id: -1})
 		}
 	}
-	p.lexicalTexts[joined] = prepareTurnPriorityLexicalText{terms: terms, needle: needle.String()}
+	p.lexicalTexts[joined] = analyzed
 }
 
 // Same value as sourceFingerprint; digests of parts shared by many readings are
