@@ -1235,6 +1235,7 @@ func normalizePrepareTurnEntityNeedle(text string) string {
 		return ""
 	}
 	var b strings.Builder
+	b.Grow(len(text)) // The kept runes never exceed the source bytes.
 	for _, r := range text {
 		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r > 127 {
 			b.WriteRune(r)

@@ -1215,6 +1215,7 @@ func (s *Server) handlePrepareTurn(w http.ResponseWriter, r *http.Request) {
 					"recent_conversation_reading": multiAgentRecentReading(priorityMemoryRequest, chatLogs, assemblyInput.Common.GeneralMemories),
 					"story_time_note":             storyTimePromptNote(assemblyInput.Perspective.StoryClock),
 					"go_baseline_plan":            injectionAssembly.MemoryDeliveryPlan,
+					"lexical_text":                prepareTurnPreparationLexicalText(injectionAssembly.preparation),
 				})
 				if len(selection.Searches) > 0 {
 					timing.addMilliseconds("preprocessing_search", selection.SearchDurationMS)

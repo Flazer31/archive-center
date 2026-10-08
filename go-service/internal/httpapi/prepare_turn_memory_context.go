@@ -544,6 +544,9 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 		sourceTerms[i] = prepareTurnRecallTerms(text)
 		sourcePhrases[i] = " " + strings.Join(strings.FieldsFunc(strings.ToLower(text), wordBreak), " ") + " "
 	}
+	// Each matched fact gets one private reading copy in this pass. Later states
+	// append to that copy instead of re-copying every earlier part per state.
+	owned := map[int]*prepareTurnMemoryContext{}
 	for _, view := range narrativeCurrentStateViews(values) {
 		switch view.Scope {
 		case "belief", "rumor", "secret":
@@ -597,12 +600,16 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 			if !mentioned {
 				continue
 			}
-			reading := prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
-			if fact.Reading != nil {
-				reading = *fact.Reading
-				reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+			reading := owned[i]
+			if reading == nil {
+				reading = &prepareTurnMemoryContext{Path: fact.SourcePath, Parts: []prepareTurnMemoryPart{{Key: fact.SourcePath, Value: fact.Text, FactTexts: []string{fact.Text}}}}
+				if fact.Reading != nil {
+					*reading = *fact.Reading
+					reading.Parts = append([]prepareTurnMemoryPart(nil), fact.Reading.Parts...)
+				}
+				reading.fingerprint = [32]byte{}
+				owned[i] = reading
 			}
-			reading.fingerprint = [32]byte{}
 			// A matching name remains discovery/scoring context. It does not make
 			// every stored slot part of an explicitly typed assertion. Unknown
 			// bindings retain the established reading (including indirect clues);
@@ -617,7 +624,7 @@ func prepareTurnAttachCurrentStateContext(out *prepareTurnInjectionAssembly, val
 				part.ReferenceOnly = !linked
 				reading.Parts = append(reading.Parts, part)
 			}
-			fact.Reading = &reading
+			fact.Reading = reading
 		}
 	}
 }

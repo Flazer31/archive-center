@@ -1266,8 +1266,13 @@ func multiAgentPublicEvidence(c prepareTurnPriorityMemoryCandidate) bool {
 	return (c.Visibility == "" || c.Visibility == "public" || c.Visibility == "general" || c.Visibility == "public_projection") && c.PerspectiveOwner == "" && len(c.AllowedViewers) == 0 && c.Lane != "subjective_relationship"
 }
 
-func multiAgentCurrentRelevanceByText(currentInput string, facts []prepareTurnPriorityMemoryCandidate) map[string]float64 {
+// The optional reader returns the same analysis as prepareTurnPriorityAnalyzeText
+// (the request cache); it must not be shared with concurrent goroutines.
+func multiAgentCurrentRelevanceByText(currentInput string, facts []prepareTurnPriorityMemoryCandidate, lexicalText func(string) prepareTurnPriorityLexicalText) map[string]float64 {
 	score := prepareTurnPriorityRelevanceScorer(nil, currentInput)
+	if lexicalText != nil {
+		score = prepareTurnPriorityRelevanceScorer(nil, currentInput, lexicalText)
+	}
 	scores := make(map[string]float64, len(facts))
 	add := func(text string) {
 		if _, ok := scores[text]; !ok {
@@ -1570,10 +1575,16 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 	}()
 	inputContext := map[string]any{}
 	scope := map[string]any{}
+	var lexicalText func(string) prepareTurnPriorityLexicalText
 	if len(scopedContext) > 0 {
 		for key, value := range scopedContext[0] {
 			if key == "go_baseline_plan" {
 				result.captureBaseline(mapFromAny(value))
+				continue
+			}
+			if key == "lexical_text" {
+				// Request-local text analysis cache; never part of a role input.
+				lexicalText, _ = value.(func(string) prepareTurnPriorityLexicalText)
 				continue
 			}
 			if key == "lorebook_candidates" || key == "lorebook_budget_chars" || key == "recent_conversation_reading" || key == "story_time_note" {
@@ -1589,7 +1600,7 @@ func (s *Server) runMultiAgent(ctx context.Context, cfg multiAgentSettings, req 
 	// Every role reads the same current-input relevance for the same text.
 	// Score each text once here, before role goroutines; roles only read it.
 	if currentInput := strings.TrimSpace(stringPtrValue(req.RawUserInput, "")); currentInput != "" {
-		inputContext["current_relevance_by_text"] = multiAgentCurrentRelevanceByText(currentInput, facts)
+		inputContext["current_relevance_by_text"] = multiAgentCurrentRelevanceByText(currentInput, facts, lexicalText)
 	}
 	for _, role := range multiAgentRoles {
 		if cfg.Roles[role].Enabled || (!cfg.Enabled && cfg.Jev.Enabled) {

@@ -197,6 +197,14 @@ func (p *prepareTurnRequestPreparation) recallMatcher(query string) func(store.M
 	return fn
 }
 
+// nil when the request has no preparation; callers then analyze text directly.
+func prepareTurnPreparationLexicalText(p *prepareTurnRequestPreparation) func(string) prepareTurnPriorityLexicalText {
+	if p == nil {
+		return nil
+	}
+	return p.lexicalText
+}
+
 func (p *prepareTurnRequestPreparation) lexicalText(text string) prepareTurnPriorityLexicalText {
 	if value, ok := p.lexicalTexts[text]; ok {
 		return value
