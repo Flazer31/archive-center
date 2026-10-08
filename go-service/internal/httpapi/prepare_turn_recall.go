@@ -1494,12 +1494,14 @@ func prepareTurnRecallTermForms(term string) []string {
 	return out
 }
 
+func prepareTurnRecallTermBreak(r rune) bool {
+	return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
+}
+
 func prepareTurnRecallTerms(text string) []string {
 	seen := map[string]bool{}
 	out := []string{}
-	for _, term := range strings.FieldsFunc(strings.ToLower(text), func(r rune) bool {
-		return !(r == '_' || r == '-' || unicode.IsLetter(r) || unicode.IsNumber(r))
-	}) {
+	for _, term := range strings.FieldsFunc(strings.ToLower(text), prepareTurnRecallTermBreak) {
 		term = strings.TrimSpace(term)
 		if term == "" || seen[term] {
 			continue

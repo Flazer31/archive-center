@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"math"
 	"strings"
+	"unicode"
 
 	"github.com/risulongmemory/archive-center-go/internal/store"
 )
@@ -26,6 +27,9 @@ type prepareTurnRequestPreparation struct {
 	guards        map[prepareTurnGuardKey]prepareTurnProtectedMemoryGuardResult
 	lexical       map[string]func(string) float64
 	lexicalTexts  map[string]prepareTurnPriorityLexicalText
+	partTerms     map[string][]string
+	partNeedles   map[string]string
+	termForms     map[string][]prepareTurnPriorityLexicalTerm
 	readingForms  map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm
 	readingGroups map[prepareTurnMemoryGroupKey]string
 	matches       map[string]func(store.Memory) prepareTurnRecallEvidence
@@ -45,6 +49,8 @@ func newPrepareTurnRequestPreparation(common *prepareTurnAssemblyCommon) *prepar
 		guards:      map[prepareTurnGuardKey]prepareTurnProtectedMemoryGuardResult{},
 		lexical:     map[string]func(string) float64{}, matches: map[string]func(store.Memory) prepareTurnRecallEvidence{},
 		lexicalTexts: map[string]prepareTurnPriorityLexicalText{},
+		partTerms:    map[string][]string{}, partNeedles: map[string]string{},
+		termForms:    map[string][]prepareTurnPriorityLexicalTerm{},
 		readingForms: map[prepareTurnMemoryFormKey]*prepareTurnMemoryForm{}, readingGroups: map[prepareTurnMemoryGroupKey]string{},
 		similarities: map[string]map[store.Memory]float64{},
 	}
@@ -195,6 +201,90 @@ func (p *prepareTurnRequestPreparation) recallMatcher(query string) func(store.M
 	}
 	p.matches[query] = fn
 	return fn
+}
+
+// Readings are their parts joined by "\n", and many readings share the same
+// long parts. Recall fields never cross that separator, so the analysis of the
+// joined text is composed from cached per-part fields using the same first-seen
+// order as prepareTurnRecallTerms, and the needle from per-part needle
+// characters with the whole text's surrounding white space removed. The result
+// equals prepareTurnPriorityAnalyzeText(joined); later lookups reuse it.
+func (p *prepareTurnRequestPreparation) primeJoinedLexicalText(joined string, parts []string) {
+	if p == nil {
+		return
+	}
+	if _, ok := p.lexicalTexts[joined]; ok {
+		return
+	}
+	defer p.measurement().start("assembly.tokenize").end()
+	seen := map[string]bool{}
+	terms := []prepareTurnPriorityLexicalTerm{}
+	for _, part := range parts {
+		fields, ok := p.partTerms[part]
+		if !ok {
+			fields = []string{}
+			distinct := map[string]bool{}
+			// A repeated field cannot add a form: its own forms were added first.
+			for _, field := range strings.FieldsFunc(strings.ToLower(part), prepareTurnRecallTermBreak) {
+				if !distinct[field] {
+					distinct[field] = true
+					fields = append(fields, field)
+				}
+			}
+			p.partTerms[part] = fields
+		}
+		for _, field := range fields {
+			if seen[field] {
+				continue
+			}
+			forms, ok := p.termForms[field]
+			if !ok {
+				for _, form := range prepareTurnRecallTermForms(field) {
+					forms = append(forms, prepareTurnPriorityLexicalTermOf(form))
+				}
+				p.termForms[field] = forms
+			}
+			for _, form := range forms {
+				if !seen[form.value] {
+					seen[form.value] = true
+					terms = append(terms, form)
+				}
+			}
+		}
+	}
+	first, last := -1, -1
+	for i, part := range parts {
+		if strings.TrimSpace(part) != "" {
+			if first < 0 {
+				first = i
+			}
+			last = i
+		}
+	}
+	var needle strings.Builder
+	if first >= 0 {
+		needle.Grow(len(joined))
+		for i := first; i <= last; i++ {
+			part := parts[i]
+			if i != first && i != last {
+				chars, ok := p.partNeedles[part]
+				if !ok {
+					chars = prepareTurnEntityNeedleChars(part)
+					p.partNeedles[part] = chars
+				}
+				needle.WriteString(chars)
+				continue
+			}
+			if i == first {
+				part = strings.TrimLeftFunc(part, unicode.IsSpace)
+			}
+			if i == last {
+				part = strings.TrimRightFunc(part, unicode.IsSpace)
+			}
+			needle.WriteString(prepareTurnEntityNeedleChars(part))
+		}
+	}
+	p.lexicalTexts[joined] = prepareTurnPriorityLexicalText{terms: terms, needle: needle.String()}
 }
 
 // nil when the request has no preparation; callers then analyze text directly.

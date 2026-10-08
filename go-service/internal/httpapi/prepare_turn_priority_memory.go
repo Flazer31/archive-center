@@ -1262,14 +1262,18 @@ type prepareTurnPriorityLexicalText struct {
 func prepareTurnPriorityAnalyzeText(text string) prepareTurnPriorityLexicalText {
 	terms := []prepareTurnPriorityLexicalTerm{}
 	for _, term := range prepareTurnRecallTerms(text) {
-		run := []rune(term)
-		v := prepareTurnPriorityLexicalTerm{value: term, nonASCII: len(run) >= 2 && prepareTurnContainsNonASCII(run)}
-		if len(run) >= 3 && prepareTurnContainsNonASCII(run[:len(run)-1]) {
-			v.shorter = string(run[:len(run)-1])
-		}
-		terms = append(terms, v)
+		terms = append(terms, prepareTurnPriorityLexicalTermOf(term))
 	}
 	return prepareTurnPriorityLexicalText{terms: terms, needle: normalizePrepareTurnEntityNeedle(text)}
+}
+
+func prepareTurnPriorityLexicalTermOf(term string) prepareTurnPriorityLexicalTerm {
+	run := []rune(term)
+	v := prepareTurnPriorityLexicalTerm{value: term, nonASCII: len(run) >= 2 && prepareTurnContainsNonASCII(run)}
+	if len(run) >= 3 && prepareTurnContainsNonASCII(run[:len(run)-1]) {
+		v.shorter = string(run[:len(run)-1])
+	}
+	return v
 }
 
 // Compile the unchanged lexical policy once per candidate pass. This closure is

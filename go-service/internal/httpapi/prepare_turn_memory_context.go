@@ -323,6 +323,7 @@ func prepareTurnBuildReadingForms(candidates []prepareTurnPriorityMemoryCandidat
 				lines = append(lines, "  "+text)
 			}
 			form.Meaning = strings.Join(values, "\n")
+			preparation.primeJoinedLexicalText(form.Meaning, values)
 			form.Text = strings.TrimSpace(form.Heading + "\n" + strings.Join(lines, "\n"))
 			form.Chars = utf8.RuneCountInString(form.Text)
 			forms[formKey] = form
